@@ -3,16 +3,15 @@
 #include <DesignSystem/DesignSystem.h>
 #include <imgui.h>
 #include <vector>
+#include <iomanip>
+#include <sstream>
 
 namespace VectorGraphics {
-
-// Static storage for local metadata
-std::map<std::string, IconMetadata> IconEditorWindow::editorLocalMetadata_;
 
 void IconEditorWindow::Render(bool* pOpen) {
     if (!pOpen || !*pOpen) return;
     
-    ImGui::Begin("Icon Editor", pOpen);
+    ImGui::Begin("Icon Editor", pOpen, ImGuiWindowFlags_AlwaysAutoResize);
     
     RenderIconSelector();
     
@@ -22,31 +21,21 @@ void IconEditorWindow::Render(bool* pOpen) {
         return;
     }
     
+    ImGui::Separator();
     RenderPreview();
-    ImGui::Separator();
     
+    ImGui::Separator();
     RenderModeSelector();
+    
     ImGui::Separator();
-    
-    auto& localMetadata = editorLocalMetadata_[selectedIcon_];
-    
-    if (localMetadata.scheme == IconColorScheme::Original) {
-        RenderOriginalMode();
-    } else if (localMetadata.scheme == IconColorScheme::Bicolor) {
-        RenderBicolorMode();
-        ImGui::Separator();
-        RenderColorZoneConfiguration();
-    } else if (localMetadata.scheme == IconColorScheme::Multicolor) {
-        RenderMulticolorMode();
-        ImGui::Separator();
-        RenderColorZoneConfiguration();
-    }
+    RenderColorZonesConfiguration();
     
     ImGui::Separator();
     RenderActions();
     
-    ImGui::Separator();
-    RenderDebugInfo();
+    if (ImGui::CollapsingHeader("Debug Info")) {
+        RenderDebugInfo();
+    }
     
     ImGui::End();
 }
@@ -55,14 +44,16 @@ void IconEditorWindow::RenderIconSelector() {
     auto& iconManager = IconManager::Instance();
     std::vector<std::string> iconList = iconManager.GetLoadedIcons();
     
-    if (!iconList.empty() && selectedIcon_.empty()) {
+    if (iconList.empty()) {
+        ImGui::Text("No icons loaded");
+        return;
+    }
+    
+    // Initialize on first run
+    if (selectedIcon_.empty() && !iconList.empty()) {
         selectedIcon_ = iconList[0];
         selectedIconIdx_ = 0;
-        
-        // Initialize local metadata for this icon (COPY from global)
-        if (editorLocalMetadata_.find(selectedIcon_) == editorLocalMetadata_.end()) {
-            editorLocalMetadata_[selectedIcon_] = iconManager.GetIconMetadataCopy(selectedIcon_);
-        }
+        localMetadata_ = iconManager.GetDefaultMetadata(selectedIcon_);
     }
     
     ImGui::SeparatorText("Select Icon");
@@ -73,11 +64,7 @@ void IconEditorWindow::RenderIconSelector() {
             if (ImGui::Selectable(iconList[i].c_str(), isSelected)) {
                 selectedIcon_ = iconList[i];
                 selectedIconIdx_ = static_cast<int>(i);
-                
-                // Initialize local metadata if not present (COPY from global)
-                if (editorLocalMetadata_.find(selectedIcon_) == editorLocalMetadata_.end()) {
-                    editorLocalMetadata_[selectedIcon_] = iconManager.GetIconMetadataCopy(selectedIcon_);
-                }
+                localMetadata_ = iconManager.GetDefaultMetadata(selectedIcon_);
             }
             if (isSelected) {
                 ImGui::SetItemDefaultFocus();
@@ -91,157 +78,175 @@ void IconEditorWindow::RenderPreview() {
     ImGui::SeparatorText("Preview");
     
     auto& iconManager = IconManager::Instance();
-    IconMetadata& localMetadata = editorLocalMetadata_[selectedIcon_];
     
     float previewSize = 128.0f;
     float availWidth = ImGui::GetContentRegionAvail().x;
     ImGui::SetCursorPosX((availWidth - previewSize) * 0.5f);
     
-    // CRITICAL: Render with LOCAL metadata (won't affect other instances)
-    iconManager.RenderIcon(selectedIcon_, previewSize, localMetadata);
+    // Render with local metadata
+    iconManager.RenderIcon(selectedIcon_, previewSize, localMetadata_);
+    
+    ImGui::Text("(Live preview with current settings)");
 }
 
 void IconEditorWindow::RenderModeSelector() {
     ImGui::SeparatorText("Color Mode");
     
     auto& iconManager = IconManager::Instance();
-    IconMetadata& localMetadata = editorLocalMetadata_[selectedIcon_];
     
-    int currentMode = static_cast<int>(localMetadata.scheme);
+    int currentMode = static_cast<int>(localMetadata_.scheme);
     const char* modes[] = { 
         "Original (SVG colors)", 
-        "Bicolor (Primary/Secondary/Tertiary)", 
-        "Multicolor (Custom)" 
+        "Bicolor (Primary/Secondary)", 
+        "Multicolor (Custom per color)" 
     };
     
-    if (ImGui::Combo("Mode", &currentMode, modes, 3)) {
-        localMetadata.scheme = static_cast<IconColorScheme>(currentMode);
+    if (ImGui::Combo("##Mode", &currentMode, modes, 3)) {
+        localMetadata_.scheme = static_cast<IconColorScheme>(currentMode);
         iconManager.InvalidateCache();
-    }
-}
-
-void IconEditorWindow::RenderOriginalMode() {
-    ImGui::SeparatorText("Original Colors");
-    ImGui::TextWrapped("This icon uses its original SVG colors. "
-                      "These colors cannot be edited. Switch to Bicolor or Multicolor mode to customize.");
-    
-    IconMetadata& localMetadata = editorLocalMetadata_[selectedIcon_];
-    int numZones = static_cast<int>(localMetadata.colorZones.size());
-    ImGui::Text("Detected color zones: %d", numZones);
-    
-    if (numZones == 0) {
-        ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "No color zones detected in this icon.");
-        ImGui::TextWrapped("This might be because:\n"
-                         "- The icon uses gradients only\n"
-                         "- All colors have very low opacity\n"
-                         "- The icon is empty");
-    }
-    
-    for (int i = 0; i < numZones; ++i) {
-        ImGui::PushID(i);
-        std::string label = "Zone " + std::to_string(i);
-        ImGui::ColorButton(label.c_str(), localMetadata.colorZones[i].customColor, 
-                         ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, 
-                         ImVec2(30, 30));
-        ImGui::SameLine();
-        ImGui::Text("Color Zone %d", i);
-        ImGui::PopID();
-    }
-}
-
-void IconEditorWindow::RenderBicolorMode() {
-    ImGui::SeparatorText("Global Colors (Design System)");
-    
-    auto& ds = DesignSystem::DesignSystem::Instance();
-    
-    ImVec4 primaryColor = ds.GetColor("semantic.icon.color.primary");
-    ImVec4 secondaryColor = ds.GetColor("semantic.icon.color.secondary");
-    ImVec4 tertiaryColor = ds.GetColor("semantic.icon.color.tertiary");
-    
-    ImGui::Text("Primary:");
-    ImGui::SameLine();
-    ImGui::ColorButton("##primary_display", primaryColor, ImGuiColorEditFlags_NoTooltip, ImVec2(30, 30));
-    
-    ImGui::Text("Secondary:");
-    ImGui::SameLine();
-    ImGui::ColorButton("##secondary_display", secondaryColor, ImGuiColorEditFlags_NoTooltip, ImVec2(30, 30));
-    
-    ImGui::Text("Tertiary:");
-    ImGui::SameLine();
-    ImGui::ColorButton("##tertiary_display", tertiaryColor, ImGuiColorEditFlags_NoTooltip, ImVec2(30, 30));
-    
-    ImGui::TextWrapped("(Colors from design system tokens)");
-}
-
-void IconEditorWindow::RenderMulticolorMode() {
-    ImGui::SeparatorText("Multicolor Mode");
-    ImGui::TextWrapped("In multicolor mode, you can assign a custom color to each color zone.");
-}
-
-void IconEditorWindow::RenderColorZoneConfiguration() {
-    ImGui::SeparatorText("Color Zones Configuration");
-    
-    auto& iconManager = IconManager::Instance();
-    IconMetadata& localMetadata = editorLocalMetadata_[selectedIcon_];
-    
-    int numZones = static_cast<int>(localMetadata.colorZones.size());
-    ImGui::Text("Number of color zones: %d", numZones);
-    
-    if (numZones == 0) {
-        ImGui::TextColored(ImVec4(1, 0.5f, 0, 1), "No color zones detected in this icon.");
-        ImGui::TextWrapped("This might be because:\n"
-                         "- The icon uses gradients only\n"
-                         "- All colors have very low opacity\n"
-                         "- The icon is empty\n\n"
-                         "Try switching to Original mode to view the icon.");
-        return;
     }
     
     ImGui::Spacing();
     
-    // Render configuration for each zone
-    for (int zoneIdx = 0; zoneIdx < numZones; ++zoneIdx) {
-        if (zoneIdx >= static_cast<int>(localMetadata.colorZones.size())) break;
+    // Mode description
+    switch (localMetadata_.scheme) {
+        case IconColorScheme::Original:
+            ImGui::TextWrapped("Uses original colors from the SVG file.");
+            break;
+        case IconColorScheme::Bicolor:
+            ImGui::TextWrapped("Uses design system tokens (primary/secondary). "
+                             "Assign each color to a token below.");
+            break;
+        case IconColorScheme::Multicolor:
+            ImGui::TextWrapped("Customize each color independently.");
+            break;
+    }
+}
+
+void IconEditorWindow::RenderColorZonesConfiguration() {
+    ImGui::SeparatorText("Color Configuration");
+    
+    auto& iconManager = IconManager::Instance();
+    
+    int numZones = static_cast<int>(localMetadata_.colorZones.size());
+    
+    if (numZones == 0) {
+        ImGui::TextColored(ImVec4(1, 0.7f, 0, 1), "No colors detected in this icon.");
+        ImGui::TextWrapped(
+            "This could mean:\n"
+            "- The icon has no fill/stroke colors\n"
+            "- All elements use references (like gradients only)\n"
+            "- The SVG uses unsupported color formats"
+        );
+        return;
+    }
+    
+    ImGui::Text("Detected %d unique color%s:", numZones, numZones > 1 ? "s" : "");
+    ImGui::Spacing();
+    
+    // Global design system colors (for reference in bicolor mode)
+    ImVec4 dsPrimary(0, 0, 0, 1);
+    ImVec4 dsSecondary(0, 0, 0, 1);
+    
+    if (localMetadata_.scheme == IconColorScheme::Bicolor) {
+        auto& ds = DesignSystem::DesignSystem::Instance();
+        dsPrimary = ds.GetColor("semantic.icon.color.primary");
+        dsSecondary = ds.GetColor("semantic.icon.color.secondary");
         
-        ColorZone& zone = localMetadata.colorZones[zoneIdx];
+        ImGui::Text("Design System Colors:");
+        ImGui::SameLine();
+        ImGui::ColorButton("##ds_primary", dsPrimary, 
+                          ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, 
+                          ImVec2(20, 20));
+        ImGui::SameLine();
+        ImGui::Text("Primary");
+        
+        ImGui::SameLine(0, 20);
+        ImGui::ColorButton("##ds_secondary", dsSecondary, 
+                          ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, 
+                          ImVec2(20, 20));
+        ImGui::SameLine();
+        ImGui::Text("Secondary");
+        
+        ImGui::Separator();
+    }
+    
+    // Render each color zone
+    for (int zoneIdx = 0; zoneIdx < numZones; ++zoneIdx) {
+        ColorZone& zone = localMetadata_.colorZones[zoneIdx];
         
         ImGui::PushID(zoneIdx);
         
-        std::string zoneHeader = "Color Zone " + std::to_string(zoneIdx);
-        if (zone.hasToken) {
-            zoneHeader += " (" + zone.tokenName + ")";
-        }
+        // Convert original color to hex for display
+        std::ostringstream hexStream;
+        hexStream << "#" << std::hex << std::setfill('0')
+                  << std::setw(2) << (zone.originalColor & 0xFF)
+                  << std::setw(2) << ((zone.originalColor >> 8) & 0xFF)
+                  << std::setw(2) << ((zone.originalColor >> 16) & 0xFF);
+        std::string originalHex = hexStream.str();
         
-        if (ImGui::CollapsingHeader(zoneHeader.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
+        std::string header = "Color " + std::to_string(zoneIdx + 1) + " (" + originalHex + ")";
+        
+        if (ImGui::TreeNodeEx(header.c_str(), ImGuiTreeNodeFlags_DefaultOpen)) {
             ImGui::Indent();
             
-            // Show original color
+            // Original color preview
             ImGui::Text("Original:");
             ImGui::SameLine();
-            ImGui::ColorButton("##original", zone.customColor, 
+            ImVec4 originalColor = ImVec4(
+                (zone.originalColor & 0xFF) / 255.0f,
+                ((zone.originalColor >> 8) & 0xFF) / 255.0f,
+                ((zone.originalColor >> 16) & 0xFF) / 255.0f,
+                ((zone.originalColor >> 24) & 0xFF) / 255.0f
+            );
+            ImGui::ColorButton("##original", originalColor, 
                              ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, 
                              ImVec2(30, 30));
             
             ImGui::Spacing();
             
-            if (localMetadata.scheme == IconColorScheme::Bicolor) {
-                // ===== BICOLOR MODE =====
-                if (zone.hasToken) {
-                    ImGui::Text("Assigned to: %s", zone.tokenName.c_str());
-                    ImGui::TextWrapped("(Defined by CSS class in SVG)");
-                } else {
-                    ImGui::Text("Uses original color");
-                    ImGui::TextWrapped("(No CSS class assigned in SVG)");
+            if (localMetadata_.scheme == IconColorScheme::Original) {
+                ImGui::TextWrapped("Mode: Original - no customization");
+                
+            } else if (localMetadata_.scheme == IconColorScheme::Bicolor) {
+                ImGui::Text("Assign to:");
+                
+                bool isPrimary = (zone.tokenAssignment == "primary");
+                bool isSecondary = (zone.tokenAssignment == "secondary");
+                
+                if (ImGui::RadioButton("Primary", isPrimary)) {
+                    zone.tokenAssignment = "primary";
+                    iconManager.InvalidateCache();
                 }
                 
-            } else if (localMetadata.scheme == IconColorScheme::Multicolor) {
-                // ===== MULTICOLOR MODE =====
-                if (ImGui::ColorEdit4("Custom Color", (float*)&zone.customColor)) {
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Secondary", isSecondary)) {
+                    zone.tokenAssignment = "secondary";
+                    iconManager.InvalidateCache();
+                }
+                
+                // Preview of chosen color
+                ImGui::Text("Result:");
+                ImGui::SameLine();
+                ImVec4 previewColor = isPrimary ? dsPrimary : dsSecondary;
+                ImGui::ColorButton("##preview", previewColor, 
+                                 ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, 
+                                 ImVec2(30, 30));
+                
+            } else if (localMetadata_.scheme == IconColorScheme::Multicolor) {
+                ImGui::Text("Custom Color:");
+                if (ImGui::ColorEdit4("##custom", (float*)&zone.customColor, 
+                                     ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar)) {
                     iconManager.InvalidateCache();
                 }
             }
             
+            // Show how many times this color appears
+            ImGui::Spacing();
+            ImGui::TextDisabled("Used in %zu location(s)", zone.mappingIndices.size());
+            
             ImGui::Unindent();
+            ImGui::TreePop();
         }
         
         ImGui::PopID();
@@ -253,51 +258,68 @@ void IconEditorWindow::RenderActions() {
     
     auto& iconManager = IconManager::Instance();
     
-    if (ImGui::Button("Reset to Original Colors", ImVec2(-1, 0))) {
-        // Reload from global template
-        editorLocalMetadata_[selectedIcon_] = iconManager.GetIconMetadataCopy(selectedIcon_);
+    if (ImGui::Button("Reset Current Mode", ImVec2(-1, 0))) {
+        // Reset only within current mode
+        IconMetadata defaultMeta = iconManager.GetDefaultMetadata(selectedIcon_);
+        
+        if (localMetadata_.scheme == IconColorScheme::Multicolor) {
+            // Reset custom colors to original
+            for (auto& zone : localMetadata_.colorZones) {
+                zone.customColor = ImVec4(
+                    (zone.originalColor & 0xFF) / 255.0f,
+                    ((zone.originalColor >> 8) & 0xFF) / 255.0f,
+                    ((zone.originalColor >> 16) & 0xFF) / 255.0f,
+                    ((zone.originalColor >> 24) & 0xFF) / 255.0f
+                );
+            }
+        } else if (localMetadata_.scheme == IconColorScheme::Bicolor) {
+            // Reset token assignments to defaults
+            localMetadata_.colorZones = defaultMeta.colorZones;
+        }
+        
         iconManager.InvalidateCache();
     }
     
     ImGui::Spacing();
-    
-    if (ImGui::Button("Apply to Global Template", ImVec2(-1, 0))) {
-        // Apply local changes to the global template
-        // This will affect NEW instances but not existing ones
-        iconManager.SetIconMetadata(selectedIcon_, editorLocalMetadata_[selectedIcon_]);
-        ImGui::OpenPopup("Applied");
-    }
-    
-    if (ImGui::BeginPopup("Applied")) {
-        ImGui::Text("Changes applied to global template!");
-        ImGui::Text("This affects new instances only.");
-        ImGui::EndPopup();
-    }
-    
-    ImGui::Spacing();
-    
-    // Info text
-    ImGui::TextWrapped("Note: Changes here only affect this preview.");
-    ImGui::TextWrapped("The icon in the toolbar and other parts of the app are NOT affected.");
-    ImGui::TextWrapped("Click 'Apply to Global Template' to make changes permanent for new instances.");
+    ImGui::TextWrapped(
+        "Note: Changes here affect only this preview. "
+        "Icons used elsewhere in the application maintain their own settings."
+    );
 }
 
 void IconEditorWindow::RenderDebugInfo() {
-    IconMetadata& localMetadata = editorLocalMetadata_[selectedIcon_];
-    int numZones = static_cast<int>(localMetadata.colorZones.size());
+    auto& iconManager = IconManager::Instance();
+    const auto& mappings = iconManager.GetColorMappings(selectedIcon_);
     
-    if (ImGui::TreeNode("Debug Info")) {
-        ImGui::Text("Icon: %s", selectedIcon_.c_str());
-        ImGui::Text("Mode: %d", static_cast<int>(localMetadata.scheme));
-        ImGui::Text("Zones: %d", numZones);
-        
-        for (int i = 0; i < numZones; ++i) {
-            ImGui::Text("Zone %d: #%08X (token: %s)", 
-                i, 
-                localMetadata.colorZones[i].originalColor,
-                localMetadata.colorZones[i].hasToken ? localMetadata.colorZones[i].tokenName.c_str() : "none");
+    ImGui::Text("Icon: %s", selectedIcon_.c_str());
+    ImGui::Text("Mode: %d", static_cast<int>(localMetadata_.scheme));
+    ImGui::Text("Unique Colors: %zu", localMetadata_.colorZones.size());
+    ImGui::Text("Total Mappings: %zu", mappings.size());
+    
+    if (ImGui::TreeNode("Color Mappings")) {
+        for (size_t i = 0; i < mappings.size(); ++i) {
+            const auto& m = mappings[i];
+            ImGui::Text("%zu: %s.%s = #%06X (class: %s)", 
+                i,
+                m.elementId.c_str(),
+                m.property.c_str(),
+                m.originalColor & 0xFFFFFF,
+                m.cssClass.empty() ? "none" : m.cssClass.c_str()
+            );
         }
-        
+        ImGui::TreePop();
+    }
+    
+    if (ImGui::TreeNode("Color Zones")) {
+        for (size_t i = 0; i < localMetadata_.colorZones.size(); ++i) {
+            const auto& zone = localMetadata_.colorZones[i];
+            ImGui::Text("%zu: #%06X -> %s (%zu mappings)", 
+                i,
+                zone.originalColor & 0xFFFFFF,
+                zone.tokenAssignment.c_str(),
+                zone.mappingIndices.size()
+            );
+        }
         ImGui::TreePop();
     }
 }

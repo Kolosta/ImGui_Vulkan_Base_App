@@ -1,5 +1,5 @@
 [package]
-name = "resvg-c-bindings"
+name = "resvg-bindings"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,10 +7,16 @@ edition = "2021"
 crate-type = ["cdylib", "staticlib"]
 name = "resvg_c"
 
+[[bin]]
+name = "icon_compiler"
+path = "src/icon_compiler_main.rs"
+
 [dependencies]
 resvg = "0.42"
 usvg = "0.42"
 tiny-skia = "0.11"
+roxmltree = "0.20"
+walkdir = "2.4"
 
 [build-dependencies]
 cbindgen = "0.26"

@@ -3,13 +3,12 @@
 #include <VectorGraphics/IconManager.h>
 #include <VectorGraphics/IconMetadata.h>
 #include <string>
-#include <map>
 
 namespace VectorGraphics {
 
 /**
- * Icon editor window for visually editing icon color schemes
- * Allows per-instance editing without affecting the global template
+ * Icon editor window for per-instance icon customization
+ * Each editor session maintains its own local metadata
  */
 class IconEditorWindow {
 public:
@@ -26,19 +25,13 @@ private:
     void RenderIconSelector();
     void RenderPreview();
     void RenderModeSelector();
-    void RenderOriginalMode();
-    void RenderBicolorMode();
-    void RenderMulticolorMode();
-    void RenderColorZoneConfiguration();
+    void RenderColorZonesConfiguration();
     void RenderActions();
     void RenderDebugInfo();
     
     std::string selectedIcon_;
     int selectedIconIdx_ = -1;
-    
-    // Local metadata storage (per icon instance in editor)
-    // This is separate from the global icon template
-    static std::map<std::string, IconMetadata> editorLocalMetadata_;
+    IconMetadata localMetadata_;  // Current editing session metadata
 };
 
 } // namespace VectorGraphics

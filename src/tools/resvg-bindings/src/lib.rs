@@ -96,8 +96,6 @@ pub extern "C" fn resvg_parse_tree_from_data(
     }
 }
 
-
-
 // Get image size
 #[no_mangle]
 pub extern "C" fn resvg_get_image_size(tree: *const ResvgRenderTree) -> ResvgSize {
@@ -166,7 +164,6 @@ pub extern "C" fn resvg_render(
         resvg::render(&(*tree).tree, final_transform, &mut pixmap.as_mut());
 
         let pixel_data = pixmap.data();
-        // TODO : Attention : tiny-skia (utilisé par resvg) produit des pixels au format RGBA pré-multiplié. Si ton moteur de rendu (Vulkan/ImGui) attend du RGBA classique, tes icônes avec de la transparence auront un rendu bizarre (trop sombres ou bords noirs).
         let output = slice::from_raw_parts_mut(pixels as *mut u8, (width * height * 4) as usize);
         output.copy_from_slice(pixel_data);
     }

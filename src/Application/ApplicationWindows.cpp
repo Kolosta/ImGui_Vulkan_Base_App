@@ -50,7 +50,7 @@ void Application::RenderIconTestWindow() {
     ImGui::ColorEdit4("Custom Primary", (float*)&customPrimary);
     ImGui::ColorEdit4("Custom Secondary", (float*)&customSecondary);
     
-    iconManager.RenderIcon("tool1", 64.0f, customPrimary, customSecondary);
+    // iconManager.RenderIcon("tool1", 64.0f, customPrimary, customSecondary);
 
     ImGui::End();
 }

@@ -3,7 +3,6 @@
 #include <imgui.h>
 #include <string>
 #include <vector>
-#include <map>
 #include <cstdint>
 
 namespace VectorGraphics {
@@ -12,55 +11,82 @@ namespace VectorGraphics {
  * Icon color scheme type
  */
 enum class IconColorScheme {
-    Original,     // Original SVG colors (elements without CSS classes)
-    Bicolor,      // 2-3 colors (primary/secondary/tertiary from design system)
-    Multicolor    // Custom palette per color zone
+    Original,     // Use original SVG colors
+    Bicolor,      // Use primary/secondary tokens from design system
+    Multicolor    // Use custom colors per zone
 };
 
 /**
- * Represents a unique color in the SVG
+ * Represents a single color occurrence in the SVG
+ * Each element+property combination is tracked separately
+ */
+struct ColorMapping {
+    std::string elementId;      // Element ID or generated identifier
+    std::string property;       // "fill", "stroke", "stop-color"
+    uint32_t originalColor;     // Original RGBA color
+    std::string cssClass;       // CSS class if present (e.g., "ds-primary")
+    
+    ColorMapping() 
+        : originalColor(0) 
+    {}
+    
+    ColorMapping(const std::string& elemId, const std::string& prop, 
+                uint32_t color, const std::string& cls = "")
+        : elementId(elemId)
+        , property(prop)
+        , originalColor(color)
+        , cssClass(cls)
+    {}
+};
+
+/**
+ * Represents a unique color in the icon
+ * Groups all mappings that share the same original color
  */
 struct ColorZone {
-    uint32_t originalColor;    // Original color in RGBA format
-    ImVec4 customColor;        // Custom color for multicolor mode
-    std::string tokenName;     // Token name for bicolor mode ("primary", "secondary", "tertiary")
-    bool hasToken;             // Whether this zone uses a design token
+    uint32_t originalColor;          // The RGBA color this zone represents
+    ImVec4 customColor;              // Custom color for multicolor mode
+    std::string tokenAssignment;     // "primary" or "secondary" for bicolor mode
+    std::vector<int> mappingIndices; // Indices into RuntimeIcon::colorMappings
     
     ColorZone() 
         : originalColor(0)
         , customColor(1, 1, 1, 1)
-        , tokenName("")
-        , hasToken(false) 
+        , tokenAssignment("primary")
     {}
     
-    ColorZone(uint32_t orig, const std::string& token = "") 
-        : originalColor(orig)
-        , tokenName(token)
-        , hasToken(!token.empty())
+    ColorZone(uint32_t color)
+        : originalColor(color)
+        , tokenAssignment("primary")
     {
         // Convert RGBA to ImVec4
-        customColor.x = ((orig) & 0xFF) / 255.0f;        // R
-        customColor.y = ((orig >> 8) & 0xFF) / 255.0f;   // G
-        customColor.z = ((orig >> 16) & 0xFF) / 255.0f;  // B
-        customColor.w = ((orig >> 24) & 0xFF) / 255.0f;  // A
+        customColor.x = ((color) & 0xFF) / 255.0f;        // R
+        customColor.y = ((color >> 8) & 0xFF) / 255.0f;   // G
+        customColor.z = ((color >> 16) & 0xFF) / 255.0f;  // B
+        customColor.w = ((color >> 24) & 0xFF) / 255.0f;  // A
     }
 };
 
 /**
- * Icon metadata - can be global (template) or local (instance-specific)
+ * Icon metadata - per-instance configuration
  */
 struct IconMetadata {
     IconColorScheme scheme = IconColorScheme::Bicolor;
-    std::vector<ColorZone> colorZones;  // Detected color zones
+    std::vector<ColorZone> colorZones;
     
-    // Copy constructor for local instances
     IconMetadata() = default;
     IconMetadata(const IconMetadata& other) = default;
     IconMetadata& operator=(const IconMetadata& other) = default;
 };
 
-// Forward declare CompiledIconData (defined in generated IconData.h)
-struct ClassMapping;
-struct CompiledIconData;
+/**
+ * Compiled icon data from build-time generation
+ */
+struct CompiledIconData {
+    std::string id;
+    const char* svgContent;
+    float width;
+    float height;
+};
 
 } // namespace VectorGraphics

@@ -1,7 +1,3 @@
-// 
-
-
-
 #pragma once
 
 #include <VectorGraphics/IconMetadata.h>
@@ -27,20 +23,20 @@ struct VulkanTexture {
 };
 
 /**
- * Runtime icon data
+ * Runtime icon data with color mappings
  */
 struct RuntimeIcon {
     std::string id;
     std::string svgContent;
-    std::map<std::string, std::string> classToToken;  // Maps "elementId:property" to token name
-    IconMetadata metadata;
+    std::vector<ColorMapping> colorMappings;  // All color occurrences in SVG
+    IconMetadata metadata;                     // Default metadata (template)
     float width;
     float height;
 };
 
 /**
  * Icon manager for vector icons with runtime recoloring
- * Uses resvg for high-quality SVG rendering with full feature support
+ * Uses resvg for high-quality SVG rendering
  */
 class IconManager {
 public:
@@ -62,59 +58,27 @@ public:
     void LoadCompiledIcons();
     
     /**
-     * Set global metadata (template for this icon)
+     * Get default metadata (template) for an icon
      */
-    void SetIconMetadata(const std::string& id, const IconMetadata& metadata);
+    IconMetadata GetDefaultMetadata(const std::string& id) const;
     
     /**
-     * Get global metadata pointer (for reading/modifying template)
+     * Get color mappings for an icon
      */
-    IconMetadata* GetIconMetadata(const std::string& id);
+    const std::vector<ColorMapping>& GetColorMappings(const std::string& id) const;
     
     /**
-     * Get a copy of metadata for local editing (instance-specific)
-     * IMPORTANT: This returns a COPY that won't affect other instances
+     * Render icon with custom metadata (instance-specific)
      */
-    IconMetadata GetIconMetadataCopy(const std::string& id) const;
+    void RenderIcon(const std::string& id, float size, const IconMetadata& metadata);
     
     /**
-     * Get color zone count
-     */
-    int GetColorZoneCount(const std::string& id) const;
-    
-    /**
-     * Render icon using global metadata (template)
+     * Render icon with default metadata
      */
     void RenderIcon(const std::string& id, float size);
     
     /**
-     * Render icon with local metadata (instance-specific)
-     * IMPORTANT: Changes to localMetadata don't affect global template
-     */
-    void RenderIcon(const std::string& id, float size, const IconMetadata& localMetadata);
-    
-    /**
-     * Render bicolor with design system tokens
-     */
-    void RenderIcon(
-        const std::string& id,
-        float size,
-        const std::string& primaryToken,
-        const std::string& secondaryToken
-    );
-    
-    /**
-     * Render bicolor with specific colors
-     */
-    void RenderIcon(
-        const std::string& id,
-        float size,
-        const ImVec4& primaryColor,
-        const ImVec4& secondaryColor
-    );
-    
-    /**
-     * Invalidate cache (will be cleaned up next frame)
+     * Invalidate cache
      */
     void InvalidateCache();
     
@@ -138,37 +102,93 @@ private:
     ~IconManager();
     
     void LoadIcon(const CompiledIconData& compiledData);
-    void ExtractColorZones(RuntimeIcon& icon);
     
+    /**
+     * Extract all colors from SVG with proper XML parsing
+     */
+    void ExtractColorMappings(RuntimeIcon& icon);
+    
+    /**
+     * Parse a single element recursively
+     */
+    void ParseElement(
+        const char* elementStart,
+        const char* elementEnd,
+        const std::string& elementName,
+        int depth,
+        std::vector<ColorMapping>& mappings
+    );
+    
+    /**
+     * Build color zones from mappings
+     */
+    void BuildColorZones(RuntimeIcon& icon);
+    
+    /**
+     * Determine default token from CSS class
+     */
+    std::string DetermineDefaultToken(const std::string& cssClass) const;
+    
+    /**
+     * Parse color value (#RRGGBB format)
+     */
+    uint32_t ParseHexColor(const std::string& hexColor) const;
+    
+    /**
+     * Extract attribute value from tag
+     */
+    std::string ExtractAttribute(const std::string& tag, const std::string& attrName) const;
+    
+    /**
+     * Parse style attribute and extract colors
+     */
+    void ParseStyleAttribute(
+        const std::string& style,
+        const std::string& elementId,
+        const std::string& cssClass,
+        std::vector<ColorMapping>& mappings
+    );
+    
+    /**
+     * Render SVG with color modifications
+     */
     unsigned char* RenderSVGWithColors(
         const RuntimeIcon& icon,
         float size,
-        const std::map<std::string, ImVec4>& tokenColors,
         const IconMetadata& metadata,
         int& outWidth,
         int& outHeight
     );
     
+    /**
+     * Modify SVG colors according to metadata
+     */
     std::string ModifySVGColors(
         const std::string& originalSVG,
-        const std::map<std::string, std::string>& classToToken,
-        const std::map<std::string, ImVec4>& tokenColors,
+        const std::vector<ColorMapping>& mappings,
         const IconMetadata& metadata
-    );
+    ) const;
     
+    /**
+     * Generate cache key
+     */
     std::string CreateCacheKey(
         const std::string& id,
         float size,
-        const IconMetadata& metadata,
-        const ImVec4* primaryColor = nullptr,
-        const ImVec4* secondaryColor = nullptr,
-        const ImVec4* tertiaryColor = nullptr
+        const IconMetadata& metadata
     ) const;
     
+    /**
+     * Color conversion utilities
+     */
     uint32_t ImVec4ToRGBA(const ImVec4& color) const;
     ImVec4 RGBAToImVec4(uint32_t rgba) const;
     std::string ImVec4ToHex(const ImVec4& color) const;
+    std::string RGBAToHex(uint32_t rgba) const;
     
+    /**
+     * Vulkan helpers
+     */
     VulkanTexture CreateTexture(const unsigned char* pixels, int width, int height);
     void DestroyTexture(VulkanTexture& tex);
     void ClearCache();
@@ -196,7 +216,6 @@ private:
     VkCommandPool commandPool_ = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
     
-    // resvg C API opaque handles
     void* resvgOptions_ = nullptr;
 };
 
