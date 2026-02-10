@@ -1,0 +1,231 @@
+use std::env;
+use std::fs;
+use std::path::Path;
+use walkdir::WalkDir;
+use roxmltree;
+use usvg::Options;
+
+#[derive(Debug, Clone)]
+struct ClassMapping {
+    element_id: String,
+    property: String,  // "fill", "stroke", "stop-color"
+    class_name: String, // "primary", "secondary", "tertiary"
+}
+
+#[derive(Debug)]
+struct IconData {
+    id: String,
+    svg_content: String,
+    class_mappings: Vec<ClassMapping>,
+    width: f32,
+    height: f32,
+}
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() != 3 {
+        eprintln!("Usage: icon_compiler <icons_dir> <output_header>");
+        std::process::exit(1);
+    }
+
+    let icons_dir = Path::new(&args[1]);
+    let output_header = Path::new(&args[2]);
+
+    if !icons_dir.exists() {
+        eprintln!("Icons directory does not exist: {:?}", icons_dir);
+        std::process::exit(1);
+    }
+
+    let mut icons = Vec::new();
+
+    // Walk through all SVG files
+    for entry in WalkDir::new(icons_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("svg"))
+    {
+        let path = entry.path();
+        let icon_id = path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        match parse_icon(path, &icon_id) {
+            Ok(icon) => icons.push(icon),
+            Err(e) => eprintln!("Warning: Failed to parse {:?}: {}", path, e),
+        }
+    }
+
+    // Generate C++ header
+    generate_cpp_header(&icons, output_header).expect("Failed to write output header");
+    println!("Generated icon data for {} icons", icons.len());
+}
+
+fn parse_icon(path: &Path, icon_id: &str) -> Result<IconData, Box<dyn std::error::Error>> {
+    let svg_content = fs::read_to_string(path)?;
+    
+    // Parse XML to extract class mappings with DTD support enabled
+    let parsing_options = roxmltree::ParsingOptions {
+        allow_dtd: true,
+        ..Default::default()
+    };
+    
+    let doc = roxmltree::Document::parse_with_options(&svg_content, parsing_options)?;
+    let mut class_mappings = Vec::new();
+
+    // Traverse all elements to find class mappings
+    traverse_element(doc.root_element(), &mut class_mappings, 0);
+
+    // Parse with usvg to get dimensions
+    let opt = Options::default();
+    let tree = usvg::Tree::from_str(&svg_content, &opt)?;
+    let size = tree.size();
+
+    Ok(IconData {
+        id: icon_id.to_string(),
+        svg_content,
+        class_mappings,
+        width: size.width(),
+        height: size.height(),
+    })
+}
+
+fn traverse_element(node: roxmltree::Node, mappings: &mut Vec<ClassMapping>, depth: usize) {
+    if !node.is_element() {
+        return;
+    }
+
+    // Get element ID (if present, otherwise generate one)
+    let element_id = node.attribute("id")
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| format!("elem_{}", depth));
+
+    // Check for class attribute
+    if let Some(class_attr) = node.attribute("class") {
+        let classes: Vec<&str> = class_attr.split_whitespace().collect();
+
+        for class in classes {
+            // Parse class names like "primary-fill", "secondary-stroke", etc.
+            if let Some((color_name, property)) = parse_class_name(class) {
+                mappings.push(ClassMapping {
+                    element_id: element_id.clone(),
+                    property: property.to_string(),
+                    class_name: color_name.to_string(),
+                });
+            }
+        }
+    }
+
+    // Recurse into children
+    for (idx, child) in node.children().enumerate() {
+        traverse_element(child, mappings, depth * 100 + idx);
+    }
+}
+
+fn parse_class_name(class: &str) -> Option<(&str, &str)> {
+    // Parse patterns like:
+    // "primary-fill" -> ("primary", "fill")
+    // "secondary-stroke" -> ("secondary", "stroke")
+    // "tertiary-fill" -> ("tertiary", "fill")
+    // "primary-gradient-stop" -> ("primary", "stop-color")
+    
+    if class.contains("gradient-stop") {
+        // For gradient stops
+        if class.contains("primary") {
+            return Some(("primary", "stop-color"));
+        } else if class.contains("secondary") {
+            return Some(("secondary", "stop-color"));
+        } else if class.contains("tertiary") {
+            return Some(("tertiary", "stop-color"));
+        }
+    }
+
+    let parts: Vec<&str> = class.split('-').collect();
+    if parts.len() >= 2 {
+        let color_name = parts[0]; // "primary", "secondary", "tertiary"
+        let property = parts[1];   // "fill", "stroke"
+        
+        if matches!(color_name, "primary" | "secondary" | "tertiary") 
+            && matches!(property, "fill" | "stroke") {
+            return Some((color_name, property));
+        }
+    }
+
+    None
+}
+
+fn generate_cpp_header(icons: &[IconData], output_path: &Path) -> std::io::Result<()> {
+    let mut cpp_code = String::new();
+
+    cpp_code.push_str("// AUTO-GENERATED FILE - DO NOT EDIT\n");
+    cpp_code.push_str("// Generated by icon_compiler\n\n");
+    cpp_code.push_str("#pragma once\n\n");
+    cpp_code.push_str("#include <string>\n");
+    cpp_code.push_str("#include <vector>\n");
+    cpp_code.push_str("#include <unordered_map>\n\n");
+    cpp_code.push_str("namespace VectorGraphics {\n\n");
+
+    // Generate ClassMapping struct
+    cpp_code.push_str("struct ClassMapping {\n");
+    cpp_code.push_str("    std::string elementId;\n");
+    cpp_code.push_str("    std::string property;\n");
+    cpp_code.push_str("    std::string className;\n");
+    cpp_code.push_str("};\n\n");
+
+    // Generate CompiledIconData struct
+    cpp_code.push_str("struct CompiledIconData {\n");
+    cpp_code.push_str("    std::string id;\n");
+    cpp_code.push_str("    const char* svgContent;\n");
+    cpp_code.push_str("    std::vector<ClassMapping> classMappings;\n");
+    cpp_code.push_str("    float width;\n");
+    cpp_code.push_str("    float height;\n");
+    cpp_code.push_str("};\n\n");
+
+    // Generate SVG content strings using raw string literals
+    for icon in icons {
+        let safe_id = icon.id.to_uppercase().replace('-', "_");
+        cpp_code.push_str(&format!("static const char* ICON_SVG_{} = R\"svg(", safe_id));
+        cpp_code.push_str(&icon.svg_content);
+        cpp_code.push_str(")svg\";\n\n");
+    }
+
+    // Generate icon data array
+    cpp_code.push_str("static const CompiledIconData COMPILED_ICONS[] = {\n");
+    
+    for icon in icons {
+        let safe_id = icon.id.to_uppercase().replace('-', "_");
+        cpp_code.push_str("    {\n");
+        cpp_code.push_str(&format!("        \"{}\",\n", icon.id));
+        cpp_code.push_str(&format!("        ICON_SVG_{},\n", safe_id));
+        cpp_code.push_str("        {\n");
+        
+        for mapping in &icon.class_mappings {
+            cpp_code.push_str(&format!(
+                "            {{\"{}\", \"{}\", \"{}\"}},\n",
+                escape_cpp_string(&mapping.element_id),
+                escape_cpp_string(&mapping.property),
+                escape_cpp_string(&mapping.class_name)
+            ));
+        }
+        
+        cpp_code.push_str("        },\n");
+        cpp_code.push_str(&format!("        {:.2}f,\n", icon.width));
+        cpp_code.push_str(&format!("        {:.2}f\n", icon.height));
+        cpp_code.push_str("    },\n");
+    }
+    
+    cpp_code.push_str("};\n\n");
+    cpp_code.push_str(&format!("static const size_t COMPILED_ICONS_COUNT = {};\n\n", icons.len()));
+    cpp_code.push_str("} // namespace VectorGraphics\n");
+
+    fs::write(output_path, cpp_code)?;
+    Ok(())
+}
+
+fn escape_cpp_string(s: &str) -> String {
+    s.replace('\\', "\\\\")
+     .replace('"', "\\\"")
+     .replace('\n', "\\n")
+     .replace('\r', "\\r")
+     .replace('\t', "\\t")
+}

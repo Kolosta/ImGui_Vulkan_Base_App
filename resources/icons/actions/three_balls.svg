@@ -3,7 +3,7 @@
     height="100%" viewBox="0 0 32 32" version="1.1" xmlns="http://www.w3.org/2000/svg"
     xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/"
     style="fill-rule:evenodd;clip-rule:evenodd;stroke-linejoin:round;stroke-miterlimit:2;">
-    <circle class="primary" cx="6.596" cy="8.498" r="6.596" style="fill:#f00;" />
-    <circle class="primary" cx="25.404" cy="8.498" r="6.596" style="fill:#0600ff;" />
-    <circle class="secondary" cx="16" cy="25.404" r="6.596" style="fill:#fff300;" />
+    <circle class="primary-fill" cx="6.596" cy="8.498" r="6.596" style="fill:#f00;" />
+    <circle class="primary-fill" cx="25.404" cy="8.498" r="6.596" style="fill:#0600ff;" />
+    <circle class="secondary-fill" cx="16" cy="25.404" r="6.596" style="fill:#fff300;" />
 </svg>

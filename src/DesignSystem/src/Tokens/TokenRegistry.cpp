@@ -642,6 +642,11 @@ void TokenRegistry::CreateDefaultSemanticTokens() {
     iconSecondary->SetDefaultValue(TokenValue("primitive.color.gray.700"));
     iconSecondary->SetDescription("Secondary icon color (for bicolor icons)");
     RegisterToken(iconSecondary);
+
+    auto iconTertiary = std::make_shared<Token>("semantic.icon.color.tertiary", TokenLevel::Semantic, ValueType::Reference);
+    iconTertiary->SetDefaultValue(TokenValue("primitive.color.gray.300"));
+    iconTertiary->SetDescription("Tertiary icon color (for bicolor? icons)");
+    RegisterToken(iconTertiary);
     
     // ===== SPACING =====
     auto spacingSmall = std::make_shared<Token>("semantic.spacing.small", TokenLevel::Semantic, ValueType::Reference);

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg width="100%"
+<svg width="100%"
     height="100%" viewBox="0 0 134 134" version="1.1" xmlns="http://www.w3.org/2000/svg"
     xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/"
     style="fill-rule:evenodd;clip-rule:evenodd;stroke-linecap:round;stroke-linejoin:round;">
@@ -27,11 +27,10 @@
     <defs>
         <linearGradient
             id="_Linear1" x1="0" y1="0" x2="1" y2="0"
-            class="gradient-primary-tertiary"
             gradientUnits="userSpaceOnUse"
             gradientTransform="matrix(0,54.121857,-167.132486,0,7.145624,37.698223)">
-            <stop class="gradient-stop-0-primary" offset="0" style="stop-color:#000;stop-opacity:1" />
-            <stop class="gradient-stop-1-tertiary" offset="1" style="stop-color:#b63131;stop-opacity:1" />
+            <stop class="primary-gradient-stop" offset="0" style="stop-color:#000;stop-opacity:1" />
+            <stop class="secondary-gradient-stop" offset="1" style="stop-color:#b63131;stop-opacity:1" />
         </linearGradient>
     </defs>
 </svg>
