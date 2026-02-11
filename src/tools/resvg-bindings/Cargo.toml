@@ -20,3 +20,25 @@ walkdir = "2.4"
 
 [build-dependencies]
 cbindgen = "0.26"
+
+
+# [package]
+# name = "resvg-bindings"
+# version = "0.1.0"
+# edition = "2021"
+
+# [lib]
+# crate-type = ["staticlib", "cdylib"]
+
+# [[bin]]
+# name = "icon_compiler"
+# path = "src/icon_compiler_main.rs"
+
+# [dependencies]
+# resvg = "0.43"
+# roxmltree = "0.20"
+
+# [profile.release]
+# opt-level = 3
+# lto = true
+# codegen-units = 1

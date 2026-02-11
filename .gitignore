@@ -35,3 +35,4 @@ _deps/
 design_system.bin
 imgui.init
 shortcuts.dat
+resvg_c.h
