@@ -1,9 +1,37 @@
 #include <DesignSystem/Override/OverrideManager.h>
+#include <DesignSystem/Tokens/TokenRegistry.h>
+#include <DesignSystem/Tokens/Token.h>
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 
 namespace DesignSystem {
+
+namespace {
+
+// Clamp a TokenValue against its owning token's constraint.
+// Only Float/Int are clamped; Color, Vec2 and Reference values are passed through
+// (Color/Vec2 sub-channel constraints are not modelled yet, and a Reference
+// stores a token id which has no numeric notion of "in range").
+TokenValue ClampToConstraint(const std::string& tokenId, const TokenValue& v) {
+    auto token = TokenRegistry::Instance().GetToken(tokenId);
+    if (!token || !token->HasConstraint()) return v;
+    const ValueConstraint& c = token->GetConstraint();
+    if (v.GetType() == ValueType::Float) {
+        double clamped = c.Clamp(static_cast<double>(v.AsFloat()));
+        TokenValue out(static_cast<float>(clamped));
+        return out;
+    }
+    if (v.GetType() == ValueType::Int) {
+        double clamped = c.Clamp(static_cast<double>(v.AsInt()));
+        TokenValue out(static_cast<int>(std::round(clamped)));
+        return out;
+    }
+    return v;
+}
+
+} // namespace
 
 void OverrideManager::AddOverride(const Override& override) {
     // Remove existing override with same token and theme
@@ -12,8 +40,12 @@ void OverrideManager::AddOverride(const Override& override) {
     } else {
         RemoveThemeOverride(override.GetTokenId(), *override.GetTheme());
     }
-    
-    overrides_.push_back(override);
+
+    // Enforce the token's value constraint at the write site so any caller
+    // (UI, scripted, deserialised) ends up with a valid override on disk.
+    Override clamped = override;
+    clamped.SetValue(ClampToConstraint(override.GetTokenId(), override.GetValue()));
+    overrides_.push_back(clamped);
 }
 
 void OverrideManager::RemoveGlobalOverride(const std::string& tokenId) {

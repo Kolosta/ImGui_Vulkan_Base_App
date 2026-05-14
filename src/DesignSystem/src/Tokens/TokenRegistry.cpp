@@ -615,6 +615,35 @@ void TokenRegistry::CreateDefaultPrimitiveTokens() {
     fontScale150->SetDefaultValue(TokenValue(1.5f));
     fontScale150->SetDescription("150% font scale");
     RegisterToken(fontScale150);
+
+    // ── Apply per-category value constraints.  Centralising the policy here
+    // keeps each token's declaration short and makes it easy to evolve the
+    // accepted range without editing many lines. The id substring drives the
+    // category; this mirrors the previous TokenEditor name-heuristic but now
+    // it is the *token* that carries the rule, not the UI.
+    struct ConstraintRule {
+        const char* idContains;
+        ValueConstraint constraint;
+    };
+    const ConstraintRule rules[] = {
+        { "spacing",   ValueConstraint::Range(0.0,  256.0, 0.0, "px, positive") },
+        { "radius",    ValueConstraint::Range(0.0,   50.0, 0.0, "px, 0..50")    },
+        { "alpha",     ValueConstraint::AlphaRange()                            },
+        { "fontSize",  ValueConstraint::Range(6.0,   72.0, 0.0, "px")           },
+        { "fontScale", ValueConstraint::Range(0.5,    3.0, 0.0, "multiplier")   },
+        { "scale",     ValueConstraint::Range(0.25,   4.0, 0.0, "multiplier")   },
+    };
+    for (auto& [id, token] : tokens_) {
+        if (token->GetValueType() != ValueType::Float) continue;
+        for (const auto& r : rules) {
+            // "scale" is a substring of "fontScale"; check fontScale first by
+            // ordering the rules array, then break on the first match.
+            if (id.find(r.idContains) != std::string::npos) {
+                token->SetConstraint(r.constraint);
+                break;
+            }
+        }
+    }
 }
 
 void TokenRegistry::CreateDefaultSemanticTokens() {
