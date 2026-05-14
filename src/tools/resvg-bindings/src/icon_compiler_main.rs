@@ -1,3 +1,58 @@
+//! # icon_compiler
+//!
+//! Parses SVG files and emits a C++ header (`IconData.h`) with pre-processed
+//! color metadata used by `IconManager` for runtime recoloring.
+//!
+//! ## How color zones work
+//!
+//! Every unique color value found in `fill`, `stroke`, or `stop-color`
+//! attributes (both inline and inside `style="..."`) is grouped into a
+//! **color zone**. At runtime the editor can remap each zone to a design-system
+//! token (bicolor mode) or to an arbitrary RGBA value (multicolor mode).
+//!
+//! ## Authoring SVGs for best results
+//!
+//! ### Class-based semantic assignment (recommended)
+//! Add a `class` attribute to each element to declare its semantic role.
+//! The compiler assigns the default bicolor token using **priority order**:
+//!
+//! | Priority | Class names recognised | Token assigned |
+//! |----------|------------------------|----------------|
+//! | 1 (highest) | `ds-primary`, `*primary*` (not containing "secondary") | `primary` |
+//! | 2 | `ds-secondary`, `*secondary*` | `secondary` |
+//! | 3 | `ds-tertiary`, `*tertiary*` | `tertiary` |
+//! | 4 | `*accent*` | `accent` |
+//! | 5 (fallback) | *(any other or no class)* | `primary` |
+//!
+//! When a color appears on elements with **different** classes, the highest
+//! priority class wins, making the assignment deterministic.
+//!
+//! Example:
+//! ```svg
+//! <circle class="ds-primary"   fill="#1a73e8" />   <!-- → primary  -->
+//! <circle class="ds-secondary" fill="#ea4335" />   <!-- → secondary -->
+//! <path   class="ds-primary"   stroke="#000"  />   <!-- → primary  -->
+//! ```
+//!
+//! ### Gradient stops
+//! Use the same class conventions on `<stop>` elements:
+//! ```svg
+//! <linearGradient id="grad">
+//!   <stop class="ds-primary"   offset="0"   stop-color="#1a73e8" />
+//!   <stop class="ds-secondary" offset="1"   stop-color="#ea4335" />
+//! </linearGradient>
+//! ```
+//!
+//! ### Transparent / decorative elements
+//! Elements that should remain invisible in customized modes can be authored
+//! with alpha = 0 (e.g. `fill-opacity:0`). At runtime the editor exposes a
+//! **Transparent** option per zone so users can explicitly keep them hidden.
+//!
+//! ### Compatible but unclassed SVGs
+//! Any valid SVG without class annotations will still work — colors are
+//! detected automatically and all zones default to `primary`. The user can
+//! then reassign zones in the editor.
+
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -76,6 +131,14 @@ fn extract_viewbox_dimensions(svg_content: &str) -> (f32, f32) {
     (24.0, 24.0)
 }
 
+/// Blend a per-element opacity value into the alpha channel of a parsed color.
+/// color is 0xAARRGGBB; opacity is in [0, 1].
+fn apply_opacity(color: u32, opacity: f32) -> u32 {
+    let orig_alpha = ((color >> 24) & 0xFF) as f32;
+    let final_alpha = (orig_alpha * opacity.clamp(0.0, 1.0)).round() as u32;
+    (final_alpha << 24) | (color & 0x00FFFFFF)
+}
+
 fn parse_style_attribute(style: &str) -> HashMap<String, String> {
     let mut properties = HashMap::new();
     
@@ -111,84 +174,103 @@ fn extract_color_mappings(svg_content: &str) -> Result<Vec<ColorMapping>, String
         if node.is_element() {
             *element_counter += 1;
             let element_id = format!("elem_{}", element_counter);
-            
             let css_class = node.attribute("class").unwrap_or("").to_string();
-            
+
+            // Direct attributes — check sibling *-opacity attributes.
             if let Some(fill_value) = node.attribute("fill") {
                 if fill_value != "none" && !fill_value.starts_with("url(") {
                     if let Some(color) = parse_color(fill_value) {
+                        let opacity = node.attribute("fill-opacity")
+                            .and_then(|s| s.trim().parse::<f32>().ok())
+                            .unwrap_or(1.0);
                         mappings.push(ColorMapping {
                             element_id: element_id.clone(),
                             property: "fill".to_string(),
-                            original_color: color,
+                            original_color: apply_opacity(color, opacity),
                             css_class: css_class.clone(),
                         });
                     }
                 }
             }
-            
+
             if let Some(stroke_value) = node.attribute("stroke") {
                 if stroke_value != "none" && !stroke_value.starts_with("url(") {
                     if let Some(color) = parse_color(stroke_value) {
+                        let opacity = node.attribute("stroke-opacity")
+                            .and_then(|s| s.trim().parse::<f32>().ok())
+                            .unwrap_or(1.0);
                         mappings.push(ColorMapping {
                             element_id: element_id.clone(),
                             property: "stroke".to_string(),
-                            original_color: color,
+                            original_color: apply_opacity(color, opacity),
                             css_class: css_class.clone(),
                         });
                     }
                 }
             }
-            
+
             if let Some(stop_color) = node.attribute("stop-color") {
                 if stop_color != "none" && !stop_color.starts_with("url(") {
                     if let Some(color) = parse_color(stop_color) {
+                        let opacity = node.attribute("stop-opacity")
+                            .and_then(|s| s.trim().parse::<f32>().ok())
+                            .unwrap_or(1.0);
                         mappings.push(ColorMapping {
                             element_id: element_id.clone(),
                             property: "stop-color".to_string(),
-                            original_color: color,
+                            original_color: apply_opacity(color, opacity),
                             css_class: css_class.clone(),
                         });
                     }
                 }
             }
-            
+
+            // Inline style attribute — opacity may live alongside the color in the same dict.
             if let Some(style_attr) = node.attribute("style") {
                 let style_properties = parse_style_attribute(style_attr);
-                
+
                 if let Some(fill_value) = style_properties.get("fill") {
                     if fill_value != "none" && !fill_value.starts_with("url(") {
                         if let Some(color) = parse_color(fill_value) {
+                            let opacity = style_properties.get("fill-opacity")
+                                .and_then(|s| s.trim().parse::<f32>().ok())
+                                .unwrap_or(1.0);
                             mappings.push(ColorMapping {
                                 element_id: element_id.clone(),
                                 property: "fill".to_string(),
-                                original_color: color,
+                                original_color: apply_opacity(color, opacity),
                                 css_class: css_class.clone(),
                             });
                         }
                     }
                 }
-                
+
                 if let Some(stroke_value) = style_properties.get("stroke") {
                     if stroke_value != "none" && !stroke_value.starts_with("url(") {
                         if let Some(color) = parse_color(stroke_value) {
+                            let opacity = style_properties.get("stroke-opacity")
+                                .and_then(|s| s.trim().parse::<f32>().ok())
+                                .unwrap_or(1.0);
                             mappings.push(ColorMapping {
                                 element_id: element_id.clone(),
                                 property: "stroke".to_string(),
-                                original_color: color,
+                                original_color: apply_opacity(color, opacity),
                                 css_class: css_class.clone(),
                             });
                         }
                     }
                 }
-                
+
                 if let Some(stop_color) = style_properties.get("stop-color") {
                     if stop_color != "none" && !stop_color.starts_with("url(") {
                         if let Some(color) = parse_color(stop_color) {
+                            let opacity = style_properties.get("stop-opacity")
+                                .and_then(|s| s.trim().parse::<f32>().ok())
+                                .unwrap_or(1.0);
                             mappings.push(ColorMapping {
                                 element_id: element_id.clone(),
                                 property: "stop-color".to_string(),
-                                original_color: color,
+                                original_color: apply_opacity(color, opacity),
                                 css_class: css_class.clone(),
                             });
                         }
@@ -196,7 +278,7 @@ fn extract_color_mappings(svg_content: &str) -> Result<Vec<ColorMapping>, String
                 }
             }
         }
-        
+
         for child in node.children() {
             traverse_node(child, mappings, element_counter);
         }
@@ -207,48 +289,72 @@ fn extract_color_mappings(svg_content: &str) -> Result<Vec<ColorMapping>, String
     Ok(mappings)
 }
 
-fn determine_default_token(css_class: &str) -> String {
-    if css_class.contains("primary") || css_class.contains("ds-primary") {
-        "primary".to_string()
-    } else if css_class.contains("secondary") || css_class.contains("ds-secondary") {
-        "secondary".to_string()
-    } else if css_class.contains("tertiary") || css_class.contains("ds-tertiary") {
-        "tertiary".to_string()
-    } else if css_class.contains("accent") {
-        "accent".to_string()
+/// Determine the bicolor token for one SVG element class string.
+/// Only "primary" and "secondary" are valid runtime tokens; tertiary and
+/// accent both collapse to "secondary" (they are accent-like by convention).
+fn class_token_priority(css_class: &str) -> u8 {
+    // Lower number = higher priority.  0 = primary, 1 = secondary, 255 = no class.
+    if css_class.contains("ds-primary")
+        || (css_class.contains("primary") && !css_class.contains("secondary"))
+    {
+        0
+    } else if css_class.contains("ds-secondary")
+        || css_class.contains("secondary")
+        || css_class.contains("tertiary")   // tertiary → secondary
+        || css_class.contains("accent")     // accent   → secondary
+    {
+        1
     } else {
-        "primary".to_string()
+        255 // no annotation
     }
 }
 
 fn build_color_zones(mappings: &[ColorMapping]) -> Vec<ColorZone> {
-    let mut color_map: HashMap<u32, Vec<(usize, String)>> = HashMap::new();
-    
+    // Group mapping indices by color value.
+    let mut color_map: HashMap<u32, Vec<usize>> = HashMap::new();
     for (idx, mapping) in mappings.iter().enumerate() {
         color_map
             .entry(mapping.original_color)
             .or_insert_with(Vec::new)
-            .push((idx, mapping.css_class.clone()));
+            .push(idx);
     }
-    
+
     let mut zones = Vec::new();
-    
-    for (color, indices_and_classes) in color_map {
-        let default_token = if let Some((_, first_class)) = indices_and_classes.first() {
-            determine_default_token(first_class)
-        } else {
+
+    for (color, indices) in color_map {
+        // --- Step 1: class-based priority (deterministic across HashMap order) ---
+        // Find the best (lowest priority number) token from all class annotations.
+        let best_class_priority = indices.iter()
+            .map(|&idx| class_token_priority(mappings[idx].css_class.as_str()))
+            .min()
+            .unwrap_or(255);
+
+        let default_token = if best_class_priority == 0 {
             "primary".to_string()
+        } else if best_class_priority == 1 {
+            "secondary".to_string()
+        } else {
+            // --- Step 2: no class annotation — infer from property usage ---
+            // Elements used exclusively as strokes are typically outlines/borders
+            // (secondary role).  Fills are the main body color (primary role).
+            let stroke_only = indices.iter().all(|&idx| {
+                let p = mappings[idx].property.as_str();
+                p == "stroke"
+            });
+            if stroke_only {
+                "secondary".to_string()
+            } else {
+                "primary".to_string()
+            }
         };
-        
-        let indices: Vec<usize> = indices_and_classes.iter().map(|(idx, _)| *idx).collect();
-        
+
         zones.push(ColorZone {
             original_color: color,
             default_token,
             mapping_indices: indices,
         });
     }
-    
+
     zones.sort_by_key(|z| z.original_color);
     zones
 }
