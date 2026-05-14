@@ -521,6 +521,52 @@ ImVec4 DesignSystem::ApplyAccessibility(const ImVec4& color, AccessibilityType t
     return ColorBlindness::ApplyColorBlindness(color, type);
 }
 
+std::vector<DesignSystem::ReferenceChainEntry>
+DesignSystem::GetReferenceChain(const std::string& tokenId, ThemeType theme) {
+    std::vector<ReferenceChainEntry> chain;
+    auto& registry = TokenRegistry::Instance();
+
+    // Bound the walk defensively: a reference cycle would otherwise loop here
+    // until the stack/CPU give up. 64 hops is well past any sane chain depth
+    // (primitive → semantic → component is 3).  Cycle detection proper is
+    // tracked in ROADMAP 1.2.7.
+    std::string current = tokenId;
+    for (int hop = 0; hop < 64; ++hop) {
+        ReferenceChainEntry entry;
+        entry.tokenId = current;
+        entry.found = false;
+        entry.overridden = false;
+
+        const Override* override = overrideManager_.GetBestOverride(current, theme);
+        if (override) {
+            entry.overridden = true;
+            entry.value = override->GetValue();
+            entry.found = true;
+            chain.push_back(entry);
+            if (!entry.value.IsReference()) return chain;
+            current = entry.value.AsReference();
+            continue;
+        }
+
+        auto token = registry.GetToken(current);
+        if (!token) {
+            chain.push_back(entry); // not found
+            return chain;
+        }
+        entry.found = true;
+
+        Context themeContext(theme, AccessibilityType::None);
+        const TokenValue* themeValue = token->GetContextValue(themeContext);
+        const TokenValue& src = themeValue ? *themeValue : token->GetDefaultValue();
+        entry.value = src;
+        chain.push_back(entry);
+
+        if (!src.IsReference()) return chain;
+        current = src.AsReference();
+    }
+    return chain;
+}
+
 } // namespace DesignSystem
 
 

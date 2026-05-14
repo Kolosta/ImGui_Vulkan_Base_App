@@ -3,6 +3,7 @@
 #include <DesignSystem/Core/TokenValue.h>
 #include <DesignSystem/Core/TokenType.h>
 #include <DesignSystem/Core/Context.h>
+#include <DesignSystem/Core/ValueConstraint.h>
 #include <string>
 #include <unordered_map>
 #include <memory>
@@ -43,6 +44,12 @@ public:
     void SetDescription(const std::string& desc) { description_ = desc; }
     const std::string& GetDescription() const { return description_; }
 
+    // Per-token value restriction (range / step / one-of).  Empty constraint
+    // by default — the token accepts any value of its declared type.
+    void SetConstraint(const ValueConstraint& c) { constraint_ = c; }
+    const ValueConstraint& GetConstraint() const { return constraint_; }
+    bool HasConstraint() const { return !constraint_.IsEmpty(); }
+
 protected:
     std::string id_;                                          // Unique identifier (e.g., "color.primary")
     TokenLevel level_;                                        // Token hierarchy level
@@ -50,6 +57,7 @@ protected:
     TokenValue defaultValue_;                                 // Default value (Dark theme)
     std::unordered_map<Context, TokenValue> contextValues_;  // Context-specific values
     std::string description_;                                 // Optional description
+    ValueConstraint constraint_;                              // Optional value restriction (Float/Int today)
 };
 
 } // namespace DesignSystem

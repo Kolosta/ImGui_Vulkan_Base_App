@@ -6,6 +6,7 @@
 #include <DesignSystem/Override/OverrideManager.h>
 #include <imgui.h>
 #include <string>
+#include <vector>
 
 namespace DesignSystem {
 
@@ -81,6 +82,25 @@ public:
      * Recursively resolve token value (public for TokenEditor).
      */
     TokenValue ResolveTokenValue(const std::string& tokenId, ThemeType theme);
+
+    /**
+     * Trace the chain of references for `tokenId` in `theme`, from the token
+     * itself down to the first non-reference value (or the first token not
+     * found). Each entry is the id of one token visited; the last entry's
+     * resolved value is what you'd get from `ResolveTokenValue`.
+     *
+     * Used by the TokenEditor to display "A → B → C → #1A73E8" trails. Also
+     * a future cycle-detection point: today the function bounds itself to 64
+     * hops and silently stops to avoid hangs.
+     */
+    struct ReferenceChainEntry {
+        std::string tokenId;       // token visited
+        bool found;                // false if this id has no registered token
+        bool overridden;           // true if an override (global or theme) supplied the value
+        TokenValue value;          // the value held at this step (reference or terminal)
+    };
+    std::vector<ReferenceChainEntry> GetReferenceChain(const std::string& tokenId,
+                                                       ThemeType theme);
 
     /**
      * Scale accessors — for code that needs to scale raw pixel values
