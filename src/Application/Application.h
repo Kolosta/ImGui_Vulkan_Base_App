@@ -15,39 +15,42 @@ class Application {
 public:
     Application();
     ~Application();
-    
+
     bool Initialize();
     void Run();
     void Shutdown();
 
 private:
-    // Lifecycle
     void ProcessEvents();
     void Update();
     void Render();
     void Present();
-    
+
     // Init (ApplicationInit.cpp)
     void SetupVulkan();
     void SetupVulkanWindow();
     void InitializeSubsystems();
     void LoadResources();
     void RegisterTestShortcuts();
-    
-    // UI (ApplicationUI.cpp)
-    void RenderDockSpace();
+
+    // Layout (ApplicationUI.cpp)
     void RenderMainMenuBar();
+    void RenderMainLayout();
     void RenderToolbar();
-    
-    // Windows (ApplicationWindows.cpp)
-    void RenderIconTestWindow();
-    void RenderDesignExample();
-    void RenderThemePreview();
-    void RenderTestZone1();
-    void RenderTestZone2();
+    void RenderMainContent();
+
+    // Content sections — inline, no Begin/End (ApplicationWindows.cpp)
+    void RenderSectionIconTestLab();
+    void RenderSectionDesignExample();
+    void RenderSectionThemePreview();
+    void RenderSectionTestZone1();
+    void RenderSectionTestZone2();
+
+    // Floating windows (ApplicationWindows.cpp)
     void RenderFloatingWindows();
-    
-    // Test Actions
+    void RenderSettings();
+
+    // Test actions
     static void TestAction_NewFile();
     static void TestAction_OpenFile();
     static void TestAction_SaveFile();
@@ -56,31 +59,32 @@ private:
     static void TestAction_Tool2();
     static void TestAction_Zone1();
     static void TestAction_Zone2();
-    
-    // Members
-    SDL_Window* window_ = nullptr;
-    bool running_ = true;
-    float mainScale_ = 1.0f;
-    
+
+    // Core
+    SDL_Window* window_    = nullptr;
+    bool        running_   = true;
+    float       mainScale_ = 1.0f;
+
     // Vulkan
-    VkInstance instance_ = VK_NULL_HANDLE;
+    VkInstance       instance_       = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice_ = VK_NULL_HANDLE;
-    VkDevice device_ = VK_NULL_HANDLE;
-    VkQueue queue_ = VK_NULL_HANDLE;
+    VkDevice         device_         = VK_NULL_HANDLE;
+    VkQueue          queue_          = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
-    VkCommandPool commandPool_ = VK_NULL_HANDLE;
-    uint32_t queueFamily_ = 0;
+    VkCommandPool    commandPool_    = VK_NULL_HANDLE;
+    uint32_t         queueFamily_    = 0;
     ImGui_ImplVulkanH_Window mainWindowData_;
-    
-    // UI State
-    bool showTokenEditor_ = false;
-    bool showShortcutEditor_ = false;
-    bool showIconEditor_ = false;
+
+    // Layout
+    float toolbarWidth_ = 64.0f;
+
+    // UI state — les trois éditeurs sont regroupés dans une seule fenêtre "Paramètres"
+    bool showSettings_  = false;
     bool showImGuiDemo_ = false;
-    
-    // UI Components
-    DesignSystem::TokenEditor tokenEditor_;
-    UI::ShortcutEditor shortcutEditor_;
+
+    // UI components
+    DesignSystem::TokenEditor        tokenEditor_;
+    UI::ShortcutEditor               shortcutEditor_;
     VectorGraphics::IconEditorWindow iconEditor_;
 };
 

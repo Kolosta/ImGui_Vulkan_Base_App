@@ -82,7 +82,7 @@ bool Application::Initialize() {
 
     ImGuiStyle& style = ImGui::GetStyle();
     style.ScaleAllSizes(mainScale_);
-    style.FontScaleDpi = mainScale_;
+    style.FontScaleDpi = 1.0f;  // fonts are loaded at physical pixel size; no post-raster DPI zoom
 
     InitializeSubsystems();
     LoadResources();
@@ -267,15 +267,14 @@ void Application::SetupVulkanWindow() {
 }
 
 void Application::InitializeSubsystems() {
-    DesignSystem::DesignSystem::Instance().Initialize();
+    DesignSystem::DesignSystem::Instance().Initialize(mainScale_);
     Shortcuts::ShortcutManager::Instance().Initialize();
-    
-    UI::FontManager::Instance().Initialize();
-    if (UI::FontManager::Instance().LoadFont("qanelas", "resources/fonts/Qanelas-Regular.otf", 14.0f)) {
-        UI::FontManager::Instance().SetDefaultFont("qanelas");
+
+    UI::FontManager::Instance().Initialize(mainScale_);
+    if (UI::FontManager::Instance().LoadFont("noto", "resources/fonts/NotoSans-Regular.ttf", 14.0f)) {
+        UI::FontManager::Instance().SetDefaultFont("noto");
     }
-    
-    // CORRECTION: Passer les ressources Vulkan à IconManager
+
     VectorGraphics::IconManager::Instance().Initialize(
         device_, physicalDevice_, queue_, commandPool_, descriptorPool_
     );
