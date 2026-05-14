@@ -6,35 +6,39 @@
 
 namespace UI {
 
-/**
- * Éditeur de shortcuts avec capture correcte et gestion des conflits
- */
 class ShortcutEditor {
 public:
     ShortcutEditor();
-    
+
+    // Fenêtre autonome (conservée pour usage standalone éventuel).
     void Render(bool* p_open = nullptr);
-    
+
+    // Contenu seul — utilisé à l'intérieur de la fenêtre Paramètres.
+    void RenderContent();
+
+    // Popup de capture — doit être appelé après le End() de la fenêtre parente.
+    void RenderCapturePopup();
+
 private:
     void RenderActionList();
     void RenderActionDetails();
     void RenderConflictDetection();
     void RenderShortcutCapture();
-    
+
     void StartCapture(const std::string& actionId, int bindingIndex);
     void StopCapture();
     bool CaptureInput(Shortcuts::KeyCombination& outKey);
-    
-    void RenderShortcutButton(const std::string& label, const Shortcuts::KeyCombination& key, 
-                             const std::string& actionId, int bindingIndex);
-    
-    // UI State
+
+    void RenderShortcutButton(const std::string& label,
+                              const Shortcuts::KeyCombination& key,
+                              const std::string& actionId,
+                              int bindingIndex);
+
     std::string selectedActionId_;
     Shortcuts::ShortcutZone filterZone_;
     bool showConflicts_;
     char searchBuffer_[256];
-    
-    // Capture state
+
     bool capturing_;
     std::string capturingActionId_;
     int capturingBindingIndex_;
