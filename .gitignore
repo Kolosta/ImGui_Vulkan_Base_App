@@ -1,38 +1,42 @@
-# Build
+# ── Build output ──────────────────────────────────────────────────────────────
 build/
 cmake-build-*/
+out/
 
-# IDE
+# ── IDE / Editor ──────────────────────────────────────────────────────────────
 .vs/
 .idea/
 *.swp
 *.swo
 *~
 
-# Compiled
+# ── Compiled objects ──────────────────────────────────────────────────────────
 *.o
 *.obj
 *.exe
 *.out
 *.app
 
-# CMake
+# ── CMake artifacts ───────────────────────────────────────────────────────────
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
 Makefile
 
-# Configuration (optionnel - décommenter pour tracker)
-# editor_config.json
-
-# OS
+# ── OS metadata ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db
 
-# Dependencies (auto-downloaded)
+# ── Auto-downloaded dependencies ──────────────────────────────────────────────
 _deps/
 
+# ── Runtime state (written by the app, not source) ────────────────────────────
 design_system.bin
-imgui.init
+imgui.ini
 shortcuts.dat
+
+# ── Generated files (produced by build steps) ─────────────────────────────────
 resvg_c.h
+
+# ── Claude Code (machine-local only; CLAUDE.md and settings.json are tracked) ──
+.claude/settings.local.json
