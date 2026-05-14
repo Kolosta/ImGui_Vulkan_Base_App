@@ -8,6 +8,10 @@
 #include <cstring>
 #include <iostream>
 #include <cmath>
+#include <cfloat>
+#include <cstdio>
+#include <string>
+#include <vector>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -167,29 +171,24 @@ void TokenEditor::RenderTokenList() {
 }
 
 void TokenEditor::InitializeNewOverrideValue(std::shared_ptr<Token> token) {
+    // Pre-fill the "Add Override" form with the token's *currently resolved*
+    // value.  Starting from 0 / red / empty made the form feel like a destructive
+    // reset; starting from the live value makes the override a small tweak away.
     auto& ds = DesignSystem::Instance();
     try {
-        TokenValue resolvedValue = ds.ResolveTokenValue(token->GetId(),
-                                        ds.GetCurrentContext().GetTheme());
-        switch (resolvedValue.GetType()) {
-            case ValueType::Color:
-                newOverrideValue_ = TokenValue(ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
-                break;
-            case ValueType::Float:
-                newOverrideValue_ = TokenValue(0.0f);
-                break;
-            case ValueType::Int:
-                newOverrideValue_ = TokenValue(0);
-                break;
-            case ValueType::Vec2:
-                newOverrideValue_ = TokenValue(ImVec2(0.0f, 0.0f));
-                break;
-            case ValueType::Reference:
-                newOverrideValue_ = TokenValue(std::string(""));
-                break;
-        }
+        newOverrideValue_ = ds.ResolveTokenValue(token->GetId(),
+                                ds.GetCurrentContext().GetTheme());
+        return;
     } catch (...) {
-        newOverrideValue_ = TokenValue(ImVec4(1.0f, 0.0f, 0.0f, 1.0f));
+        // Token has no resolvable value yet (unregistered reference, etc.):
+        // fall through to a type-appropriate zero.
+    }
+    switch (token->GetValueType()) {
+        case ValueType::Color:     newOverrideValue_ = TokenValue(ImVec4(1, 1, 1, 1)); break;
+        case ValueType::Float:     newOverrideValue_ = TokenValue(0.0f); break;
+        case ValueType::Int:       newOverrideValue_ = TokenValue(0); break;
+        case ValueType::Vec2:      newOverrideValue_ = TokenValue(ImVec2(0, 0)); break;
+        case ValueType::Reference: newOverrideValue_ = TokenValue(std::string("")); break;
     }
 }
 
@@ -208,6 +207,28 @@ void TokenEditor::RenderTokenDetails(Context& currentContext,
     if (!token->GetDescription().empty())
         ImGui::TextWrapped("Description: %s", token->GetDescription().c_str());
 
+    // ── Constraint summary ──────────────────────────────────────────────────
+    if (token->HasConstraint()) {
+        const ValueConstraint& c = token->GetConstraint();
+        if (!c.allowedValues.empty()) {
+            std::string s = "Allowed: ";
+            for (size_t i = 0; i < c.allowedValues.size(); ++i) {
+                if (i) s += ", ";
+                char buf[32]; snprintf(buf, sizeof(buf), "%.3g", c.allowedValues[i]);
+                s += buf;
+            }
+            ImGui::TextDisabled("%s", s.c_str());
+        } else {
+            auto lo = c.Min(); auto hi = c.Max();
+            char buf[128];
+            snprintf(buf, sizeof(buf), "Range: [%.3g .. %.3g]%s%s",
+                     lo.value_or(-INFINITY), hi.value_or(INFINITY),
+                     c.description.empty() ? "" : "   — ",
+                     c.description.c_str());
+            ImGui::TextDisabled("%s", buf);
+        }
+    }
+
     ImGui::Separator();
     ImGui::Text("Default Value:");
     TokenValue defaultValue = token->GetDefaultValue();
@@ -225,9 +246,59 @@ void TokenEditor::RenderTokenDetails(Context& currentContext,
     }
 
     ImGui::Separator();
-    ImGui::Text("Actual Value:");
+    ImGui::Text("Actual Value (theme=%s, accessibility=%s):",
+                ThemeTypeToString(currentContext.GetTheme()).c_str(),
+                AccessibilityTypeToString(currentContext.GetAccessibility()).c_str());
     ImGui::Indent();
     RenderActualValue(token, currentContext);
+    ImGui::Unindent();
+
+    // ── Reference chain ─────────────────────────────────────────────────────
+    if (token->GetValueType() == ValueType::Reference || defaultValue.IsReference()) {
+        ImGui::Separator();
+        ImGui::Text("Reference chain:");
+        auto chain = DesignSystem::Instance().GetReferenceChain(
+                         token->GetId(), currentContext.GetTheme());
+        ImGui::Indent();
+        for (size_t i = 0; i < chain.size(); ++i) {
+            const auto& entry = chain[i];
+            if (!entry.found) {
+                ImGui::TextColored(ImVec4(1, 0.5f, 0.5f, 1),
+                                   "%s  (not registered)", entry.tokenId.c_str());
+                break;
+            }
+            const char* tag = entry.overridden ? "[override] " : "";
+            ImGui::Text("%s%s", tag, entry.tokenId.c_str());
+            if (!entry.value.IsReference()) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("=>");
+                ImGui::SameLine();
+                RenderValuePreview(("##chain" + std::to_string(i)).c_str(),
+                                    entry.value, currentContext, true);
+            }
+        }
+        ImGui::Unindent();
+    }
+
+    // ── Override status across themes ───────────────────────────────────────
+    ImGui::Separator();
+    ImGui::Text("Override status:");
+    ImGui::Indent();
+    const char* globalTag = overrideManager.HasGlobalOverride(selectedTokenId_)
+                                ? "yes" : "no";
+    ImGui::Text("Global: %s", globalTag);
+    const ThemeType allThemes[] = {
+        ThemeType::Dark, ThemeType::Light,
+        ThemeType::MutedGreen, ThemeType::HighContrast
+    };
+    for (ThemeType t : allThemes) {
+        bool h = overrideManager.HasThemeOverride(selectedTokenId_, t);
+        bool current = (t == currentContext.GetTheme());
+        ImGui::Text("%s: %s%s",
+                    ThemeTypeToString(t).c_str(),
+                    h ? "yes" : "no",
+                    current ? "   <- current theme" : "");
+    }
     ImGui::Unindent();
 }
 
@@ -542,7 +613,7 @@ bool TokenEditor::RenderValueEditor(const char* label, TokenValue& value,
     if (value.GetType() != expectedType && !value.IsReference()) {
         switch (expectedType) {
             case ValueType::Color:
-                value = TokenValue(ImVec4(1.0f, 0.0f, 0.0f, 1.0f)); break;
+                value = TokenValue(ImVec4(1.0f, 1.0f, 1.0f, 1.0f)); break;
             case ValueType::Float:
                 value = TokenValue(0.0f); break;
             case ValueType::Int:
@@ -554,37 +625,84 @@ bool TokenEditor::RenderValueEditor(const char* label, TokenValue& value,
     }
 
     bool changed = false;
-    std::string tokenId = token->GetId();
+    const ValueConstraint& c = token->GetConstraint();
 
     switch (value.GetType()) {
         case ValueType::Color: {
             ImVec4 color = value.AsColor();
-            if (ImGui::ColorEdit4(label, &color.x, ImGuiColorEditFlags_NoInputs)) {
+            if (ImGui::ColorEdit4(label, &color.x,
+                                  ImGuiColorEditFlags_NoInputs |
+                                  ImGuiColorEditFlags_AlphaBar)) {
                 value.SetColor(color); changed = true;
             }
             break;
         }
         case ValueType::Float: {
+            // Drive the widget from the constraint, not a name heuristic.
+            // - constraint with finite min+max         → SliderFloat in range
+            // - constraint with one-of discrete values → Combo of allowed values
+            // - constraint with one open bound         → DragFloat using that bound
+            // - no constraint                          → DragFloat with a wide cap
             float f = value.AsFloat();
-            if (tokenId.find("radius") != std::string::npos) {
-                if (ImGui::SliderFloat(label, &f, 0.0f, 12.0f))
-                    { value.SetFloat(f); changed = true; }
-            } else if (tokenId.find("alpha") != std::string::npos) {
-                if (ImGui::SliderFloat(label, &f, 0.0f, 1.0f))
-                    { value.SetFloat(f); changed = true; }
-            } else if (tokenId.find("scale") != std::string::npos) {
-                if (ImGui::SliderFloat(label, &f, 0.5f, 2.0f))
-                    { value.SetFloat(f); changed = true; }
+            if (!c.allowedValues.empty()) {
+                int sel = 0;
+                for (size_t i = 0; i < c.allowedValues.size(); ++i)
+                    if (static_cast<float>(c.allowedValues[i]) == f) { sel = static_cast<int>(i); break; }
+                std::vector<std::string> items;
+                items.reserve(c.allowedValues.size());
+                for (double v : c.allowedValues) {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "%.3g", v);
+                    items.emplace_back(buf);
+                }
+                std::vector<const char*> cstrs;
+                cstrs.reserve(items.size());
+                for (auto& s : items) cstrs.push_back(s.c_str());
+                if (ImGui::Combo(label, &sel, cstrs.data(),
+                                 static_cast<int>(cstrs.size()))) {
+                    value.SetFloat(static_cast<float>(c.allowedValues[sel]));
+                    changed = true;
+                }
             } else {
-                if (ImGui::DragFloat(label, &f, 0.1f, 0.0f, 1000.0f))
-                    { value.SetFloat(f); changed = true; }
+                auto lo = c.Min();
+                auto hi = c.Max();
+                if (lo && hi) {
+                    float step = static_cast<float>(c.step > 0 ? c.step : 0.0);
+                    (void)step; // ImGui Slider has no built-in step; future: snap on commit.
+                    if (ImGui::SliderFloat(label, &f,
+                                           static_cast<float>(*lo),
+                                           static_cast<float>(*hi))) {
+                        value.SetFloat(static_cast<float>(c.Clamp(f)));
+                        changed = true;
+                    }
+                } else {
+                    float drag_min = lo ? static_cast<float>(*lo) : -FLT_MAX;
+                    float drag_max = hi ? static_cast<float>(*hi) :  FLT_MAX;
+                    if (ImGui::DragFloat(label, &f, 0.1f, drag_min, drag_max)) {
+                        value.SetFloat(static_cast<float>(c.Clamp(f)));
+                        changed = true;
+                    }
+                }
             }
             break;
         }
         case ValueType::Int: {
             int i = value.AsInt();
-            if (ImGui::DragInt(label, &i, 1, 0, 1000))
-                { value.SetInt(i); changed = true; }
+            auto lo = c.Min();
+            auto hi = c.Max();
+            int drag_min = lo ? static_cast<int>(*lo) : 0;
+            int drag_max = hi ? static_cast<int>(*hi) : 1000;
+            if (lo && hi) {
+                if (ImGui::SliderInt(label, &i, drag_min, drag_max)) {
+                    value.SetInt(static_cast<int>(c.Clamp(static_cast<double>(i))));
+                    changed = true;
+                }
+            } else {
+                if (ImGui::DragInt(label, &i, 1, drag_min, drag_max)) {
+                    value.SetInt(static_cast<int>(c.Clamp(static_cast<double>(i))));
+                    changed = true;
+                }
+            }
             break;
         }
         case ValueType::Vec2: {
@@ -609,13 +727,24 @@ bool TokenEditor::RenderValueEditor(const char* label, TokenValue& value,
 bool TokenEditor::ValidateOverrideType(const TokenValue& value,
                                        std::shared_ptr<Token> token) {
     auto& ds = DesignSystem::Instance();
+    ValueType expectedType;
     try {
-        TokenValue resolved = ds.ResolveTokenValue(token->GetId(),
-                                  ds.GetCurrentContext().GetTheme());
-        return value.GetType() == resolved.GetType() || value.IsReference();
+        expectedType = ds.ResolveTokenValue(token->GetId(),
+                           ds.GetCurrentContext().GetTheme()).GetType();
     } catch (...) {
-        return true;
+        // No resolvable value yet; accept anything that matches the declared type.
+        expectedType = token->GetValueType();
     }
+    if (!value.IsReference() && value.GetType() != expectedType) return false;
+
+    // Type matches.  Also verify the constraint accepts the numeric value;
+    // ImGui sliders already clamp, but a programmatically-built TokenValue
+    // (or a future code path) could still slip through.
+    const ValueConstraint& c = token->GetConstraint();
+    if (c.IsEmpty()) return true;
+    if (value.GetType() == ValueType::Float) return c.Accepts(static_cast<double>(value.AsFloat()));
+    if (value.GetType() == ValueType::Int)   return c.Accepts(static_cast<double>(value.AsInt()));
+    return true;
 }
 
 bool TokenEditor::IsTokenFiltered(std::shared_ptr<Token> token) const {
