@@ -576,21 +576,45 @@ void TokenRegistry::CreateDefaultPrimitiveTokens() {
     scale100->SetDefaultValue(TokenValue(1.0f));
     scale100->SetDescription("Normal scale (100%)");
     RegisterToken(scale100);
-    
+
     auto scale125 = std::make_shared<Token>("primitive.scale.125", TokenLevel::Primitive, ValueType::Float);
     scale125->SetDefaultValue(TokenValue(1.25f));
     scale125->SetDescription("125% scale");
     RegisterToken(scale125);
-    
+
     auto scale150 = std::make_shared<Token>("primitive.scale.150", TokenLevel::Primitive, ValueType::Float);
     scale150->SetDefaultValue(TokenValue(1.5f));
     scale150->SetDescription("150% scale");
     RegisterToken(scale150);
-    
+
     auto scale75 = std::make_shared<Token>("primitive.scale.75", TokenLevel::Primitive, ValueType::Float);
     scale75->SetDefaultValue(TokenValue(0.75f));
     scale75->SetDescription("75% scale");
     RegisterToken(scale75);
+
+    // ===== FONT SCALE =====
+    // Multiplier applied ONLY to font sizes (on top of UI scale).
+    // Keeps the bitmap-font sharp scheme: imgui re-rasterises at the
+    // final integer pixel size, never a post-raster zoom.
+    auto fontScale100 = std::make_shared<Token>("primitive.fontScale.100", TokenLevel::Primitive, ValueType::Float);
+    fontScale100->SetDefaultValue(TokenValue(1.0f));
+    fontScale100->SetDescription("Normal font scale (100%)");
+    RegisterToken(fontScale100);
+
+    auto fontScale75 = std::make_shared<Token>("primitive.fontScale.75", TokenLevel::Primitive, ValueType::Float);
+    fontScale75->SetDefaultValue(TokenValue(0.75f));
+    fontScale75->SetDescription("75% font scale");
+    RegisterToken(fontScale75);
+
+    auto fontScale125 = std::make_shared<Token>("primitive.fontScale.125", TokenLevel::Primitive, ValueType::Float);
+    fontScale125->SetDefaultValue(TokenValue(1.25f));
+    fontScale125->SetDescription("125% font scale");
+    RegisterToken(fontScale125);
+
+    auto fontScale150 = std::make_shared<Token>("primitive.fontScale.150", TokenLevel::Primitive, ValueType::Float);
+    fontScale150->SetDefaultValue(TokenValue(1.5f));
+    fontScale150->SetDescription("150% font scale");
+    RegisterToken(fontScale150);
 }
 
 void TokenRegistry::CreateDefaultSemanticTokens() {
@@ -695,8 +719,16 @@ void TokenRegistry::CreateDefaultSemanticTokens() {
     // ===== SCALE =====
     auto scaleDefault = std::make_shared<Token>("semantic.scale.default", TokenLevel::Semantic, ValueType::Reference);
     scaleDefault->SetDefaultValue(TokenValue("primitive.scale.100"));
-    scaleDefault->SetDescription("Default UI scale");
+    scaleDefault->SetDescription("Global UI scale — multiplies every metric AND fonts");
     RegisterToken(scaleDefault);
+
+    // ===== FONT SCALE =====
+    // Extra multiplier applied ONLY to fonts (combined with semantic.scale.default).
+    // Lets the user grow/shrink text independently of overall UI density.
+    auto fontScaleDefault = std::make_shared<Token>("semantic.fontScale.default", TokenLevel::Semantic, ValueType::Reference);
+    fontScaleDefault->SetDefaultValue(TokenValue("primitive.fontScale.100"));
+    fontScaleDefault->SetDescription("Font-only scale multiplier (on top of semantic.scale.default)");
+    RegisterToken(fontScaleDefault);
 }
 
 void TokenRegistry::CreateDefaultComponentTokens() {
