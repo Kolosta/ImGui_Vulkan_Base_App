@@ -19,8 +19,9 @@ public:
     
     /**
      * Initialization.
+     * dpiScale: SDL_GetDisplayContentScale() — used to convert logical to physical pixels.
      */
-    void Initialize();
+    void Initialize(float dpiScale = 1.0f);
     void Shutdown();
     
     /**
@@ -80,21 +81,30 @@ public:
      * Recursively resolve token value (public for TokenEditor).
      */
     TokenValue ResolveTokenValue(const std::string& tokenId, ThemeType theme);
-    
+
+    /**
+     * Scale accessors — for code that needs to scale raw pixel values
+     * (e.g. hardcoded toolbar widths) so they track the UI scale + DPI.
+     *   GetUiScale()       = current semantic.scale.default token value
+     *   GetGlobalScale()   = uiScale * dpiScale  (full physical-pixel multiplier)
+     *   GetDpiScale()      = monitor DPI scale captured at init
+     */
+    float GetUiScale() const;
+    float GetGlobalScale() const;
+    float GetDpiScale() const { return dpiScale_; }
+
 private:
     DesignSystem();
     ~DesignSystem();
     DesignSystem(const DesignSystem&) = delete;
     DesignSystem& operator=(const DesignSystem&) = delete;
-    
-    /**
-     * Apply accessibility transformation.
-     */
+
     ImVec4 ApplyAccessibility(const ImVec4& color, AccessibilityType type);
-    
-    Context currentContext_;
+
+    Context         currentContext_;
     OverrideManager overrideManager_;
-    int stylesPushedCount_;
+    int             stylesPushedCount_;
+    float           dpiScale_ = 1.0f;
 };
 
 } // namespace DesignSystem
