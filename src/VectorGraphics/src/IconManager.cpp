@@ -140,7 +140,11 @@ void IconManager::LoadIcon(const CompiledIconData& iconData) {
         ColorZone zone;
         zone.originalColor = compiledZone.originalColor;
         zone.tokenAssignment = compiledZone.defaultToken;
-        
+
+        // Initialize bicolorAlpha from the original color's alpha so elements that were
+        // transparent in the SVG (fill-opacity:0) start transparent in bicolor mode too.
+        zone.bicolorAlpha = ((compiledZone.originalColor >> 24) & 0xFF) / 255.0f;
+
         // Initialize customColor to original color
         zone.customColor = ColorU32ToVec4(compiledZone.originalColor);
         
@@ -263,10 +267,10 @@ std::string IconManager::GenerateCacheKey(
         oss << "_" << zone.originalColor;
         
         if (metadata.scheme == IconColorScheme::Bicolor) {
-            // CORRECTION : Inclure la VALEUR actuelle du token, pas juste son nom
             oss << "_" << zone.tokenAssignment;
             uint32_t tokenColor = GetColorForToken(zone.tokenAssignment);
             oss << "_" << std::hex << tokenColor;
+            oss << "_a" << std::fixed << std::setprecision(3) << zone.bicolorAlpha;
         } else if (metadata.scheme == IconColorScheme::Multicolor) {
             oss << "_" << std::hex << ColorVec4ToU32(zone.customColor);
         }
@@ -497,46 +501,145 @@ std::string IconManager::ApplyColorMapping(
     if (metadata.scheme == IconColorScheme::Original) {
         return svgContent;
     }
-    
+
     std::string result = svgContent;
-    
+
     // Build color replacement map
     std::unordered_map<uint32_t, uint32_t> colorReplacements;
-    
+
     for (size_t zoneIdx = 0; zoneIdx < metadata.colorZones.size() && zoneIdx < icon.colorZones.size(); ++zoneIdx) {
         const ColorZone& metaZone = metadata.colorZones[zoneIdx];
         const ColorZone& iconZone = icon.colorZones[zoneIdx];
-        
+
         uint32_t newColor = GetColorForZone(metaZone, metadata.scheme);
         colorReplacements[iconZone.originalColor] = newColor;
     }
-    
-    // Replace colors in SVG
-    for (const auto& [oldColor, newColor] : colorReplacements) {
-        char oldColorHex[10];
-        char newColorHex[10];
-        
-        snprintf(oldColorHex, sizeof(oldColorHex), "#%06X", oldColor & 0xFFFFFF);
-        snprintf(newColorHex, sizeof(newColorHex), "#%06X", newColor & 0xFFFFFF);
-        
-        // Replace all occurrences
+
+    auto isHexDigit = [](char c) {
+        return (c >= '0' && c <= '9')
+            || (c >= 'a' && c <= 'f')
+            || (c >= 'A' && c <= 'F');
+    };
+
+    // Word-boundary replace: avoids matching "#abc" inside "#abcdef".
+    auto replaceAllBounded = [&](const std::string& oldStr, const std::string& newStr) {
+        if (oldStr.empty()) return;
         size_t pos = 0;
-        while ((pos = result.find(oldColorHex, pos)) != std::string::npos) {
-            result.replace(pos, strlen(oldColorHex), newColorHex);
-            pos += strlen(newColorHex);
+        while ((pos = result.find(oldStr, pos)) != std::string::npos) {
+            char nextChar = (pos + oldStr.length() < result.length())
+                                ? result[pos + oldStr.length()]
+                                : 0;
+            if (!isHexDigit(nextChar)) {
+                result.replace(pos, oldStr.length(), newStr);
+                pos += newStr.length();
+            } else {
+                pos += oldStr.length();
+            }
         }
-        
-        // Also try lowercase
-        snprintf(oldColorHex, sizeof(oldColorHex), "#%06x", oldColor & 0xFFFFFF);
-        snprintf(newColorHex, sizeof(newColorHex), "#%06x", newColor & 0xFFFFFF);
-        
-        pos = 0;
-        while ((pos = result.find(oldColorHex, pos)) != std::string::npos) {
-            result.replace(pos, strlen(oldColorHex), newColorHex);
-            pos += strlen(newColorHex);
+    };
+
+    // Replace colors in SVG using a TWO-PHASE approach to prevent cross-contamination.
+    //
+    // Problem: if zone A is replaced with color X, and zone B's *original* color happens
+    // to equal X (e.g. primary token = white, and another zone was already white), zone B
+    // would re-match the already-replaced text. Two phases solve this cleanly:
+    //   Phase 1 — replace every old color hex form with a unique placeholder string.
+    //   Phase 2 — replace each placeholder with the final new color string.
+    //
+    // The compiler normalizes all input color forms (3-digit hex, named colors, rgb(), …)
+    // into a single u32.  The SVG source still contains the original textual form, so we
+    // try every plausible representation of each old color in phase 1.
+
+    struct ZoneReplacement {
+        std::string placeholder;  // unique, can't appear in valid SVG
+        std::string newColorStr;  // final color: "#rrggbb" or "rgba(r,g,b,a)"
+        std::vector<std::string> oldForms; // all hex forms to search for
+    };
+    std::vector<ZoneReplacement> zoneReplacements;
+    zoneReplacements.reserve(colorReplacements.size());
+
+    size_t zoneSeq = 0;
+    for (const auto& [oldColor, newColor] : colorReplacements) {
+        uint8_t r = (oldColor >> 16) & 0xFF;
+        uint8_t g = (oldColor >> 8)  & 0xFF;
+        uint8_t b =  oldColor        & 0xFF;
+
+        uint8_t newAlpha = (newColor >> 24) & 0xFF;
+        uint8_t newR     = (newColor >> 16) & 0xFF;
+        uint8_t newG     = (newColor >> 8)  & 0xFF;
+        uint8_t newB     =  newColor        & 0xFF;
+        char colorBuf[48];
+        if (newAlpha == 255) {
+            snprintf(colorBuf, sizeof(colorBuf), "#%02x%02x%02x", newR, newG, newB);
+        } else {
+            snprintf(colorBuf, sizeof(colorBuf), "rgba(%d,%d,%d,%.4f)",
+                     newR, newG, newB, newAlpha / 255.0f);
+        }
+
+        ZoneReplacement zr;
+        zr.newColorStr = colorBuf;
+        // Placeholder: not a valid CSS color, won't be matched by any other zone's search
+        zr.placeholder = "__ICCLR" + std::to_string(zoneSeq++) + "__";
+
+        char buf[10];
+        snprintf(buf, sizeof(buf), "#%06X", oldColor & 0xFFFFFF);
+        zr.oldForms.emplace_back(buf);
+        snprintf(buf, sizeof(buf), "#%06x", oldColor & 0xFFFFFF);
+        zr.oldForms.emplace_back(buf);
+
+        bool reducible = ((r >> 4) == (r & 0x0F))
+                      && ((g >> 4) == (g & 0x0F))
+                      && ((b >> 4) == (b & 0x0F));
+        if (reducible) {
+            char buf3[6];
+            snprintf(buf3, sizeof(buf3), "#%X%X%X", r & 0x0F, g & 0x0F, b & 0x0F);
+            zr.oldForms.emplace_back(buf3);
+            snprintf(buf3, sizeof(buf3), "#%x%x%x", r & 0x0F, g & 0x0F, b & 0x0F);
+            zr.oldForms.emplace_back(buf3);
+        }
+
+        zoneReplacements.push_back(std::move(zr));
+    }
+
+    // Phase 1: old color forms → unique placeholders (with word-boundary guard)
+    for (const auto& zr : zoneReplacements) {
+        for (const auto& oldForm : zr.oldForms) {
+            replaceAllBounded(oldForm, zr.placeholder);
         }
     }
-    
+
+    // Phase 2: placeholders → final color strings (no boundary check needed)
+    for (const auto& zr : zoneReplacements) {
+        size_t pos = 0;
+        while ((pos = result.find(zr.placeholder, pos)) != std::string::npos) {
+            result.replace(pos, zr.placeholder.length(), zr.newColorStr);
+            pos += zr.newColorStr.length();
+        }
+    }
+
+    // In customized modes, force visibility of zero-opacity fills/strokes. Without
+    // this, an SVG path like `style="fill:#fff;fill-opacity:0"` stays invisible
+    // even after the user overrides its color in the editor.
+    static const std::pair<const char*, const char*> opacityFixes[] = {
+        {"fill-opacity:0;",       "fill-opacity:1;"},
+        {"fill-opacity:0\"",      "fill-opacity:1\""},
+        {"fill-opacity:0 ",       "fill-opacity:1 "},
+        {"fill-opacity=\"0\"",    "fill-opacity=\"1\""},
+        {"stroke-opacity:0;",     "stroke-opacity:1;"},
+        {"stroke-opacity:0\"",    "stroke-opacity:1\""},
+        {"stroke-opacity:0 ",     "stroke-opacity:1 "},
+        {"stroke-opacity=\"0\"",  "stroke-opacity=\"1\""},
+    };
+    for (const auto& [from, to] : opacityFixes) {
+        std::string fromStr(from);
+        std::string toStr(to);
+        size_t pos = 0;
+        while ((pos = result.find(fromStr, pos)) != std::string::npos) {
+            result.replace(pos, fromStr.length(), toStr);
+            pos += toStr.length();
+        }
+    }
+
     return result;
 }
 
@@ -548,8 +651,14 @@ uint32_t IconManager::GetColorForZone(
         case IconColorScheme::Original:
             return zone.originalColor;
             
-        case IconColorScheme::Bicolor:
-            return GetColorForToken(zone.tokenAssignment);
+        case IconColorScheme::Bicolor: {
+            uint32_t tokenColor = GetColorForToken(zone.tokenAssignment);
+            // Apply the per-zone alpha so bicolor gradients handle transparency correctly.
+            // e.g. a gradient from primary@1.0 to primary@0.0 fades through the token color.
+            uint8_t a = static_cast<uint8_t>(
+                std::clamp(zone.bicolorAlpha, 0.0f, 1.0f) * 255.0f);
+            return (static_cast<uint32_t>(a) << 24) | (tokenColor & 0x00FFFFFFu);
+        }
             
         case IconColorScheme::Multicolor:
             return ColorVec4ToU32(zone.customColor);
@@ -862,17 +971,43 @@ void IconManager::InvalidateCache() {
 }
 
 void IconManager::CleanupOldCacheEntries() {
-    std::vector<std::string> keysToRemove;
-    
+    // Phase 1: age-based purge — entries untouched for cacheMaxAge_ frames are evicted
+    // regardless of total cache size.
+    std::vector<std::string> oldKeys;
     for (const auto& [key, texture] : textureCache_) {
         if (currentFrame_ - texture.lastAccessFrame > cacheMaxAge_) {
-            keysToRemove.push_back(key);
-            DestroyVulkanTexture(texture);
+            oldKeys.push_back(key);
         }
     }
-    
-    for (const auto& key : keysToRemove) {
+    for (const auto& key : oldKeys) {
+        DestroyVulkanTexture(textureCache_[key]);
         textureCache_.erase(key);
+    }
+
+    // Phase 2: size-based LRU eviction.  Without this, dragging a design-system color
+    // slider produces a brand-new cache key (token color baked into the key) every
+    // frame, and age-based cleanup alone never catches up — the cache grows unbounded
+    // until the descriptor pool is exhausted (VK_ERROR_OUT_OF_POOL_MEMORY).
+    // CreateVulkanTextureFromRGBA does a vkQueueWaitIdle before returning, so by the
+    // time we reach this point the GPU is idle and the LRU descriptor sets we evict
+    // are no longer bound to any in-flight command buffer.
+    if (textureCache_.size() > maxCacheSize_) {
+        std::vector<std::pair<uint64_t, std::string>> byAge;
+        byAge.reserve(textureCache_.size());
+        for (const auto& [key, texture] : textureCache_) {
+            byAge.emplace_back(texture.lastAccessFrame, key);
+        }
+        std::sort(byAge.begin(), byAge.end()); // oldest lastAccessFrame first
+
+        // Drop down to ~75% in one pass to avoid evicting on every single insertion
+        // when the cache is sitting right at the limit.
+        size_t targetSize = (maxCacheSize_ * 3) / 4;
+        size_t toEvict = textureCache_.size() - targetSize;
+        for (size_t i = 0; i < toEvict && i < byAge.size(); ++i) {
+            const std::string& key = byAge[i].second;
+            DestroyVulkanTexture(textureCache_[key]);
+            textureCache_.erase(key);
+        }
     }
 }
 

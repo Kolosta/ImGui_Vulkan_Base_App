@@ -19,7 +19,10 @@ public:
      * Render the icon editor window
      * @param pOpen Pointer to bool controlling window visibility
      */
-    void Render(bool* pOpen);
+    void Render(bool* pOpen = nullptr);
+
+    // Contenu seul — utilisé à l'intérieur de la fenêtre Paramètres.
+    void RenderContent();
 
 private:
     void RenderIconSelector();
@@ -28,10 +31,16 @@ private:
     void RenderColorZonesConfiguration();
     void RenderActions();
     void RenderDebugInfo();
+    void RenderIconList();
+    void RenderIconDetails();
+    void RenderIconPreview();
     
     std::string selectedIcon_;
     int selectedIconIdx_ = -1;
     IconMetadata localMetadata_;  // Current editing session metadata
+    std::string selectedIconId_;
+    bool        showGrid_      = true;
+    float       previewScale_  = 1.0f;
 };
 
 } // namespace VectorGraphics

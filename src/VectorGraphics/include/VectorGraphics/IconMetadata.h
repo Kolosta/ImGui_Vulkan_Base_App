@@ -78,13 +78,15 @@ struct ColorMapping {
  */
 struct ColorZone {
     uint32_t originalColor;              // Original color from SVG
-    std::string tokenAssignment;         // Token name for bicolor mode (e.g., "primary", "secondary")
+    std::string tokenAssignment;         // Token name for bicolor mode ("primary" or "secondary")
+    float bicolorAlpha;                  // Per-zone alpha override in bicolor mode (0=transparent, 1=opaque)
     ImVec4 customColor;                  // Custom color for multicolor mode
     std::vector<size_t> mappingIndices;  // Indices into ColorMapping array
-    
-    ColorZone() 
+
+    ColorZone()
         : originalColor(0)
         , tokenAssignment("primary")
+        , bicolorAlpha(1.0f)
         , customColor(1.0f, 1.0f, 1.0f, 1.0f)
     {}
 };

@@ -10,8 +10,10 @@ namespace VectorGraphics {
 
 void IconEditorWindow::Render(bool* pOpen) {
     if (!pOpen || !*pOpen) return;
+
+    ImGui::SetNextWindowSize(ImVec2(800.0f, 600.0f), ImGuiCond_FirstUseEver);
     
-    ImGui::Begin("Icon Editor", pOpen, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::Begin("Icon Editor", pOpen, ImGuiWindowFlags_NoDocking);
     
     RenderIconSelector();
     
@@ -216,28 +218,32 @@ void IconEditorWindow::RenderColorZonesConfiguration() {
                 
             } else if (localMetadata_.scheme == IconColorScheme::Bicolor) {
                 ImGui::Text("Assign to:");
-                
-                bool isPrimary = (zone.tokenAssignment == "primary");
+
+                bool isPrimary   = (zone.tokenAssignment == "primary");
                 bool isSecondary = (zone.tokenAssignment == "secondary");
-                
-                if (ImGui::RadioButton("Primary", isPrimary)) {
+
+                if (ImGui::RadioButton("Primary", isPrimary))
                     zone.tokenAssignment = "primary";
-                    // iconManager.InvalidateCache();
-                }
-                
                 ImGui::SameLine();
-                if (ImGui::RadioButton("Secondary", isSecondary)) {
+                if (ImGui::RadioButton("Secondary", isSecondary))
                     zone.tokenAssignment = "secondary";
-                    // iconManager.InvalidateCache();
-                }
-                
-                // Preview of chosen color
+
+                // Per-zone alpha — lets bicolor gradients fade in/out through the
+                // token color (e.g. primary@1.0 → primary@0.0 gradient stop).
+                ImGui::SetNextItemWidth(-1);
+                ImGui::SliderFloat("##bicolor_alpha", &zone.bicolorAlpha, 0.0f, 1.0f, "Alpha %.2f");
+
+                // Preview: token color with bicolorAlpha applied
+                ImVec4 baseColor    = isPrimary ? dsPrimary : dsSecondary;
+                ImVec4 previewColor = ImVec4(baseColor.x, baseColor.y, baseColor.z,
+                                             zone.bicolorAlpha);
                 ImGui::Text("Result:");
                 ImGui::SameLine();
-                ImVec4 previewColor = isPrimary ? dsPrimary : dsSecondary;
-                ImGui::ColorButton("##preview", previewColor, 
-                                 ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoPicker, 
-                                 ImVec2(30, 30));
+                ImGui::ColorButton("##preview", previewColor,
+                                   ImGuiColorEditFlags_NoTooltip
+                                   | ImGuiColorEditFlags_NoPicker
+                                   | ImGuiColorEditFlags_AlphaPreview,
+                                   ImVec2(30, 30));
                 
             } else if (localMetadata_.scheme == IconColorScheme::Multicolor) {
                 ImGui::Text("Custom Color:");
@@ -291,6 +297,75 @@ void IconEditorWindow::RenderActions() {
         "Note: Changes here affect only this preview. "
         "Icons used elsewhere in the application maintain their own settings."
     );
+}
+
+void IconEditorWindow::RenderContent() {
+    // Panneau gauche — liste d'icônes
+    ImGui::BeginChild("IconListPane", ImVec2(220.0f, 0.0f), true);
+    RenderIconList();
+    ImGui::EndChild();
+
+    ImGui::SameLine();
+
+    // Panneau droit — détails et prévisualisation
+    ImGui::BeginChild("IconDetailsPane", ImVec2(0.0f, 0.0f), true);
+    if (!selectedIconId_.empty()) {
+        RenderIconDetails();
+        ImGui::Separator();
+        RenderIconPreview();
+    } else {
+        ImGui::TextWrapped("Sélectionner une icône pour voir les détails");
+    }
+    ImGui::EndChild();
+}
+
+void IconEditorWindow::RenderIconList() {
+    auto& iconManager = IconManager::Instance();
+    std::vector<std::string> iconList = iconManager.GetLoadedIcons();
+
+    ImGui::Text("Icons (%zu)", iconList.size());
+    ImGui::Separator();
+
+    if (iconList.empty()) {
+        ImGui::TextDisabled("Aucune icône chargée");
+        return;
+    }
+
+    if (selectedIcon_.empty()) {
+        selectedIcon_    = iconList[0];
+        selectedIconId_  = iconList[0];
+        selectedIconIdx_ = 0;
+        localMetadata_   = iconManager.GetDefaultMetadata(selectedIcon_);
+    }
+
+    for (size_t i = 0; i < iconList.size(); ++i) {
+        bool isSelected = (selectedIcon_ == iconList[i]);
+        if (ImGui::Selectable(iconList[i].c_str(), isSelected)) {
+            selectedIcon_    = iconList[i];
+            selectedIconId_  = iconList[i];
+            selectedIconIdx_ = static_cast<int>(i);
+            localMetadata_   = iconManager.GetDefaultMetadata(selectedIcon_);
+        }
+        if (isSelected)
+            ImGui::SetItemDefaultFocus();
+    }
+}
+
+void IconEditorWindow::RenderIconDetails() {
+    ImGui::Text("Icon: %s", selectedIcon_.c_str());
+    ImGui::Separator();
+    RenderModeSelector();
+    ImGui::Separator();
+    RenderColorZonesConfiguration();
+    ImGui::Separator();
+    RenderActions();
+    if (ImGui::CollapsingHeader("Debug Info")) {
+        RenderDebugInfo();
+    }
+}
+
+void IconEditorWindow::RenderIconPreview() {
+    RenderPreview();
 }
 
 void IconEditorWindow::RenderDebugInfo() {
