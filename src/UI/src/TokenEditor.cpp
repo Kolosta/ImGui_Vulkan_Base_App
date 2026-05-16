@@ -66,8 +66,8 @@ void TokenEditor::Render(Context& currentContext, OverrideManager& overrideManag
 // ── Contenu seul (utilisé dans la fenêtre Paramètres) ────────────────────────
 
 void TokenEditor::RenderContent(Context& currentContext, OverrideManager& overrideManager) {
-    Shortcuts::ShortcutManager::Instance().RegisterWindowZone(
-        "Token Editor", Shortcuts::ShortcutZone::TokenEditor);
+    Shortcuts::ShortcutManager::Instance().RegisterRegionContext(
+        "Token Editor", "tokenEditor", "content");
 
     // Filtres de visibilité inline (remplacent le menu bar absent dans les onglets)
     ImGui::Checkbox("Primitives",  &showPrimitives_);
