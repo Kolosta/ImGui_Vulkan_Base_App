@@ -19,6 +19,11 @@ concurrency:
 permissions:
   contents: read
 
+# Opt the JS-based actions into Node.js 24 ahead of the June 2026
+# forced migration (removes the deprecation warning, future-proofs CI).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: Build (Windows · MinGW64)
