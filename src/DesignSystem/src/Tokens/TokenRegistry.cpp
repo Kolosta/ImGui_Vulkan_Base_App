@@ -680,10 +680,48 @@ void TokenRegistry::CreateDefaultSemanticTokens() {
     textMuted->SetDescription("Muted/secondary text");
     RegisterToken(textMuted);
 
-    auto warning = std::make_shared<Token>("semantic.color.warning", TokenLevel::Semantic, ValueType::Color);
+    auto warning = std::make_shared<Token>("semantic.color.warning", TokenLevel::Semantic, ValueType::Reference);
     warning->SetDefaultValue(TokenValue("primitive.color.orange.500"));
     warning->SetDescription("Warning color used to indicate caution or non-critical alerts");
     RegisterToken(warning);
+
+    auto success = std::make_shared<Token>("semantic.color.success", TokenLevel::Semantic, ValueType::Reference);
+    success->SetDefaultValue(TokenValue("primitive.color.green.500"));
+    success->SetDescription("Success color (e.g. 'no conflicts')");
+    RegisterToken(success);
+
+    auto recording = std::make_shared<Token>("semantic.color.recording", TokenLevel::Semantic, ValueType::Reference);
+    recording->SetDefaultValue(TokenValue("primitive.color.red.500"));
+    recording->SetDescription("Recording / capture-active indicator");
+    RegisterToken(recording);
+
+    auto surfaceElevated = std::make_shared<Token>("semantic.color.surface.elevated", TokenLevel::Semantic, ValueType::Reference);
+    surfaceElevated->SetDefaultValue(TokenValue("primitive.color.gray.700"));
+    surfaceElevated->SetDescription("Elevated surface (key cap face, raised chips)");
+    RegisterToken(surfaceElevated);
+
+    auto borderSubtle = std::make_shared<Token>("semantic.color.border.subtle", TokenLevel::Semantic, ValueType::Reference);
+    borderSubtle->SetDefaultValue(TokenValue("primitive.color.gray.500"));
+    borderSubtle->SetDescription("Subtle border (key cap, separator overlays)");
+    RegisterToken(borderSubtle);
+
+    auto statusbarBg = std::make_shared<Token>("semantic.color.statusbar.background", TokenLevel::Semantic, ValueType::Reference);
+    statusbarBg->SetDefaultValue(TokenValue("primitive.color.gray.800"));
+    statusbarBg->SetDescription("Bottom status bar background");
+    RegisterToken(statusbarBg);
+
+    auto statusbarText = std::make_shared<Token>("semantic.color.statusbar.text", TokenLevel::Semantic, ValueType::Reference);
+    statusbarText->SetDefaultValue(TokenValue("semantic.color.text.muted"));
+    statusbarText->SetDescription("Bottom status bar text");
+    RegisterToken(statusbarText);
+
+    // ===== SHORTCUT BEHAVIOUR ===============================================
+    auto dragThreshold = std::make_shared<Token>("semantic.shortcut.dragThreshold", TokenLevel::Semantic, ValueType::Float);
+    dragThreshold->SetDefaultValue(TokenValue(6.0f));
+    dragThreshold->SetDescription("Distance (logical px) the mouse must travel before "
+                                   "a drag-style shortcut triggers");
+    dragThreshold->SetConstraint(ValueConstraint::Range(2.0, 64.0, 0.0, "px"));
+    RegisterToken(dragThreshold);
     
     // ===== ICON COLORS =====
     auto iconPrimary = std::make_shared<Token>("semantic.icon.color.primary", TokenLevel::Semantic, ValueType::Reference);
@@ -782,21 +820,61 @@ void TokenRegistry::CreateDefaultComponentTokens() {
     buttonPadding->SetDescription("Button padding (x, y)");
     RegisterToken(buttonPadding);
     
-    // ===== FRAME/INPUT =====
+    // ===== FRAME/INPUT (combos, inputs, sliders…) =====
+    // Frame background is intentionally a *different* surface than the
+    // window/child background so combos & inputs are visible against the
+    // panels they sit in.
     auto frameBg = std::make_shared<Token>("component.frame.background", TokenLevel::Component, ValueType::Reference);
-    frameBg->SetDefaultValue(TokenValue("semantic.color.surface"));
-    frameBg->SetDescription("Input frame background");
+    frameBg->SetDefaultValue(TokenValue("semantic.color.surface.elevated"));
+    frameBg->SetDescription("Input/combo frame background");
     RegisterToken(frameBg);
-    
+
+    auto frameBgHover = std::make_shared<Token>("component.frame.backgroundHover", TokenLevel::Component, ValueType::Reference);
+    frameBgHover->SetDefaultValue(TokenValue("semantic.color.surface.elevated"));
+    frameBgHover->SetDescription("Input/combo frame background when hovered");
+    RegisterToken(frameBgHover);
+
+    auto frameBgActive = std::make_shared<Token>("component.frame.backgroundActive", TokenLevel::Component, ValueType::Reference);
+    frameBgActive->SetDefaultValue(TokenValue("semantic.color.surface"));
+    frameBgActive->SetDescription("Input/combo frame background when active");
+    RegisterToken(frameBgActive);
+
+    auto frameBorder = std::make_shared<Token>("component.frame.border", TokenLevel::Component, ValueType::Reference);
+    frameBorder->SetDefaultValue(TokenValue("semantic.color.border.subtle"));
+    frameBorder->SetDescription("Input/combo/window border colour");
+    RegisterToken(frameBorder);
+
+    auto frameBorderSize = std::make_shared<Token>("component.frame.borderSize", TokenLevel::Component, ValueType::Float);
+    frameBorderSize->SetDefaultValue(TokenValue(1.0f));
+    frameBorderSize->SetDescription("Input/combo frame border thickness (px)");
+    frameBorderSize->SetConstraint(ValueConstraint::Range(0.0, 4.0, 0.0, "px"));
+    RegisterToken(frameBorderSize);
+
     auto frameRadius = std::make_shared<Token>("component.frame.radius", TokenLevel::Component, ValueType::Reference);
     frameRadius->SetDefaultValue(TokenValue("semantic.radius.default"));
     frameRadius->SetDescription("Frame border radius");
     RegisterToken(frameRadius);
-    
+
     auto framePadding = std::make_shared<Token>("component.frame.padding", TokenLevel::Component, ValueType::Vec2);
     framePadding->SetDefaultValue(TokenValue(ImVec2(10.0f, 5.0f)));
     framePadding->SetDescription("Frame padding (x, y)");
     RegisterToken(framePadding);
+
+    auto popupBg = std::make_shared<Token>("component.popup.background", TokenLevel::Component, ValueType::Reference);
+    popupBg->SetDefaultValue(TokenValue("semantic.color.surface.elevated"));
+    popupBg->SetDescription("Popup / combo-list background");
+    RegisterToken(popupBg);
+
+    auto popupBorder = std::make_shared<Token>("component.popup.border", TokenLevel::Component, ValueType::Reference);
+    popupBorder->SetDefaultValue(TokenValue("semantic.color.border.subtle"));
+    popupBorder->SetDescription("Popup / combo-list border colour");
+    RegisterToken(popupBorder);
+
+    auto popupBorderSize = std::make_shared<Token>("component.popup.borderSize", TokenLevel::Component, ValueType::Float);
+    popupBorderSize->SetDefaultValue(TokenValue(1.0f));
+    popupBorderSize->SetDescription("Popup / combo-list border thickness (px)");
+    popupBorderSize->SetConstraint(ValueConstraint::Range(0.0, 4.0, 0.0, "px"));
+    RegisterToken(popupBorderSize);
     
     // ===== WINDOW =====
     auto windowRadius = std::make_shared<Token>("component.window.radius", TokenLevel::Component, ValueType::Reference);
@@ -818,6 +896,253 @@ void TokenRegistry::CreateDefaultComponentTokens() {
     grabRadius->SetDefaultValue(TokenValue("semantic.radius.small"));
     grabRadius->SetDescription("Grab/slider border radius");
     RegisterToken(grabRadius);
+
+    // ===== KEY CAP (kbd-style chip used to display shortcuts) =====
+    auto keycapBg = std::make_shared<Token>("component.keycap.background", TokenLevel::Component, ValueType::Reference);
+    keycapBg->SetDefaultValue(TokenValue("semantic.color.surface.elevated"));
+    keycapBg->SetDescription("Key cap background");
+    RegisterToken(keycapBg);
+
+    auto keycapBorder = std::make_shared<Token>("component.keycap.border", TokenLevel::Component, ValueType::Reference);
+    keycapBorder->SetDefaultValue(TokenValue("semantic.color.border.subtle"));
+    keycapBorder->SetDescription("Key cap border");
+    RegisterToken(keycapBorder);
+
+    auto keycapText = std::make_shared<Token>("component.keycap.text", TokenLevel::Component, ValueType::Reference);
+    keycapText->SetDefaultValue(TokenValue("semantic.color.text"));
+    keycapText->SetDescription("Key cap text");
+    RegisterToken(keycapText);
+
+    auto keycapRadius = std::make_shared<Token>("component.keycap.radius", TokenLevel::Component, ValueType::Reference);
+    keycapRadius->SetDefaultValue(TokenValue("primitive.radius.4"));
+    keycapRadius->SetDescription("Key cap corner radius");
+    RegisterToken(keycapRadius);
+
+    auto keycapPadding = std::make_shared<Token>("component.keycap.padding", TokenLevel::Component, ValueType::Vec2);
+    keycapPadding->SetDefaultValue(TokenValue(ImVec2(6.0f, 2.0f)));
+    keycapPadding->SetDescription("Key cap inner padding (x,y)");
+    RegisterToken(keycapPadding);
+
+    auto keycapFontScale = std::make_shared<Token>("component.keycap.fontScale", TokenLevel::Component, ValueType::Float);
+    keycapFontScale->SetDefaultValue(TokenValue(0.85f));
+    keycapFontScale->SetDescription("Key cap text scale relative to base font");
+    keycapFontScale->SetConstraint(ValueConstraint::Range(0.5, 2.0, 0.0, "multiplier"));
+    RegisterToken(keycapFontScale);
+
+    // ===== STATUS BAR =====
+    auto statusbarBgC = std::make_shared<Token>("component.statusbar.background", TokenLevel::Component, ValueType::Reference);
+    statusbarBgC->SetDefaultValue(TokenValue("semantic.color.statusbar.background"));
+    statusbarBgC->SetDescription("Status bar fill colour");
+    RegisterToken(statusbarBgC);
+
+    auto statusbarTextC = std::make_shared<Token>("component.statusbar.text", TokenLevel::Component, ValueType::Reference);
+    statusbarTextC->SetDefaultValue(TokenValue("semantic.color.statusbar.text"));
+    statusbarTextC->SetDescription("Status bar text colour");
+    RegisterToken(statusbarTextC);
+
+    auto statusbarHeight = std::make_shared<Token>("component.statusbar.height", TokenLevel::Component, ValueType::Float);
+    statusbarHeight->SetDefaultValue(TokenValue(22.0f));
+    statusbarHeight->SetDescription("Status bar height in logical pixels");
+    statusbarHeight->SetConstraint(ValueConstraint::Range(16.0, 40.0, 0.0, "px"));
+    RegisterToken(statusbarHeight);
+
+    auto statusbarPadding = std::make_shared<Token>("component.statusbar.padding", TokenLevel::Component, ValueType::Vec2);
+    statusbarPadding->SetDefaultValue(TokenValue(ImVec2(8.0f, 3.0f)));
+    statusbarPadding->SetDescription("Status bar inner padding (x,y)");
+    RegisterToken(statusbarPadding);
+
+    // ===== SHORTCUT EDITOR ROW STATES =====
+    auto shortcutRowHover = std::make_shared<Token>("component.shortcutRow.hoverBackground", TokenLevel::Component, ValueType::Reference);
+    shortcutRowHover->SetDefaultValue(TokenValue("semantic.color.surface"));
+    shortcutRowHover->SetDescription("Shortcut editor row hover background");
+    RegisterToken(shortcutRowHover);
+
+    auto shortcutRowSelected = std::make_shared<Token>("component.shortcutRow.selectedBackground", TokenLevel::Component, ValueType::Reference);
+    shortcutRowSelected->SetDefaultValue(TokenValue("semantic.color.primary"));
+    shortcutRowSelected->SetDescription("Shortcut editor row selected background");
+    RegisterToken(shortcutRowSelected);
+
+    // ===== SHORTCUT STATES =====
+    auto shortcutConflict = std::make_shared<Token>("component.shortcut.conflict", TokenLevel::Component, ValueType::Reference);
+    shortcutConflict->SetDefaultValue(TokenValue("semantic.color.warning"));
+    shortcutConflict->SetDescription("Shortcut soft-conflict highlight (resolvable by context)");
+    RegisterToken(shortcutConflict);
+
+    auto shortcutConflictHard = std::make_shared<Token>("component.shortcut.conflictHard", TokenLevel::Component, ValueType::Reference);
+    shortcutConflictHard->SetDefaultValue(TokenValue("semantic.color.danger"));
+    shortcutConflictHard->SetDescription("Shortcut hard-conflict highlight (same context)");
+    RegisterToken(shortcutConflictHard);
+
+    auto shortcutRecording = std::make_shared<Token>("component.shortcut.recording", TokenLevel::Component, ValueType::Reference);
+    shortcutRecording->SetDefaultValue(TokenValue("semantic.color.recording"));
+    shortcutRecording->SetDescription("Shortcut capture popup 'recording' indicator");
+    RegisterToken(shortcutRecording);
+
+    auto shortcutCaptureBg = std::make_shared<Token>("component.shortcut.captureBackground", TokenLevel::Component, ValueType::Reference);
+    shortcutCaptureBg->SetDefaultValue(TokenValue("semantic.color.surface"));
+    shortcutCaptureBg->SetDescription("Shortcut capture popup background");
+    RegisterToken(shortcutCaptureBg);
+
+    // ===== SECTION HEADER (used in shortcut editor tree) =====
+    auto sectionHeaderText = std::make_shared<Token>("component.sectionHeader.text", TokenLevel::Component, ValueType::Reference);
+    sectionHeaderText->SetDefaultValue(TokenValue("semantic.color.text"));
+    sectionHeaderText->SetDescription("Section header text");
+    RegisterToken(sectionHeaderText);
+
+    auto sectionHeaderFontScale = std::make_shared<Token>("component.sectionHeader.fontScale", TokenLevel::Component, ValueType::Float);
+    sectionHeaderFontScale->SetDefaultValue(TokenValue(1.1f));
+    sectionHeaderFontScale->SetDescription("Section header relative font scale");
+    sectionHeaderFontScale->SetConstraint(ValueConstraint::Range(0.5, 2.5, 0.0, "multiplier"));
+    RegisterToken(sectionHeaderFontScale);
+
+    // ===== SHORTCUT CAPTURE FIELD (clickable input that records key combos) =====
+    auto captureBg = std::make_shared<Token>("component.captureField.background", TokenLevel::Component, ValueType::Reference);
+    captureBg->SetDefaultValue(TokenValue("semantic.color.surface"));
+    captureBg->SetDescription("Idle capture-field background");
+    RegisterToken(captureBg);
+
+    auto captureBgRec = std::make_shared<Token>("component.captureField.backgroundRecording", TokenLevel::Component, ValueType::Reference);
+    captureBgRec->SetDefaultValue(TokenValue("semantic.color.surface.elevated"));
+    captureBgRec->SetDescription("Recording capture-field background");
+    RegisterToken(captureBgRec);
+
+    auto captureBorder = std::make_shared<Token>("component.captureField.border", TokenLevel::Component, ValueType::Reference);
+    captureBorder->SetDefaultValue(TokenValue("semantic.color.border.subtle"));
+    captureBorder->SetDescription("Idle capture-field border");
+    RegisterToken(captureBorder);
+
+    auto captureBorderRec = std::make_shared<Token>("component.captureField.borderRecording", TokenLevel::Component, ValueType::Reference);
+    captureBorderRec->SetDefaultValue(TokenValue("semantic.color.recording"));
+    captureBorderRec->SetDescription("Recording capture-field border (red)");
+    RegisterToken(captureBorderRec);
+
+    auto captureText = std::make_shared<Token>("component.captureField.text", TokenLevel::Component, ValueType::Reference);
+    captureText->SetDefaultValue(TokenValue("semantic.color.text"));
+    captureText->SetDescription("Capture-field foreground text");
+    RegisterToken(captureText);
+
+    auto captureHintText = std::make_shared<Token>("component.captureField.hintText", TokenLevel::Component, ValueType::Reference);
+    captureHintText->SetDefaultValue(TokenValue("semantic.color.text.muted"));
+    captureHintText->SetDescription("Capture-field hint text (placeholder)");
+    RegisterToken(captureHintText);
+
+    auto captureRadius = std::make_shared<Token>("component.captureField.radius", TokenLevel::Component, ValueType::Reference);
+    captureRadius->SetDefaultValue(TokenValue("semantic.radius.small"));
+    captureRadius->SetDescription("Capture-field corner radius");
+    RegisterToken(captureRadius);
+
+    auto capturePadding = std::make_shared<Token>("component.captureField.padding", TokenLevel::Component, ValueType::Vec2);
+    capturePadding->SetDefaultValue(TokenValue(ImVec2(8.0f, 4.0f)));
+    capturePadding->SetDescription("Capture-field inner padding (x,y)");
+    RegisterToken(capturePadding);
+
+    auto captureMinWidth = std::make_shared<Token>("component.captureField.minWidth", TokenLevel::Component, ValueType::Float);
+    captureMinWidth->SetDefaultValue(TokenValue(180.0f));
+    captureMinWidth->SetDescription("Capture-field minimum width (logical px)");
+    captureMinWidth->SetConstraint(ValueConstraint::Range(80.0, 600.0, 0.0, "px"));
+    RegisterToken(captureMinWidth);
+
+    auto captureHeight = std::make_shared<Token>("component.captureField.height", TokenLevel::Component, ValueType::Float);
+    captureHeight->SetDefaultValue(TokenValue(28.0f));
+    captureHeight->SetDescription("Capture-field height (logical px)");
+    captureHeight->SetConstraint(ValueConstraint::Range(20.0, 64.0, 0.0, "px"));
+    RegisterToken(captureHeight);
+
+    // ── Capture-field extended states (hover / active-press) ────────────
+    auto captureBgHover = std::make_shared<Token>("component.captureField.backgroundHover", TokenLevel::Component, ValueType::Reference);
+    captureBgHover->SetDefaultValue(TokenValue(std::string("semantic.color.surface.elevated")));
+    captureBgHover->SetDescription("Capture-field hover background");
+    RegisterToken(captureBgHover);
+
+    auto captureBgActive = std::make_shared<Token>("component.captureField.backgroundActive", TokenLevel::Component, ValueType::Reference);
+    captureBgActive->SetDefaultValue(TokenValue(std::string("semantic.color.surface")));
+    captureBgActive->SetDescription("Capture-field background while clicked (mouse held down)");
+    RegisterToken(captureBgActive);
+
+    // ── Generic toggle (Kbd|Mouse, modifier toggle, Any wildcard) ──────
+    auto togBg = std::make_shared<Token>("component.toggle.background", TokenLevel::Component, ValueType::Reference);
+    togBg->SetDefaultValue(TokenValue(std::string("semantic.color.surface")));
+    togBg->SetDescription("Toggle button background (off state)");
+    RegisterToken(togBg);
+
+    auto togHover = std::make_shared<Token>("component.toggle.hover", TokenLevel::Component, ValueType::Reference);
+    togHover->SetDefaultValue(TokenValue(std::string("semantic.color.surface.elevated")));
+    togHover->SetDescription("Toggle button hover background (off state)");
+    RegisterToken(togHover);
+
+    auto togActiveBg = std::make_shared<Token>("component.toggle.activeBackground", TokenLevel::Component, ValueType::Reference);
+    togActiveBg->SetDefaultValue(TokenValue(std::string("semantic.color.primary")));
+    togActiveBg->SetDescription("Toggle button background when toggled on");
+    RegisterToken(togActiveBg);
+
+    auto togBorder = std::make_shared<Token>("component.toggle.border", TokenLevel::Component, ValueType::Reference);
+    togBorder->SetDefaultValue(TokenValue(std::string("semantic.color.border.subtle")));
+    togBorder->SetDescription("Toggle button border (off state)");
+    RegisterToken(togBorder);
+
+    auto togActiveBd = std::make_shared<Token>("component.toggle.activeBorder", TokenLevel::Component, ValueType::Reference);
+    togActiveBd->SetDefaultValue(TokenValue(std::string("semantic.color.primary")));
+    togActiveBd->SetDescription("Toggle button border when toggled on");
+    RegisterToken(togActiveBd);
+
+    auto togText = std::make_shared<Token>("component.toggle.text", TokenLevel::Component, ValueType::Reference);
+    togText->SetDefaultValue(TokenValue(std::string("semantic.color.text.muted")));
+    togText->SetDescription("Toggle button text (off state)");
+    RegisterToken(togText);
+
+    auto togActiveTx = std::make_shared<Token>("component.toggle.activeText", TokenLevel::Component, ValueType::Reference);
+    togActiveTx->SetDefaultValue(TokenValue(std::string("semantic.color.text")));
+    togActiveTx->SetDescription("Toggle button text when toggled on");
+    RegisterToken(togActiveTx);
+
+    auto togRadius = std::make_shared<Token>("component.toggle.radius", TokenLevel::Component, ValueType::Float);
+    togRadius->SetDefaultValue(TokenValue(5.0f));
+    togRadius->SetDescription("Toggle button corner radius (logical px)");
+    togRadius->SetConstraint(ValueConstraint::Range(0.0, 16.0, 0.0, "px"));
+    RegisterToken(togRadius);
+
+    auto togBorderSize = std::make_shared<Token>("component.toggle.borderSize", TokenLevel::Component, ValueType::Float);
+    togBorderSize->SetDefaultValue(TokenValue(1.0f));
+    togBorderSize->SetDescription("Toggle / button-group border thickness (px)");
+    togBorderSize->SetConstraint(ValueConstraint::Range(0.0, 4.0, 0.0, "px"));
+    RegisterToken(togBorderSize);
+
+    // ── Square icon button (used for Restore/Delete) ───────────────────
+    auto ibBg = std::make_shared<Token>("component.iconButton.background", TokenLevel::Component, ValueType::Reference);
+    ibBg->SetDefaultValue(TokenValue(std::string("semantic.color.surface")));
+    ibBg->SetDescription("Icon button background");
+    RegisterToken(ibBg);
+
+    auto ibHover = std::make_shared<Token>("component.iconButton.hover", TokenLevel::Component, ValueType::Reference);
+    ibHover->SetDefaultValue(TokenValue(std::string("semantic.color.surface.elevated")));
+    ibHover->SetDescription("Icon button hover background");
+    RegisterToken(ibHover);
+
+    auto ibActive = std::make_shared<Token>("component.iconButton.active", TokenLevel::Component, ValueType::Reference);
+    ibActive->SetDefaultValue(TokenValue(std::string("semantic.color.background")));
+    ibActive->SetDescription("Icon button background while clicked");
+    RegisterToken(ibActive);
+
+    auto ibBorder = std::make_shared<Token>("component.iconButton.border", TokenLevel::Component, ValueType::Reference);
+    ibBorder->SetDefaultValue(TokenValue(std::string("semantic.color.border.subtle")));
+    ibBorder->SetDescription("Icon button border");
+    RegisterToken(ibBorder);
+
+    auto ibIcon = std::make_shared<Token>("component.iconButton.iconColor", TokenLevel::Component, ValueType::Reference);
+    ibIcon->SetDefaultValue(TokenValue(std::string("semantic.color.text")));
+    ibIcon->SetDescription("Default icon tint for icon button");
+    RegisterToken(ibIcon);
+
+    auto ibDanger = std::make_shared<Token>("component.iconButton.dangerIcon", TokenLevel::Component, ValueType::Reference);
+    ibDanger->SetDefaultValue(TokenValue(std::string("semantic.color.danger")));
+    ibDanger->SetDescription("Danger-tinted icon for destructive icon button (delete)");
+    RegisterToken(ibDanger);
+
+    auto ibRadius = std::make_shared<Token>("component.iconButton.radius", TokenLevel::Component, ValueType::Float);
+    ibRadius->SetDefaultValue(TokenValue(3.0f));
+    ibRadius->SetDescription("Icon button corner radius (logical px)");
+    ibRadius->SetConstraint(ValueConstraint::Range(0.0, 16.0, 0.0, "px"));
+    RegisterToken(ibRadius);
 }
 
 } // namespace DesignSystem

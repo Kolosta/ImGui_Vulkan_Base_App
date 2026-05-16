@@ -3,6 +3,8 @@
 #include <VectorGraphics/IconManager.h>
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ShortcutManager.h>
+#include <Shortcuts/EventNormalizer.h>
+#include <Shortcuts/ToolManager.h>
 #include <UI/FontManager.h>
 
 #ifdef _DEBUG
@@ -22,8 +24,10 @@ static void check_vk_result(VkResult err) {
     if (err < 0) abort();
 }
 
-Application::Application()  {}
-Application::~Application() {}
+Application* Application::s_instance_ = nullptr;
+
+Application::Application()  { s_instance_ = this; }
+Application::~Application() { if (s_instance_ == this) s_instance_ = nullptr; }
 
 void Application::Run() {
     while (running_) {
@@ -77,11 +81,31 @@ void Application::Update() {
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
-    Shortcuts::ShortcutManager::Instance().ProcessInput();
+    // Shortcut pipeline:
+    //   1. drain ImGui IO into normalised events
+    //   2. reset per-frame context (BeginFrame); panels then call
+    //      RegisterRegionContext from inside their hovered window
+    //   3. UI renders (panels register their context this frame)
+    //   4. ProcessInput dispatches events with the now-up-to-date context
+    {
+        // Pull the drag threshold from the design system every frame so DS
+        // overrides take effect immediately without restarting the app.
+        try {
+            float t = DesignSystem::DesignSystem::Instance()
+                        .GetFloat("semantic.shortcut.dragThreshold");
+            Shortcuts::EventNormalizer::Instance().SetDragThreshold(t);
+        } catch (...) { /* token missing — keep current value */ }
+    }
+    Shortcuts::EventNormalizer::Instance().Frame();
+    Shortcuts::ShortcutManager::Instance().BeginFrame();
 
     RenderMainMenuBar();
     RenderMainLayout();
     RenderFloatingWindows();
+
+    // Dispatch happens after panels have set the context for this frame so
+    // editor/region/tool match the user's current hover.
+    Shortcuts::ShortcutManager::Instance().ProcessInput();
 }
 
 void Application::Render() {
@@ -192,14 +216,39 @@ void Application::Present() {
     }
 }
 
-// ── Test Actions ─────────────────────────────────────────────────────────────
-void Application::TestAction_NewFile()  { std::cout << "[ACTION] New File"  << std::endl; }
-void Application::TestAction_OpenFile() { std::cout << "[ACTION] Open File" << std::endl; }
-void Application::TestAction_SaveFile() { std::cout << "[ACTION] Save File" << std::endl; }
-void Application::TestAction_Quit()     { std::cout << "[ACTION] Quit"      << std::endl; }
-void Application::TestAction_Tool1()    { std::cout << "[ACTION] Tool 1"    << std::endl; }
-void Application::TestAction_Tool2()    { std::cout << "[ACTION] Tool 2"    << std::endl; }
-void Application::TestAction_Zone1()    { std::cout << "[ACTION] Zone 1"    << std::endl; }
-void Application::TestAction_Zone2()    { std::cout << "[ACTION] Zone 2"    << std::endl; }
+// ── Default Actions ──────────────────────────────────────────────────────────
+void Application::Action_NewFile()  { std::cout << "[ACTION] New File"  << std::endl; }
+void Application::Action_OpenFile() { std::cout << "[ACTION] Open File" << std::endl; }
+void Application::Action_SaveFile() { std::cout << "[ACTION] Save File" << std::endl; }
+void Application::Action_Zone1()    { std::cout << "[ACTION] Zone 1"    << std::endl; }
+void Application::Action_Zone2()    { std::cout << "[ACTION] Zone 2"    << std::endl; }
+void Application::Action_ThemePreviewCycle() {
+    std::cout << "[ACTION] Theme Preview Cycle" << std::endl;
+}
+
+void Application::Action_Quit() {
+    std::cout << "[ACTION] Quit" << std::endl;
+    running_ = false;
+}
+void Application::Action_ToggleSettings() {
+    showSettings_ = !showSettings_;
+}
+void Application::Action_ToggleImGuiDemo() {
+    showImGuiDemo_ = !showImGuiDemo_;
+}
+void Application::Action_ActivateTool1() {
+    Shortcuts::Tools::ToolManager::Instance().SetActiveTool("tool.brush");
+    std::cout << "[ACTION] Activate Tool: brush" << std::endl;
+}
+void Application::Action_ActivateTool2() {
+    Shortcuts::Tools::ToolManager::Instance().SetActiveTool("tool.eraser");
+    std::cout << "[ACTION] Activate Tool: eraser" << std::endl;
+}
+void Application::Action_CycleTool() {
+    Shortcuts::Tools::ToolManager::Instance().CycleNext();
+    std::cout << "[ACTION] Cycle Tool → "
+              << Shortcuts::Tools::ToolManager::Instance().GetActiveTool()
+              << std::endl;
+}
 
 } // namespace App

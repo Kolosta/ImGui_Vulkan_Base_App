@@ -3,6 +3,7 @@
 #include <Shortcuts/ShortcutManager.h>
 #include <imgui.h>
 #include <string>
+#include <map>
 
 namespace UI {
 
@@ -10,40 +11,58 @@ class ShortcutEditor {
 public:
     ShortcutEditor();
 
-    // Fenêtre autonome (conservée pour usage standalone éventuel).
+    /** Standalone window. */
     void Render(bool* p_open = nullptr);
 
-    // Contenu seul — utilisé à l'intérieur de la fenêtre Paramètres.
+    /** Embedded inside another window (e.g. Settings -> Shortcuts). */
     void RenderContent();
 
-    // Popup de capture — doit être appelé après le End() de la fenêtre parente.
-    void RenderCapturePopup();
+    /** No-op kept for API compatibility (was the popup renderer). */
+    void RenderCapturePopup() {}
 
 private:
-    void RenderActionList();
-    void RenderActionDetails();
-    void RenderConflictDetection();
-    void RenderShortcutCapture();
+    void RenderToolbar();
+    void RenderTreePane();
+    void RenderDetailPane();
+    void RenderConflictsList();
+    void RenderAdvancedEditorFor(const std::string& actionId,
+                                 Shortcuts::EventSignature& sig,
+                                 int bindingIndex);
 
-    void StartCapture(const std::string& actionId, int bindingIndex);
-    void StopCapture();
-    bool CaptureInput(Shortcuts::KeyCombination& outKey);
+    void DrawTreeForCategory(Shortcuts::ActionCategory cat);
+    void DrawActionLeaf(const Shortcuts::Action* action);
 
-    void RenderShortcutButton(const std::string& label,
-                              const Shortcuts::KeyCombination& key,
-                              const std::string& actionId,
-                              int bindingIndex);
-
+    // selection
     std::string selectedActionId_;
-    Shortcuts::ShortcutZone filterZone_;
-    bool showConflicts_;
-    char searchBuffer_[256];
 
-    bool capturing_;
-    std::string capturingActionId_;
-    int capturingBindingIndex_;
-    Shortcuts::KeyCombination capturedKey_;
-    bool keyCaptured_;
+    // filters
+    char  searchBuf_[256];
+    bool  showConflicts_       = false;
+    bool  showOnlyOverridden_  = false;
+
+    // advanced editor target binding (-1 = none / -2 = pending new binding)
+    int   advancedBindingIndex_ = -1;
+    Shortcuts::EventSignature advancedDraft_;
+
+    // ── Pending edits & rejection state ─────────────────────────────────
+    // For each (actionId|index) we may keep:
+    //   pendingDraft_ : the user's in-progress signature, even when the
+    //                   resolver refuses to commit it (dangerous binding).
+    //   pendingError_ : the human-readable reason from IsDangerousBinding()
+    //                   so the row keeps showing the error until the user
+    //                   makes the binding safe again.
+    struct PendingEdit {
+        Shortcuts::EventSignature draft;
+        std::string error;
+        bool active = false;
+    };
+    std::map<std::string, PendingEdit> pendingEdits_;
+    std::string PendingKey(const std::string& actionId, int index) const {
+        return actionId + "|" + std::to_string(index);
+    }
+
+    // tree expansion state for ImGui (key by category)
+    bool categoryOpen_[10] = { true, true, true, true, true, true, true, true, true, true };
 };
 
 } // namespace UI

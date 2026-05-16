@@ -7,12 +7,15 @@
 
 #include <UI/TokenEditor.h>
 #include <UI/ShortcutEditor.h>
+#include <UI/StatusBar.h>
 #include <VectorGraphics/editors/IconEditorWindow.h>
 
 namespace App {
 
 class Application {
 public:
+    static constexpr const char* kVersion = "v0.1.0";
+
     Application();
     ~Application();
 
@@ -31,13 +34,14 @@ private:
     void SetupVulkanWindow();
     void InitializeSubsystems();
     void LoadResources();
-    void RegisterTestShortcuts();
+    void RegisterDefaultShortcuts();
 
     // Layout (ApplicationUI.cpp)
     void RenderMainMenuBar();
     void RenderMainLayout();
     void RenderToolbar();
     void RenderMainContent();
+    void RenderStatusBar();
 
     // Content sections — inline, no Begin/End (ApplicationWindows.cpp)
     void RenderSectionIconTestLab();
@@ -50,15 +54,19 @@ private:
     void RenderFloatingWindows();
     void RenderSettings();
 
-    // Test actions
-    static void TestAction_NewFile();
-    static void TestAction_OpenFile();
-    static void TestAction_SaveFile();
-    static void TestAction_Quit();
-    static void TestAction_Tool1();
-    static void TestAction_Tool2();
-    static void TestAction_Zone1();
-    static void TestAction_Zone2();
+    // Default actions
+    static void Action_NewFile();
+    static void Action_OpenFile();
+    static void Action_SaveFile();
+    void Action_Quit();
+    void Action_ToggleSettings();
+    void Action_ToggleImGuiDemo();
+    static void Action_Zone1();
+    static void Action_Zone2();
+    static void Action_ThemePreviewCycle();
+    void Action_ActivateTool1();
+    void Action_ActivateTool2();
+    void Action_CycleTool();
 
     // Core
     SDL_Window* window_    = nullptr;
@@ -86,6 +94,9 @@ private:
     DesignSystem::TokenEditor        tokenEditor_;
     UI::ShortcutEditor               shortcutEditor_;
     VectorGraphics::IconEditorWindow iconEditor_;
+
+    // Singleton-self for non-static actions (callbacks captured by lambda).
+    static Application* s_instance_;
 };
 
 } // namespace App

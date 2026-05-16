@@ -405,19 +405,36 @@ void DesignSystem::ApplyGlobalStyle() {
         style.PopupRounding  = GetFloat("component.popup.radius")  * effectiveScale;
         style.GrabRounding   = GetFloat("component.grab.radius")   * effectiveScale;
 
+        // Combos/inputs need a visible border so they read against panels
+        // that share their background family.  Driven by tokens, clamped
+        // so a 1px border survives uiScale < 1.
+        float frameBorderPx = 1.0f;
+        try { frameBorderPx = GetFloat("component.frame.borderSize"); } catch (...) {}
+        float popupBorderPx = 1.0f;
+        try { popupBorderPx = GetFloat("component.popup.borderSize"); } catch (...) {}
+        style.FrameBorderSize = ScaleThinLine(frameBorderPx, uiScale);
+        style.PopupBorderSize = ScaleThinLine(popupBorderPx, uiScale);
+
         ImVec2 fp          = GetVec2("component.frame.padding");
         style.FramePadding = ImVec2(fp.x * effectiveScale, fp.y * effectiveScale);
 
         ImVec4* colors = style.Colors;
-        colors[ImGuiCol_WindowBg]       = GetColor("semantic.color.background");
-        colors[ImGuiCol_ChildBg]        = GetColor("semantic.color.surface");
-        colors[ImGuiCol_FrameBg]        = GetColor("component.frame.background");
-        colors[ImGuiCol_FrameBgHovered] = GetColor("component.frame.background");
-        colors[ImGuiCol_FrameBgActive]  = GetColor("component.frame.background");
-        colors[ImGuiCol_Button]         = GetColor("component.button.background");
-        colors[ImGuiCol_ButtonHovered]  = GetColor("component.button.background");
-        colors[ImGuiCol_ButtonActive]   = GetColor("component.button.background");
-        colors[ImGuiCol_Text]           = GetColor("semantic.color.text");
+        colors[ImGuiCol_WindowBg]        = GetColor("semantic.color.background");
+        colors[ImGuiCol_ChildBg]         = GetColor("semantic.color.surface");
+        colors[ImGuiCol_PopupBg]         = GetColor("component.popup.background");
+        colors[ImGuiCol_Border]          = GetColor("component.frame.border");
+        colors[ImGuiCol_FrameBg]         = GetColor("component.frame.background");
+        colors[ImGuiCol_FrameBgHovered]  = GetColor("component.frame.backgroundHover");
+        colors[ImGuiCol_FrameBgActive]   = GetColor("component.frame.backgroundActive");
+        colors[ImGuiCol_Button]          = GetColor("component.button.background");
+        colors[ImGuiCol_ButtonHovered]   = GetColor("component.button.background");
+        colors[ImGuiCol_ButtonActive]    = GetColor("component.button.background");
+        colors[ImGuiCol_Text]            = GetColor("semantic.color.text");
+        // Combo arrow button + header rows follow the frame family so the
+        // dropdown affordance is subtle (no solid blue fill).
+        colors[ImGuiCol_Header]          = GetColor("component.frame.background");
+        colors[ImGuiCol_HeaderHovered]   = GetColor("component.frame.backgroundHover");
+        colors[ImGuiCol_HeaderActive]    = GetColor("component.frame.backgroundActive");
 
     } catch (...) {
         // Tokens may not exist yet during first initialization pass.

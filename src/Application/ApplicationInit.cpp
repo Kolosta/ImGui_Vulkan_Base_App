@@ -4,6 +4,8 @@
 #include <SDL3/SDL_vulkan.h>
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ShortcutManager.h>
+#include <Shortcuts/EventNormalizer.h>
+#include <Shortcuts/ToolManager.h>
 #include <UI/FontManager.h>
 #include <VectorGraphics/IconManager.h>
 #include <iostream>
@@ -86,7 +88,7 @@ bool Application::Initialize() {
 
     InitializeSubsystems();
     LoadResources();
-    RegisterTestShortcuts();
+    RegisterDefaultShortcuts();
 
     ImGui_ImplSDL3_InitForVulkan(window_);
     ImGui_ImplVulkan_InitInfo init_info = {};
@@ -268,6 +270,8 @@ void Application::SetupVulkanWindow() {
 
 void Application::InitializeSubsystems() {
     DesignSystem::DesignSystem::Instance().Initialize(mainScale_);
+    Shortcuts::Tools::ToolManager::Instance().Initialize();
+    Shortcuts::EventNormalizer::Instance().Initialize();
     Shortcuts::ShortcutManager::Instance().Initialize();
 
     UI::FontManager::Instance().Initialize(mainScale_);
@@ -285,40 +289,126 @@ void Application::LoadResources() {
     VectorGraphics::IconManager::Instance().LoadCompiledIcons();
 }
 
-void Application::RegisterTestShortcuts() {
-    auto& sm = Shortcuts::ShortcutManager::Instance();
-    
-    sm.RegisterAction(Shortcuts::Action("action.new", "New File", 
-        Shortcuts::ShortcutZone::Global, TestAction_NewFile));
-    sm.SetBinding("action.new", {{Shortcuts::KeyCombination(ImGuiKey_N, true, false, false)}});
-    
-    sm.RegisterAction(Shortcuts::Action("action.open", "Open File",
-        Shortcuts::ShortcutZone::Global, TestAction_OpenFile));
-    sm.SetBinding("action.open", {{Shortcuts::KeyCombination(ImGuiKey_O, true, false, false)}});
-    
-    sm.RegisterAction(Shortcuts::Action("action.save", "Save File",
-        Shortcuts::ShortcutZone::Global, TestAction_SaveFile));
-    sm.SetBinding("action.save", {{Shortcuts::KeyCombination(ImGuiKey_S, true, false, false)}});
-    
-    sm.RegisterAction(Shortcuts::Action("action.quit", "Quit",
-        Shortcuts::ShortcutZone::Global, TestAction_Quit));
-    sm.SetBinding("action.quit", {{Shortcuts::KeyCombination(ImGuiKey_Q, true, false, false)}});
-    
-    sm.RegisterAction(Shortcuts::Action("tool.1", "Tool 1",
-        Shortcuts::ShortcutZone::Toolbar, TestAction_Tool1));
-    sm.SetBinding("tool.1", {{Shortcuts::KeyCombination(ImGuiKey_1, true, false, false)}});
-    
-    sm.RegisterAction(Shortcuts::Action("tool.2", "Tool 2",
-        Shortcuts::ShortcutZone::Toolbar, TestAction_Tool2));
-    sm.SetBinding("tool.2", {{Shortcuts::KeyCombination(ImGuiKey_2, true, false, false)}});
-    
-    sm.RegisterAction(Shortcuts::Action("zone1.action", "Zone 1 Action",
-        Shortcuts::ShortcutZone::TestZone1, TestAction_Zone1, true));
-    sm.SetBinding("zone1.action", {{Shortcuts::KeyCombination(ImGuiKey_A, true, false, false)}});
-    
-    sm.RegisterAction(Shortcuts::Action("zone2.action", "Zone 2 Action",
-        Shortcuts::ShortcutZone::TestZone2, TestAction_Zone2, true));
-    sm.SetBinding("zone2.action", {{Shortcuts::KeyCombination(ImGuiKey_A, true, false, false)}});
+void Application::RegisterDefaultShortcuts() {
+    using namespace Shortcuts;
+    auto& sm = ShortcutManager::Instance();
+    auto& tm = Tools::ToolManager::Instance();
+
+    auto sigKey = [](ImGuiKey key, bool ctrl=false, bool shift=false, bool alt=false) {
+        EventSignature s;
+        s.type = EventType::KeyPress;
+        s.key  = key;
+        s.modifiers.ctrl = ctrl;
+        s.modifiers.shift = shift;
+        s.modifiers.alt  = alt;
+        return s;
+    };
+
+    // ── Application ──────────────────────────────────────────────────────────
+    {
+        Action a;
+        a.id = "app.quit";
+        a.name = "Quit";
+        a.description = "Close the application";
+        a.category = ActionCategory::Application;
+        a.callback = [this]{ Action_Quit(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_Q, true) });
+    }
+    {
+        Action a;
+        a.id = "app.toggleSettings";
+        a.name = "Toggle Settings";
+        a.description = "Show or hide the Settings window";
+        a.category = ActionCategory::Application;
+        a.callback = [this]{ Action_ToggleSettings(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_F1) });
+    }
+
+    // ── File ─────────────────────────────────────────────────────────────────
+    {
+        Action a; a.id = "file.new"; a.name = "New File"; a.description = "Create a new file";
+        a.category = ActionCategory::File; a.callback = &Application::Action_NewFile;
+        sm.RegisterAction(a, { sigKey(ImGuiKey_N, true) });
+    }
+    {
+        Action a; a.id = "file.open"; a.name = "Open File"; a.description = "Open an existing file";
+        a.category = ActionCategory::File; a.callback = &Application::Action_OpenFile;
+        sm.RegisterAction(a, { sigKey(ImGuiKey_O, true) });
+    }
+    {
+        Action a; a.id = "file.save"; a.name = "Save File"; a.description = "Save the current file";
+        a.category = ActionCategory::File; a.callback = &Application::Action_SaveFile;
+        sm.RegisterAction(a, { sigKey(ImGuiKey_S, true) });
+    }
+
+    // ── View ─────────────────────────────────────────────────────────────────
+    {
+        Action a; a.id = "view.toggleDemo"; a.name = "ImGui Demo";
+        a.description = "Show the ImGui demo window";
+        a.category = ActionCategory::View;
+        a.callback = [this]{ Action_ToggleImGuiDemo(); };
+        // F12 conflicte parfois avec des hotkeys système (devtools, etc.) :
+        // par défaut on prend Ctrl+Shift+D, plus sûr.
+        sm.RegisterAction(a, { sigKey(ImGuiKey_D, /*ctrl=*/true, /*shift=*/true) });
+    }
+
+    // ── Tools ────────────────────────────────────────────────────────────────
+    tm.RegisterTool({"tool.brush",  "Brush Tool", "tool1", {"tool.brush.activate"}});
+    tm.RegisterTool({"tool.eraser", "Eraser Tool", "tool2", {"tool.eraser.activate"}});
+
+    {
+        Action a; a.id = "tool.brush.activate"; a.name = "Activate Brush";
+        a.description = "Activate the brush tool";
+        a.category = ActionCategory::Tool;
+        a.callback = [this]{ Action_ActivateTool1(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_1) });
+    }
+    {
+        Action a; a.id = "tool.eraser.activate"; a.name = "Activate Eraser";
+        a.description = "Activate the eraser tool";
+        a.category = ActionCategory::Tool;
+        a.callback = [this]{ Action_ActivateTool2(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_2) });
+    }
+    {
+        Action a; a.id = "tool.cycleNext"; a.name = "Next Tool";
+        a.description = "Switch to the next tool in the toolbar";
+        a.category = ActionCategory::Tool;
+        a.requiredContext.region = "toolbar";
+        a.callback = [this]{ Action_CycleTool(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_Tab) });
+    }
+
+    // ── Zone-specific actions (same key, different editors) ──────────────────
+    {
+        Action a; a.id = "edit.themePreview.cycle"; a.name = "Cycle Theme";
+        a.description = "Cycle through themes (active in the Theme Preview area)";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "themePreview";
+        a.callback = &Application::Action_ThemePreviewCycle;
+        sm.RegisterAction(a, { sigKey(ImGuiKey_T) });
+    }
+    {
+        Action a; a.id = "edit.testZone1.action"; a.name = "Zone 1 Action";
+        a.description = "Action scoped to test zone 1";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "testZone1";
+        a.callback = &Application::Action_Zone1;
+        sm.RegisterAction(a, { sigKey(ImGuiKey_A) });
+    }
+    {
+        Action a; a.id = "edit.testZone2.action"; a.name = "Zone 2 Action";
+        a.description = "Action scoped to test zone 2";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "testZone2";
+        a.callback = &Application::Action_Zone2;
+        sm.RegisterAction(a, { sigKey(ImGuiKey_A) });
+    }
+
+    // re-save once after registering everything so freshly added defaults
+    // are persisted (Load happened before Register, so defaults are missing
+    // from disk on first run).
+    sm.Save();
 }
 
 void Application::Shutdown() {
@@ -327,6 +417,7 @@ void Application::Shutdown() {
 
     DesignSystem::DesignSystem::Instance().Shutdown();
     Shortcuts::ShortcutManager::Instance().Shutdown();
+    Shortcuts::Tools::ToolManager::Instance().Shutdown();
     VectorGraphics::IconManager::Instance().Shutdown();
 
     vkDestroyCommandPool(device_, commandPool_, g_Allocator);
