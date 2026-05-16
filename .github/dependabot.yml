@@ -1,24 +1,34 @@
 version: 2
 updates:
   # Rust dependencies of the resvg-bindings / icon_compiler crate.
+  # Grouped into a single monthly PR per ecosystem to avoid PR spam;
+  # one grouped PR is still atomically revertable.
   - package-ecosystem: "cargo"
     directory: "/src/tools/resvg-bindings"
     schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
+      interval: "monthly"
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "deps"
     labels:
       - "dependencies"
+    groups:
+      cargo:
+        patterns:
+          - "*"
 
   # GitHub Actions used by the CI workflow.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 5
+      interval: "monthly"
+    open-pull-requests-limit: 3
     commit-message:
       prefix: "chore"
     labels:
       - "dependencies"
       - "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
