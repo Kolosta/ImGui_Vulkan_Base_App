@@ -1,0 +1,51 @@
+{
+  // Portable tasks: everything goes through CMake presets so there are no
+  // machine-specific paths here. Per-developer overrides live in the
+  // gitignored CMakeUserPresets.json. Override CMAKE_PRESET below if you
+  // use a custom local preset.
+  "version": "2.0.0",
+  "options": {
+    "env": {
+      "CMAKE_PRESET": "default"
+    }
+  },
+  "tasks": [
+    {
+      "label": "CMake: Configure",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--preset", "${env:CMAKE_PRESET}"],
+      "problemMatcher": [],
+      "detail": "Configure the project with the selected CMake preset."
+    },
+    {
+      "label": "CMake: Build",
+      "type": "shell",
+      "command": "cmake",
+      "args": ["--build", "--preset", "${env:CMAKE_PRESET}", "-j"],
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"],
+      "detail": "Build (configures first if needed via the preset)."
+    },
+    {
+      "label": "CMake: Clean rebuild",
+      "type": "shell",
+      "command": "cmake",
+      "args": [
+        "--build", "--preset", "${env:CMAKE_PRESET}",
+        "--target", "clean"
+      ],
+      "problemMatcher": [],
+      "detail": "Run the build system's clean target."
+    },
+    {
+      "label": "Run: Carto",
+      "type": "shell",
+      "command": "${workspaceFolder}/out/build/${env:CMAKE_PRESET}/Carto.exe",
+      "options": { "cwd": "${workspaceFolder}/out/build/${env:CMAKE_PRESET}" },
+      "dependsOn": "CMake: Build",
+      "problemMatcher": [],
+      "detail": "Build then launch the executable from its output dir."
+    }
+  ]
+}
