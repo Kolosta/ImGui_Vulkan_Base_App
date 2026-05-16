@@ -19,6 +19,13 @@ concurrency:
 permissions:
   contents: read
 
+# NOTE: We deliberately do NOT set FORCE_JAVASCRIPT_ACTIONS_TO_NODE24.
+# The actions/* actions are already on Node-24-capable majors
+# (checkout@v6, cache@v5, upload-artifact@v7); forcing Node 24 globally
+# crashes actions/cache@v5 during restore. The only remaining Node-20
+# action is jakoch/install-vulkan-sdk-action@v1, whose deprecation
+# warning is harmless until the June 2026 cutoff.
+
 jobs:
   build:
     name: Build (Windows · MinGW64)
