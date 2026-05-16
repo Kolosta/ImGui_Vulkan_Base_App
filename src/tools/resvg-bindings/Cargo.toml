@@ -12,7 +12,7 @@ name = "icon_compiler"
 path = "src/icon_compiler_main.rs"
 
 [dependencies]
-resvg = "0.42"
+resvg = "0.47"
 usvg = "0.47"
 tiny-skia = "0.12"
 roxmltree = "0.21"
