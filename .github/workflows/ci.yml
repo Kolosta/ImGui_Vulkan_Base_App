@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # ── Rust (gnu target, ABI-matching MinGW) ────────────────────────────
       # Installed first so it is on the Windows PATH ($GITHUB_PATH) before
