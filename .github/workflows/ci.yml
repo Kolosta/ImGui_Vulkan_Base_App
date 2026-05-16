@@ -1,0 +1,137 @@
+name: CI
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+# • workflow_dispatch : manual run from ANY branch (Actions tab → Run workflow)
+# • pull_request → main : every PR targeting main must pass this
+# • push → main          : guards direct/merge commits landing on main
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Cancel superseded runs on the same ref (e.g. new push to a PR branch).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (Windows · MinGW64)
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        # Run every step inside the MSYS2 mingw64 shell so gcc/g++/cmake/
+        # mingw32-make are all on PATH and ABI-consistent with the Rust
+        # x86_64-pc-windows-gnu target.
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Rust (gnu target, ABI-matching MinGW) ────────────────────────────
+      # Installed first so it is on the Windows PATH ($GITHUB_PATH) before
+      # the MSYS2 shell is set up with `path-type: inherit` below.
+      - name: Setup Rust (x86_64-pc-windows-gnu)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
+      # ── MSYS2 toolchain (GCC + CMake + Make) ─────────────────────────────
+      # path-type: inherit makes the MSYS2 shell inherit the full Windows
+      # PATH, so `cargo` (installed by rust-toolchain) is reachable from
+      # the same shell that runs cmake/make.
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          path-type: inherit
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-make
+            git
+
+      # ── Vulkan SDK (headers + loader for find_package(Vulkan)) ───────────
+      - name: Install Vulkan SDK
+        uses: jakoch/install-vulkan-sdk-action@v1
+        with:
+          install_runtime: true
+          cache: true
+
+      # ── Caches ───────────────────────────────────────────────────────────
+      - name: Cache CMake FetchContent (_deps)
+        uses: actions/cache@v4
+        with:
+          path: out/build/ci/_deps
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: |
+            deps-${{ runner.os }}-
+
+      # rust-toolchain uses the default cargo home (USERPROFILE\.cargo on
+      # Windows runners). Cache its registry/git plus the project's
+      # cargo build dir for resvg-bindings.
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            out/build/ci/src/VectorGraphics/resvg-lib
+          key: cargo-${{ runner.os }}-${{ hashFiles('src/tools/resvg-bindings/Cargo.toml') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-
+
+      # ── Configure ────────────────────────────────────────────────────────
+      # With path-type: inherit the MSYS2 shell already has cargo on PATH
+      # (installed by rust-toolchain on the Windows side).
+      - name: Configure (CMake preset 'ci')
+        run: |
+          cargo --version
+          cmake --version
+          cmake --preset ci
+
+      # ── Build ────────────────────────────────────────────────────────────
+      - name: Build
+        run: |
+          cmake --build --preset ci -j
+
+      # ── Smoke check: required build outputs must exist ───────────────────
+      - name: Smoke check
+        run: |
+          set -e
+          EXE="out/build/ci/Carto.exe"
+          ICON="out/build/ci/src/VectorGraphics/generated/IconData.h"
+          DLL="out/build/ci/resvg_c.dll"
+          fail=0
+          for f in "$EXE" "$ICON" "$DLL"; do
+            if [ -f "$f" ]; then
+              echo "OK   $f"
+            else
+              echo "MISS $f"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::Build produced an incomplete output set"
+            exit 1
+          fi
+
+      # ── Artifact (debugging / manual download) ───────────────────────────
+      - name: Upload build artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carto-windows-mingw64
+          path: |
+            out/build/ci/Carto.exe
+            out/build/ci/*.dll
+          if-no-files-found: error
+          retention-days: 14

@@ -1,29 +1,44 @@
 {
     "version": 8,
+    "cmakeMinimumRequired": {
+        "major": 3,
+        "minor": 22,
+        "patch": 0
+    },
     "configurePresets": [
         {
-            "name": "GCC 15.2.0 x86_64-w64-mingw32 (mingw64)",
-            "displayName": "GCC 15.2.0 x86_64-w64-mingw32 (mingw64)",
-            "description": "Using compilers: C = C:\\msys64\\mingw64\\bin\\gcc.exe, CXX = C:\\msys64\\mingw64\\bin\\g++.exe",
+            "name": "default",
+            "displayName": "Default (MinGW Makefiles, portable)",
+            "description": "Portable preset: gcc/g++ resolved from PATH (MSYS2 mingw64). No machine-specific paths. Override locally via CMakeUserPresets.json.",
             "generator": "MinGW Makefiles",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
-                "CMAKE_C_COMPILER": "C:/msys64/mingw64/bin/gcc.exe",
-                "CMAKE_CXX_COMPILER": "C:/msys64/mingw64/bin/g++.exe",
-                "CMAKE_BUILD_TYPE": "Debug",
-
-                "CMAKE_TOOLCHAIN_FILE": "D:/Projets/Code/libs/vcpkg/scripts/buildsystems/vcpkg.cmake",
-                "VCPKG_TARGET_TRIPLET": "x64-mingw-dynamic"
+                "CMAKE_C_COMPILER": "gcc",
+                "CMAKE_CXX_COMPILER": "g++",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "ci",
+            "inherits": "default",
+            "displayName": "CI (GitHub Actions)",
+            "description": "Used by .github/workflows/ci.yml. Identical to default; kept separate so CI intent is explicit and the local 'default' can be overridden freely.",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug"
             }
         }
     ],
     "buildPresets": [
         {
-            "name": "build-debug",
-            "displayName": "Build Debug",
-            "description": "Compile en mode Debug avec GCC",
-            "configurePreset": "GCC 15.2.0 x86_64-w64-mingw32 (mingw64)"
+            "name": "default",
+            "displayName": "Build (Debug)",
+            "configurePreset": "default"
+        },
+        {
+            "name": "ci",
+            "displayName": "CI Build (Debug)",
+            "configurePreset": "ci"
         }
     ]
 }

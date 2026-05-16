@@ -23,6 +23,10 @@ CMakeFiles/
 cmake_install.cmake
 Makefile
 
+# ── Machine-local CMake presets (absolute toolchain/vcpkg paths) ──────────────
+# CMakePresets.json is portable and tracked; per-developer overrides go here.
+CMakeUserPresets.json
+
 # ── OS metadata ───────────────────────────────────────────────────────────────
 .DS_Store
 Thumbs.db

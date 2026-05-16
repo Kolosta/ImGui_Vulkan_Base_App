@@ -1,0 +1,24 @@
+version: 2
+updates:
+  # Rust dependencies of the resvg-bindings / icon_compiler crate.
+  - package-ecosystem: "cargo"
+    directory: "/src/tools/resvg-bindings"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
+
+  # GitHub Actions used by the CI workflow.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "chore"
+    labels:
+      - "dependencies"
+      - "ci"
