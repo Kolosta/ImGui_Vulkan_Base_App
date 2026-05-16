@@ -19,4 +19,4 @@ roxmltree = "0.20"
 walkdir = "2.4"
 
 [build-dependencies]
-cbindgen = "0.26"
+cbindgen = "0.29"
