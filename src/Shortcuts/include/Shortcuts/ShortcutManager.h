@@ -1,362 +1,144 @@
-// #pragma once
-
-// #include <string>
-// #include <vector>
-// #include <map>
-// #include <set>
-// #include <functional>
-// #include <optional>
-// #include <imgui.h>
-
-// namespace DesignSystem {
-
-// /**
-//  * Zone d'application pour les shortcuts
-//  * Hiérarchie: Global > Zone spécifique
-//  */
-// enum class ShortcutZone {
-//     Global,           // Partout dans l'application
-//     Toolbar,          // Barre d'outils
-//     DesignExample,    // Zone Design System Example
-//     ThemePreview,     // Zone Theme Preview
-//     TestZone1,        // Zone de test 1
-//     TestZone2,        // Zone de test 2
-//     TokenEditor,      // Token Editor window
-//     ShortcutEditor    // Shortcut Editor window
-// };
-
-// inline std::string ShortcutZoneToString(ShortcutZone zone) {
-//     switch (zone) {
-//         case ShortcutZone::Global: return "Global";
-//         case ShortcutZone::Toolbar: return "Toolbar";
-//         case ShortcutZone::DesignExample: return "Design Example";
-//         case ShortcutZone::ThemePreview: return "Theme Preview";
-//         case ShortcutZone::TestZone1: return "Test Zone 1";
-//         case ShortcutZone::TestZone2: return "Test Zone 2";
-//         case ShortcutZone::TokenEditor: return "Token Editor";
-//         case ShortcutZone::ShortcutEditor: return "Shortcut Editor";
-//         default: return "Unknown";
-//     }
-// }
-
-// /**
-//  * Représente une combinaison de touches
-//  */
-// struct KeyCombination {
-//     ImGuiKey key = ImGuiKey_None;
-//     bool ctrl = false;
-//     bool shift = false;
-//     bool alt = false;
-    
-//     KeyCombination() = default;
-//     KeyCombination(ImGuiKey k, bool c = false, bool s = false, bool a = false)
-//         : key(k), ctrl(c), shift(s), alt(a) {}
-    
-//     bool operator==(const KeyCombination& other) const {
-//         return key == other.key && ctrl == other.ctrl && 
-//                shift == other.shift && alt == other.alt;
-//     }
-    
-//     bool operator<(const KeyCombination& other) const {
-//         if (key != other.key) return key < other.key;
-//         if (ctrl != other.ctrl) return ctrl < other.ctrl;
-//         if (shift != other.shift) return shift < other.shift;
-//         return alt < other.alt;
-//     }
-    
-//     std::string ToString() const;
-//     bool IsPressed() const;
-// };
-
-// /**
-//  * Action exécutable par un shortcut
-//  */
-// struct Action {
-//     std::string id;                         // Identifiant unique
-//     std::string name;                       // Nom affiché
-//     ShortcutZone zone;                      // Zone d'application
-//     bool allowPriorityOverride = false;     // Permet override prioritaire
-//     std::function<void()> callback;         // Fonction à exécuter
-    
-//     Action(const std::string& id, const std::string& name, ShortcutZone zone,
-//            std::function<void()> cb, bool allowOverride = false)
-//         : id(id), name(name), zone(zone), callback(cb), allowPriorityOverride(allowOverride) {}
-// };
-
-// /**
-//  * Shortcut bindings pour une action
-//  */
-// struct ShortcutBinding {
-//     std::string actionId;
-//     std::vector<KeyCombination> keys;        // Plusieurs shortcuts possibles
-//     std::vector<KeyCombination> defaultKeys; // Shortcuts par défaut
-    
-//     ShortcutBinding() = default;
-//     ShortcutBinding(const std::string& id, const std::vector<KeyCombination>& k)
-//         : actionId(id), keys(k), defaultKeys(k) {}
-        
-//     void RestoreDefaults() { keys = defaultKeys; }
-// };
-
-// /**
-//  * Conflit de shortcut détecté
-//  */
-// struct ShortcutConflict {
-//     KeyCombination combination;
-//     std::string actionId1;
-//     std::string actionId2;
-//     ShortcutZone zone1;
-//     ShortcutZone zone2;
-//     bool isResolvable;  // True si zones différentes et non-parentes
-// };
-
-// /**
-//  * Gestionnaire centralisé des shortcuts
-//  */
-// class ShortcutManager {
-// public:
-//     static ShortcutManager& Instance();
-    
-//     /**
-//      * Enregistrement d'actions
-//      */
-//     void RegisterAction(const Action& action);
-//     void UnregisterAction(const std::string& actionId);
-    
-//     /**
-//      * Gestion des bindings
-//      */
-//     void SetBinding(const std::string& actionId, const std::vector<KeyCombination>& keys);
-//     void AddBinding(const std::string& actionId, const KeyCombination& key);
-//     void RemoveBinding(const std::string& actionId, const KeyCombination& key);
-//     void RestoreDefaultBindings(const std::string& actionId);
-    
-//     /**
-//      * Détection de conflits
-//      */
-//     std::vector<ShortcutConflict> DetectConflicts() const;
-//     bool HasConflict(const std::string& actionId, const KeyCombination& key) const;
-    
-//     /**
-//      * Traitement des inputs (à appeler chaque frame)
-//      */
-//     void ProcessInput(ShortcutZone currentZone);
-    
-//     /**
-//      * Récupération d'informations
-//      */
-//     const Action* GetAction(const std::string& actionId) const;
-//     const ShortcutBinding* GetBinding(const std::string& actionId) const;
-//     std::vector<const Action*> GetActionsForZone(ShortcutZone zone) const;
-//     std::string GetShortcutString(const std::string& actionId) const; // Premier shortcut
-    
-//     /**
-//      * Sauvegarde/Chargement
-//      */
-//     void SaveBindings();
-//     void LoadBindings();
-    
-// private:
-//     ShortcutManager() = default;
-    
-//     bool ZoneConflicts(ShortcutZone z1, ShortcutZone z2) const;
-//     bool IsParentZone(ShortcutZone parent, ShortcutZone child) const;
-    
-//     std::map<std::string, Action> actions_;
-//     std::map<std::string, ShortcutBinding> bindings_;
-// };
-
-// } // namespace DesignSystem
-
-
-
 #pragma once
 
+#include <Shortcuts/Event.h>
+#include <Shortcuts/ShortcutContext.h>
+#include <Shortcuts/Action.h>
+#include <Shortcuts/ModalSession.h>
+
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
-#include <map>
-#include <set>
-#include <functional>
-#include <optional>
-#include <imgui.h>
 
 namespace Shortcuts {
 
 /**
- * Zone d'application pour les shortcuts
- * Déterminée par la position de la souris, pas par la fenêtre active
- */
-enum class ShortcutZone {
-    Global,           // Partout dans l'application
-    Toolbar,          // Barre d'outils
-    DesignExample,    // Zone Design System Example
-    ThemePreview,     // Zone Theme Preview
-    TestZone1,        // Zone de test 1
-    TestZone2,        // Zone de test 2
-    TokenEditor,      // Token Editor window
-    ShortcutEditor    // Shortcut Editor window
-};
-
-inline std::string ShortcutZoneToString(ShortcutZone zone) {
-    switch (zone) {
-        case ShortcutZone::Global: return "Global";
-        case ShortcutZone::Toolbar: return "Toolbar";
-        case ShortcutZone::DesignExample: return "Design Example";
-        case ShortcutZone::ThemePreview: return "Theme Preview";
-        case ShortcutZone::TestZone1: return "Test Zone 1";
-        case ShortcutZone::TestZone2: return "Test Zone 2";
-        case ShortcutZone::TokenEditor: return "Token Editor";
-        case ShortcutZone::ShortcutEditor: return "Shortcut Editor";
-        default: return "Unknown";
-    }
-}
-
-/**
- * Représente une combinaison de touches
- */
-struct KeyCombination {
-    ImGuiKey key = ImGuiKey_None;
-    bool ctrl = false;
-    bool shift = false;
-    bool alt = false;
-    
-    KeyCombination() = default;
-    KeyCombination(ImGuiKey k, bool c = false, bool s = false, bool a = false)
-        : key(k), ctrl(c), shift(s), alt(a) {}
-    
-    bool operator==(const KeyCombination& other) const {
-        return key == other.key && ctrl == other.ctrl && 
-               shift == other.shift && alt == other.alt;
-    }
-    
-    bool operator<(const KeyCombination& other) const {
-        if (key != other.key) return key < other.key;
-        if (ctrl != other.ctrl) return ctrl < other.ctrl;
-        if (shift != other.shift) return shift < other.shift;
-        return alt < other.alt;
-    }
-    
-    std::string ToString() const;
-    bool IsPressed() const;
-    bool IsValid() const;
-};
-
-/**
- * Action exécutable par un shortcut
- */
-struct Action {
-    std::string id;
-    std::string name;
-    ShortcutZone zone;
-    bool allowPriorityOverride = false;
-    std::function<void()> callback;
-    
-    Action(const std::string& id, const std::string& name, ShortcutZone zone,
-           std::function<void()> cb, bool allowOverride = false)
-        : id(id), name(name), zone(zone), callback(cb), allowPriorityOverride(allowOverride) {}
-};
-
-/**
- * Shortcut bindings pour une action
- */
-struct ShortcutBinding {
-    std::string actionId;
-    std::vector<KeyCombination> keys;
-    std::vector<KeyCombination> defaultKeys;
-    
-    ShortcutBinding() = default;
-    ShortcutBinding(const std::string& id, const std::vector<KeyCombination>& k)
-        : actionId(id), keys(k), defaultKeys(k) {}
-        
-    void RestoreDefaults() { keys = defaultKeys; }
-};
-
-/**
- * Conflit de shortcut détecté
+ * Conflict descriptor produced by DetectConflicts() and HasConflict().
+ *
+ *   isHard = true  : same key in fully overlapping context (will collide
+ *                    every frame - shown red in editor)
+ *   isHard = false : overlap is partial (one context is more specific or
+ *                    has a different region) - shown yellow as warning
  */
 struct ShortcutConflict {
-    KeyCombination combination;
+    EventSignature signature;
     std::string actionId1;
     std::string actionId2;
-    ShortcutZone zone1;
-    ShortcutZone zone2;
-    bool isResolvable;
+    ShortcutContext context1;
+    ShortcutContext context2;
+    bool isHard = false;
 };
 
-/**
- * Gestionnaire centralisé des shortcuts avec persistance
- */
 class ShortcutManager {
 public:
     static ShortcutManager& Instance();
-    
-    /**
-     * Initialisation et persistence
-     */
+
+    // ─── Lifecycle ────────────────────────────────────────────────────────
     void Initialize();
     void Shutdown();
-    
-    /**
-     * Enregistrement d'actions
-     */
-    void RegisterAction(const Action& action);
+
+    // ─── Action registry ──────────────────────────────────────────────────
+    void RegisterAction(const Action& action,
+                        const std::vector<EventSignature>& defaultBindings = {});
     void UnregisterAction(const std::string& actionId);
-    
-    /**
-     * Gestion des bindings
-     */
-    void SetBinding(const std::string& actionId, const std::vector<KeyCombination>& keys);
-    void AddBinding(const std::string& actionId, const KeyCombination& key);
-    void RemoveBinding(const std::string& actionId, const KeyCombination& key);
-    void RestoreDefaultBindings(const std::string& actionId);
-    
-    /**
-     * Détection de conflits
-     */
-    std::vector<ShortcutConflict> DetectConflicts() const;
-    bool HasConflict(const std::string& actionId, const KeyCombination& key) const;
-    
-    /**
-     * Traitement des inputs (à appeler chaque frame)
-     * Détecte automatiquement la zone basée sur la position de la souris
-     */
-    void ProcessInput();
-    
-    /**
-     * Enregistrer la zone d'une fenêtre ImGui
-     * Appeler dans ImGui::Begin() de chaque fenêtre
-     */
-    void RegisterWindowZone(const char* windowName, ShortcutZone zone);
-    
-    /**
-     * Récupération d'informations
-     */
+
     const Action* GetAction(const std::string& actionId) const;
+    std::vector<const Action*> GetAllActions() const;
+    std::vector<const Action*> GetActionsByCategory(ActionCategory cat) const;
+    std::vector<const Action*> GetActionsForContext(const ShortcutContext& ctx) const;
+
+    // ─── Bindings ─────────────────────────────────────────────────────────
     const ShortcutBinding* GetBinding(const std::string& actionId) const;
-    std::vector<const Action*> GetActionsForZone(ShortcutZone zone) const;
+    void SetBindings(const std::string& actionId, const std::vector<EventSignature>& sigs);
+    void AddBinding (const std::string& actionId, const EventSignature& sig);
+    void RemoveBinding(const std::string& actionId, const EventSignature& sig);
+    void RestoreDefaults(const std::string& actionId);
+    void RestoreAllDefaults();
+
+    /**
+     * Restore the original default value of binding `index` while leaving
+     * other custom bindings intact.  Behaviour:
+     *   - if index < defaults.size() and index < current.size():
+     *       overwrite current[index] with defaults[index]
+     *   - if index < defaults.size() but index >= current.size():
+     *       append defaults[index]
+     *   - otherwise: do nothing (no default to restore at that slot)
+     */
+    void RestoreBindingAt(const std::string& actionId, int index);
+    void SetEnabled(const std::string& actionId, bool enabled);
+    /** Toggle a single shortcut entry within the action's binding list. */
+    void SetEntryEnabled(const std::string& actionId, int index, bool enabled);
+
+    /** First binding rendered as a string ("Ctrl+S" etc.). Empty if none. */
     std::string GetShortcutString(const std::string& actionId) const;
-    
+    /** Full list of bindings as ToString() for displaying multi-shortcut actions. */
+    std::vector<std::string> GetShortcutStrings(const std::string& actionId) const;
+
+    // ─── Conflict detection ───────────────────────────────────────────────
+    std::vector<ShortcutConflict> DetectConflicts() const;
+    /** Conflicts that would occur if `candidate` were added to actionId. */
+    std::vector<ShortcutConflict> CheckCandidate(const std::string& actionId,
+                                                 const EventSignature& candidate) const;
+
+    /**
+     * Validate that the candidate event signature is safe to bind on the
+     * given action.  Returns an empty string when the binding is allowed.
+     * Returns a human-readable reason when it is not (e.g. "Left mouse
+     * press without modifiers would block all UI interaction").  Actions
+     * with `allowUnsafeMouseBindings = true` bypass the check.
+     */
+    std::string IsDangerousBinding(const std::string& actionId,
+                                   const EventSignature& candidate) const;
+
+    // ─── Per-frame ────────────────────────────────────────────────────────
+    /** Called by Application after EventNormalizer::Frame(). Updates context,
+     *  drains the event queue and dispatches matching actions. */
+    void ProcessInput();
+
+    /** Region/editor scope helper, called during the render pass of each panel.
+     *  Updates currentContext_ when the calling window is hovered. */
+    void RegisterRegionContext(const char* windowName,
+                               const std::string& editorId,
+                               const std::string& regionId = "content");
+
+    /** Force the editor/region for this frame regardless of hover (for popups). */
+    void SetCurrentContext(const ShortcutContext& ctx) { currentContext_ = ctx; }
+    const ShortcutContext& GetCurrentContext() const { return currentContext_; }
+
+    /** Called once per frame by Application before any panel renders, to clear
+     *  the per-frame "best hover" state and pull tool from ToolManager. */
+    void BeginFrame();
+
+    // ─── Modal stack ──────────────────────────────────────────────────────
+    void PushModal(std::unique_ptr<ModalSession> session);
+    void PopModal();
+    ModalSession* TopModal() const;
+
+    // ─── Status-bar helpers ───────────────────────────────────────────────
+    /** Up to `maxCount` most relevant actions to display, sorted by
+     *  context specificity desc then category. */
+    std::vector<const Action*> GetStatusBarActions(int maxCount = 5) const;
+
+    // ─── Persistence (manual; auto-saved on every mutation) ───────────────
+    void Save();
+    void Load();
+
 private:
     ShortcutManager() = default;
-    ShortcutZone currentZone_ = ShortcutZone::Global;
-    
-    bool ZoneConflicts(ShortcutZone z1, ShortcutZone z2) const;
-    bool IsParentZone(ShortcutZone parent, ShortcutZone child) const;
-    
-    /**
-     * Détection de zone basée sur la souris
-     */
-    ShortcutZone DetectCurrentZone() const;
-    
-    /**
-     * Persistance
-     */
-    void SaveBindings();
-    void LoadBindings();
-    
-    std::map<std::string, Action> actions_;
+
+    bool DispatchEvent(const Event& observedEvent);
+    void NotifyChanged();
+
+    // storage
+    std::map<std::string, Action>          actions_;
     std::map<std::string, ShortcutBinding> bindings_;
-    std::map<std::string, ShortcutZone> windowZones_;
+    ShortcutContext                        currentContext_;
+    int                                    bestHoverSpecificity_ = 0;
+    std::vector<std::unique_ptr<ModalSession>> modalStack_;
+
+    // persistence
+    static constexpr uint32_t kMagic   = 0x53484354; // "SHCT"
+    static constexpr uint32_t kVersion = 6;
 };
 
 } // namespace Shortcuts

@@ -40,7 +40,7 @@ Resolution order: `Override (global > theme-scoped) → Token default → Refere
 
 ### Shortcuts (`src/Shortcuts/`)
 
-Zone-based keyboard management. Each action belongs to a `ShortcutZone` (spatial region inferred from mouse position). `ShortcutManager` handles conflict detection and persists bindings to `shortcuts.dat`.
+Blender-inspired hierarchical shortcut engine. A 5-level context (window → editor → region → mode → tool) determines which actions are active. `EventNormalizer` drains ImGui IO into typed events (Press/Release/Click/Drag×8/Wheel) each frame. `ShortcutManager` resolves the highest-specificity matching action and persists bindings to `shortcuts.dat` (binary format v3). `ToolManager` tracks the active tool and feeds the context's `tool` field.
 
 ### VectorGraphics (`src/VectorGraphics/`)
 
@@ -49,6 +49,22 @@ SVG icons are rasterized at runtime by `resvg` (Rust, exposed via C FFI in `src/
 ### UI (`src/UI/`)
 
 Stateless ImGui components — `TokenEditor`, `ShortcutEditor`, `FontManager` — that render into the docking layout. No independent state; they read from and write to the singletons above.
+
+## Language
+
+**Respond to the user in French.** All conversational replies, explanations, and questions to the user must be written in French.
+
+Everything *in the codebase and product*, however, **must be in English**: all UI-visible text (button labels, menu items, tooltips, window titles, action names, action descriptions, status bar strings, error messages), all source code, all comments, and all commit messages. Do not write French strings anywhere in source files.
+
+## Styling — Design System Tokens (CRITICAL)
+
+Any work that touches visual style **must go through design-system tokens**. Never hard-code colors, sizes, radii, paddings, font scales, or border widths as literals in UI code.
+
+- Resolve every style value via `DesignSystem::Instance().GetColor/GetFloat/GetVec2(...)` on a token name.
+- Respect the three-tier hierarchy: **Primitive → Semantic → Component**. A semantic token may reference another semantic token; a component token may reference a semantic or another component token. Add a new token at the right tier rather than inlining a value.
+- If a needed token does not exist, **create it** (in `TokenRegistry.cpp`, with a description and an appropriate `ValueConstraint`) or reuse an existing one — do not bypass the system with a literal.
+- Fallback literals are permitted *only* inside the `SafeColor/SafeFloat/SafeVec2` try/catch helpers, as the last-resort default if a token is missing. The token is still the source of truth.
+- New reusable UI widgets must read all of their dimensions/colors from tokens so themes stay coherent and overridable at runtime.
 
 ## Key Patterns
 
@@ -120,6 +136,11 @@ Omit the scope for cross-cutting changes (e.g. a refactor touching three subsyst
 - Breaking changes: add `!` after type/scope (`feat(ui)!:`) and include a `BREAKING CHANGE:` footer.
 - One logical change per commit. Fix A and add B → two commits.
 - Do not commit generated files (`IconData.h`, `resvg_c.h`) or runtime state (`design_system.bin`, `imgui.ini`, `shortcuts.dat`).
+
+### Claude-specific commit rules (CRITICAL)
+
+- **Never** add `Co-Authored-By: Claude ...` or any self-referencing attribution to commit messages.
+- **Never** commit after making code changes without an explicit user request to do so. Always wait for the user to ask before running `git commit`.
 
 ### Examples
 

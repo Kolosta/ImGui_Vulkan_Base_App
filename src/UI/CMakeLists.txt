@@ -4,6 +4,10 @@ add_library(UI STATIC
     src/FontManager.cpp
     src/TokenEditor.cpp
     src/ShortcutEditor.cpp
+    src/KeyCap.cpp
+    src/StatusBar.cpp
+    src/ShortcutCaptureField.cpp
+    src/ButtonGroup.cpp
 )
 
 target_include_directories(UI
@@ -17,5 +21,6 @@ target_include_directories(UI
 target_link_libraries(UI PUBLIC
     DesignSystem
     Shortcuts
+    VectorGraphics
     Vulkan::Vulkan
 )

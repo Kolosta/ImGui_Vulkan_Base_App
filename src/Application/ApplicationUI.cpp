@@ -1,7 +1,9 @@
 #include "Application.h"
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ShortcutManager.h>
+#include <Shortcuts/ToolManager.h>
 #include <VectorGraphics/IconManager.h>
+#include <UI/StatusBar.h>
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cmath>
@@ -16,26 +18,31 @@ void Application::RenderMainMenuBar() {
     auto& sm = Shortcuts::ShortcutManager::Instance();
 
     if (ImGui::BeginMenu("File")) {
-        if (ImGui::MenuItem("New",  sm.GetShortcutString("action.new").c_str()))
-            TestAction_NewFile();
-        if (ImGui::MenuItem("Open", sm.GetShortcutString("action.open").c_str()))
-            TestAction_OpenFile();
-        if (ImGui::MenuItem("Save", sm.GetShortcutString("action.save").c_str()))
-            TestAction_SaveFile();
+        if (ImGui::MenuItem("New",  sm.GetShortcutString("file.new").c_str()))
+            Action_NewFile();
+        if (ImGui::MenuItem("Open", sm.GetShortcutString("file.open").c_str()))
+            Action_OpenFile();
+        if (ImGui::MenuItem("Save", sm.GetShortcutString("file.save").c_str()))
+            Action_SaveFile();
         ImGui::Separator();
-        if (ImGui::MenuItem("Quit", sm.GetShortcutString("action.quit").c_str()))
-            TestAction_Quit();
+        if (ImGui::MenuItem("Quit", sm.GetShortcutString("app.quit").c_str()))
+            Action_Quit();
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Edit")) {
-        if (ImGui::MenuItem("Paramètres", nullptr, showSettings_))
-            showSettings_ = !showSettings_;
+        if (ImGui::MenuItem("Paramètres",
+                            sm.GetShortcutString("app.toggleSettings").c_str(),
+                            showSettings_))
+            Action_ToggleSettings();
         ImGui::EndMenu();
     }
 
     if (ImGui::BeginMenu("Windows")) {
-        ImGui::MenuItem("ImGui Demo", nullptr, &showImGuiDemo_);
+        if (ImGui::MenuItem("ImGui Demo",
+                            sm.GetShortcutString("view.toggleDemo").c_str(),
+                            showImGuiDemo_))
+            Action_ToggleImGuiDemo();
         ImGui::EndMenu();
     }
 
@@ -66,22 +73,39 @@ void Application::RenderMainLayout() {
     ImGui::Begin("##MainLayout", nullptr, kFlags);
     ImGui::PopStyleVar(3);
 
-    RenderToolbar();
+    // Reserve space for the bottom status bar
+    const float statusBarHeight = UI::StatusBar::Height();
+    const float layoutHeight = ImGui::GetWindowHeight() - statusBarHeight;
 
-    {
-        ImDrawList* dl   = ImGui::GetWindowDrawList();
-        ImVec2      wPos = ImGui::GetWindowPos();
-        float       sepX = wPos.x + toolbarWidth_;
-        float       top  = wPos.y;
-        float       bot  = top + ImGui::GetWindowHeight();
-        dl->AddLine(ImVec2(sepX, top), ImVec2(sepX, bot),
-                    ImGui::GetColorU32(ImGuiCol_Separator));
+    if (ImGui::BeginChild("##LayoutBody",
+                          ImVec2(0.0f, layoutHeight),
+                          false,
+                          ImGuiWindowFlags_NoScrollbar |
+                          ImGuiWindowFlags_NoScrollWithMouse)) {
+        RenderToolbar();
+
+        {
+            ImDrawList* dl   = ImGui::GetWindowDrawList();
+            ImVec2      wPos = ImGui::GetWindowPos();
+            float       sepX = wPos.x + toolbarWidth_;
+            float       top  = wPos.y;
+            float       bot  = top + ImGui::GetWindowHeight();
+            dl->AddLine(ImVec2(sepX, top), ImVec2(sepX, bot),
+                        ImGui::GetColorU32(ImGuiCol_Separator));
+        }
+
+        ImGui::SameLine(0.0f, 1.0f);
+        RenderMainContent();
     }
+    ImGui::EndChild();
 
-    ImGui::SameLine(0.0f, 1.0f);
-    RenderMainContent();
+    RenderStatusBar();
 
     ImGui::End();
+}
+
+void Application::RenderStatusBar() {
+    UI::StatusBar::Render(kVersion);
 }
 
 // ── Left toolbar ──────────────────────────────────────────────────────────────
@@ -121,13 +145,14 @@ void Application::RenderToolbar() {
                           ImGuiWindowFlags_NoScrollbar |
                           ImGuiWindowFlags_NoScrollWithMouse))
     {
-        Shortcuts::ShortcutManager::Instance().RegisterWindowZone(
-            "##Toolbar", Shortcuts::ShortcutZone::Toolbar);
+        Shortcuts::ShortcutManager::Instance().RegisterRegionContext(
+            "##Toolbar", "", "toolbar");
 
         ImVec4 accentColor = ImVec4(0.3f, 0.5f, 0.9f, 1.0f);
         try { accentColor = ds.GetColor("semantic.color.primary"); } catch (...) {}
 
-        static int selectedTool = -1;
+        auto& tm = Shortcuts::Tools::ToolManager::Instance();
+        const auto& activeTool = tm.GetActiveTool();
 
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,  ImVec2(0.0f, 0.0f));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 6.0f * globalScale);
@@ -161,6 +186,7 @@ void Application::RenderToolbar() {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             ImGui::SetCursorPosY(kSpacing);
 
+            auto& sm = Shortcuts::ShortcutManager::Instance();
             for (int i = 0; i < kNumTools; ++i) {
                 int col = i % numCols;
                 if (col == 0)
@@ -168,8 +194,11 @@ void Application::RenderToolbar() {
                 else
                     ImGui::SameLine(0.0f, kSpacing);
 
-                const int  toolId     = i + 1;
-                const bool isSelected = (selectedTool == toolId);
+                const int  toolId   = i + 1;
+                std::string toolKey = (toolId == 1) ? "tool.brush"
+                                     : (toolId == 2) ? "tool.eraser"
+                                     : std::string();
+                const bool isSelected = !toolKey.empty() && (toolKey == activeTool);
 
                 ImGui::PushID(i);
 
@@ -180,14 +209,20 @@ void Application::RenderToolbar() {
                 }
 
                 if (ImGui::Button("##tool", ImVec2(kButtonSize, kButtonSize))) {
-                    selectedTool = toolId;
-                    if (toolId == 1)      TestAction_Tool1();
-                    else if (toolId == 2) TestAction_Tool2();
+                    if (toolId == 1)      Action_ActivateTool1();
+                    else if (toolId == 2) Action_ActivateTool2();
                 }
 
                 if (ImGui::IsItemHovered()) {
                     ImGui::BeginTooltip();
                     ImGui::Text("Tool %d", toolId);
+                    if (toolId == 1) {
+                        std::string sc = sm.GetShortcutString("tool.brush.activate");
+                        if (!sc.empty()) ImGui::TextDisabled("Raccourci: %s", sc.c_str());
+                    } else if (toolId == 2) {
+                        std::string sc = sm.GetShortcutString("tool.eraser.activate");
+                        if (!sc.empty()) ImGui::TextDisabled("Raccourci: %s", sc.c_str());
+                    }
                     ImGui::TextDisabled("Click to activate");
                     ImGui::TextDisabled("Right-click for options");
                     ImGui::EndTooltip();
@@ -232,10 +267,16 @@ void Application::RenderToolbar() {
 
         ImGui::PushID("settings");
         if (ImGui::Button("##settings", ImVec2(kButtonSize, kButtonSize))) {
-            showSettings_ = !showSettings_;
+            Action_ToggleSettings();
         }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Paramètres");
+        if (ImGui::IsItemHovered()) {
+            ImGui::BeginTooltip();
+            ImGui::Text("Paramètres");
+            std::string sc = Shortcuts::ShortcutManager::Instance()
+                                 .GetShortcutString("app.toggleSettings");
+            if (!sc.empty()) ImGui::TextDisabled("Raccourci: %s", sc.c_str());
+            ImGui::EndTooltip();
+        }
 
         {
             const float  iconSz  = kButtonSize * 0.60f;
