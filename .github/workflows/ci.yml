@@ -24,6 +24,12 @@ jobs:
     name: Build (Windows · MinGW64)
     runs-on: windows-latest
 
+    # Pin CARGO_HOME up-front so it is identical across every context:
+    # the Windows-side cache action and the MSYS2 shell (via cygpath).
+    # dtolnay/rust-toolchain honours a pre-set CARGO_HOME.
+    env:
+      CARGO_HOME: ${{ github.workspace }}\.cargo
+
     defaults:
       run:
         # Run every step inside the MSYS2 mingw64 shell so gcc/g++/cmake/
@@ -72,21 +78,27 @@ jobs:
           restore-keys: |
             deps-${{ runner.os }}-
 
+      # CARGO_HOME is pinned at job level (Windows path under the
+      # workspace), so this cache key is stable and matches what the
+      # MSYS2 build step resolves via cygpath.
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            ${{ env.CARGO_HOME }}/registry
+            ${{ env.CARGO_HOME }}/git
             out/build/ci/src/VectorGraphics/resvg-lib
           key: cargo-${{ runner.os }}-${{ hashFiles('src/tools/resvg-bindings/Cargo.toml') }}
           restore-keys: |
             cargo-${{ runner.os }}-
 
       # ── Configure ────────────────────────────────────────────────────────
+      # rust-toolchain installs cargo under a Windows path ($CARGO_HOME,
+      # e.g. C:\Users\runneradmin\.cargo). Convert it to an MSYS2 POSIX
+      # path with cygpath so `cargo` is found inside the msys2 shell.
       - name: Configure (CMake preset 'ci')
         run: |
-          export PATH="$USERPROFILE/.cargo/bin:$PATH"
+          export PATH="$(cygpath -u "$CARGO_HOME")/bin:$PATH"
           cargo --version
           cmake --version
           cmake --preset ci
@@ -94,7 +106,7 @@ jobs:
       # ── Build ────────────────────────────────────────────────────────────
       - name: Build
         run: |
-          export PATH="$USERPROFILE/.cargo/bin:$PATH"
+          export PATH="$(cygpath -u "$CARGO_HOME")/bin:$PATH"
           cmake --build --preset ci -j
 
       # ── Smoke check: required build outputs must exist ───────────────────
