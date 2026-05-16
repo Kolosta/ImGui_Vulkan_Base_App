@@ -68,7 +68,7 @@ jobs:
 
       # ── Caches ───────────────────────────────────────────────────────────
       - name: Cache CMake FetchContent (_deps)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: out/build/ci/_deps
           key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
@@ -79,7 +79,7 @@ jobs:
       # Windows runners). Cache its registry/git plus the project's
       # cargo build dir for resvg-bindings.
       - name: Cache Cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
