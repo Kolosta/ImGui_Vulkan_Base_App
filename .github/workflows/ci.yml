@@ -24,12 +24,6 @@ jobs:
     name: Build (Windows · MinGW64)
     runs-on: windows-latest
 
-    # Pin CARGO_HOME up-front so it is identical across every context:
-    # the Windows-side cache action and the MSYS2 shell (via cygpath).
-    # dtolnay/rust-toolchain honours a pre-set CARGO_HOME.
-    env:
-      CARGO_HOME: ${{ github.workspace }}\.cargo
-
     defaults:
       run:
         # Run every step inside the MSYS2 mingw64 shell so gcc/g++/cmake/
@@ -41,26 +35,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # ── Rust (gnu target, ABI-matching MinGW) ────────────────────────────
+      # Installed first so it is on the Windows PATH ($GITHUB_PATH) before
+      # the MSYS2 shell is set up with `path-type: inherit` below.
+      - name: Setup Rust (x86_64-pc-windows-gnu)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnu
+
       # ── MSYS2 toolchain (GCC + CMake + Make) ─────────────────────────────
+      # path-type: inherit makes the MSYS2 shell inherit the full Windows
+      # PATH, so `cargo` (installed by rust-toolchain) is reachable from
+      # the same shell that runs cmake/make.
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
           msystem: MINGW64
           update: true
+          path-type: inherit
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-make
             git
-
-      # ── Rust (gnu target, ABI-matching MinGW) ────────────────────────────
-      # Installed on the Windows side; the resvg-bindings build invokes
-      # `cargo` which CMake finds via PATH. setup-msys2 prepends MSYS to
-      # PATH, so we expose cargo explicitly in the build step.
-      - name: Setup Rust (x86_64-pc-windows-gnu)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-gnu
 
       # ── Vulkan SDK (headers + loader for find_package(Vulkan)) ───────────
       - name: Install Vulkan SDK
@@ -78,27 +75,25 @@ jobs:
           restore-keys: |
             deps-${{ runner.os }}-
 
-      # CARGO_HOME is pinned at job level (Windows path under the
-      # workspace), so this cache key is stable and matches what the
-      # MSYS2 build step resolves via cygpath.
+      # rust-toolchain uses the default cargo home (USERPROFILE\.cargo on
+      # Windows runners). Cache its registry/git plus the project's
+      # cargo build dir for resvg-bindings.
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.CARGO_HOME }}/registry
-            ${{ env.CARGO_HOME }}/git
+            ~/.cargo/registry
+            ~/.cargo/git
             out/build/ci/src/VectorGraphics/resvg-lib
           key: cargo-${{ runner.os }}-${{ hashFiles('src/tools/resvg-bindings/Cargo.toml') }}
           restore-keys: |
             cargo-${{ runner.os }}-
 
       # ── Configure ────────────────────────────────────────────────────────
-      # rust-toolchain installs cargo under a Windows path ($CARGO_HOME,
-      # e.g. C:\Users\runneradmin\.cargo). Convert it to an MSYS2 POSIX
-      # path with cygpath so `cargo` is found inside the msys2 shell.
+      # With path-type: inherit the MSYS2 shell already has cargo on PATH
+      # (installed by rust-toolchain on the Windows side).
       - name: Configure (CMake preset 'ci')
         run: |
-          export PATH="$(cygpath -u "$CARGO_HOME")/bin:$PATH"
           cargo --version
           cmake --version
           cmake --preset ci
@@ -106,7 +101,6 @@ jobs:
       # ── Build ────────────────────────────────────────────────────────────
       - name: Build
         run: |
-          export PATH="$(cygpath -u "$CARGO_HOME")/bin:$PATH"
           cmake --build --preset ci -j
 
       # ── Smoke check: required build outputs must exist ───────────────────
