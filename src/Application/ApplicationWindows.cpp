@@ -509,7 +509,7 @@
 namespace App {
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Sections inline (pas de Begin/End propre — rendues dans RenderMainContent)
+//  Inline content sections (no Begin/End - rendered inside RenderMainContent)
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Application::RenderSectionIconTestLab() {
@@ -592,8 +592,8 @@ void Application::RenderSectionDesignExample() {
                       ImGuiWindowFlags_None);
     ImGui::PopStyleVar();
 
-    Shortcuts::ShortcutManager::Instance().RegisterWindowZone(
-        "DesignExampleZone", Shortcuts::ShortcutZone::DesignExample);
+    Shortcuts::ShortcutManager::Instance().RegisterRegionContext(
+        "DesignExampleZone", "designExample", "content");
 
     ImGui::TextUnformatted("This section uses the Design System!");
 
@@ -622,10 +622,17 @@ void Application::RenderSectionThemePreview() {
                       ImGuiWindowFlags_None);
     ImGui::PopStyleVar();
 
-    Shortcuts::ShortcutManager::Instance().RegisterWindowZone(
-        "ThemePreviewZone", Shortcuts::ShortcutZone::ThemePreview);
+    Shortcuts::ShortcutManager::Instance().RegisterRegionContext(
+        "ThemePreviewZone", "themePreview", "content");
+
+    auto& sm = Shortcuts::ShortcutManager::Instance();
+    std::string sc = sm.GetShortcutString("edit.themePreview.cycle");
 
     ImGui::TextUnformatted("Preview with current context");
+    if (!sc.empty()) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("(%s to cycle)", sc.c_str());
+    }
     ImGui::Separator();
 
     auto& ds = DesignSystem::DesignSystem::Instance();
@@ -667,14 +674,20 @@ void Application::RenderSectionTestZone1() {
                       ImGuiWindowFlags_None);
     ImGui::PopStyleVar();
 
-    Shortcuts::ShortcutManager::Instance().RegisterWindowZone(
-        "TestZone1Child", Shortcuts::ShortcutZone::TestZone1);
+    Shortcuts::ShortcutManager::Instance().RegisterRegionContext(
+        "TestZone1Child", "testZone1", "content");
 
-    ImGui::TextUnformatted("Shortcuts active when this zone is focused.");
-    ImGui::TextUnformatted("Press Ctrl+A to trigger Zone 1 action.");
+    auto& smZ1 = Shortcuts::ShortcutManager::Instance();
+    std::string scZ1 = smZ1.GetShortcutString("edit.testZone1.action");
+
+    ImGui::TextUnformatted("Shortcuts active when this area is hovered.");
+    if (!scZ1.empty())
+        ImGui::Text("Press %s to trigger the Zone 1 action.", scZ1.c_str());
 
     if (ImGui::Button("Trigger Zone 1 Action"))
-        TestAction_Zone1();
+        Action_Zone1();
+    if (ImGui::IsItemHovered() && !scZ1.empty())
+        ImGui::SetTooltip("Shortcut: %s", scZ1.c_str());
 
     ImGui::EndChild();
     ImGui::Spacing();
@@ -688,22 +701,28 @@ void Application::RenderSectionTestZone2() {
                       ImGuiWindowFlags_None);
     ImGui::PopStyleVar();
 
-    Shortcuts::ShortcutManager::Instance().RegisterWindowZone(
-        "TestZone2Child", Shortcuts::ShortcutZone::TestZone2);
+    Shortcuts::ShortcutManager::Instance().RegisterRegionContext(
+        "TestZone2Child", "testZone2", "content");
 
-    ImGui::TextUnformatted("Shortcuts active when this zone is focused.");
-    ImGui::TextUnformatted("Press Ctrl+A for Zone 2 action.");
-    ImGui::TextUnformatted("(same shortcut as Zone 1, different action)");
+    auto& smZ2 = Shortcuts::ShortcutManager::Instance();
+    std::string scZ2 = smZ2.GetShortcutString("edit.testZone2.action");
+
+    ImGui::TextUnformatted("Shortcuts active when this area is hovered.");
+    if (!scZ2.empty())
+        ImGui::Text("Press %s for the Zone 2 action.", scZ2.c_str());
+    ImGui::TextUnformatted("(same key as Zone 1, different action - resolved by context)");
 
     if (ImGui::Button("Trigger Zone 2 Action"))
-        TestAction_Zone2();
+        Action_Zone2();
+    if (ImGui::IsItemHovered() && !scZ2.empty())
+        ImGui::SetTooltip("Shortcut: %s", scZ2.c_str());
 
     ImGui::EndChild();
     ImGui::Spacing();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Fenêtres flottantes
+//  Floating windows
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Application::RenderFloatingWindows() {
@@ -715,13 +734,7 @@ void Application::RenderFloatingWindows() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Fenêtre "Paramètres" — trois éditeurs en onglets
-//
-//  • NoDocking : ne peut pas être dockée dans une autre fenêtre, ni accepter
-//    qu'une autre se docke en elle.
-//  • Pas de NoMove : peut être déplacée hors de la fenêtre principale si
-//    ImGuiConfigFlags_ViewportsEnable est activé dans ApplicationInit.cpp.
-//  • La croix de fermeture est fournie par ImGui via &showSettings_.
+//  Settings window - three editors in tabs
 // ─────────────────────────────────────────────────────────────────────────────
 
 void Application::RenderSettings() {
@@ -731,14 +744,13 @@ void Application::RenderSettings() {
     constexpr ImGuiWindowFlags kFlags =
         ImGuiWindowFlags_NoDocking;
 
-    if (!ImGui::Begin("Paramètres", &showSettings_, kFlags)) {
+    if (!ImGui::Begin("Settings", &showSettings_, kFlags)) {
         ImGui::End();
         return;
     }
 
     if (ImGui::BeginTabBar("##SettingsTabs")) {
 
-        // ── Onglet Design System ──────────────────────────────────────────
         if (ImGui::BeginTabItem("Design System")) {
             auto& ds = DesignSystem::DesignSystem::Instance();
             tokenEditor_.RenderContent(ds.GetCurrentContext(),
@@ -746,14 +758,12 @@ void Application::RenderSettings() {
             ImGui::EndTabItem();
         }
 
-        // ── Onglet Raccourcis ─────────────────────────────────────────────
-        if (ImGui::BeginTabItem("Raccourcis")) {
+        if (ImGui::BeginTabItem("Shortcuts")) {
             shortcutEditor_.RenderContent();
             ImGui::EndTabItem();
         }
 
-        // ── Onglet Icônes ─────────────────────────────────────────────────
-        if (ImGui::BeginTabItem("Icônes")) {
+        if (ImGui::BeginTabItem("Icons")) {
             iconEditor_.RenderContent();
             ImGui::EndTabItem();
         }
@@ -763,8 +773,6 @@ void Application::RenderSettings() {
 
     ImGui::End();
 
-    // Le popup de capture de raccourci doit être rendu hors du Begin/End
-    // de la fenêtre principale pour que ImGui le positionne correctement.
     shortcutEditor_.RenderCapturePopup();
 }
 
