@@ -42,6 +42,32 @@ void TokenValue::SetFloat(float value) { type_ = ValueType::Float; value_ = valu
 void TokenValue::SetInt(int value) { type_ = ValueType::Int; value_ = value; }
 void TokenValue::SetVec2(const ImVec2& vec) { type_ = ValueType::Vec2; value_ = vec; }
 void TokenValue::SetReference(const std::string& tokenId) { type_ = ValueType::Reference; value_ = tokenId; }
+void TokenValue::SetRatio(float fraction) { type_ = ValueType::Ratio; value_ = fraction; }
+void TokenValue::SetBezier(const ImVec4& cp) { type_ = ValueType::Bezier; value_ = cp; }
+void TokenValue::SetTextStyle(const TextStyleRefs& refs) { type_ = ValueType::TextStyle; value_ = refs; }
+void TokenValue::SetFontFamily(const std::string& name) { type_ = ValueType::FontFamily; value_ = name; }
+
+TokenValue TokenValue::MakeRatio(float fraction) { TokenValue v; v.SetRatio(fraction); return v; }
+TokenValue TokenValue::MakeBezier(const ImVec4& cp) { TokenValue v; v.SetBezier(cp); return v; }
+TokenValue TokenValue::MakeTextStyle(const TextStyleRefs& refs) { TokenValue v; v.SetTextStyle(refs); return v; }
+TokenValue TokenValue::MakeFontFamily(const std::string& name) { TokenValue v; v.SetFontFamily(name); return v; }
+
+float TokenValue::AsRatio() const {
+    if (type_ != ValueType::Ratio) throw std::runtime_error("Not a Ratio");
+    return std::get<float>(value_);
+}
+ImVec4 TokenValue::AsBezier() const {
+    if (type_ != ValueType::Bezier) throw std::runtime_error("Not a Bezier");
+    return std::get<ImVec4>(value_);
+}
+TextStyleRefs TokenValue::AsTextStyle() const {
+    if (type_ != ValueType::TextStyle) throw std::runtime_error("Not a TextStyle");
+    return std::get<TextStyleRefs>(value_);
+}
+std::string TokenValue::AsFontFamily() const {
+    if (type_ != ValueType::FontFamily) throw std::runtime_error("Not a FontFamily");
+    return std::get<std::string>(value_);
+}
 
 /**
  * Properly compares values using std::visit.
@@ -99,6 +125,33 @@ void TokenValue::WriteToBinary(std::ostream& out) const {
             out.write(str.data(), len);
             break;
         }
+        case ValueType::Ratio: {
+            float f = std::get<float>(value_);
+            out.write(reinterpret_cast<const char*>(&f), sizeof(float));
+            break;
+        }
+        case ValueType::Bezier: {
+            ImVec4 c = std::get<ImVec4>(value_);
+            out.write(reinterpret_cast<const char*>(&c), sizeof(ImVec4));
+            break;
+        }
+        case ValueType::TextStyle: {
+            const TextStyleRefs& t = std::get<TextStyleRefs>(value_);
+            auto wr = [&](const std::string& s) {
+                uint32_t len = static_cast<uint32_t>(s.length());
+                out.write(reinterpret_cast<const char*>(&len), sizeof(uint32_t));
+                out.write(s.data(), len);
+            };
+            wr(t.family); wr(t.size); wr(t.weight); wr(t.lineHeight); wr(t.tracking);
+            break;
+        }
+        case ValueType::FontFamily: {
+            const std::string& str = std::get<std::string>(value_);
+            uint32_t len = static_cast<uint32_t>(str.length());
+            out.write(reinterpret_cast<const char*>(&len), sizeof(uint32_t));
+            out.write(str.data(), len);
+            break;
+        }
     }
 }
 
@@ -130,6 +183,36 @@ TokenValue TokenValue::ReadFromBinary(std::istream& in, ValueType type) {
             std::string str(len, '\0');
             in.read(&str[0], len);
             return TokenValue(str);
+        }
+        case ValueType::Ratio: {
+            float value;
+            in.read(reinterpret_cast<char*>(&value), sizeof(float));
+            return TokenValue::MakeRatio(value);
+        }
+        case ValueType::Bezier: {
+            ImVec4 cp;
+            in.read(reinterpret_cast<char*>(&cp), sizeof(ImVec4));
+            return TokenValue::MakeBezier(cp);
+        }
+        case ValueType::TextStyle: {
+            auto rd = [&]() {
+                uint32_t len;
+                in.read(reinterpret_cast<char*>(&len), sizeof(uint32_t));
+                std::string s(len, '\0');
+                in.read(&s[0], len);
+                return s;
+            };
+            TextStyleRefs t;
+            t.family = rd(); t.size = rd(); t.weight = rd();
+            t.lineHeight = rd(); t.tracking = rd();
+            return TokenValue::MakeTextStyle(t);
+        }
+        case ValueType::FontFamily: {
+            uint32_t len;
+            in.read(reinterpret_cast<char*>(&len), sizeof(uint32_t));
+            std::string str(len, '\0');
+            in.read(&str[0], len);
+            return TokenValue::MakeFontFamily(str);
         }
     }
     return TokenValue();

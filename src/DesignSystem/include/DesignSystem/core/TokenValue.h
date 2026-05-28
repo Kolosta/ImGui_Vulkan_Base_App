@@ -10,9 +10,24 @@
 
 namespace DesignSystem {
 
+/// A composite text style: each field is a token id (reference) that supplies
+/// one typographic axis. Resolved lazily by the consumer (font system).
+struct TextStyleRefs {
+    std::string family;
+    std::string size;
+    std::string weight;
+    std::string lineHeight;
+    std::string tracking;
+    bool operator==(const TextStyleRefs& o) const {
+        return family == o.family && size == o.size && weight == o.weight &&
+               lineHeight == o.lineHeight && tracking == o.tracking;
+    }
+};
+
 /**
- * Type-safe value storage supporting Color, Float, Int, Vec2, and Reference types.
- * Uses std::variant for efficient storage and binary serialization for fast I/O.
+ * Type-safe value storage. Variants: Color, Float, Int, Vec2, Reference, plus
+ * Ratio (float fraction), Bezier (ImVec4 = 4 control points) and TextStyle
+ * (5 token-id refs). Binary serialization for fast I/O.
  */
 class TokenValue {
 public:
@@ -22,10 +37,16 @@ public:
     explicit TokenValue(int value);
     explicit TokenValue(const ImVec2& vec);
     explicit TokenValue(const std::string& tokenId);
-    
+
+    // Tagged factories for the variants that reuse a backing type.
+    static TokenValue MakeRatio(float fraction);
+    static TokenValue MakeBezier(const ImVec4& controlPoints);
+    static TokenValue MakeTextStyle(const TextStyleRefs& refs);
+    static TokenValue MakeFontFamily(const std::string& familyName);
+
     ValueType GetType() const { return type_; }
     bool IsReference() const { return type_ == ValueType::Reference; }
-    
+
     /**
      * Type-safe getters (throw std::runtime_error if type mismatch).
      */
@@ -34,7 +55,11 @@ public:
     int AsInt() const;
     ImVec2 AsVec2() const;
     std::string AsReference() const;
-    
+    float AsRatio() const;
+    ImVec4 AsBezier() const;
+    TextStyleRefs AsTextStyle() const;
+    std::string AsFontFamily() const;
+
     /**
      * Type-safe setters.
      */
@@ -43,6 +68,10 @@ public:
     void SetInt(int value);
     void SetVec2(const ImVec2& vec);
     void SetReference(const std::string& tokenId);
+    void SetRatio(float fraction);
+    void SetBezier(const ImVec4& controlPoints);
+    void SetTextStyle(const TextStyleRefs& refs);
+    void SetFontFamily(const std::string& familyName);
     
     /**
      * Comparison operators (properly handles ImVec types).
@@ -58,7 +87,7 @@ public:
 
 private:
     ValueType type_;
-    std::variant<ImVec4, float, int, ImVec2, std::string> value_;
+    std::variant<ImVec4, float, int, ImVec2, std::string, TextStyleRefs> value_;
 };
 
 } // namespace DesignSystem
