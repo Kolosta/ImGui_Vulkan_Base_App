@@ -23,7 +23,11 @@ enum class ValueType {
     Float,      // Single float value
     Int,        // Integer value
     Vec2,       // 2D vector (ImVec2)
-    Reference   // Reference to another token
+    Reference,  // Reference to another token
+    Ratio,      // Fraction of a measured dimension (e.g. radius.full = 0.5)
+    Bezier,     // Cubic-bezier easing curve (x1,y1,x2,y2) stored as ImVec4
+    TextStyle,  // Composite: family+size+weight+line-height+tracking refs
+    FontFamily  // A font-family NAME (string), edited via a dropdown of fonts
 };
 
 /**
@@ -74,6 +78,10 @@ inline std::string ValueTypeToString(ValueType type) {
         case ValueType::Int: return "Int";
         case ValueType::Vec2: return "Vec2";
         case ValueType::Reference: return "Reference";
+        case ValueType::Ratio: return "Ratio";
+        case ValueType::Bezier: return "Bezier";
+        case ValueType::TextStyle: return "TextStyle";
+        case ValueType::FontFamily: return "FontFamily";
         default: return "Unknown";
     }
 }
@@ -84,6 +92,10 @@ inline ValueType StringToValueType(const std::string& str) {
     if (str == "Int") return ValueType::Int;
     if (str == "Vec2") return ValueType::Vec2;
     if (str == "Reference") return ValueType::Reference;
+    if (str == "Ratio") return ValueType::Ratio;
+    if (str == "Bezier") return ValueType::Bezier;
+    if (str == "TextStyle") return ValueType::TextStyle;
+    if (str == "FontFamily") return ValueType::FontFamily;
     return ValueType::Float;
 }
 
