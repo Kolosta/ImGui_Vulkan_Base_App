@@ -2,7 +2,12 @@
   Keep the PR title in Conventional Commits form, e.g.:
     feat(ui): add collapsible shortcut groups
     fix(vector-graphics): prevent descriptor pool exhaustion
-  See CONTRIBUTING.md and CLAUDE.md for the full convention.
+  See CONTRIBUTING.md for the full convention.
+
+  GitFlow base branch:
+    • feature / fix / chore / docs / refactor  → base: develop
+    • release/*  → base: main  (and back-merge to develop)
+    • hotfix/*   → base: main  (and back-merge to develop)
 -->
 
 ## What
