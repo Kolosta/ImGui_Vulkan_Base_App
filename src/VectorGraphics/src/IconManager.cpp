@@ -231,28 +231,6 @@ void IconManager::RenderIcon(
 // TEXTURE MANAGEMENT
 // ============================================================================
 
-// std::string IconManager::GenerateCacheKey(
-//     const std::string& iconId,
-//     int width,
-//     int height,
-//     const IconMetadata& metadata
-// ) const {
-//     std::ostringstream oss;
-//     oss << iconId << "_" << width << "x" << height << "_" << static_cast<int>(metadata.scheme);
-    
-//     // Add zone information to cache key
-//     for (const auto& zone : metadata.colorZones) {
-//         oss << "_" << zone.originalColor;
-        
-//         if (metadata.scheme == IconColorScheme::Bicolor) {
-//             oss << "_" << zone.tokenAssignment;
-//         } else if (metadata.scheme == IconColorScheme::Multicolor) {
-//             oss << "_" << std::hex << ColorVec4ToU32(zone.customColor);
-//         }
-//     }
-    
-//     return oss.str();
-// }
 std::string IconManager::GenerateCacheKey(
     const std::string& iconId,
     int width,
@@ -279,73 +257,6 @@ std::string IconManager::GenerateCacheKey(
     return oss.str();
 }
 
-// ImTextureID IconManager::GetOrCreateTexture(
-//     const std::string& iconId,
-//     int width,
-//     int height,
-//     const IconMetadata& metadata
-// ) {
-//     std::string cacheKey = GenerateCacheKey(iconId, width, height, metadata);
-    
-//     auto it = textureCache_.find(cacheKey);
-//     if (it != textureCache_.end()) {
-//         it->second.lastAccessFrame = currentFrame_;
-//         return it->second.textureId;
-//     }
-    
-//     // Create new texture
-//     ImTextureID texture = RenderIconToTexture(iconId, width, height, metadata);
-    
-//     if (texture) {
-//         // Entry already added in RenderIconToTexture via CreateVulkanTextureFromRGBA
-        
-//         // Cleanup if cache is too large
-//         if (textureCache_.size() > maxCacheSize_) {
-//             CleanupOldCacheEntries();
-//         }
-//     }
-    
-//     return texture;
-// }
-// ImTextureID IconManager::GetOrCreateTexture(
-//     const std::string& iconId,
-//     int width,
-//     int height,
-//     const IconMetadata& metadata
-// ) {
-//     std::string cacheKey = GenerateCacheKey(iconId, width, height, metadata);
-    
-//     auto it = textureCache_.find(cacheKey);
-//     if (it != textureCache_.end()) {
-//         it->second.lastAccessFrame = currentFrame_;
-//         return it->second.textureId;
-//     }
-    
-//     // Create new texture
-//     ImTextureID texture = RenderIconToTexture(iconId, width, height, metadata);
-    
-//     if (texture) {
-//         // CORRECTION : Ajouter réellement l'entrée au cache
-//         IconTexture iconTexture;
-//         iconTexture.textureId = texture;
-//         iconTexture.cacheKey = cacheKey;
-//         iconTexture.width = width;
-//         iconTexture.height = height;
-//         iconTexture.lastAccessFrame = currentFrame_;
-        
-//         // Les autres champs (imageView, image, etc.) ne sont pas facilement accessibles ici
-//         // mais ne sont pas critiques pour le cache de base
-        
-//         textureCache_[cacheKey] = iconTexture;
-        
-//         // Cleanup if cache is too large
-//         if (textureCache_.size() > maxCacheSize_) {
-//             CleanupOldCacheEntries();
-//         }
-//     }
-    
-//     return texture;
-// }
 ImTextureID IconManager::GetOrCreateTexture(
     const std::string& iconId,
     int width,
@@ -377,64 +288,6 @@ ImTextureID IconManager::GetOrCreateTexture(
     return ImTextureID(0);
 }
 
-
-// ImTextureID IconManager::RenderIconToTexture(
-//     const std::string& iconId,
-//     int width,
-//     int height,
-//     const IconMetadata& metadata
-// ) {
-//     auto it = icons_.find(iconId);
-//     if (it == icons_.end()) {
-//         return ImTextureID(0);
-//     }
-    
-//     const RuntimeIcon& icon = it->second;
-    
-//     // Apply color mapping to SVG
-//     std::string processedSvg = ApplyColorMapping(icon.svgContent, icon, metadata);
-    
-//     // Parse SVG with resvg
-//     resvg_options* opt = resvg_options_create();
-//     resvg_options_load_system_fonts(opt);
-    
-//     resvg_render_tree* tree = resvg_parse_tree_from_data(
-//         processedSvg.c_str(),
-//         processedSvg.length(),
-//         opt
-//     );
-    
-//     resvg_options_destroy(opt);
-    
-//     if (!tree) {
-//         return ImTextureID(0);
-//     }
-    
-//     // Get tree size
-//     resvg_size tree_size = resvg_get_image_size(tree);
-    
-//     // Calculate scaling factor
-//     float scaleX = width / tree_size.width;
-//     float scaleY = height / tree_size.height;
-//     float finalScale = std::min(scaleX, scaleY);
-    
-//     // Allocate pixel buffer (RGBA)
-//     std::vector<uint8_t> pixmap(width * height * 4, 0);
-    
-//     // Render
-//     resvg_fit_to fit_to;
-//     fit_to.type_ = RESVG_FIT_TO_TYPE_ZOOM;
-//     fit_to.value = finalScale;
-    
-//     resvg_render(tree, fit_to, resvg_transform_identity(), width, height, pixmap.data());
-    
-//     resvg_tree_destroy(tree);
-    
-//     // Create Vulkan texture from pixmap buffer
-//     ImTextureID textureId = CreateVulkanTextureFromRGBA(pixmap.data(), width, height);
-    
-//     return textureId;
-// }
 IconTexture IconManager::RenderIconToTexture(
     const std::string& iconId,
     int width,
@@ -672,7 +525,7 @@ uint32_t IconManager::GetColorForToken(const std::string& tokenName) const {
     auto& ds = DesignSystem::DesignSystem::Instance();
     
     // Build full token path
-    std::string fullToken = "semantic.icon.color." + tokenName;
+    std::string fullToken = "semantic.icon.color." + tokenName + ".default";
     
     try {
         ImVec4 color = ds.GetColor(fullToken);

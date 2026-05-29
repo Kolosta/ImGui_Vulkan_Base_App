@@ -1,15 +1,19 @@
 name: CI
 
-# ── Triggers ──────────────────────────────────────────────────────────────────
-# • workflow_dispatch : manual run from ANY branch (Actions tab → Run workflow)
-# • pull_request → main : every PR targeting main must pass this
-# • push → main          : guards direct/merge commits landing on main
+# ── Triggers (GitFlow) ────────────────────────────────────────────────────────
+# • workflow_dispatch        : manual run from ANY branch (Actions tab)
+# • push → main, develop     : guards commits landing on the two long-lived
+#                              branches (releases on main, integration on develop)
+# • pull_request → main, develop, release/**, hotfix/**
+#                              : every PR into a protected / integration branch,
+#                              plus release-stabilisation and hotfix PRs, must
+#                              pass before it can be merged
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
   push:
-    branches: [main]
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop, 'release/**', 'hotfix/**']
 
 # Cancel superseded runs on the same ref (e.g. new push to a PR branch).
 concurrency:
@@ -64,6 +68,7 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-make
+            mingw-w64-x86_64-freetype
             git
 
       # ── Vulkan SDK (headers + loader for find_package(Vulkan)) ───────────
