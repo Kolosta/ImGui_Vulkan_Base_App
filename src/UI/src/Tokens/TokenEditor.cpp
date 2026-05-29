@@ -1,4 +1,6 @@
-#include <UI/TokenEditor.h>
+#include <UI/Tokens/TokenEditor.h>
+#include <UI/Widgets/IconWidgets.h>
+#include <UI/Text/FontManager.h>
 #include <DesignSystem/Tokens/TokenRegistry.h>
 #include <DesignSystem/Tokens/Token.h>
 #include <DesignSystem/Override/OverrideManager.h>
@@ -18,6 +20,32 @@
 #endif
 
 namespace DesignSystem {
+
+namespace {
+struct WeightChoice { const char* name; int value; };
+constexpr WeightChoice kWeightChoices[] = {
+    {"Thin (100)",100},{"Extra-Light (200)",200},{"Light (300)",300},
+    {"Regular (400)",400},{"Medium (500)",500},{"Semi-Bold (600)",600},
+    {"Bold (700)",700},{"Extra-Bold (800)",800},{"Black (900)",900},
+    {"Extra-Black (950)",950},
+};
+bool FontFamilyCombo(const char* label, std::string& family) {
+    bool changed = false;
+    if (ImGui::BeginCombo(label, family.empty() ? "(none)" : family.c_str())) {
+        for (const std::string& name : UI::FontManager::Instance().FamilyNames()) {
+            bool sel = (name == family);
+            if (ImGui::Selectable(name.c_str(), sel)) { family = name; changed = true; }
+            if (sel) ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    return changed;
+}
+bool IsWeightToken(const std::string& id) {
+    return id.find("font.weight") != std::string::npos ||
+           id.find("font-weight") != std::string::npos;
+}
+} // namespace
 
 TokenEditor::TokenEditor()
     : selectedThemeIndex_(0),
@@ -64,8 +92,36 @@ void TokenEditor::Render(Context& currentContext, OverrideManager& overrideManag
 }
 
 // ── Contenu seul (utilisé dans la fenêtre Paramètres) ────────────────────────
+// Trois onglets : éditeur historique (liste), arbre développeur, et éditeur
+// par zones côté utilisateur. Les deux derniers réutilisent TokenInspector
+// donc partagent exactement les mêmes fonctionnalités d'override / preview.
 
 void TokenEditor::RenderContent(Context& currentContext, OverrideManager& overrideManager) {
+    if (ImGui::BeginTabBar("##DesignSystemTabs")) {
+        if (ImGui::BeginTabItem("Design System")) {
+            RenderClassicEditor(currentContext, overrideManager);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Token Tree (dev)")) {
+            treeView_.Render(currentContext, overrideManager);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("User Theme")) {
+            userThemeEditor_.Render(currentContext, overrideManager);
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Tokens viewer")) {
+            tokensViewer_.Render(currentContext, overrideManager);
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+    }
+}
+
+// ── Onglet historique : liste + détails + overrides (comportement inchangé) ──
+
+void TokenEditor::RenderClassicEditor(Context& currentContext,
+                                      OverrideManager& overrideManager) {
     Shortcuts::ShortcutManager::Instance().RegisterRegionContext(
         "Token Editor", "tokenEditor", "content");
 
@@ -128,7 +184,7 @@ void TokenEditor::RenderTokenList() {
     auto& registry = TokenRegistry::Instance();
 
     if (showPrimitives_) {
-        if (ImGui::CollapsingHeader("Primitive Tokens", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (UI::IconCollapsingHeader("primHdr", "Primitive Tokens", "", true)) {
             auto primitives = registry.GetTokensByLevel(TokenLevel::Primitive);
             for (const auto& token : primitives) {
                 if (IsTokenFiltered(token)) continue;
@@ -142,7 +198,7 @@ void TokenEditor::RenderTokenList() {
     }
 
     if (showSemantics_) {
-        if (ImGui::CollapsingHeader("Semantic Tokens", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (UI::IconCollapsingHeader("semHdr", "Semantic Tokens", "", true)) {
             auto semantics = registry.GetTokensByLevel(TokenLevel::Semantic);
             for (const auto& token : semantics) {
                 if (IsTokenFiltered(token)) continue;
@@ -156,7 +212,7 @@ void TokenEditor::RenderTokenList() {
     }
 
     if (showComponents_) {
-        if (ImGui::CollapsingHeader("Component Tokens", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (UI::IconCollapsingHeader("compHdr", "Component Tokens", "", true)) {
             auto components = registry.GetTokensByLevel(TokenLevel::Component);
             for (const auto& token : components) {
                 if (IsTokenFiltered(token)) continue;
@@ -189,6 +245,10 @@ void TokenEditor::InitializeNewOverrideValue(std::shared_ptr<Token> token) {
         case ValueType::Int:       newOverrideValue_ = TokenValue(0); break;
         case ValueType::Vec2:      newOverrideValue_ = TokenValue(ImVec2(0, 0)); break;
         case ValueType::Reference: newOverrideValue_ = TokenValue(std::string("")); break;
+        case ValueType::Ratio:     newOverrideValue_ = TokenValue::MakeRatio(0.5f); break;
+        case ValueType::Bezier:    newOverrideValue_ = TokenValue::MakeBezier(ImVec4(0.25f,0.1f,0.25f,1.0f)); break;
+        case ValueType::FontFamily:newOverrideValue_ = TokenValue::MakeFontFamily("Qanelas"); break;
+        case ValueType::TextStyle: break;  // seeded from the resolved value
     }
 }
 
@@ -360,6 +420,25 @@ void TokenEditor::RenderValuePreview(const char* label, const TokenValue& value,
             if (showLabel) ImGui::Text("Ref: %s", value.AsReference().c_str());
             break;
         }
+        case ValueType::Ratio: {
+            if (showLabel) ImGui::Text("%.0f%% of min side", value.AsRatio() * 100.0f);
+            break;
+        }
+        case ValueType::Bezier: {
+            ImVec4 b = value.AsBezier();
+            if (showLabel) ImGui::Text("cubic-bezier(%.2f, %.2f, %.2f, %.2f)",
+                                       b.x, b.y, b.z, b.w);
+            break;
+        }
+        case ValueType::TextStyle: {
+            TextStyleRefs t = value.AsTextStyle();
+            if (showLabel) ImGui::Text("%s / %s", t.size.c_str(), t.weight.c_str());
+            break;
+        }
+        case ValueType::FontFamily: {
+            if (showLabel) ImGui::Text("Font: %s", value.AsFontFamily().c_str());
+            break;
+        }
     }
 }
 
@@ -373,7 +452,7 @@ void TokenEditor::RenderColorPreview(const char* label, const ImVec4& color,
 
     auto& ds = DesignSystem::Instance();
     float globalAlpha = 1.0f;
-    try { globalAlpha = ds.GetFloat("semantic.alpha.default"); } catch (...) {}
+    try { globalAlpha = ds.GetFloat(Tok::S_Opacity_Default); } catch (...) {}
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 pos  = ImGui::GetCursorScreenPos();
@@ -423,7 +502,7 @@ void TokenEditor::RenderFloatPreview(const char* label, float value) {
     std::string tokenId = selectedTokenId_;
     auto& ds = DesignSystem::Instance();
     float globalAlpha = 1.0f;
-    try { globalAlpha = ds.GetFloat("semantic.alpha.default"); } catch (...) {}
+    try { globalAlpha = ds.GetFloat(Tok::S_Opacity_Default); } catch (...) {}
 
     ImDrawList* drawList = ImGui::GetWindowDrawList();
     ImVec2 pos = ImGui::GetCursorScreenPos();
@@ -688,6 +767,18 @@ bool TokenEditor::RenderValueEditor(const char* label, TokenValue& value,
         }
         case ValueType::Int: {
             int i = value.AsInt();
+            // Font-weight tokens use a named-weight dropdown (Thin…Black).
+            if (IsWeightToken(token->GetId())) {
+                int sel = 0;
+                for (int k = 0; k < (int)IM_ARRAYSIZE(kWeightChoices); ++k)
+                    if (kWeightChoices[k].value == i) { sel = k; break; }
+                std::vector<const char*> names;
+                for (const auto& w : kWeightChoices) names.push_back(w.name);
+                if (ImGui::Combo(label, &sel, names.data(), (int)names.size())) {
+                    value.SetInt(kWeightChoices[sel].value); changed = true;
+                }
+                break;
+            }
             auto lo = c.Min();
             auto hi = c.Max();
             int drag_min = lo ? static_cast<int>(*lo) : 0;
@@ -718,6 +809,42 @@ bool TokenEditor::RenderValueEditor(const char* label, TokenValue& value,
             buffer[255] = '\0';
             if (ImGui::InputText(label, buffer, sizeof(buffer)))
                 { value.SetReference(std::string(buffer)); changed = true; }
+            break;
+        }
+        case ValueType::Ratio: {
+            float r = value.AsRatio();
+            if (ImGui::SliderFloat(label, &r, 0.0f, 1.0f, "%.2f")) {
+                value.SetRatio(r); changed = true;
+            }
+            break;
+        }
+        case ValueType::Bezier: {
+            ImVec4 b = value.AsBezier();
+            if (ImGui::DragFloat4(label, &b.x, 0.01f, -1.0f, 2.0f, "%.2f")) {
+                value.SetBezier(b); changed = true;
+            }
+            break;
+        }
+        case ValueType::TextStyle: {
+            // Edit each axis of the composite; the whole struct is one override.
+            TextStyleRefs t = value.AsTextStyle();
+            auto editRef = [&](const char* lbl, std::string& ref) {
+                char buf[256]; strncpy(buf, ref.c_str(), 255); buf[255] = '\0';
+                if (ImGui::InputText(lbl, buf, sizeof(buf))) { ref = buf; changed = true; }
+            };
+            ImGui::PushID(label);
+            editRef("family",      t.family);
+            editRef("size",        t.size);
+            editRef("weight",      t.weight);
+            editRef("line-height", t.lineHeight);
+            editRef("tracking",    t.tracking);
+            ImGui::PopID();
+            if (changed) value.SetTextStyle(t);
+            break;
+        }
+        case ValueType::FontFamily: {
+            std::string fam = value.AsFontFamily();
+            if (FontFamilyCombo(label, fam)) { value.SetFontFamily(fam); changed = true; }
             break;
         }
     }

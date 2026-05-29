@@ -1,13 +1,19 @@
 cmake_minimum_required(VERSION 3.22)
 
 add_library(UI STATIC
-    src/FontManager.cpp
-    src/TokenEditor.cpp
-    src/ShortcutEditor.cpp
-    src/KeyCap.cpp
-    src/StatusBar.cpp
-    src/ShortcutCaptureField.cpp
-    src/ButtonGroup.cpp
+    src/Text/FontManager.cpp
+    src/Widgets/IconWidgets.cpp
+    src/Widgets/ButtonGroup.cpp
+    src/Widgets/Dropdown.cpp
+    src/Tokens/TokenEditor.cpp
+    src/Tokens/TokenInspector.cpp
+    src/Tokens/TokenTreeView.cpp
+    src/Tokens/TokensViewer.cpp
+    src/Tokens/UserThemeEditor.cpp
+    src/Shortcuts/ShortcutEditor.cpp
+    src/Shortcuts/ShortcutCaptureField.cpp
+    src/Shortcuts/KeyCap.cpp
+    src/Chrome/StatusBar.cpp
 )
 
 target_include_directories(UI
@@ -16,6 +22,12 @@ target_include_directories(UI
     PRIVATE
         ${IMGUI_DIR}
         ${IMGUI_DIR}/backends
+        ${IMGUI_DIR}/misc/freetype
+)
+
+target_compile_definitions(UI PRIVATE
+    IMGUI_ENABLE_DOCKING
+    IMGUI_ENABLE_FREETYPE
 )
 
 target_link_libraries(UI PUBLIC
@@ -23,4 +35,5 @@ target_link_libraries(UI PUBLIC
     Shortcuts
     VectorGraphics
     Vulkan::Vulkan
+    Freetype::Freetype
 )

@@ -2,6 +2,9 @@
 
 #include <DesignSystem/Core/Context.h>
 #include <DesignSystem/Core/TokenValue.h>
+#include <UI/Tokens/TokenTreeView.h>
+#include <UI/Tokens/TokensViewer.h>
+#include <UI/Tokens/UserThemeEditor.h>
 #include <string>
 #include <vector>
 #include <memory>
@@ -20,8 +23,15 @@ public:
     void Render(Context& currentContext, OverrideManager& overrideManager,
                 bool* p_open = nullptr);
 
-    // Contenu seul, sans Begin/End — utilisé à l'intérieur de la fenêtre Paramètres.
+    // Contenu seul, sans Begin/End — utilisé à l'intérieur de la fenêtre
+    // Paramètres. Affiche trois onglets : l'éditeur historique (liste), la
+    // vue arbre développeur, et l'éditeur par zones côté utilisateur.
     void RenderContent(Context& currentContext, OverrideManager& overrideManager);
+
+    // L'éditeur historique seul (liste + détails + overrides). Conservé tel
+    // quel : c'est l'onglet "Design System".
+    void RenderClassicEditor(Context& currentContext,
+                             OverrideManager& overrideManager);
 
 private:
     void RenderContextSelector(Context& currentContext);
@@ -52,6 +62,11 @@ private:
 
     TokenValue newOverrideValue_;
     bool addingGlobalOverride_;
+
+    // The additional tabs (dev tree + user-facing zone editor + viewer).
+    TokenTreeView   treeView_;
+    UserThemeEditor userThemeEditor_;
+    TokensViewer    tokensViewer_;
 };
 
 } // namespace DesignSystem

@@ -1,5 +1,5 @@
-#include <UI/ShortcutCaptureField.h>
-#include <UI/KeyCap.h>
+#include <UI/Shortcuts/ShortcutCaptureField.h>
+#include <UI/Shortcuts/KeyCap.h>
 #include <Shortcuts/ShortcutManager.h>
 #include <DesignSystem/DesignSystem.h>
 #include <imgui_internal.h>
@@ -9,18 +9,19 @@ namespace UI {
 
 namespace {
 
-ImVec4 SafeColor(const std::string& token, ImVec4 fallback) {
-    try { return DesignSystem::DesignSystem::Instance().GetColor(token); }
+// Token-typed Safe* (Tok auto-follows TokName(): Spectrum-2 rename safe).
+ImVec4 SafeColor(DesignSystem::Tok t, ImVec4 fallback) {
+    try { return DesignSystem::DesignSystem::Instance().GetColor(t); }
     catch (...) { return fallback; }
 }
 
-float SafeFloat(const std::string& token, float fallback) {
-    try { return DesignSystem::DesignSystem::Instance().GetFloat(token); }
+float SafeFloat(DesignSystem::Tok t, float fallback) {
+    try { return DesignSystem::DesignSystem::Instance().GetFloat(t); }
     catch (...) { return fallback; }
 }
 
-ImVec2 SafeVec2(const std::string& token, ImVec2 fallback) {
-    try { return DesignSystem::DesignSystem::Instance().GetVec2(token); }
+ImVec2 SafeVec2(DesignSystem::Tok t, ImVec2 fallback) {
+    try { return DesignSystem::DesignSystem::Instance().GetVec2(t); }
     catch (...) { return fallback; }
 }
 
@@ -46,7 +47,7 @@ void DrawText(const char* text, ImVec4 col) {
 
 float ShortcutCaptureField::Height() {
     auto& ds = DesignSystem::DesignSystem::Instance();
-    float h  = SafeFloat("component.captureField.height", 28.0f);
+    float h  = SafeFloat(DesignSystem::Tok::C_CaptureField_Height, 28.0f);
     return h * ds.GetGlobalScale();
 }
 
@@ -56,6 +57,7 @@ bool ShortcutCaptureField::Render(const char* id,
                                   bool /*withInputKindToggle*/,
                                   bool withDropdown,
                                   StatusOverride status) {
+    DesignSystem::DesignSystem::ComponentScope _cs("ShortcutCaptureField");
     using namespace Shortcuts;
     auto& ds = DesignSystem::DesignSystem::Instance();
     const float scale = ds.GetGlobalScale();
@@ -70,26 +72,26 @@ bool ShortcutCaptureField::Render(const char* id,
     // look (bg / hover / active / border / radius) from the SAME tokens
     // ImGui frames use so it stays visually consistent with combos &
     // inputs.  The recording/error overrides remain dedicated tokens.
-    ImVec2 padding = SafeVec2("component.captureField.padding", ImVec2(8.0f, 4.0f));
+    ImVec2 padding = SafeVec2(DesignSystem::Tok::C_CaptureField_Padding, ImVec2(8.0f, 4.0f));
     padding.x *= scale;
     padding.y *= scale;
-    float radius = SafeFloat("component.frame.radius", 4.0f) * scale;
+    float radius = SafeFloat(DesignSystem::Tok::C_CaptureField_CornerRadius, 4.0f) * scale;
 
-    ImVec4 bgIdle   = SafeColor("component.frame.background",
+    ImVec4 bgIdle   = SafeColor(DesignSystem::Tok::C_Frame_Background,
                                  ImVec4(0.13f, 0.13f, 0.15f, 1.0f));
-    ImVec4 bgHover  = SafeColor("component.frame.backgroundHover",
+    ImVec4 bgHover  = SafeColor(DesignSystem::Tok::C_Frame_BackgroundHover,
                                  ImVec4(0.18f, 0.18f, 0.20f, 1.0f));
-    ImVec4 bgActive = SafeColor("component.frame.backgroundActive",
+    ImVec4 bgActive = SafeColor(DesignSystem::Tok::C_Frame_BackgroundDown,
                                  ImVec4(0.10f, 0.10f, 0.12f, 1.0f));
-    ImVec4 bgRec    = SafeColor("component.captureField.backgroundRecording",
+    ImVec4 bgRec    = SafeColor(DesignSystem::Tok::C_CaptureField_BackgroundRecording,
                                  ImVec4(0.22f, 0.10f, 0.10f, 1.0f));
-    ImVec4 bdIdle   = SafeColor("component.frame.border",
+    ImVec4 bdIdle   = SafeColor(DesignSystem::Tok::C_CaptureField_Border,
                                  ImVec4(0.40f, 0.40f, 0.45f, 1.0f));
-    ImVec4 bdRec    = SafeColor("component.captureField.borderRecording",
+    ImVec4 bdRec    = SafeColor(DesignSystem::Tok::C_CaptureField_BorderRecording,
                                  ImVec4(0.95f, 0.30f, 0.30f, 1.0f));
-    ImVec4 hint     = SafeColor("component.captureField.hintText",
+    ImVec4 hint     = SafeColor(DesignSystem::Tok::C_CaptureField_LabelHint,
                                  ImVec4(0.55f, 0.55f, 0.58f, 1.0f));
-    float frameBorderPx = SafeFloat("component.frame.borderSize", 1.0f);
+    float frameBorderPx = SafeFloat(DesignSystem::Tok::C_Frame_BorderWidth, 1.0f);
 
     bool committedThisFrame = false;
 
@@ -97,7 +99,7 @@ bool ShortcutCaptureField::Render(const char* id,
     ImVec2 cursorScreen = ImGui::GetCursorScreenPos();
     float availW = ImGui::GetContentRegionAvail().x;
     float itemW  = ImGui::CalcItemWidth();
-    float minWidth = SafeFloat("component.captureField.minWidth", 180.0f) * scale;
+    float minWidth = SafeFloat(DesignSystem::Tok::C_CaptureField_MinWidth, 180.0f) * scale;
     float fieldW   = (itemW > 0.0f && itemW < availW) ? itemW : availW;
     if (fieldW < minWidth) fieldW = std::min(minWidth, availW);
     if (fieldW < 40.0f * scale) fieldW = 40.0f * scale;
@@ -136,11 +138,11 @@ bool ShortcutCaptureField::Render(const char* id,
                                           : (frameBorderPx * scale);
     if (!st.recording) {
         if (status == StatusOverride::Error) {
-            border = SafeColor("component.shortcut.conflictHard",
+            border = SafeColor(DesignSystem::Tok::C_Shortcut_ConflictHard,
                                ImVec4(0.95f, 0.30f, 0.30f, 1.0f));
             borderThickness = 2.0f * scale;
         } else if (status == StatusOverride::Warning) {
-            border = SafeColor("component.shortcut.conflict",
+            border = SafeColor(DesignSystem::Tok::C_Shortcut_ConflictSoft,
                                ImVec4(1.0f, 0.75f, 0.0f, 1.0f));
             borderThickness = 1.5f * scale;
         }
@@ -162,10 +164,10 @@ bool ShortcutCaptureField::Render(const char* id,
                     ImGui::ColorConvertFloat4ToU32(bdIdle),
                     frameBorderPx * scale);
         if (arrowHovered || arrowActive) {
-            ImVec4 hoverTint = SafeColor("component.frame.backgroundHover",
+            ImVec4 hoverTint = SafeColor(DesignSystem::Tok::C_Frame_BackgroundHover,
                                           ImVec4(0.22f,0.22f,0.25f,1.0f));
             if (arrowActive)
-                hoverTint = SafeColor("component.frame.backgroundActive",
+                hoverTint = SafeColor(DesignSystem::Tok::C_Frame_BackgroundDown,
                                        ImVec4(0.10f,0.10f,0.12f,1.0f));
             dl->AddRectFilled(ImVec2(aMin.x + 1.0f, aMin.y + 1.0f),
                               ImVec2(aMax.x - 1.0f, aMax.y - 1.0f),
@@ -173,7 +175,7 @@ bool ShortcutCaptureField::Render(const char* id,
                               radius, ImDrawFlags_RoundCornersRight);
         }
         // Caret glyph
-        ImVec4 caretC = SafeColor("semantic.color.text.muted",
+        ImVec4 caretC = SafeColor(DesignSystem::Tok::S_Color_Text_Subtle,
                                   ImVec4(0.6f,0.6f,0.6f,1.0f));
         float cx = (aMin.x + aMax.x) * 0.5f;
         float cy = (aMin.y + aMax.y) * 0.5f;
