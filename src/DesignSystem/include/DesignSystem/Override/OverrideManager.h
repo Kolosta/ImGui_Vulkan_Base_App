@@ -20,8 +20,32 @@ public:
     
     /**
      * Add/modify overrides.
+     *
+     * AddOverride is forgiving: an out-of-range numeric value is *clamped* to
+     * the token's effective constraint before being stored, so any path (UI,
+     * scripted, deserialised) ends up with a valid override.
      */
     void AddOverride(const Override& override);
+
+    /**
+     * Result of a strict override attempt. `accepted` is false when the value
+     * violates the token's effective constraint or its declared type; `error`
+     * then holds a human-readable, caller-friendly explanation (token id,
+     * expected range/type, offending value) and nothing is stored.
+     */
+    struct AddResult {
+        bool        accepted = false;
+        std::string error;
+        explicit operator bool() const { return accepted; }
+    };
+
+    /**
+     * Strict variant: rejects (does not clamp) a value the token cannot hold,
+     * returning a descriptive error instead of silently coercing it. Use this
+     * when a caller wants the design system to enforce strong typing at the
+     * value level and to surface a precise reason on failure.
+     */
+    AddResult TryAddOverride(const Override& override);
     
     /**
      * Remove overrides.
