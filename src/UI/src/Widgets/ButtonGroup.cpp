@@ -1,4 +1,4 @@
-#include <UI/ButtonGroup.h>
+#include <UI/Widgets/ButtonGroup.h>
 #include <DesignSystem/DesignSystem.h>
 #include <imgui_internal.h>
 #include <algorithm>
@@ -8,12 +8,13 @@ namespace UI {
 
 namespace {
 
-ImVec4 SafeColor(const std::string& token, ImVec4 fallback) {
-    try { return DesignSystem::DesignSystem::Instance().GetColor(token); }
+// Token-typed Safe* (Tok auto-follows TokName(): Spectrum-2 rename safe).
+ImVec4 SafeColor(DesignSystem::Tok t, ImVec4 fallback) {
+    try { return DesignSystem::DesignSystem::Instance().GetColor(t); }
     catch (...) { return fallback; }
 }
-float SafeFloat(const std::string& token, float fallback) {
-    try { return DesignSystem::DesignSystem::Instance().GetFloat(token); }
+float SafeFloat(DesignSystem::Tok t, float fallback) {
+    try { return DesignSystem::DesignSystem::Instance().GetFloat(t); }
     catch (...) { return fallback; }
 }
 
@@ -44,30 +45,31 @@ ButtonGroup::Result ButtonGroup::Render() {
     Result result;
     if (cells_.empty() || colW_.empty() || rowH_.empty()) return result;
 
+    DesignSystem::DesignSystem::ComponentScope _cs("ButtonGroup");
     auto& ds = DesignSystem::DesignSystem::Instance();
     const float scale = ds.GetGlobalScale();
 
     // ── Tokens ──────────────────────────────────────────────────────────
-    ImVec4 baseBg   = SafeColor("component.toggle.background",
+    ImVec4 baseBg   = SafeColor(DesignSystem::Tok::C_Toggle_Background,
                                  ImVec4(0.16f, 0.16f, 0.18f, 1.0f));
-    ImVec4 hoverBg  = SafeColor("component.toggle.hover",
+    ImVec4 hoverBg  = SafeColor(DesignSystem::Tok::C_Toggle_BackgroundHover,
                                  ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
-    ImVec4 activeBg = SafeColor("component.toggle.activeBackground",
+    ImVec4 activeBg = SafeColor(DesignSystem::Tok::C_Toggle_BackgroundSelected,
                                  ImVec4(0.22f, 0.45f, 0.85f, 1.0f));
-    ImVec4 border   = SafeColor("component.toggle.border",
+    ImVec4 border   = SafeColor(DesignSystem::Tok::C_Toggle_Border,
                                  ImVec4(0.40f, 0.40f, 0.45f, 1.0f));
-    ImVec4 activeBd = SafeColor("component.toggle.activeBorder",
+    ImVec4 activeBd = SafeColor(DesignSystem::Tok::C_Toggle_BorderSelected,
                                  ImVec4(0.45f, 0.65f, 1.00f, 1.0f));
-    ImVec4 text     = SafeColor("component.toggle.text",
+    ImVec4 text     = SafeColor(DesignSystem::Tok::C_Toggle_Label,
                                  ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
-    ImVec4 activeTx = SafeColor("component.toggle.activeText",
+    ImVec4 activeTx = SafeColor(DesignSystem::Tok::C_Toggle_LabelSelected,
                                  ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-    ImVec4 disabledTx = SafeColor("semantic.color.text.muted",
+    ImVec4 disabledTx = SafeColor(DesignSystem::Tok::S_Color_Text_Subtle,
                                   ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
     // Radius / border come from the SAME frame tokens ImGui uses for
     // every button & input, so the group matches native widgets exactly.
-    float radius      = SafeFloat("component.frame.radius", 4.0f) * scale;
-    float borderSize  = SafeFloat("component.frame.borderSize", 1.0f) * scale;
+    float radius      = SafeFloat(DesignSystem::Tok::C_Frame_CornerRadius, 4.0f) * scale;
+    float borderSize  = SafeFloat(DesignSystem::Tok::C_Frame_BorderWidth, 1.0f) * scale;
 
     // ── Column / row pixel offsets ──────────────────────────────────────
     std::vector<float> colX(colW_.size() + 1, 0.0f);

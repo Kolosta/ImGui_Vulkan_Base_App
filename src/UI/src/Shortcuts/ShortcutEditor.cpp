@@ -1,7 +1,8 @@
-#include <UI/ShortcutEditor.h>
-#include <UI/KeyCap.h>
-#include <UI/ShortcutCaptureField.h>
-#include <UI/ButtonGroup.h>
+#include <UI/Shortcuts/ShortcutEditor.h>
+#include <UI/Widgets/IconWidgets.h>
+#include <UI/Shortcuts/KeyCap.h>
+#include <UI/Shortcuts/ShortcutCaptureField.h>
+#include <UI/Widgets/ButtonGroup.h>
 #include <Shortcuts/ShortcutManager.h>
 #include <Shortcuts/EventNormalizer.h>
 #include <Shortcuts/ToolManager.h>
@@ -18,13 +19,14 @@ namespace UI {
 
 namespace {
 
-ImVec4 SafeColor(const std::string& token, ImVec4 fallback) {
-    try { return DesignSystem::DesignSystem::Instance().GetColor(token); }
+// Token-typed Safe* (Tok auto-follows TokName(): Spectrum-2 rename safe).
+ImVec4 SafeColor(DesignSystem::Tok t, ImVec4 fallback) {
+    try { return DesignSystem::DesignSystem::Instance().GetColor(t); }
     catch (...) { return fallback; }
 }
 
-float SafeFloat(const std::string& token, float fallback) {
-    try { return DesignSystem::DesignSystem::Instance().GetFloat(token); }
+float SafeFloat(DesignSystem::Tok t, float fallback) {
+    try { return DesignSystem::DesignSystem::Instance().GetFloat(t); }
     catch (...) { return fallback; }
 }
 
@@ -51,19 +53,20 @@ bool MatchesSearch(const Shortcuts::Action& a, const char* needle) {
 // ──────────────────────────────────────────────────────────────────────────
 bool IconSquareButton(const char* id, const char* iconId, float size,
                       const char* tooltip, ImVec4 tintIcon) {
+    DesignSystem::DesignSystem::ComponentScope _cs("IconButton");
     ImGui::PushID(id);
 
     auto& ds = DesignSystem::DesignSystem::Instance();
     const float scale = ds.GetGlobalScale();
-    float radius = SafeFloat("component.iconButton.radius", 3.0f) * scale;
+    float radius = SafeFloat(DesignSystem::Tok::C_IconButton_CornerRadius, 3.0f) * scale;
 
-    ImVec4 bg     = SafeColor("component.iconButton.background",
+    ImVec4 bg     = SafeColor(DesignSystem::Tok::C_IconButton_Background,
                               ImVec4(0.16f, 0.16f, 0.18f, 1.0f));
-    ImVec4 bgHov  = SafeColor("component.iconButton.hover",
+    ImVec4 bgHov  = SafeColor(DesignSystem::Tok::C_IconButton_BackgroundHover,
                               ImVec4(0.24f, 0.24f, 0.27f, 1.0f));
-    ImVec4 bgAct  = SafeColor("component.iconButton.active",
+    ImVec4 bgAct  = SafeColor(DesignSystem::Tok::C_IconButton_BackgroundDown,
                               ImVec4(0.10f, 0.10f, 0.12f, 1.0f));
-    ImVec4 border = SafeColor("component.iconButton.border",
+    ImVec4 border = SafeColor(DesignSystem::Tok::C_IconButton_Border,
                               ImVec4(0.40f, 0.40f, 0.45f, 1.0f));
 
     ImVec2 cur = ImGui::GetCursorScreenPos();
@@ -258,7 +261,7 @@ void ShortcutEditor::RenderTreePane() {
         Shortcuts::ActionCategory::Custom,
     };
 
-    auto headerColor = SafeColor("component.sectionHeader.text",
+    auto headerColor = SafeColor(DesignSystem::Tok::C_SectionHeader_Label,
                                  ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_Text, headerColor);
     for (auto cat : kAllCats) DrawTreeForCategory(cat);
@@ -282,8 +285,8 @@ void ShortcutEditor::DrawTreeForCategory(Shortcuts::ActionCategory cat) {
     if (filtered.empty()) return;
 
     int catIdx = static_cast<int>(cat);
-    ImGui::SetNextItemOpen(categoryOpen_[catIdx], ImGuiCond_FirstUseEver);
-    if (ImGui::CollapsingHeader(Shortcuts::ActionCategoryName(cat))) {
+    if (UI::IconCollapsingHeader("catHdr", Shortcuts::ActionCategoryName(cat),
+                                 "", categoryOpen_[catIdx])) {
         categoryOpen_[catIdx] = true;
         std::map<std::string, std::vector<const Shortcuts::Action*>> bySub;
         for (const auto* a : filtered) {
@@ -332,7 +335,7 @@ void ShortcutEditor::DrawActionLeaf(const Shortcuts::Action* action) {
         float availX = ImGui::GetContentRegionAvail().x;
         if (ts.x + padRight < availX)
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (availX - ts.x - padRight));
-        ImVec4 muted = SafeColor("semantic.color.text.muted",
+        ImVec4 muted = SafeColor(DesignSystem::Tok::S_Color_Text_Subtle,
                                  ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
         ImGui::TextColored(muted, "%s", label.c_str());
     }
@@ -351,8 +354,8 @@ void ShortcutEditor::RenderDetailPane() {
 
     auto& ds = DesignSystem::DesignSystem::Instance();
     const float scale = ds.GetGlobalScale();
-    float headerScale = SafeFloat("component.sectionHeader.fontScale", 1.1f);
-    ImVec4 headerColor = SafeColor("component.sectionHeader.text",
+    float headerScale = SafeFloat(DesignSystem::Tok::C_SectionHeader_FontScale, 1.1f);
+    ImVec4 headerColor = SafeColor(DesignSystem::Tok::C_SectionHeader_Label,
                                    ImVec4(0.95f, 0.95f, 0.95f, 1.0f));
 
     ImGui::PushStyleColor(ImGuiCol_Text, headerColor);
@@ -366,7 +369,7 @@ void ShortcutEditor::RenderDetailPane() {
     }
 
     ImGui::Spacing();
-    ImVec4 muted = SafeColor("semantic.color.text.muted",
+    ImVec4 muted = SafeColor(DesignSystem::Tok::S_Color_Text_Subtle,
                              ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
     ImGui::TextColored(muted, "ID: %s", a->id.c_str());
     ImGui::TextColored(muted, "Category: %s",
@@ -532,7 +535,7 @@ void ShortcutEditor::RenderDetailPane() {
             // ── Danger tag (persistent — keeps showing even after the
             //    rejected commit so the user understands what happened) ──
             if (!danger.empty()) {
-                ImVec4 col = SafeColor("component.shortcut.conflictHard",
+                ImVec4 col = SafeColor(DesignSystem::Tok::C_Shortcut_ConflictHard,
                                        ImVec4(0.9f, 0.26f, 0.26f, 1.0f));
                 ImGui::SameLine(0.0f, 8.0f * scale);
                 ImGui::PushStyleColor(ImGuiCol_Text, col);
@@ -548,9 +551,9 @@ void ShortcutEditor::RenderDetailPane() {
                 bool hard = false;
                 for (const auto& c : conflicts) if (c.isHard) hard = true;
                 ImVec4 col = hard
-                    ? SafeColor("component.shortcut.conflictHard",
+                    ? SafeColor(DesignSystem::Tok::C_Shortcut_ConflictHard,
                                 ImVec4(0.9f, 0.26f, 0.26f, 1.0f))
-                    : SafeColor("component.shortcut.conflict",
+                    : SafeColor(DesignSystem::Tok::C_Shortcut_ConflictSoft,
                                 ImVec4(1.0f, 0.75f, 0.0f, 1.0f));
                 ImGui::SameLine(0.0f, 8.0f * scale);
                 ImGui::PushStyleColor(ImGuiCol_Text, col);
@@ -568,7 +571,7 @@ void ShortcutEditor::RenderDetailPane() {
                 ImGui::PopStyleColor();
             }
 
-            ImVec4 iconTint = SafeColor("component.iconButton.iconColor",
+            ImVec4 iconTint = SafeColor(DesignSystem::Tok::C_IconButton_Icon,
                                         ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
 
             if (canRestore) {
@@ -581,7 +584,7 @@ void ShortcutEditor::RenderDetailPane() {
             }
 
             ImGui::SameLine(0.0f, 4.0f * scale);
-            ImVec4 dangerTint = SafeColor("component.iconButton.dangerIcon",
+            ImVec4 dangerTint = SafeColor(DesignSystem::Tok::C_IconButton_IconNegative,
                                           ImVec4(0.95f, 0.45f, 0.45f, 1.0f));
             bool deleteRow = IconSquareButton("delete", "close", btnSize,
                                               "Remove this shortcut", dangerTint);
@@ -928,7 +931,7 @@ void ShortcutEditor::RenderAdvancedEditorFor(const std::string& actionId,
 
     // ── Drag distance threshold (only for drag types) ──────────────────
     if (isDragT(sig.type)) {
-        float dsDefault = SafeFloat("semantic.shortcut.dragThreshold", 6.0f);
+        float dsDefault = SafeFloat(DesignSystem::Tok::S_Config_DragThreshold, 6.0f);
         bool useCustom = sig.dragThreshold > 0.0f;
         if (ImGui::Checkbox("Override drag distance", &useCustom)) {
             sig.dragThreshold = useCustom ? dsDefault : 0.0f;
@@ -950,7 +953,7 @@ void ShortcutEditor::RenderAdvancedEditorFor(const std::string& actionId,
         }
         ImGui::EndDisabled();
         ImGui::SameLine();
-        ImVec4 muted = SafeColor("semantic.color.text.muted",
+        ImVec4 muted = SafeColor(DesignSystem::Tok::S_Color_Text_Subtle,
                                  ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
         ImGui::TextColored(muted, useCustom ? "(per-shortcut)" : "(from design system)");
     }
@@ -995,7 +998,7 @@ void ShortcutEditor::RenderAdvancedEditorFor(const std::string& actionId,
     // ── Validity warning (only when invalid) ──────────────────────────
     if (!sig.IsValid()) {
         ImGui::Spacing();
-        ImVec4 warn = SafeColor("component.shortcut.conflict",
+        ImVec4 warn = SafeColor(DesignSystem::Tok::C_Shortcut_ConflictSoft,
                                 ImVec4(1.0f, 0.75f, 0.0f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, warn);
         ImGui::TextWrapped("[!] This shortcut is not yet bound - pick a key, button or wheel above.");
@@ -1006,7 +1009,7 @@ void ShortcutEditor::RenderAdvancedEditorFor(const std::string& actionId,
     std::string danger = sm.IsDangerousBinding(actionId, sig);
     if (!danger.empty()) {
         ImGui::Spacing();
-        ImVec4 col = SafeColor("component.shortcut.conflictHard",
+        ImVec4 col = SafeColor(DesignSystem::Tok::C_Shortcut_ConflictHard,
                                ImVec4(0.9f, 0.26f, 0.26f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, col);
         ImGui::TextWrapped("[!] Unsafe binding: %s", danger.c_str());
@@ -1027,15 +1030,15 @@ void ShortcutEditor::RenderConflictsList() {
 
     ImGui::Text("Conflicts detected: %zu", conflicts.size());
     if (conflicts.empty()) {
-        ImVec4 ok = SafeColor("semantic.color.success",
+        ImVec4 ok = SafeColor(DesignSystem::Tok::S_Color_Positive_Default,
                               ImVec4(0.30f, 0.80f, 0.30f, 1.0f));
         ImGui::TextColored(ok, "[OK] No conflicts.");
         return;
     }
 
-    ImVec4 hard = SafeColor("component.shortcut.conflictHard",
+    ImVec4 hard = SafeColor(DesignSystem::Tok::C_Shortcut_ConflictHard,
                             ImVec4(0.9f, 0.26f, 0.26f, 1.0f));
-    ImVec4 soft = SafeColor("component.shortcut.conflict",
+    ImVec4 soft = SafeColor(DesignSystem::Tok::C_Shortcut_ConflictSoft,
                             ImVec4(1.0f, 0.75f, 0.0f, 1.0f));
     for (size_t i = 0; i < conflicts.size(); ++i) {
         const auto& c = conflicts[i];
