@@ -68,6 +68,7 @@ jobs:
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
             mingw-w64-x86_64-make
+            mingw-w64-x86_64-freetype
             git
 
       # ── Vulkan SDK (headers + loader for find_package(Vulkan)) ───────────
