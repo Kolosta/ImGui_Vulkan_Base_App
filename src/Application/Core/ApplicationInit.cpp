@@ -6,7 +6,7 @@
 #include <Shortcuts/ShortcutManager.h>
 #include <Shortcuts/EventNormalizer.h>
 #include <Shortcuts/ToolManager.h>
-#include <UI/FontManager.h>
+#include <UI/Text/FontManager.h>
 #include <VectorGraphics/IconManager.h>
 #include <iostream>
 
@@ -67,8 +67,31 @@ bool Application::Initialize() {
         return false;
     }
 
+    // Open maximized on first launch. The window is still HIDDEN; maximizing
+    // now updates its size so SetupVulkanWindow()'s SDL_GetWindowSize() returns
+    // the maximized dimensions and the swapchain is sized correctly for the
+    // very first frame (no black flash / cropped frame on show).
+    SDL_MaximizeWindow(window_);
+
     SetupVulkan();
     SetupVulkanWindow();
+
+    // On Windows the OS modal resize loop blocks SDL_PollEvent, so the normal
+    // ProcessEvents/Update/Render/Present loop never runs during live resize
+    // → black / cropped frame until the user releases. This event watch fires
+    // synchronously from inside the OS loop and renders a full frame each time
+    // the window is resized or exposed, keeping the content live.
+    SDL_AddEventWatch([](void* userdata, SDL_Event* ev) -> bool {
+        auto* app = static_cast<Application*>(userdata);
+        // Ignore events fired during init (maximize/show happen before the
+        // ImGui backends exist — rendering then would assert).
+        if (app->initialized_ &&
+            (ev->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED ||
+             ev->type == SDL_EVENT_WINDOW_EXPOSED)) {
+            app->RenderFrame();
+        }
+        return false;
+    }, this);
 
     SDL_SetWindowPosition(window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
     SDL_ShowWindow(window_);
@@ -78,7 +101,10 @@ bool Application::Initialize() {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // The docking *engine* stays compiled (docking branch), but its native
+    // drag&drop / drop-target UX is intentionally NOT enabled: the app uses
+    // its own Blender-style fixed 3-zone layout + custom resize instead.
+    io.ConfigFlags &= ~ImGuiConfigFlags_DockingEnable;
 
     ImGui::StyleColorsDark();
 
@@ -107,6 +133,8 @@ bool Application::Initialize() {
     init_info.CheckVkResultFn = check_vk_result;
     ImGui_ImplVulkan_Init(&init_info);
 
+    // Backends are now live — the SDL event watch may render during resize.
+    initialized_ = true;
     return true;
 }
 
@@ -268,20 +296,151 @@ void Application::SetupVulkanWindow() {
     );
 }
 
+// NOTE: the per-zone demo look is now part of the THEME (authored as theme
+// definitions in DesignSystem/Tokens/ThemeDefinition.cpp and installed by
+// DesignSystem::Initialize) — it is no longer a set of user overrides.
+//
+// Register every editable zone/sub-zone scope up front so the theme editors
+// list them all immediately (a scope otherwise only appears once its zone
+// has been rendered at least once). Registering is cheap and side-effect
+// free; it does not change rendering — a zone with no theme-def/override
+// still cascades to the global look.
+//
+// SCOPE TREE (matches ThemeDefinition.cpp seeds + the ZoneStyle pushes in
+// ApplicationUI / ApplicationWindows):
+//
+//   global                             (the implicit parent — never registered)
+//   ├─ toolbar / menuBar / statusBar / mainContent       (structural chrome)
+//   ├─ editors                          (all editors share this base look)
+//   │  ├─ editors/viewport
+//   │  ├─ editors/outliner
+//   │  ├─ editors/timeline
+//   │  └─ editors/devPanels
+//   ├─ settings                         (the Settings floating window)
+//   │  ├─ settings/designSystem
+//   │  ├─ settings/tokenTree
+//   │  ├─ settings/userTheme
+//   │  ├─ settings/shortcuts
+//   │  └─ settings/icons
+//   ├─ devTest                          (the Dev Test floating window)
+//   │  ├─ devTest/icons
+//   │  ├─ devTest/design
+//   │  │  └─ devTest/design/print
+//   │  ├─ devTest/themePreview
+//   │  ├─ devTest/zone1
+//   │  │  └─ devTest/zone1/action
+//   │  └─ devTest/zone2
+//   │      └─ devTest/zone2/action
+//   └─ <legacy demo scopes kept for backwards compatibility — see below>
+static void RegisterAppScopes() {
+    auto& ds = DesignSystem::DesignSystem::Instance();
+    auto R = [&](const char* path, const char* label) {
+        ds.RegisterScope(path, label);
+    };
+    // Structural chrome
+    R("toolbar",                 "Toolbar");
+    R("menuBar",                 "Menu bar");
+    R("statusBar",               "Status bar");
+    R("mainContent",             "Main content");
+    // Editor zones (Blender-style layout). The root "editors" scope groups
+    // every editor; each editor kind is a sub-scope. Window padding is
+    // forced to 0 on "editors" (see ThemeDefinition.cpp) so editor content
+    // is flush; sub-scopes let a single editor be themed apart.
+    R("editors",                 "All editors");
+    R("editors/viewport",        "Viewport editor");
+    R("editors/outliner",        "Outliner editor");
+    R("editors/timeline",        "Timeline editor");
+    R("editors/devPanels",       "Dev Panels editor");
+    // Settings floating window + its tabs (each tab is a sub-scope so
+    // restyling one tab does not leak to the others).
+    R("settings",                "Settings window");
+    R("settings/designSystem",   "Settings · Design System tab");
+    R("settings/tokenTree",      "Settings · Token Tree tab");
+    R("settings/userTheme",      "Settings · User Theme tab");
+    R("settings/shortcuts",      "Settings · Shortcuts tab");
+    R("settings/icons",          "Settings · Icons tab");
+    // Dev Test floating window + each collapsible section as a sub-scope.
+    R("devTest",                 "Dev Test window");
+    R("devTest/icons",           "DevTest · Icon Test Lab");
+    R("devTest/design",          "DevTest · Design System Example");
+    R("devTest/design/print",    "DevTest · Print button");
+    R("devTest/themePreview",    "DevTest · Theme Preview");
+    R("devTest/zone1",           "DevTest · Test Zone 1");
+    R("devTest/zone1/action",    "DevTest · Zone 1 action");
+    R("devTest/zone2",           "DevTest · Test Zone 2");
+    R("devTest/zone2/action",    "DevTest · Zone 2 action");
+    // Legacy demo scope paths kept registered for backwards compatibility
+    // with code paths that still push them; their theme-defs in
+    // ThemeDefinition.cpp mirror the devTest/* variants so the visual is
+    // identical at both spots.
+    R("iconTestLab",             "(legacy) Icon Test Lab");
+    R("designExample",           "(legacy) Design System Example");
+    R("designExample/print",     "(legacy) Print button");
+    R("themePreview",            "(legacy) Theme Preview");
+    R("testZone1",               "(legacy) Test Zone 1");
+    R("testZone1/action",        "(legacy) Action button");
+    R("testZone2",               "(legacy) Test Zone 2");
+    R("testZone2/action",        "(legacy) Action button");
+}
+
 void Application::InitializeSubsystems() {
     DesignSystem::DesignSystem::Instance().Initialize(mainScale_);
+    RegisterAppScopes();
     Shortcuts::Tools::ToolManager::Instance().Initialize();
     Shortcuts::EventNormalizer::Instance().Initialize();
     Shortcuts::ShortcutManager::Instance().Initialize();
 
-    UI::FontManager::Instance().Initialize(mainScale_);
-    if (UI::FontManager::Instance().LoadFont("noto", "resources/fonts/NotoSans-Regular.ttf", 14.0f)) {
-        UI::FontManager::Instance().SetDefaultFont("noto");
-    }
+    // Fonts are now design-system driven: discover everything under
+    // resources/fonts, and let the DS tokens pick the default
+    // family/weight/size (see ApplyFontTokens()). No symbol-font fallback merge:
+    // a complete primary face already covers the glyphs the app uses.
+    auto& fonts = UI::FontManager::Instance();
+    fonts.Initialize(mainScale_);
+    fonts.DiscoverFonts("resources/fonts");
+    ApplyFontTokens();
 
     VectorGraphics::IconManager::Instance().Initialize(
         device_, physicalDevice_, queue_, commandPool_, descriptorPool_
     );
+}
+
+void Application::ApplyFontTokens() {
+    auto& fonts = UI::FontManager::Instance();
+    auto& ds    = DesignSystem::DesignSystem::Instance();
+
+    // Discovered families get default role assignments (sans/serif/mono/cjk)
+    // from name heuristics. Tokens then select a role; the user can re-map.
+    fonts.AutoAssignRoles();
+
+    // The default UI font follows the BODY role: the family NAME and the
+    // weight come from design-system tokens (font.family.body resolves to a
+    // FontFamily value; font.weight.body.m to an Int). Falls back gracefully.
+    std::string family = "NotoSans";
+    int weight = 400;
+    try {
+        auto v = ds.ResolveTokenValue(DesignSystem::TokIdStr(DesignSystem::Tok::S_FontFamily_Body),
+                                      ds.GetCurrentContext().GetTheme());
+        if (v.GetType() == DesignSystem::ValueType::FontFamily)
+            family = v.AsFontFamily();
+    } catch (...) {}
+    try { weight = ds.GetInt(DesignSystem::Tok::S_FontWeight_BodyM); } catch (...) {}
+
+    // If the named family wasn't discovered, fall back to the sans role, then
+    // to any discovered family.
+    if (!fonts.Family(family)) {
+        std::string sans = fonts.RoleFamily(0);
+        if (!sans.empty()) family = sans;
+        else if (!fonts.FamilyNames().empty()) family = fonts.FamilyNames().front();
+    }
+    // Only rebuild the default font when the resolved (family, weight) changed.
+    // ApplyFontTokens() is called every frame, so this guard keeps it cheap
+    // while making token edits take effect live.
+    if (!family.empty() &&
+        (family != lastFontFamily_ || weight != lastFontWeight_)) {
+        fonts.SetDefaultFont(family, weight);
+        lastFontFamily_ = family;
+        lastFontWeight_ = weight;
+    }
 }
 
 void Application::LoadResources() {
@@ -353,13 +512,17 @@ void Application::RegisterDefaultShortcuts() {
     }
 
     // ── Tools ────────────────────────────────────────────────────────────────
-    tm.RegisterTool({"tool.brush",  "Brush Tool", "tool1", {"tool.brush.activate"}});
-    tm.RegisterTool({"tool.eraser", "Eraser Tool", "tool2", {"tool.eraser.activate"}});
+    tm.RegisterTool({"tool.brush",  "Brush Tool",  "pen",        {"tool.brush.activate"}});
+    tm.RegisterTool({"tool.eraser", "Eraser Tool", "ink-eraser", {"tool.eraser.activate"}});
+    tm.RegisterTool({"tool.hand",   "Hand Tool",   "draw",       {"tool.hand.activate"}});
 
     {
         Action a; a.id = "tool.brush.activate"; a.name = "Activate Brush";
         a.description = "Activate the brush tool";
         a.category = ActionCategory::Tool;
+        // Scoped to the Viewport: only fires when the mouse is over the
+        // Viewport zone that registered "viewport" this frame, not any zone.
+        a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_ActivateTool1(); };
         sm.RegisterAction(a, { sigKey(ImGuiKey_1) });
     }
@@ -367,8 +530,42 @@ void Application::RegisterDefaultShortcuts() {
         Action a; a.id = "tool.eraser.activate"; a.name = "Activate Eraser";
         a.description = "Activate the eraser tool";
         a.category = ActionCategory::Tool;
+        a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_ActivateTool2(); };
         sm.RegisterAction(a, { sigKey(ImGuiKey_2) });
+    }
+    {
+        Action a; a.id = "tool.hand.activate"; a.name = "Activate Hand";
+        a.description = "Pan the canvas by dragging with the mouse";
+        a.category = ActionCategory::Tool;
+        a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_ActivateHand(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_H) });
+    }
+    {
+        Action a; a.id = "view.fitDocument"; a.name = "Fit Document in View";
+        a.description = "Zoom/pan so the whole document is visible";
+        a.category = ActionCategory::View;
+        a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_ViewFitDocument(); };
+        // Shift+C and Ctrl+Numpad0.
+        sm.RegisterAction(a, { sigKey(ImGuiKey_C, false, true) });
+    }
+    {
+        Action a; a.id = "view.resetOrigin"; a.name = "Reset View to Origin";
+        a.description = "Recenter near the document origin at 100% zoom";
+        a.category = ActionCategory::View;
+        a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_ViewResetOrigin(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_Keypad0, true) });
+    }
+    {
+        Action a; a.id = "file.newDocument"; a.name = "New Document";
+        a.description = "Create a new blank document / artboard";
+        a.category = ActionCategory::File;
+        a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_NewDocument(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_N, true, true) });
     }
     {
         Action a; a.id = "tool.cycleNext"; a.name = "Next Tool";
@@ -377,6 +574,71 @@ void Application::RegisterDefaultShortcuts() {
         a.requiredContext.region = "toolbar";
         a.callback = [this]{ Action_CycleTool(); };
         sm.RegisterAction(a, { sigKey(ImGuiKey_Tab) });
+    }
+
+    // ── Editor switch shortcuts (Blender-style) ──────────────────────────────
+    // Switch the editor kind of the zone under the mouse. No requiredContext:
+    // they fire over any zone, targeting the hovered leaf (ZoneLayout resolves
+    // it each frame). The editor-selector dropdown shows these bindings.
+    {
+        Action a; a.id = "editor.viewport"; a.name = "Viewport Editor";
+        a.description = "Show the Viewport editor in the hovered zone";
+        a.category = ActionCategory::Window;
+        a.callback = [this]{ zoneLayout_.SetHoveredEditor(EditorKind::Viewport); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_F5, false, true) });
+    }
+    {
+        Action a; a.id = "editor.outliner"; a.name = "Outliner Editor";
+        a.description = "Show the Outliner editor in the hovered zone";
+        a.category = ActionCategory::Window;
+        a.callback = [this]{ zoneLayout_.SetHoveredEditor(EditorKind::Outliner); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_F9, false, true) });
+    }
+    {
+        Action a; a.id = "editor.timeline"; a.name = "Timeline Editor";
+        a.description = "Show the Timeline editor in the hovered zone";
+        a.category = ActionCategory::Window;
+        a.callback = [this]{ zoneLayout_.SetHoveredEditor(EditorKind::Timeline); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_F12, false, true) });
+    }
+    {
+        Action a; a.id = "editor.devPanels"; a.name = "Dev Panels Editor";
+        a.description = "Show the Dev Panels editor in the hovered zone";
+        a.category = ActionCategory::Window;
+        a.callback = [this]{ zoneLayout_.SetHoveredEditor(EditorKind::DevPanels); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_F11, false, true) });
+    }
+
+    // ── Tab navigation (multi-tab zones) ─────────────────────────────────────
+    // Next/Previous cycle the tabs of the HOVERED zone; First/Last jump within
+    // the ACTIVE zone (the last one clicked).
+    {
+        Action a; a.id = "editor.tabNext"; a.name = "Next Tab";
+        a.description = "Activate the next tab in the hovered zone";
+        a.category = ActionCategory::Window;
+        a.callback = [this]{ zoneLayout_.HoveredTabCycle(+1); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_Tab, true) });
+    }
+    {
+        Action a; a.id = "editor.tabPrev"; a.name = "Previous Tab";
+        a.description = "Activate the previous tab in the hovered zone";
+        a.category = ActionCategory::Window;
+        a.callback = [this]{ zoneLayout_.HoveredTabCycle(-1); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_Tab, true, true) });
+    }
+    {
+        Action a; a.id = "editor.tabFirst"; a.name = "First Tab";
+        a.description = "Activate the first tab in the active zone";
+        a.category = ActionCategory::Window;
+        a.callback = [this]{ zoneLayout_.ActiveTabSelectEdge(false); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_Home, true) });
+    }
+    {
+        Action a; a.id = "editor.tabLast"; a.name = "Last Tab";
+        a.description = "Activate the last tab in the active zone";
+        a.category = ActionCategory::Window;
+        a.callback = [this]{ zoneLayout_.ActiveTabSelectEdge(true); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_End, true) });
     }
 
     // ── Zone-specific actions (same key, different editors) ──────────────────

@@ -13,6 +13,26 @@ endif()
 # Vulkan
 find_package(Vulkan REQUIRED)
 
+# FreeType — replaces ImGui's default stb_truetype rasterizer so we can drive
+# variable-font axes (weight/width/optical-size) and OpenType features at
+# runtime. Provided by MSYS2: pacman -S mingw-w64-x86_64-freetype.
+#
+# The IDE-bundled CMake's FindFreetype module does not probe the MSYS2 mingw64
+# prefix, so we hint it explicitly (override on the cache line if your MSYS2
+# lives elsewhere). FREETYPE_DIR can also be set in CMakeUserPresets.json.
+if(NOT DEFINED MSYS2_MINGW64_ROOT)
+    set(MSYS2_MINGW64_ROOT "C:/msys64/mingw64" CACHE PATH "MSYS2 mingw64 prefix")
+endif()
+if(NOT FREETYPE_INCLUDE_DIRS AND EXISTS "${MSYS2_MINGW64_ROOT}/include/freetype2")
+    set(FREETYPE_INCLUDE_DIRS
+        "${MSYS2_MINGW64_ROOT}/include/freetype2"
+        "${MSYS2_MINGW64_ROOT}/include")
+endif()
+if(NOT FREETYPE_LIBRARY AND EXISTS "${MSYS2_MINGW64_ROOT}/lib/libfreetype.dll.a")
+    set(FREETYPE_LIBRARY "${MSYS2_MINGW64_ROOT}/lib/libfreetype.dll.a")
+endif()
+find_package(Freetype REQUIRED)
+
 include(FetchContent)
 
 # SDL3
@@ -39,6 +59,7 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/misc/freetype/imgui_freetype.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
 )
@@ -56,23 +77,54 @@ add_executable(${PROJECT_NAME}
     ${IMGUI_SOURCES}
 )
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE IMGUI_ENABLE_DOCKING)
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    IMGUI_ENABLE_DOCKING
+    IMGUI_ENABLE_FREETYPE
+)
 
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
+    ${IMGUI_DIR}/misc/freetype
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     Vulkan::Vulkan
     SDL3::SDL3-shared
+    Freetype::Freetype
     DesignSystem
     UI
     Shortcuts
     VectorGraphics
     Application
 )
+
+# ── Token integrity tests ────────────────────────────────────────────────────
+# Structural correctness is already enforced at compile time (static_asserts
+# in TokenSchema.cpp). This optional target adds the runtime value-level
+# safety net. Enabled by default; build/run the `ds_token_tests` target.
+option(DS_BUILD_TESTS "Build the design-system token integrity tests" ON)
+if(DS_BUILD_TESTS)
+    # DesignSystem references core ImGui symbols (ImGui::GetStyle, PushStyleVar
+    # …) from ApplyGlobalStyle/PushAllStyles. The test never calls those, but
+    # the linker still needs the definitions. Link the *core* ImGui TUs only —
+    # the SDL/Vulkan backends are not needed and would drag heavy deps in.
+    set(IMGUI_CORE_SOURCES
+        ${IMGUI_DIR}/imgui.cpp
+        ${IMGUI_DIR}/imgui_draw.cpp
+        ${IMGUI_DIR}/imgui_tables.cpp
+        ${IMGUI_DIR}/imgui_widgets.cpp
+    )
+    add_executable(ds_token_tests
+        tests/TokenIntegrityTests.cpp
+        ${IMGUI_CORE_SOURCES}
+    )
+    target_link_libraries(ds_token_tests PRIVATE DesignSystem)
+    target_include_directories(ds_token_tests PRIVATE ${IMGUI_DIR})
+    enable_testing()
+    add_test(NAME token_integrity COMMAND ds_token_tests)
+endif()
 
 # Copy resources
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/resources DESTINATION ${CMAKE_CURRENT_BINARY_DIR})

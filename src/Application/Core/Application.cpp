@@ -5,7 +5,7 @@
 #include <Shortcuts/ShortcutManager.h>
 #include <Shortcuts/EventNormalizer.h>
 #include <Shortcuts/ToolManager.h>
-#include <UI/FontManager.h>
+#include <UI/Text/FontManager.h>
 
 #ifdef _DEBUG
 #define APP_USE_VULKAN_DEBUG_REPORT
@@ -29,12 +29,16 @@ Application* Application::s_instance_ = nullptr;
 Application::Application()  { s_instance_ = this; }
 Application::~Application() { if (s_instance_ == this) s_instance_ = nullptr; }
 
+void Application::RenderFrame() {
+    ProcessEvents();
+    Update();
+    Render();
+    Present();
+}
+
 void Application::Run() {
     while (running_) {
-        ProcessEvents();
-        Update();
-        Render();
-        Present();
+        RenderFrame();
     }
 }
 
@@ -73,6 +77,16 @@ void Application::ProcessEvents() {
 void Application::Update() {
     VectorGraphics::IconManager::Instance().CleanupCacheIfNeeded();
 
+    // Reset component-usage tracking at the start of every frame, so the
+    // Tokens viewer reads the previous frame's counts cleanly without
+    // unbounded growth. ComponentScope RAII populates it as widgets render.
+    DesignSystem::DesignSystem::Instance().ResetUsage();
+
+    // Re-resolve the default font from design-system tokens. Guarded inside
+    // (only rebuilds when family/weight changed), so font-family / font-weight
+    // token edits in the Token editor take effect live.
+    ApplyFontTokens();
+
     // No font atlas rebuild needed in imgui 1.92+: glyphs are rasterised
     // lazily at the exact size driven by style.FontSizeBase/FontScaleMain/FontScaleDpi
     // (set by DesignSystem::ApplyGlobalStyle).
@@ -92,7 +106,7 @@ void Application::Update() {
         // overrides take effect immediately without restarting the app.
         try {
             float t = DesignSystem::DesignSystem::Instance()
-                        .GetFloat("semantic.shortcut.dragThreshold");
+                        .GetFloat(DesignSystem::Tok::S_Config_DragThreshold);
             Shortcuts::EventNormalizer::Instance().SetDragThreshold(t);
         } catch (...) { /* token missing — keep current value */ }
     }
@@ -116,7 +130,7 @@ void Application::Render() {
     if (is_minimized) return;
 
     auto& ds = DesignSystem::DesignSystem::Instance();
-    ImVec4 clear_color = ds.GetColor("semantic.color.background");
+    ImVec4 clear_color = ds.GetColor(DesignSystem::Tok::S_Color_Background_Default);
     mainWindowData_.ClearValue.color.float32[0] = clear_color.x * clear_color.w;
     mainWindowData_.ClearValue.color.float32[1] = clear_color.y * clear_color.w;
     mainWindowData_.ClearValue.color.float32[2] = clear_color.z * clear_color.w;
@@ -243,6 +257,30 @@ void Application::Action_ActivateTool1() {
 void Application::Action_ActivateTool2() {
     Shortcuts::Tools::ToolManager::Instance().SetActiveTool("tool.eraser");
     std::cout << "[ACTION] Activate Tool: eraser" << std::endl;
+}
+void Application::Action_ActivateHand() {
+    Shortcuts::Tools::ToolManager::Instance().SetActiveTool("tool.hand");
+    std::cout << "[ACTION] Activate Tool: hand" << std::endl;
+}
+void Application::Action_NewDocument() {
+    // Open the New Artboard popup in the Viewport leaf the mouse is over
+    // (no-op if none). The popup adds an artboard to the shared project.
+    if (EditorState* st = zoneLayout_.HoveredEditorState())
+        st->openNewDoc = true;
+}
+void Application::Action_NewProject() {
+    // Reset to a brand-new empty project (no artboard). Shared by every
+    // Viewport and the Outliner. File save/open comes later.
+    project_.Reset();
+    std::cout << "[ACTION] New Project" << std::endl;
+}
+void Application::Action_ViewFitDocument() {
+    if (EditorState* st = zoneLayout_.HoveredEditorState())
+        st->reqFitDoc = true;
+}
+void Application::Action_ViewResetOrigin() {
+    if (EditorState* st = zoneLayout_.HoveredEditorState())
+        st->reqResetOrigin = true;
 }
 void Application::Action_CycleTool() {
     Shortcuts::Tools::ToolManager::Instance().CycleNext();
