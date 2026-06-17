@@ -1,5 +1,6 @@
 #include <UI/Widgets/ButtonGroup.h>
 #include <DesignSystem/DesignSystem.h>
+#include <VectorGraphics/IconManager.h>
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cmath>
@@ -243,7 +244,14 @@ ButtonGroup::Result ButtonGroup::Render() {
     dl->AddRect(groupMn, groupMx, perimeterCol, radius,
                 ImDrawFlags_RoundCornersAll, borderSize);
 
-    // ── Pass 6: labels (stripped of "##id"), centred per cell ───────────
+    // ── Pass 6: icon (optional) + label (stripped of "##id") ─────────────
+    // Center alignment keeps the classic look; Left alignment makes a
+    // full-width "nav list" row: icon + label start at a left inset, vertically
+    // centred — used by the Preferences left column.
+    const float iconSz   = SafeFloat(DesignSystem::Tok::C_Dropdown_IconSize, 16.0f) * scale;
+    const float leftPad  = SafeFloat(DesignSystem::Tok::C_Menu_ItemPaddingX, 6.0f) * scale;
+    const float iconGap  = 6.0f * scale;
+    auto& im = VectorGraphics::IconManager::Instance();
     for (size_t i = 0; i < cells_.size(); ++i) {
         const Cell& c = cells_[i];
         const Resolved& r = rc[i];
@@ -251,11 +259,36 @@ ButtonGroup::Result ButtonGroup::Render() {
         const char* lblEnd = lbl;
         while (*lblEnd && !(lblEnd[0] == '#' && lblEnd[1] == '#')) ++lblEnd;
         ImVec2 ts = ImGui::CalcTextSize(lbl, lblEnd);
-        ImVec2 tp(r.mn.x + (r.mx.x - r.mn.x - ts.x) * 0.5f,
-                  r.mn.y + (r.mx.y - r.mn.y - ts.y) * 0.5f);
+        const bool hasIcon = !c.icon.empty();
         ImVec4 tc = !c.enabled ? disabledTx
                    : (c.selected ? activeTx : text);
-        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), tp,
+
+        float cellH = r.mx.y - r.mn.y;
+        float textY = r.mn.y + (cellH - ts.y) * 0.5f;
+        float x;
+        if (c.align == Align::Left) {
+            x = r.mn.x + leftPad;
+            if (hasIcon) {
+                ImVec2 ip(x, r.mn.y + (cellH - iconSz) * 0.5f);
+                auto md = im.GetDefaultMetadata(c.icon.c_str());
+                for (auto& z : md.colorZones) z.customColor = tc;
+                if (!md.colorZones.empty())
+                    im.RenderIcon(dl, c.icon.c_str(), ip, iconSz, md);
+                x += iconSz + iconGap;
+            }
+        } else {
+            float contentW = ts.x + (hasIcon ? iconSz + iconGap : 0.0f);
+            x = r.mn.x + (r.mx.x - r.mn.x - contentW) * 0.5f;
+            if (hasIcon) {
+                ImVec2 ip(x, r.mn.y + (cellH - iconSz) * 0.5f);
+                auto md = im.GetDefaultMetadata(c.icon.c_str());
+                for (auto& z : md.colorZones) z.customColor = tc;
+                if (!md.colorZones.empty())
+                    im.RenderIcon(dl, c.icon.c_str(), ip, iconSz, md);
+                x += iconSz + iconGap;
+            }
+        }
+        dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(x, textY),
                     ImGui::ColorConvertFloat4ToU32(tc), lbl, lblEnd);
     }
 

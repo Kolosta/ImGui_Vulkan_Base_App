@@ -1,6 +1,7 @@
 #pragma once
 
 #include <imgui.h>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -22,12 +23,37 @@
 
 namespace UI {
 
+// Visual style of the trigger. Default = a filled, bordered chip with a
+// chevron. Minimal = a borderless, transparent trigger with no chevron and only
+// a subtle hover fill — used for menu-bar-style dropdowns (e.g. the title bar's
+// File/Edit/Windows menus) that should read as flat menu items, not chips.
+enum class DropdownStyle {
+    Default,
+    Minimal,
+};
+
 struct DropdownItem {
     const char* icon = "";       // icon id (may be empty)
     std::string label;
     std::string shortcut;        // right-aligned hint text (may be empty)
     int  columnGroup = 0;        // column index when columnHeaders is set
     bool enabled     = true;
+    // NB: keep `tooltip` LAST so existing brace-init aggregates
+    // `{icon,label,shortcut,columnGroup,enabled}` keep mapping their trailing
+    // int/bool to columnGroup/enabled (not to a std::string → null crash).
+    std::string tooltip;         // description shown on hover-dwell (Blender-like)
+};
+
+// A button FUSED to the dropdown trigger (ButtonGroup-style: shared border, only
+// the group's outer corners rounded). Placed left or right of the trigger. The
+// button is independent of the menu (e.g. a magnet toggle next to a Snap dropdown).
+struct DropdownButton {
+    std::string id;              // unique within the dropdown
+    const char* icon = "";       // icon id (optional)
+    std::string label;           // text (optional; icon-only if empty)
+    std::string tooltip;
+    bool        active = false;  // toggled/accented state
+    enum class Side { Left, Right } side = Side::Left;
 };
 
 struct DropdownConfig {
@@ -37,11 +63,22 @@ struct DropdownConfig {
     std::vector<std::string> columnHeaders;     // empty => single-column list
     std::vector<DropdownItem> items;
     int selectedIndex = -1;                     // highlighted item, -1 = none
+    DropdownStyle style = DropdownStyle::Default;
+    // Buttons fused to the trigger (ButtonGroup look). Rendered left/right per side.
+    std::vector<DropdownButton> buttons;
+    // CUSTOM BODY: when set, the popup renders THIS instead of the item list (the
+    // body is responsible for its own widgets). The menu chrome (bg/border/merged
+    // corner) is still drawn by the dropdown; the callback runs inside the popup
+    // with the cursor at the menu's content origin. `menuSize` sizes the popup.
+    std::function<void()> bodyDraw;
+    ImVec2 menuSize{0, 0};                      // required when bodyDraw is set
 };
 
 struct DropdownResult {
     bool changed  = false;       // an item was clicked this frame
     int  selected = -1;          // index of the clicked item (valid if changed)
+    // Index into cfg.buttons of a fused button clicked this frame, or -1.
+    int  buttonClicked = -1;
 };
 
 // Draw the trigger at the current cursor position and, if open, its menu.

@@ -47,6 +47,9 @@ namespace UI {
  */
 class ButtonGroup {
 public:
+    // Where the label (and optional icon) sit inside a cell.
+    enum class Align { Center, Left };
+
     struct Cell {
         std::string label;       // may contain "##id"
         int   col = 0, row = 0;
@@ -54,6 +57,8 @@ public:
         bool  selected = false;  // toggled / active-value state
         bool  enabled  = true;   // false → ImGui disabled
         std::string tooltip;     // optional
+        std::string icon;        // optional icon id, drawn left of the label
+        Align align = Align::Center;  // Left = full-width nav-list look
     };
 
     struct Result {
@@ -72,8 +77,10 @@ public:
     void AddCell(const std::string& label, int col, int row,
                  int colSpan, int rowSpan, bool selected,
                  bool enabled = true, const std::string& tooltip = "") {
-        cells_.push_back(Cell{label, col, row, colSpan, rowSpan,
-                              selected, enabled, tooltip});
+        Cell c{}; c.label = label; c.col = col; c.row = row;
+        c.colSpan = colSpan; c.rowSpan = rowSpan; c.selected = selected;
+        c.enabled = enabled; c.tooltip = tooltip;
+        cells_.push_back(c);
     }
 
     void Clear() { cells_.clear(); }

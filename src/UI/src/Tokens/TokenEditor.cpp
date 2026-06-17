@@ -1,5 +1,6 @@
 #include <UI/Tokens/TokenEditor.h>
 #include <UI/Widgets/IconWidgets.h>
+#include <UI/Widgets/ScrollArea.h>
 #include <UI/Text/FontManager.h>
 #include <DesignSystem/Tokens/TokenRegistry.h>
 #include <DesignSystem/Tokens/Token.h>
@@ -136,13 +137,13 @@ void TokenEditor::RenderClassicEditor(Context& currentContext,
     RenderContextSelector(currentContext);
     ImGui::Separator();
 
-    ImGui::BeginChild("TokenListPane", ImVec2(300.0f, 0.0f), true);
+    UI::BeginScroll("TokenListPane", ImVec2(300.0f, 0.0f), ImGuiChildFlags_Borders);
     RenderTokenList();
-    ImGui::EndChild();
+    UI::EndScroll();
 
     ImGui::SameLine();
 
-    ImGui::BeginChild("TokenDetailsPane", ImVec2(0.0f, 0.0f), true);
+    UI::BeginScroll("TokenDetailsPane", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
     if (!selectedTokenId_.empty()) {
         RenderTokenDetails(currentContext, overrideManager);
         ImGui::Separator();
@@ -150,7 +151,7 @@ void TokenEditor::RenderClassicEditor(Context& currentContext,
     } else {
         ImGui::TextWrapped("Sélectionner un token pour voir les détails");
     }
-    ImGui::EndChild();
+    UI::EndScroll();
 }
 
 // ── Sélecteur de contexte ─────────────────────────────────────────────────────

@@ -3,6 +3,7 @@
 #include <UI/Shortcuts/KeyCap.h>
 #include <UI/Shortcuts/ShortcutCaptureField.h>
 #include <UI/Widgets/ButtonGroup.h>
+#include <UI/Widgets/ScrollArea.h>
 #include <Shortcuts/ShortcutManager.h>
 #include <Shortcuts/EventNormalizer.h>
 #include <Shortcuts/ToolManager.h>
@@ -202,21 +203,21 @@ void ShortcutEditor::RenderContent() {
     const float scale = ds.GetGlobalScale();
     const float treeWidth = 320.0f * scale;
 
-    if (ImGui::BeginChild("##TreePane", ImVec2(treeWidth, 0.0f), true)) {
+    if (UI::BeginScroll("##TreePane", ImVec2(treeWidth, 0.0f), ImGuiChildFlags_Borders)) {
         RenderTreePane();
     }
-    ImGui::EndChild();
+    UI::EndScroll();
 
     ImGui::SameLine();
 
-    if (ImGui::BeginChild("##DetailPane", ImVec2(0.0f, 0.0f), true)) {
+    if (UI::BeginScroll("##DetailPane", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders)) {
         if (selectedActionId_.empty())
             ImGui::TextWrapped("Select an action in the tree to view and edit "
                                "its shortcuts.");
         else
             RenderDetailPane();
     }
-    ImGui::EndChild();
+    UI::EndScroll();
 
     if (showConflicts_) {
         ImGui::Separator();
