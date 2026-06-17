@@ -267,7 +267,7 @@ gh pr create --base develop
 
 Versions follow **Semantic Versioning** — `MAJOR.MINOR.PATCH`, with optional
 pre-release suffixes (`-rc.N`). The app version lives in
-`src/Application/Core/Application.h` (`Application::kVersion`).
+`src/Application/App/Application.h` (`Application::kVersion`).
 
 - **MAJOR** — incompatible/breaking changes.
 - **MINOR** — new, backward-compatible features.
