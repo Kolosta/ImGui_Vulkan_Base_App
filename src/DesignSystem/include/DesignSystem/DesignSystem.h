@@ -379,6 +379,29 @@ public:
     float GetGlobalScale() const;
     float GetDpiScale() const { return dpiScale_; }
 
+    /**
+     * Designate the application's MAIN ImGui context. ApplyGlobalStyle writes
+     * the resolved ImGuiStyle into THIS context, regardless of which context is
+     * current when an override is committed. Secondary windows (Preferences,
+     * future detached editors) run their own ImGui context but copy the main
+     * context's live style every frame, so a single ApplyGlobalStyle on the main
+     * context propagates to every window. Without this, an override committed
+     * from the Preferences window applied the style to the Preferences context
+     * only (then got overwritten by the main style next frame), so style-only
+     * tokens (font-size, anti-aliasing…) never took effect anywhere.
+     */
+    void SetMainImGuiContext(ImGuiContext* ctx) { mainImGuiContext_ = ctx; }
+
+    /**
+     * Global borders toggle. `S_Border_Enabled` (1/0) flips EVERY border at
+     * once. BordersEnabled() reads it; GetBorderWidth(tok) returns the token's
+     * width when on, or 0 when off — the single entry point border code (ImGui
+     * style, zone frames, panels) should use instead of GetFloat(width_token),
+     * so disabling borders never requires editing each individual width token.
+     */
+    bool  BordersEnabled();
+    float GetBorderWidth(Tok widthToken);
+
 private:
     DesignSystem();
     ~DesignSystem();
@@ -392,6 +415,9 @@ private:
     ThemeDefinitionStore themeDefs_;          // theme base layer (not overrides)
     int                  stylesPushedCount_;
     float                dpiScale_ = 1.0f;
+    // The main window's ImGui context (set once at init). ApplyGlobalStyle
+    // always targets this context's ImGuiStyle — see SetMainImGuiContext.
+    ImGuiContext*        mainImGuiContext_ = nullptr;
     // Sticky scope registry (path → label), populated by RegisterScope.
     std::map<std::string, std::string> scopeRegistry_;
     // Active-scope stack: top = the scope every Get* currently resolves

@@ -229,6 +229,24 @@ constexpr VarFBind kVarBindings[] = {
 //  logic is preserved from the previous implementation.
 // ─────────────────────────────────────────────────────────────────────────────
 void DesignSystem::ApplyGlobalStyle() {
+    // Always target the MAIN context's style. An override may be committed while
+    // a secondary window's ImGui context is current (e.g. editing in the
+    // Preferences window); applying the style there would be lost (the secondary
+    // window copies the main style every frame). Switch to the main context for
+    // the duration of this function, restoring the caller's context on exit.
+    struct ContextGuard {
+        ImGuiContext* saved;
+        bool          switched;
+        explicit ContextGuard(ImGuiContext* target)
+            : saved(ImGui::GetCurrentContext()), switched(false) {
+            if (target && target != saved) {
+                ImGui::SetCurrentContext(target);
+                switched = true;
+            }
+        }
+        ~ContextGuard() { if (switched) ImGui::SetCurrentContext(saved); }
+    } _ctxGuard(mainImGuiContext_);
+
     ImGuiStyle& style = ImGui::GetStyle();
 
     // Capture the DPI-scaled dark theme as the immutable baseline (once, after
@@ -275,22 +293,22 @@ void DesignSystem::ApplyGlobalStyle() {
         // ── Window component ────────────────────────────────────────────────
         style.WindowPadding            = SV(GetVec2(Tok::C_Window_Padding));
         style.WindowRounding           = S(GetFloat(Tok::C_Window_CornerRadius));
-        style.WindowBorderSize         = ScaleThinLine(GetFloat(Tok::C_Window_BorderWidth), uiScale);
+        style.WindowBorderSize         = ScaleThinLine(GetBorderWidth(Tok::C_Window_BorderWidth), uiScale);
         style.WindowBorderHoverPadding = S(GetFloat(Tok::C_Window_BorderHoverPadding));
         style.WindowMinSize            = SV(GetVec2(Tok::C_Window_MinSize));
         style.WindowTitleAlign         = GetVec2(Tok::C_Window_TitleAlign);
         style.WindowMenuButtonPosition = (ImGuiDir)GetInt(Tok::C_Window_MenuButtonPosition);
         // ── Child component ─────────────────────────────────────────────────
         style.ChildRounding            = S(GetFloat(Tok::C_Child_CornerRadius));
-        style.ChildBorderSize          = ScaleThinLine(GetFloat(Tok::C_Child_BorderWidth), uiScale);
+        style.ChildBorderSize          = ScaleThinLine(GetBorderWidth(Tok::C_Child_BorderWidth), uiScale);
         // ── Popup component ─────────────────────────────────────────────────
         style.PopupRounding            = S(GetFloat(Tok::C_Popup_CornerRadius));
-        style.PopupBorderSize          = ScaleThinLine(GetFloat(Tok::C_Popup_BorderWidth), uiScale);
+        style.PopupBorderSize          = ScaleThinLine(GetBorderWidth(Tok::C_Popup_BorderWidth), uiScale);
 
         // ── Frame component ─────────────────────────────────────────────────
         style.FramePadding      = SV(GetVec2(Tok::C_Frame_Padding));
         style.FrameRounding     = S(GetFloat(Tok::C_Frame_CornerRadius));
-        style.FrameBorderSize   = ScaleThinLine(GetFloat(Tok::C_Frame_BorderWidth), uiScale);
+        style.FrameBorderSize   = ScaleThinLine(GetBorderWidth(Tok::C_Frame_BorderWidth), uiScale);
 
         // ── Global layout (semantic.spacing.*: not widgets) ─────────────────
         style.ItemSpacing       = SV(GetVec2(Tok::S_Config_ItemSpacing));
@@ -311,16 +329,16 @@ void DesignSystem::ApplyGlobalStyle() {
 
         // ── Image component ─────────────────────────────────────────────────
         style.ImageRounding   = S(GetFloat(Tok::C_Image_CornerRadius));
-        style.ImageBorderSize = ScaleThinLine(GetFloat(Tok::C_Image_BorderWidth), uiScale);
+        style.ImageBorderSize = ScaleThinLine(GetBorderWidth(Tok::C_Image_BorderWidth), uiScale);
 
         // ── Tab component ───────────────────────────────────────────────────
         style.TabRounding                      = S(GetFloat(Tok::C_Tab_CornerRadius));
-        style.TabBorderSize                    = ScaleThinLine(GetFloat(Tok::C_Tab_BorderWidth), uiScale);
+        style.TabBorderSize                    = ScaleThinLine(GetBorderWidth(Tok::C_Tab_BorderWidth), uiScale);
         style.TabMinWidthBase                  = S(GetFloat(Tok::C_Tab_MinWidthBase));
         style.TabMinWidthShrink                = S(GetFloat(Tok::C_Tab_MinWidthShrink));
         style.TabCloseButtonMinWidthSelected   = GetFloat(Tok::C_Tab_CloseButtonMinWidthSelected);
         style.TabCloseButtonMinWidthUnselected = GetFloat(Tok::C_Tab_CloseButtonMinWidthUnselected);
-        style.TabBarBorderSize                 = ScaleThinLine(GetFloat(Tok::C_Tab_BarBorderWidth), uiScale);
+        style.TabBarBorderSize                 = ScaleThinLine(GetBorderWidth(Tok::C_Tab_BarBorderWidth), uiScale);
         style.TabBarOverlineSize               = S(GetFloat(Tok::C_Tab_BarOverlineWidth));
 
         // ── Table component / tree lines (semantic) ─────────────────────────
@@ -337,7 +355,7 @@ void DesignSystem::ApplyGlobalStyle() {
 
         // ── Drag & drop component ───────────────────────────────────────────
         style.DragDropTargetRounding   = S(GetFloat(Tok::C_DragDropTarget_CornerRadius));
-        style.DragDropTargetBorderSize = ScaleThinLine(GetFloat(Tok::C_DragDropTarget_BorderWidth), uiScale);
+        style.DragDropTargetBorderSize = ScaleThinLine(GetBorderWidth(Tok::C_DragDropTarget_BorderWidth), uiScale);
         style.DragDropTargetPadding    = S(GetFloat(Tok::C_DragDropTarget_Padding));
 
         // ── Separator component + global widget config (semantic) ───────────
@@ -390,6 +408,16 @@ float DesignSystem::GetUiScale() const {
 
 float DesignSystem::GetGlobalScale() const {
     return GetUiScale() * dpiScale_;
+}
+
+bool DesignSystem::BordersEnabled() {
+    try { return GetInt(Tok::S_Border_Enabled) != 0; }
+    catch (...) { return true; }   // missing token → borders on (safe default)
+}
+
+float DesignSystem::GetBorderWidth(Tok widthToken) {
+    if (!BordersEnabled()) return 0.0f;
+    try { return GetFloat(widthToken); } catch (...) { return 0.0f; }
 }
 
 void DesignSystem::PushAllStyles() {

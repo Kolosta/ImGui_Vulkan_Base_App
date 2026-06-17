@@ -538,6 +538,7 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Vec2(Tok::P_Config_TouchExtraPadding, TokenLevel::Primitive, {0.0f,0.0f}, "touch padding", Px(10)));
     put(Float(Tok::P_Config_IndentSpacing, TokenLevel::Primitive, 21.f, "tree indent", Px(48)));
     put(Float(Tok::P_Config_ColumnsMinSpacing, TokenLevel::Primitive, 6.f, "columns min", Px(48)));
+    put(Int(Tok::P_Config_UndoSteps, TokenLevel::Primitive, 256, "undo history depth (steps kept per window)", CS::Range(2.0, 4096.0, "steps")));
     put(Vec2(Tok::P_Config_DisplayWindowPadding, TokenLevel::Primitive, {19.0f,19.0f}, "display window pad", Px(64)));
     put(Vec2(Tok::P_Config_DisplaySafeAreaPadding, TokenLevel::Primitive, {3.0f,3.0f}, "safe area pad", Px(64)));
     put(Vec2(Tok::P_Config_SeparatorTextPadding, TokenLevel::Primitive, {20.0f,3.0f}, "separator text pad", PadXY()));
@@ -553,6 +554,7 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Float(Tok::P_Config_HoverDelayShort, TokenLevel::Primitive, 0.15f, "hover short", Delay()));
     put(Float(Tok::P_Config_HoverDelayNormal, TokenLevel::Primitive, 0.40f, "hover normal", Delay()));
     put(Float(Tok::P_Config_DragThreshold, TokenLevel::Primitive, 6.f, "drag threshold", CS::Range(2.0,64.0,"px")));
+    put(Int(Tok::P_Border_Enabled, TokenLevel::Primitive, 1, "global borders on/off", Bool01()));
     put(Int(Tok::P_Config_AntiAliasedLines, TokenLevel::Primitive, 1, "AA lines", Bool01()));
     put(Int(Tok::P_Config_AntiAliasedLinesUseTex, TokenLevel::Primitive, 1, "AA lines tex", Bool01()));
     put(Int(Tok::P_Config_AntiAliasedFill, TokenLevel::Primitive, 1, "AA fill", Bool01()));
@@ -656,6 +658,65 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::S_Color_Accent_Default, TokenLevel::Semantic, Tok::S_Accent_Color_700, "background accent default"));
     put(Ref(Tok::S_Color_Accent_Hover, TokenLevel::Semantic, Tok::S_Accent_Color_600, "background accent hover"));
     put(Ref(Tok::S_Color_Accent_Down, TokenLevel::Semantic, Tok::S_Accent_Color_600, "background accent pressed"));
+
+    // ── Interaction-STATE matrix (semantic.accent.color.<role>.<status>) ──────
+    // Per role we pick a consistent shade across status scales (dark theme):
+    //   visual=1300/900, hover=1200/800, text=300, selected=700, hover-sel=600,
+    //   active=700. `default` is grey (neutral) for the passive roles and blue
+    //   (accent) for the selection roles; `neutral` is grey throughout; `brand`
+    //   is purple. These feed component tokens (e.g. the Outliner rows).
+    // visual
+    put(Ref(Tok::S_Accent_Visual_Default,  TokenLevel::Semantic, Tok::S_Neutral_Color_900,  "state visual default (grey)"));
+    put(Ref(Tok::S_Accent_Visual_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_1300, "state visual positive"));
+    put(Ref(Tok::S_Accent_Visual_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_1300, "state visual negative"));
+    put(Ref(Tok::S_Accent_Visual_Info,     TokenLevel::Semantic, Tok::S_Info_Color_1300,     "state visual info"));
+    put(Ref(Tok::S_Accent_Visual_Neutral,  TokenLevel::Semantic, Tok::S_Neutral_Color_900,   "state visual neutral"));
+    put(Ref(Tok::S_Accent_Visual_Notice,   TokenLevel::Semantic, Tok::S_Notice_Color_1300,   "state visual notice"));
+    put(Ref(Tok::S_Accent_Visual_Brand,    TokenLevel::Semantic, Tok::P_Color_Purple_1300,   "state visual brand"));
+    // hover — a LIGHT, lightly-tinted cue (drawn semi-transparent over the row),
+    // so hovering even a light zebra stripe still reads. Mid-light shades.
+    put(Ref(Tok::S_Accent_Hover_Default,   TokenLevel::Semantic, Tok::S_Neutral_Color_500,   "state hover default (grey)"));
+    put(Ref(Tok::S_Accent_Hover_Positive,  TokenLevel::Semantic, Tok::S_Positive_Color_700,  "state hover positive"));
+    put(Ref(Tok::S_Accent_Hover_Negative,  TokenLevel::Semantic, Tok::S_Negative_Color_700,  "state hover negative"));
+    put(Ref(Tok::S_Accent_Hover_Info,      TokenLevel::Semantic, Tok::S_Info_Color_700,      "state hover info"));
+    put(Ref(Tok::S_Accent_Hover_Neutral,   TokenLevel::Semantic, Tok::S_Neutral_Color_500,   "state hover neutral"));
+    put(Ref(Tok::S_Accent_Hover_Notice,    TokenLevel::Semantic, Tok::S_Notice_Color_700,    "state hover notice"));
+    put(Ref(Tok::S_Accent_Hover_Brand,     TokenLevel::Semantic, Tok::P_Color_Purple_700,    "state hover brand"));
+    // text
+    put(Ref(Tok::S_Accent_Text_Default,    TokenLevel::Semantic, Tok::S_Neutral_Color_300,   "state text default (grey)"));
+    put(Ref(Tok::S_Accent_Text_Positive,   TokenLevel::Semantic, Tok::S_Positive_Color_300,  "state text positive"));
+    put(Ref(Tok::S_Accent_Text_Negative,   TokenLevel::Semantic, Tok::S_Negative_Color_300,  "state text negative"));
+    put(Ref(Tok::S_Accent_Text_Info,       TokenLevel::Semantic, Tok::S_Info_Color_300,      "state text info"));
+    put(Ref(Tok::S_Accent_Text_Neutral,    TokenLevel::Semantic, Tok::S_Neutral_Color_300,   "state text neutral"));
+    put(Ref(Tok::S_Accent_Text_Notice,     TokenLevel::Semantic, Tok::S_Notice_Color_300,    "state text notice"));
+    put(Ref(Tok::S_Accent_Text_Brand,      TokenLevel::Semantic, Tok::P_Color_Purple_300,    "state text brand"));
+    // selected — a DIMMER tone (sits quietly); active is brighter so the two are
+    // clearly distinct. selected=800, hover-selected=700, active=600, active-
+    // hover=500. (default selection roles stay blue/accent.)
+    put(Ref(Tok::S_Accent_Selected_Default,  TokenLevel::Semantic, Tok::S_Accent_Color_800,   "state selected default (blue, dim)"));
+    put(Ref(Tok::S_Accent_Selected_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_800, "state selected positive"));
+    put(Ref(Tok::S_Accent_Selected_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_800, "state selected negative"));
+    put(Ref(Tok::S_Accent_Selected_Info,     TokenLevel::Semantic, Tok::S_Info_Color_800,     "state selected info"));
+    put(Ref(Tok::S_Accent_Selected_Neutral,  TokenLevel::Semantic, Tok::S_Neutral_Color_800,  "state selected neutral"));
+    put(Ref(Tok::S_Accent_Selected_Notice,   TokenLevel::Semantic, Tok::S_Notice_Color_800,   "state selected notice"));
+    put(Ref(Tok::S_Accent_Selected_Brand,    TokenLevel::Semantic, Tok::P_Color_Purple_800,   "state selected brand"));
+    // hover-selected (selected + hovered → one step brighter than selected)
+    put(Ref(Tok::S_Accent_HoverSelected_Default,  TokenLevel::Semantic, Tok::S_Accent_Color_700,   "state hover-selected default (blue)"));
+    put(Ref(Tok::S_Accent_HoverSelected_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_700, "state hover-selected positive"));
+    put(Ref(Tok::S_Accent_HoverSelected_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_700, "state hover-selected negative"));
+    put(Ref(Tok::S_Accent_HoverSelected_Info,     TokenLevel::Semantic, Tok::S_Info_Color_700,     "state hover-selected info"));
+    put(Ref(Tok::S_Accent_HoverSelected_Neutral,  TokenLevel::Semantic, Tok::S_Neutral_Color_700,  "state hover-selected neutral"));
+    put(Ref(Tok::S_Accent_HoverSelected_Notice,   TokenLevel::Semantic, Tok::S_Notice_Color_700,   "state hover-selected notice"));
+    put(Ref(Tok::S_Accent_HoverSelected_Brand,    TokenLevel::Semantic, Tok::P_Color_Purple_700,   "state hover-selected brand"));
+    // active — BRIGHTER than selected so an active-selected row clearly stands out
+    put(Ref(Tok::S_Accent_Active_Default,  TokenLevel::Semantic, Tok::S_Accent_Color_600,   "state active default (blue, bright)"));
+    put(Ref(Tok::S_Accent_Active_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_600, "state active positive"));
+    put(Ref(Tok::S_Accent_Active_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_600, "state active negative"));
+    put(Ref(Tok::S_Accent_Active_Info,     TokenLevel::Semantic, Tok::S_Info_Color_600,     "state active info"));
+    put(Ref(Tok::S_Accent_Active_Neutral,  TokenLevel::Semantic, Tok::S_Neutral_Color_600,  "state active neutral"));
+    put(Ref(Tok::S_Accent_Active_Notice,   TokenLevel::Semantic, Tok::S_Notice_Color_600,   "state active notice"));
+    put(Ref(Tok::S_Accent_Active_Brand,    TokenLevel::Semantic, Tok::P_Color_Purple_600,   "state active brand"));
+
     put(Ref(Tok::S_Background_Accent_KbdFocus, TokenLevel::Semantic, Tok::S_Accent_Color_600, "background accent kbd-focus"));
     put(Ref(Tok::S_Background_Info_Default, TokenLevel::Semantic, Tok::S_Info_Color_700, "background info default"));
     put(Ref(Tok::S_Background_Info_Hover, TokenLevel::Semantic, Tok::S_Info_Color_600, "background info hover"));
@@ -790,6 +851,11 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(RefT4(Tok::S_Border_Subtle, TokenLevel::Semantic, "divider / separator", Tok::P_Color_Gray_700, Tok::P_Color_Gray_200, Tok::P_Color_Gray_700, Tok::P_Color_Gray_100));
     put(RefT4(Tok::S_Color_Border_Strong, TokenLevel::Semantic, "strong border", Tok::P_Color_Gray_500, Tok::P_Color_Gray_400, Tok::P_Color_Gray_500, Tok::P_Color_Gray_25));
     put(RefT4(Tok::S_Border_Disabled, TokenLevel::Semantic, "disabled border", Tok::P_Color_Gray_700, Tok::P_Color_Gray_300, Tok::P_Color_Gray_700, Tok::P_Color_Gray_300));
+    // Global borders on/off (1/0). When 0, every border width collapses to 0 at
+    // resolution time (see DesignSystem::BordersEnabled / GetBorderWidth), so the
+    // whole UI can go border-less without editing each *.border.width token.
+    // Semantic tokens must reference a primitive (no literals at this tier).
+    put(Ref(Tok::S_Border_Enabled, TokenLevel::Semantic, Tok::P_Border_Enabled, "global borders on/off"));
     put(Ref(Tok::S_Border_Negative_Default, TokenLevel::Semantic, Tok::S_Negative_Color_500, "negative border default"));
     put(Ref(Tok::S_Border_Negative_Hover, TokenLevel::Semantic, Tok::S_Negative_Color_400, "negative border hover"));
     put(Ref(Tok::S_Border_Negative_Pressed, TokenLevel::Semantic, Tok::S_Negative_Color_300, "negative border pressed"));
@@ -978,6 +1044,7 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::S_Config_TouchExtraPadding, TokenLevel::Semantic, Tok::P_Config_TouchExtraPadding, "semantic.config.touch-extra-padding"));
     put(Ref(Tok::S_Config_IndentSpacing, TokenLevel::Semantic, Tok::P_Config_IndentSpacing, "semantic.config.indent-spacing"));
     put(Ref(Tok::S_Config_ColumnsMinSpacing, TokenLevel::Semantic, Tok::P_Config_ColumnsMinSpacing, "semantic.config.columns-min-spacing"));
+    put(Ref(Tok::S_Config_UndoSteps, TokenLevel::Semantic, Tok::P_Config_UndoSteps, "semantic.config.undo-steps"));
     put(Ref(Tok::S_Config_DisplayWindowPadding, TokenLevel::Semantic, Tok::P_Config_DisplayWindowPadding, "semantic.config.display-window-padding"));
     put(Ref(Tok::S_Config_DisplaySafeAreaPadding, TokenLevel::Semantic, Tok::P_Config_DisplaySafeAreaPadding, "semantic.config.display-safe-area-padding"));
     put(Ref(Tok::S_Config_SeparatorTextPadding, TokenLevel::Semantic, Tok::P_Config_SeparatorTextPadding, "semantic.config.separator-text-padding"));
@@ -1162,7 +1229,11 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Vec2(Tok::C_Window_MinSize, TokenLevel::Component, {32.0f,32.0f}, "min window size", Px(2048)));
     put(Ref(Tok::C_Window_TitleAlign, TokenLevel::Component, Tok::S_Config_SeparatorTextAlign, "title align"));
     put(Int(Tok::C_Window_MenuButtonPosition, TokenLevel::Component, 1, "menu button side", Dir012()));
-    put(Ref(Tok::C_Child_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "child bg"));
+    // Detached-window drop shadow (SecondaryWindow). A soft dark edge giving the
+    // floating window a sense of depth; tint carries its own alpha.
+    put(Color(Tok::C_Window_ShadowColor, TokenLevel::Component, HexA(0x00000040), "detached window shadow"));
+    put(Float(Tok::C_Window_ShadowSize, TokenLevel::Component, 18.f, "detached window shadow size", Px(64)));
+    put(Ref(Tok::C_Child_Background, TokenLevel::Component, Tok::S_Background_App_Child, "child bg (inner zones inside an editor)"));
     put(Ref(Tok::C_Child_BackgroundOpacity, TokenLevel::Component, Tok::S_Opacity_Transparent, "child bg opacity"));
     put(Ref(Tok::C_Child_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "child rounding"));
     put(Ref(Tok::C_Child_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "child border"));
@@ -1170,9 +1241,9 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Popup_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "popup rounding"));
     put(Ref(Tok::C_Popup_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "popup border"));
     put(Ref(Tok::C_Popup_MenuBarBackground, TokenLevel::Component, Tok::S_Color_Background_Layer1, "menu bar bg"));
-    put(Ref(Tok::C_Frame_Background, TokenLevel::Component, Tok::S_Color_Background_Layer1, "frame bg"));
-    put(Ref(Tok::C_Frame_BackgroundHover, TokenLevel::Component, Tok::S_Color_Background_Layer1, "frame bg hover"));
-    put(Ref(Tok::C_Frame_BackgroundDown, TokenLevel::Component, Tok::S_Color_Background_Layer2, "frame bg down"));
+    put(Ref(Tok::C_Frame_Background, TokenLevel::Component, Tok::S_Background_App_Frame, "frame/input bg (the lightest surface)"));
+    put(Ref(Tok::C_Frame_BackgroundHover, TokenLevel::Component, Tok::S_Background_App_Frame, "frame bg hover"));
+    put(Ref(Tok::C_Frame_BackgroundDown, TokenLevel::Component, Tok::S_Background_App_Child, "frame bg down"));
     put(Ref(Tok::C_Frame_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "frame rounding"));
     put(Ref(Tok::C_Frame_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "frame border"));
     put(Ref(Tok::C_Frame_Padding, TokenLevel::Component, Tok::S_Config_ItemInnerSpacing, "frame padding"));
@@ -1213,12 +1284,24 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Header_BackgroundHover, TokenLevel::Component, Tok::S_Color_Accent_Hover, "header hover"));
     put(Ref(Tok::C_Header_BackgroundDown, TokenLevel::Component, Tok::S_Color_Accent_Down, "header down"));
     put(Ref(Tok::C_Scrollbar_Background, TokenLevel::Component, Tok::S_Color_Background_Layer1, "scrollbar track"));
-    put(Ref(Tok::C_Scrollbar_Grab, TokenLevel::Component, Tok::S_Color_Border_Strong, "scrollbar grab"));
-    put(Ref(Tok::C_Scrollbar_GrabHover, TokenLevel::Component, Tok::S_Color_Border_Default, "scrollbar grab hover"));
+    // Rest colour kept discreet/dark (subtle border = gray-700 on dark); it
+    // brightens toward the hover/active colours as the cursor nears the grab.
+    put(Ref(Tok::C_Scrollbar_Grab, TokenLevel::Component, Tok::S_Border_Subtle, "scrollbar grab"));
+    put(Ref(Tok::C_Scrollbar_GrabHover, TokenLevel::Component, Tok::S_Color_Border_Strong, "scrollbar grab hover"));
     put(Ref(Tok::C_Scrollbar_GrabDown, TokenLevel::Component, Tok::S_Text_Tertiary, "scrollbar grab down"));
     put(Float(Tok::C_Scrollbar_Size, TokenLevel::Component, 14.f, "scrollbar size", CS::Range(1.0,32.0,"px")));
     put(Ref(Tok::C_Scrollbar_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "scrollbar rounding"));
     put(Float(Tok::C_Scrollbar_Padding, TokenLevel::Component, 2.f, "scrollbar padding", Px(10)));
+    // Custom overlay scrollbar (UI::BeginScroll/EndScroll). The grab floats in
+    // the component's right margin (overlay → no reserved space) and grows from
+    // its rest thickness to its hover thickness (≈ the margin) as the cursor
+    // approaches within `proximity` px. Grab colours reuse the scrollbar grab
+    // tokens above (rest = grab, near/hover = grab hover).
+    put(Float(Tok::C_Scrollbar_OverlayMargin,     TokenLevel::Component, 7.f, "overlay scrollbar gutter width", Px(20)));
+    put(Float(Tok::C_Scrollbar_OverlayWidthRest,  TokenLevel::Component, 3.f, "overlay scrollbar width at rest", Px(20)));
+    put(Float(Tok::C_Scrollbar_OverlayWidthHover, TokenLevel::Component, 5.f, "overlay scrollbar width near/hover", Px(20)));
+    put(Float(Tok::C_Scrollbar_OverlayProximity,  TokenLevel::Component, 48.f, "overlay scrollbar proximity reach", Px(200)));
+    put(Float(Tok::C_Scrollbar_OverlayPadding,    TokenLevel::Component, 4.f, "overlay scrollbar top/bottom inset", Px(20)));
     put(Ref(Tok::C_Slider_Grab, TokenLevel::Component, Tok::S_Color_Accent_Default, "slider grab"));
     put(Ref(Tok::C_Slider_GrabDown, TokenLevel::Component, Tok::S_Color_Accent_Down, "slider grab down"));
     put(Ref(Tok::C_Slider_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "slider rounding"));
@@ -1243,12 +1326,19 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Image_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_None, "image border"));
     put(Int(Tok::C_Docking_NodeHasCloseButton, TokenLevel::Component, 1, "docking close button", Bool01()));
     put(Float(Tok::C_Docking_SeparatorSize, TokenLevel::Component, 2.f, "docking separator", Round12()));
-    put(Float(Tok::C_Zone_SeparatorSize, TokenLevel::Component, 6.f, "zone separator size", CS::Range(2.0,20.0,"px")));
-    put(Ref(Tok::C_Zone_SeparatorColor, TokenLevel::Component, Tok::S_Opacity_Transparent, "zone separator fill"));
+    put(Float(Tok::C_Zone_SeparatorSize, TokenLevel::Component, 4.f, "zone separator size", CS::Range(2.0,20.0,"px")));
+    // Zone separators: the segment UNDER the cursor (primary, full colour) and
+    // the colinear continuation segments between the other zones that would
+    // shift on drag (own colour + own opacity, so it can read fainter or differ
+    // in hue). Both default to the semantic border colour; the continuation's
+    // alpha is driven by its dedicated opacity token (was a hard-coded ×0.35).
+    put(Ref(Tok::C_Zone_SeparatorColor, TokenLevel::Component, Tok::S_Color_Border_Default, "zone separator (under cursor)"));
+    put(Ref(Tok::C_Zone_SeparatorColorContinuation, TokenLevel::Component, Tok::S_Color_Border_Default, "zone separator (between zones)"));
+    put(Ref(Tok::C_Zone_SeparatorContinuationOpacity, TokenLevel::Component, Tok::S_Opacity_Reduced, "zone separator continuation opacity"));
     put(Ref(Tok::C_DragDropTarget_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "drop target rounding"));
     put(Float(Tok::C_DragDropTarget_BorderWidth, TokenLevel::Component, 2.f, "drop target border", Border4()));
     put(Float(Tok::C_DragDropTarget_Padding, TokenLevel::Component, 3.f, "drop target pad", Px(16)));
-    put(Ref(Tok::C_KeyCap_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "keycap bg"));
+    put(Ref(Tok::C_KeyCap_Background, TokenLevel::Component, Tok::S_Background_App_Control, "keycap bg (clickable surface, above app base)"));
     put(Ref(Tok::C_KeyCap_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "keycap border"));
     put(Ref(Tok::C_KeyCap_Label, TokenLevel::Component, Tok::S_Color_Text_Default, "keycap text"));
     put(Ref(Tok::C_KeyCap_CornerRadius, TokenLevel::Component, Tok::S_Radius_Xs, "keycap rounding"));
@@ -1287,9 +1377,9 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Toggle_LabelSelected, TokenLevel::Component, Tok::S_Color_Text_Default, "toggle text on"));
     put(Ref(Tok::C_Toggle_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Small, "toggle rounding"));
     put(Float(Tok::C_Toggle_BorderWidth, TokenLevel::Component, 1.f, "toggle border", Border4()));
-    put(Ref(Tok::C_IconButton_Background, TokenLevel::Component, Tok::S_Color_Background_Layer2, "icon button bg"));
-    put(Ref(Tok::C_IconButton_BackgroundHover, TokenLevel::Component, Tok::S_Color_Background_Layer1, "icon button bg hover"));
-    put(Ref(Tok::C_IconButton_BackgroundDown, TokenLevel::Component, Tok::S_Color_Background_Default, "icon button bg down"));
+    put(Ref(Tok::C_IconButton_Background, TokenLevel::Component, Tok::S_Background_App_Control, "icon button bg (clickable surface, above app base)"));
+    put(Ref(Tok::C_IconButton_BackgroundHover, TokenLevel::Component, Tok::S_Surface_Canvas, "icon button bg hover (slightly lighter)"));
+    put(Ref(Tok::C_IconButton_BackgroundDown, TokenLevel::Component, Tok::S_Surface_Raised, "icon button bg down"));
     put(Ref(Tok::C_IconButton_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "icon button border"));
     put(Ref(Tok::C_IconButton_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "icon button tint"));
     put(Ref(Tok::C_IconButton_IconNegative, TokenLevel::Component, Tok::S_Color_Negative_Default, "icon button danger"));
@@ -1324,8 +1414,8 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Vec2(Tok::C_Dropdown_Padding, TokenLevel::Component, {8.f, 2.f}, "dropdown padding (x=side margin, y=vertical inset)", PadXY()));
     put(Float(Tok::C_Dropdown_ChevronSize, TokenLevel::Component, 8.f, "dropdown chevron size", Px(32)));
     put(Float(Tok::C_Dropdown_IconSize, TokenLevel::Component, 16.f, "dropdown icon size", Px(64)));
-    put(Ref(Tok::C_Dropdown_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "dropdown bg (darker than the bar)"));
-    put(Ref(Tok::C_Dropdown_BackgroundHover, TokenLevel::Component, Tok::S_Color_Background_EditorSurface, "dropdown bg hover (slightly lighter)"));
+    put(Ref(Tok::C_Dropdown_Background, TokenLevel::Component, Tok::S_Background_App_Control, "dropdown bg (clickable surface, above app base)"));
+    put(Ref(Tok::C_Dropdown_BackgroundHover, TokenLevel::Component, Tok::S_Surface_Canvas, "dropdown bg hover (slightly lighter)"));
     put(Ref(Tok::C_Dropdown_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "dropdown text"));
     put(Ref(Tok::C_Dropdown_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "dropdown icon tint"));
     put(Ref(Tok::C_Dropdown_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "dropdown rounding"));
@@ -1344,16 +1434,30 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::S_CornerRadius_Control, TokenLevel::Semantic, Tok::P_Radius_150, "radius control (small UI elements)"));
     put(Ref(Tok::C_Dropdown_Border, TokenLevel::Component, Tok::S_Neutral_Color_700, "dropdown border (subtle at rest)"));
     put(Ref(Tok::C_Dropdown_BorderHover, TokenLevel::Component, Tok::S_Neutral_Color_600, "dropdown border hover (slightly brighter)"));
-    put(Ref(Tok::C_Dropdown_BackgroundDown, TokenLevel::Component, Tok::S_Color_Background_Layer2, "dropdown bg pressed/open"));
+    put(Ref(Tok::C_Dropdown_BackgroundDown, TokenLevel::Component, Tok::S_Surface_Raised, "dropdown bg pressed/open"));
     put(Ref(Tok::C_Dropdown_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "dropdown border width"));
     put(Ref(Tok::C_Menu_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "menu border"));
     put(Ref(Tok::C_Menu_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "menu border width"));
     put(Color(Tok::P_Color_Gray_850, TokenLevel::Primitive, Hex(0x1E1E1E), "gray 850"));
-    put(RefT4(Tok::S_Color_Background_EditorSurface, TokenLevel::Semantic, "editor surface", Tok::P_Color_Gray_850, Tok::P_Color_Gray_75, Tok::P_Color_Gray_850, Tok::P_Color_Gray_1000));
-    put(Ref(Tok::C_Editor_Background, TokenLevel::Component, Tok::S_Color_Background_EditorSurface, "editor zone bg"));
-    put(Ref(Tok::C_Editor_TopBarBackground, TokenLevel::Component, Tok::S_Color_Background_Layer2, "editor top-bar bg"));
+    put(Ref(Tok::C_Editor_Background, TokenLevel::Component, Tok::S_Surface_Canvas, "editor zone bg"));
+    put(Ref(Tok::C_Editor_TopBarBackground, TokenLevel::Component, Tok::S_Surface_Raised, "editor top-bar / menu bar bg"));
+    // Tooltip: same surface as the editor menu bar, control corner radius, thin
+    // border (honours the global border toggle), and a real padding.
+    put(Ref(Tok::C_Tooltip_Background, TokenLevel::Component, Tok::C_Editor_TopBarBackground, "tooltip bg (= editor menu bar)"));
+    put(Ref(Tok::C_Tooltip_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "tooltip text"));
+    put(Ref(Tok::C_Tooltip_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "tooltip border"));
+    put(Ref(Tok::C_Tooltip_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "tooltip border width"));
+    put(Ref(Tok::C_Tooltip_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "tooltip rounding"));
+    put(Vec2(Tok::C_Tooltip_Padding, TokenLevel::Component, {8.f, 6.f}, "tooltip padding", PadXY()));
+    // Editor content inset: a dedicated semantic (referencing a spacing
+    // primitive) so it can be tuned at the semantic tier; the component points
+    // at the semantic. Drives the panel-editor padding (Outliner/Properties/
+    // Timeline/Dev); surfaced in Preferences ▸ Customisation ▸ Editor frame.
+    put(Ref(Tok::S_Spacing_EditorInset, TokenLevel::Semantic, Tok::P_Spacing_300, "editor content inset (panel editors)"));
+    put(Ref(Tok::C_Editor_ContentInset, TokenLevel::Component, Tok::S_Spacing_EditorInset, "inset/padding around panel-editor content (Outliner/Properties/Timeline/Dev)"));
     put(Ref(Tok::C_Cursor_Color, TokenLevel::Component, Tok::S_Static_WhiteText, "custom mouse cursor icon tint (white, theme-invariant)"));
     put(Float(Tok::C_Menu_ItemPaddingX, TokenLevel::Component, 6.f, "menu item horizontal padding", CS::Range(0.0,24.0,"px")));
+    put(Ref(Tok::C_Menu_TitleText, TokenLevel::Component, Tok::S_Color_Text_Subtle, "floating-menu title (header) text — a touch greyer than item text"));
     // ── Tabbed zones (Graphite-style) ──
     put(Color(Tok::P_Color_WhiteTransparent, TokenLevel::Primitive, HexA(0xFFFFFF2E), "white ~18% (drop preview)"));
     put(Color(Tok::P_Color_Gray_875, TokenLevel::Primitive, Hex(0x232323), "gray 875"));
@@ -1363,12 +1467,12 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     // menu-bar colour so it visually merges with it; inactive tabs match the
     // bar; hover is a hair lighter than the bar but still darker than the menu
     // bar (never pure black).
-    put(Ref(Tok::C_ZoneTab_Background, TokenLevel::Component, Tok::S_Color_Background_EditorSurface, "zone tab bg (= bar)"));
+    put(Ref(Tok::C_ZoneTab_Background, TokenLevel::Component, Tok::S_Surface_Canvas, "zone tab bg (= editor bg)"));
     put(Ref(Tok::C_ZoneTab_BackgroundActive, TokenLevel::Component, Tok::C_Editor_TopBarBackground, "active zone tab bg (= menu bar)"));
-    put(Ref(Tok::C_ZoneTab_BackgroundHover, TokenLevel::Component, Tok::P_Color_Gray_875, "zone tab bg hover (just above the bar)"));
+    put(Ref(Tok::C_ZoneTab_BackgroundHover, TokenLevel::Component, Tok::S_Surface_Raised, "zone tab bg hover (toward the menu bar)"));
     put(Ref(Tok::C_ZoneTab_Text, TokenLevel::Component, Tok::S_Color_Text_Subtle, "zone tab text"));
     put(Ref(Tok::C_ZoneTab_TextActive, TokenLevel::Component, Tok::S_Color_Text_Default, "active zone tab text"));
-    put(Ref(Tok::C_ZoneTab_BarBackground, TokenLevel::Component, Tok::S_Color_Background_EditorSurface, "zone tab bar bg (darker than menu bar)"));
+    put(Ref(Tok::C_ZoneTab_BarBackground, TokenLevel::Component, Tok::S_Surface_Canvas, "zone tab bar bg (= editor bg)"));
     put(Ref(Tok::C_ZoneTab_InsertLineColor, TokenLevel::Component, Tok::S_Color_Accent_Default, "zone tab insertion line"));
     put(Float(Tok::C_ZoneTab_InsertLineWidth, TokenLevel::Component, 2.f, "zone tab insertion line width", CS::Range(1.0,6.0,"px")));
     put(Ref(Tok::C_ZoneTab_DropPreviewFill, TokenLevel::Component, Tok::P_Color_WhiteTransparent, "drop preview fill"));
@@ -1376,6 +1480,146 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Float(Tok::C_ZoneTab_PreviewAnimDuration, TokenLevel::Component, 0.06f, "drop preview anim seconds", CS::Range(0.0,1.0,"s")));
     put(Float(Tok::C_ZoneTab_DragThreshold, TokenLevel::Component, 5.f, "zone tab drag arm distance", CS::Range(1.0,20.0,"px")));
     put(Int(Tok::C_ZoneTab_ShowSolo, TokenLevel::Component, 0, "always show tab bar for solo zones", Bool01()));
+    // ── Custom application title bar + splash screen ──
+    put(Ref(Tok::C_TitleBar_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "title bar bg (= semantic.background.base, the darkest surface)"));
+    put(Ref(Tok::C_TitleBar_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "title bar icon tint"));
+    put(Ref(Tok::C_TitleBar_Text, TokenLevel::Component, Tok::S_Color_Text_Subtle, "title bar text"));
+    put(Ref(Tok::C_TitleBar_ButtonHover, TokenLevel::Component, Tok::S_Background_App_Control, "title bar button hover (a hair lighter than the bar)"));
+    put(Ref(Tok::C_TitleBar_CloseHover, TokenLevel::Component, Tok::S_Color_Negative_Default, "title bar close hover"));
+    put(Ref(Tok::C_Splash_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "splash bg (base)"));
+    put(Ref(Tok::C_Splash_Link, TokenLevel::Component, Tok::S_Color_Accent_Default, "splash link color"));
+    // Version label sits over the LIGHT splash image → always dark (a fixed
+    // neutral, not a theme-dependent text colour that would go light on dark).
+    put(Ref(Tok::C_Splash_VersionText, TokenLevel::Component, Tok::S_Neutral_Color_900, "splash version text (dark on light image)"));
+
+    // ── Surface ROLES (semantic) + component surfaces ──
+    // ONE coherent grey ladder, named by FUNCTION (not by component), so the
+    // same usage gets the same grey everywhere. Darkest → lightest:
+    //   background.base < app.control < surface.canvas < surface.raised
+    //                   < app.child < app.frame.
+    //   background.base — app canvas + window base (the darkest chrome); this is
+    //                     the EXISTING S_Color_Background_Default role, reused.
+    //   app.control    — clickable chips (dropdown / keycap / icon button).
+    //   surface.canvas — a large content surface (used by the editor canvas).
+    //   surface.raised — a bar/toolbar sitting above a canvas (editor menu bar).
+    //   app.child      — an inner sub-surface inside a content surface.
+    //   app.frame      — text inputs / frames (the lightest field surface).
+    // Precise components reference these roles through COMPONENT tokens below.
+    put(Color(Tok::P_Color_Gray_780, TokenLevel::Primitive, Hex(0x323232), "gray 780"));
+    put(Color(Tok::P_Color_Gray_760, TokenLevel::Primitive, Hex(0x3C3C3C), "gray 760"));
+    put(Color(Tok::P_Color_Gray_740, TokenLevel::Primitive, Hex(0x484848), "gray 740"));
+    put(RefT4(Tok::S_Background_App_Control, TokenLevel::Semantic, "clickable component surface",
+              Tok::P_Color_Gray_850, Tok::P_Color_Gray_100, Tok::P_Color_Gray_850, Tok::P_Color_Gray_900));
+    put(RefT4(Tok::S_Surface_Canvas, TokenLevel::Semantic, "large content surface",
+              Tok::P_Color_Gray_875, Tok::P_Color_Gray_50, Tok::P_Color_Gray_875, Tok::P_Color_Gray_1000));
+    put(RefT4(Tok::S_Surface_Raised, TokenLevel::Semantic, "bar/toolbar above a canvas",
+              Tok::P_Color_Gray_800, Tok::P_Color_Gray_25, Tok::P_Color_Gray_800, Tok::P_Color_Gray_900));
+    put(RefT4(Tok::S_Background_App_Child, TokenLevel::Semantic, "inner child surface",
+              Tok::P_Color_Gray_780, Tok::P_Color_Gray_25, Tok::P_Color_Gray_780, Tok::P_Color_Gray_900));
+    put(RefT4(Tok::S_Background_App_Frame, TokenLevel::Semantic, "input/frame surface (lightest)",
+              Tok::P_Color_Gray_740, Tok::P_Color_Gray_25, Tok::P_Color_Gray_740, Tok::P_Color_Gray_800));
+    // Minimal-style dropdown hover (title-bar menus): no chip, just a subtle
+    // fill a hair lighter than the title bar (= app base), i.e. the control
+    // surface, so the hovered menu item reads without a hard border/background.
+    put(Ref(Tok::C_Dropdown_BackgroundHoverMinimal, TokenLevel::Component, Tok::S_Background_App_Control, "minimal dropdown hover (just above the title bar)"));
+
+    // Preferences-window title bar — independent of the main title bar so each
+    // window's bar text/icons can be themed separately. Defaults mirror the
+    // main bar (base background, bright text/icons), white-ish by default.
+    put(Ref(Tok::C_PrefBar_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "preferences title bar bg (= app base)"));
+    put(Ref(Tok::C_PrefBar_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "preferences title bar text"));
+    put(Ref(Tok::C_PrefBar_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "preferences title bar icon tint"));
+    put(Ref(Tok::C_PrefBar_ButtonHover, TokenLevel::Component, Tok::S_Background_App_Control, "preferences title bar button hover"));
+    put(Ref(Tok::C_PrefBar_CloseHover, TokenLevel::Component, Tok::S_Color_Negative_Default, "preferences title bar close hover"));
+
+    // Nested panel widget. Header is flat; body darkens with depth so deeper
+    // sub-panels recede. Lighter → darker: header/L1 = raised, L2 = canvas,
+    // L3 = base. Header never uses accent (no colour change on hover/select).
+    put(Ref(Tok::C_Panel_HeaderBackground, TokenLevel::Component, Tok::S_Surface_Raised, "panel header bg (flat, all depths)"));
+    put(Ref(Tok::C_Panel_BodyL1, TokenLevel::Component, Tok::S_Surface_Raised, "panel body level 1 (= header)"));
+    put(Ref(Tok::C_Panel_BodyL2, TokenLevel::Component, Tok::S_Surface_Canvas, "panel body level 2 (darker)"));
+    put(Ref(Tok::C_Panel_BodyL3, TokenLevel::Component, Tok::S_Color_Background_Default, "panel body level 3+ (darkest)"));
+    put(Ref(Tok::C_Panel_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "panel level-1 outer border"));
+    put(Ref(Tok::C_Panel_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "panel header label"));
+    put(Ref(Tok::C_Panel_OverrideBadge, TokenLevel::Component, Tok::S_Color_Accent_Default, "panel override badge tint"));
+    put(Float(Tok::C_Panel_Gap, TokenLevel::Component, 2.f, "vertical gap before each level-1 panel", CS::Range(0.0,20.0,"px")));
+    // Panels use the SMALL control radius (like buttons/frames/dropdowns), not
+    // the larger default/editor radius.
+    put(Ref(Tok::C_Panel_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "panel rounding"));
+
+    // ── Outliner rows — reference the semantic state matrix. NORMAL family uses
+    // the `default` status (grey hover, blue selected/active); the SEARCH family
+    // uses the `positive` status (green) so matched rows read as "found".
+    put(Ref(Tok::C_Outliner_Row_Hover,         TokenLevel::Component, Tok::S_Accent_Hover_Default,          "outliner row hover"));
+    put(Ref(Tok::C_Outliner_Row_Selected,      TokenLevel::Component, Tok::S_Accent_Selected_Default,       "outliner row selected"));
+    put(Ref(Tok::C_Outliner_Row_SelectedHover, TokenLevel::Component, Tok::S_Accent_HoverSelected_Default,  "outliner row selected+hover"));
+    put(Ref(Tok::C_Outliner_Row_Active,        TokenLevel::Component, Tok::S_Accent_Active_Default,         "outliner row active"));
+    put(Ref(Tok::C_Outliner_Row_ActiveHover,   TokenLevel::Component, Tok::S_Accent_Active_Default,         "outliner row active+hover"));
+    put(Ref(Tok::C_Outliner_Text,              TokenLevel::Component, Tok::S_Color_Text_Default,            "outliner row text"));
+    put(Ref(Tok::C_Outliner_Search_Visual,       TokenLevel::Component, Tok::S_Accent_Visual_Positive,        "outliner search matched-idle bg"));
+    put(Ref(Tok::C_Outliner_Search_Hover,        TokenLevel::Component, Tok::S_Accent_Hover_Positive,         "outliner search hover"));
+    put(Ref(Tok::C_Outliner_Search_Selected,     TokenLevel::Component, Tok::S_Accent_Selected_Positive,      "outliner search selected"));
+    put(Ref(Tok::C_Outliner_Search_SelectedHover,TokenLevel::Component, Tok::S_Accent_HoverSelected_Positive, "outliner search selected+hover"));
+    put(Ref(Tok::C_Outliner_Search_Active,       TokenLevel::Component, Tok::S_Accent_Active_Positive,        "outliner search active"));
+    put(Ref(Tok::C_Outliner_Search_ActiveHover,  TokenLevel::Component, Tok::S_Accent_Active_Positive,        "outliner search active+hover"));
+    put(Ref(Tok::C_Outliner_Search_Text,         TokenLevel::Component, Tok::S_Accent_Text_Positive,          "outliner search matched text (green)"));
+
+    // ── Shared object-state cues. Semantic → palette; the active/orange and
+    // loose/violet mapping lives here ONCE so Viewport, Outliner and Edit mode
+    // agree. On-page "active" = orange, "selected (not active)" = a darker orange,
+    // so the active element stands out from the rest of the selection everywhere.
+    put(Ref(Tok::S_State_Active_OnPage,   TokenLevel::Semantic, Tok::P_Color_Orange_500, "active object marker, on a page (orange)"));
+    put(Ref(Tok::S_State_Active_Loose,    TokenLevel::Semantic, Tok::P_Color_Purple_700, "active object marker, page-less (violet)"));
+    put(Ref(Tok::S_State_Selected_OnPage, TokenLevel::Semantic, Tok::P_Color_Orange_700, "selected (not active) on-page object (darker orange)"));
+    put(Ref(Tok::S_State_Selected_Loose,  TokenLevel::Semantic, Tok::P_Color_Purple_600, "selected page-less object (violet)"));
+
+    // ── Viewport canvas overlays. Cursor/axes use the theme-invariant STATIC
+    // palette so they stay legible over any page colour; transparent steps carry
+    // their own alpha so no literal alpha is needed in the draw code.
+    put(Ref(Tok::C_Viewport_CanvasArea,        TokenLevel::Component, Tok::S_Surface_Canvas,            "viewport ruler/canvas backdrop"));
+    put(Ref(Tok::C_Viewport_Guide,             TokenLevel::Component, Tok::S_Border_Blue,               "viewport alignment guide (blue)"));
+    put(Ref(Tok::C_Viewport_PageBorder,        TokenLevel::Component, Tok::P_Color_TransparentBlack_500,"viewport page edge"));
+    put(Ref(Tok::C_Viewport_PageNameHover,     TokenLevel::Component, Tok::P_Color_TransparentWhite_300,"hovered page-name label background"));
+    put(Ref(Tok::C_Viewport_OriginOutline,     TokenLevel::Component, Tok::P_Color_TransparentBlack_700,"object origin dot outline"));
+    put(Ref(Tok::C_Viewport_CursorRing,        TokenLevel::Component, Tok::S_Static_WhiteText,          "2D cursor outer ring (white)"));
+    put(Ref(Tok::C_Viewport_CursorRingAccent,  TokenLevel::Component, Tok::P_Color_Static_Red_900,      "2D cursor inner ring (red)"));
+    put(Ref(Tok::C_Viewport_CursorTick,        TokenLevel::Component, Tok::S_Static_BlackText,          "cursor −X/−Y ticks (black)"));
+    put(Ref(Tok::C_Viewport_CursorAxisX,       TokenLevel::Component, Tok::P_Color_Static_Red_800,      "cursor +X axis (red)"));
+    put(Ref(Tok::C_Viewport_CursorAxisY,       TokenLevel::Component, Tok::P_Color_Static_Green_600,    "cursor +Y axis (green)"));
+    put(Ref(Tok::C_Viewport_ThumbnailBackground, TokenLevel::Component, Tok::S_Static_WhiteText,        "thumbnail strip slot fill"));
+    put(Ref(Tok::C_Viewport_ThumbnailBorder,   TokenLevel::Component, Tok::P_Color_TransparentBlack_500,"thumbnail strip slot border"));
+
+    // ── Edit-mode overlay (edges, vertices, per-type Bézier handles). ──
+    put(Ref(Tok::C_EditHandle_Edge,       TokenLevel::Component, Tok::S_Color_Border_Strong,        "edit edge line"));
+    put(Ref(Tok::C_EditHandle_Vertex,     TokenLevel::Component, Tok::P_Color_Gray_900,             "edit vertex dot"));
+    put(Ref(Tok::C_EditHandle_VertexRing, TokenLevel::Component, Tok::P_Color_TransparentWhite_700, "edit vertex highlight ring"));
+    put(Ref(Tok::C_EditHandle_NurbsHull,  TokenLevel::Component, Tok::S_Border_Blue,                "NURBS control polygon (guide)"));
+    put(Ref(Tok::C_EditHandle_Free,       TokenLevel::Component, Tok::S_Border_Blue,                "Free handle (blue)"));
+    put(Ref(Tok::C_EditHandle_Aligned,    TokenLevel::Component, Tok::S_Border_Orange,              "Aligned handle (amber)"));
+    put(Ref(Tok::C_EditHandle_Mirrored,   TokenLevel::Component, Tok::S_Border_Green,               "Mirrored handle (green)"));
+    put(Ref(Tok::C_EditHandle_Vector,     TokenLevel::Component, Tok::S_Border_Purple,              "Vector handle (purple)"));
+    put(Ref(Tok::C_EditHandle_Default,    TokenLevel::Component, Tok::S_Border_Blue,                "fallback handle colour"));
+
+    // ── Zone-layout overlays (split corner hints, join preview, transform dim).
+    // The low-alpha corner tints use the coloured BORDER roles; alpha is applied
+    // at draw time (a functional overlay strength, not a themeable colour).
+    put(Ref(Tok::C_ZoneOverlay_CornerTopLeft,     TokenLevel::Component, Tok::S_Border_Blue,   "split corner — top-left (blue)"));
+    put(Ref(Tok::C_ZoneOverlay_CornerTopRight,    TokenLevel::Component, Tok::S_Border_Green,  "split corner — top-right (green)"));
+    put(Ref(Tok::C_ZoneOverlay_CornerBottomLeft,  TokenLevel::Component, Tok::S_Border_Orange, "split corner — bottom-left (amber)"));
+    put(Ref(Tok::C_ZoneOverlay_CornerBottomRight, TokenLevel::Component, Tok::S_Border_Magenta,"split corner — bottom-right (pink)"));
+    put(Ref(Tok::C_ZoneOverlay_SplitLine,         TokenLevel::Component, Tok::P_Color_TransparentWhite_900, "split arm preview line"));
+    put(Ref(Tok::C_ZoneOverlay_JoinKeep,          TokenLevel::Component, Tok::P_Color_TransparentWhite_200, "join: kept-zone faint fill"));
+    put(Ref(Tok::C_ZoneOverlay_JoinRemove,        TokenLevel::Component, Tok::P_Color_TransparentBlack_500, "join: removed-zone dim"));
+    put(Ref(Tok::C_ZoneOverlay_JoinResidual,      TokenLevel::Component, Tok::P_Color_TransparentBlack_700, "join: residual-zone strong dim"));
+    put(Ref(Tok::C_ZoneOverlay_JoinFrame,         TokenLevel::Component, Tok::S_Border_Blue,                "join: final-rect frame (blue)"));
+    put(Ref(Tok::C_ZoneOverlay_TransformDim,      TokenLevel::Component, Tok::P_Color_TransparentBlack_500, "crop/transform scrim"));
+
+    // Object-placement preview: a boolean preference (Classic) / forced in IOF,
+    // plus the thin crosshair cursor colour.
+    put(Int(Tok::P_Config_PreviewPlacement, TokenLevel::Primitive, 0, "preview placement on/off", Bool01()));
+    put(Ref(Tok::S_Config_PreviewPlacement, TokenLevel::Semantic, Tok::P_Config_PreviewPlacement, "semantic.config.preview-placement"));
+    put(Ref(Tok::C_Viewport_Crosshair, TokenLevel::Component, Tok::S_Static_WhiteText, "crosshair placement cursor"));
+    put(Ref(Tok::S_Config_PlacementPreviewAlpha, TokenLevel::Semantic, Tok::P_Opacity_400, "placement ghost opacity"));
 
     (void)i;
     return s;
