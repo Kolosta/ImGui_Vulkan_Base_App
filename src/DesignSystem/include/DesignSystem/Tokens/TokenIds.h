@@ -532,6 +532,7 @@ enum class Tok : std::uint32_t {
     P_Config_TouchExtraPadding,
     P_Config_IndentSpacing,
     P_Config_ColumnsMinSpacing,
+    P_Config_UndoSteps,
     P_Config_DisplayWindowPadding,
     P_Config_DisplaySafeAreaPadding,
     P_Config_SeparatorTextPadding,
@@ -547,6 +548,7 @@ enum class Tok : std::uint32_t {
     P_Config_HoverDelayShort,
     P_Config_HoverDelayNormal,
     P_Config_DragThreshold,
+    P_Border_Enabled,           // literal 1/0 backing S_Border_Enabled (global borders toggle)
     P_Config_AntiAliasedLines,
     P_Config_AntiAliasedLinesUseTex,
     P_Config_AntiAliasedFill,
@@ -650,6 +652,55 @@ enum class Tok : std::uint32_t {
     S_Color_Accent_Default,
     S_Color_Accent_Hover,
     S_Color_Accent_Down,
+    // ── Interaction-STATE colour matrix (semantic.accent.color.<role>.<status>)
+    // Reusable everywhere an editor/list/row needs coherent state cues. Six roles
+    // (visual / hover / text / selected / hover-selected / active) × seven status
+    // families (default, positive, negative, info, neutral, notice, brand). The
+    // `default` status is grey for the passive roles (visual/hover/text) and blue
+    // (accent) for the selection roles (selected/active/hover-selected) — Blender-
+    // like (grey at rest, blue selected). Component tokens reference THESE.
+    S_Accent_Visual_Default,
+    S_Accent_Visual_Positive,
+    S_Accent_Visual_Negative,
+    S_Accent_Visual_Info,
+    S_Accent_Visual_Neutral,
+    S_Accent_Visual_Notice,
+    S_Accent_Visual_Brand,
+    S_Accent_Hover_Default,
+    S_Accent_Hover_Positive,
+    S_Accent_Hover_Negative,
+    S_Accent_Hover_Info,
+    S_Accent_Hover_Neutral,
+    S_Accent_Hover_Notice,
+    S_Accent_Hover_Brand,
+    S_Accent_Text_Default,
+    S_Accent_Text_Positive,
+    S_Accent_Text_Negative,
+    S_Accent_Text_Info,
+    S_Accent_Text_Neutral,
+    S_Accent_Text_Notice,
+    S_Accent_Text_Brand,
+    S_Accent_Selected_Default,
+    S_Accent_Selected_Positive,
+    S_Accent_Selected_Negative,
+    S_Accent_Selected_Info,
+    S_Accent_Selected_Neutral,
+    S_Accent_Selected_Notice,
+    S_Accent_Selected_Brand,
+    S_Accent_HoverSelected_Default,
+    S_Accent_HoverSelected_Positive,
+    S_Accent_HoverSelected_Negative,
+    S_Accent_HoverSelected_Info,
+    S_Accent_HoverSelected_Neutral,
+    S_Accent_HoverSelected_Notice,
+    S_Accent_HoverSelected_Brand,
+    S_Accent_Active_Default,
+    S_Accent_Active_Positive,
+    S_Accent_Active_Negative,
+    S_Accent_Active_Info,
+    S_Accent_Active_Neutral,
+    S_Accent_Active_Notice,
+    S_Accent_Active_Brand,
     S_Background_Accent_KbdFocus,
     S_Background_Info_Default,
     S_Background_Info_Hover,
@@ -784,6 +835,8 @@ enum class Tok : std::uint32_t {
     S_Border_Subtle,
     S_Color_Border_Strong,
     S_Border_Disabled,
+    S_Border_Enabled,           // global on/off (1/0) for ALL borders at once
+
     S_Border_Negative_Default,
     S_Border_Negative_Hover,
     S_Border_Negative_Pressed,
@@ -969,6 +1022,7 @@ enum class Tok : std::uint32_t {
     S_Config_TouchExtraPadding,
     S_Config_IndentSpacing,
     S_Config_ColumnsMinSpacing,
+    S_Config_UndoSteps,
     S_Config_DisplayWindowPadding,
     S_Config_DisplaySafeAreaPadding,
     S_Config_SeparatorTextPadding,
@@ -1153,6 +1207,8 @@ enum class Tok : std::uint32_t {
     C_Window_MinSize,
     C_Window_TitleAlign,
     C_Window_MenuButtonPosition,
+    C_Window_ShadowColor,       // detached-window drop shadow tint (incl. alpha)
+    C_Window_ShadowSize,        // shadow spread in px
     C_Child_Background,
     C_Child_BackgroundOpacity,
     C_Child_CornerRadius,
@@ -1210,6 +1266,14 @@ enum class Tok : std::uint32_t {
     C_Scrollbar_Size,
     C_Scrollbar_CornerRadius,
     C_Scrollbar_Padding,
+    // Custom Blender-style overlay scrollbar (UI::BeginScroll/EndScroll): a thin
+    // grab floating in the component's right margin — zero reserved space — that
+    // grows and brightens as the cursor nears it.
+    C_Scrollbar_OverlayMargin,      // right inset the grab lives in (= the 5px margin)
+    C_Scrollbar_OverlayWidthRest,   // grab thickness at rest (thin, e.g. 3px)
+    C_Scrollbar_OverlayWidthHover,  // grab thickness when near/hovered (~ margin)
+    C_Scrollbar_OverlayProximity,   // cursor distance at which the grab starts reacting
+    C_Scrollbar_OverlayPadding,     // top/bottom inset so the grab clears the container edges/radius
     C_Slider_Grab,
     C_Slider_GrabDown,
     C_Slider_CornerRadius,
@@ -1236,6 +1300,8 @@ enum class Tok : std::uint32_t {
     C_Docking_SeparatorSize,
     C_Zone_SeparatorSize,
     C_Zone_SeparatorColor,
+    C_Zone_SeparatorColorContinuation,
+    C_Zone_SeparatorContinuationOpacity,
     C_DragDropTarget_CornerRadius,
     C_DragDropTarget_BorderWidth,
     C_DragDropTarget_Padding,
@@ -1337,11 +1403,19 @@ enum class Tok : std::uint32_t {
     C_Menu_Border,
     C_Menu_BorderWidth,
     P_Color_Gray_850,
-    S_Color_Background_EditorSurface,
     C_Editor_Background,
     C_Editor_TopBarBackground,
+    S_Spacing_EditorInset,
+    C_Editor_ContentInset,
     C_Cursor_Color,
     C_Menu_ItemPaddingX,
+    C_Menu_TitleText,
+    C_Tooltip_Background,
+    C_Tooltip_Text,
+    C_Tooltip_Border,
+    C_Tooltip_BorderWidth,
+    C_Tooltip_CornerRadius,
+    C_Tooltip_Padding,
     P_Color_WhiteTransparent,
     P_Color_Gray_875,
     C_ZoneTab_Gap,
@@ -1359,6 +1433,128 @@ enum class Tok : std::uint32_t {
     C_ZoneTab_PreviewAnimDuration,
     C_ZoneTab_DragThreshold,
     C_ZoneTab_ShowSolo,
+    C_TitleBar_Background,
+    C_TitleBar_Icon,
+    C_TitleBar_Text,
+    C_TitleBar_ButtonHover,
+    C_TitleBar_CloseHover,
+    C_Splash_Background,
+    C_Splash_Link,
+    C_Splash_VersionText,       // version label over the (light) splash image — dark
+
+    // ── Application surface hierarchy (darkest → lightest) ──
+    // One ordered semantic ladder for the app chrome, so every clickable /
+    // container surface derives from a single, coherent scale instead of
+    // borrowing the generic recessed/raised layers. Order, dark theme:
+    //   base < control < editor < menu-bar < child < frame.
+    C_Dropdown_BackgroundHoverMinimal,
+    P_Color_Gray_780,
+    P_Color_Gray_760,
+    P_Color_Gray_740,
+    // Generic surface ROLES (named by function/elevation, never by component).
+    // Darkest → lightest. Component tokens below reference these. The darkest
+    // "base" role already exists as S_Color_Background_Default
+    // (semantic.background.base.default) — reused here, not duplicated.
+    S_Background_App_Control,   // clickable component chips
+    S_Surface_Canvas,           // large content surface (e.g. an editor canvas)
+    S_Surface_Raised,           // a bar/toolbar sitting above a canvas
+    S_Background_App_Child,     // inner sub-surface inside a content surface
+    S_Background_App_Frame,     // text input / frame field (lightest)
+
+    // ── Preferences window title bar (independent of the main title bar) ──
+    // Each window's title bar controls its own text/icon colours, so they can
+    // be themed separately. The main window uses C_TitleBar_*; the Preferences
+    // window uses these.
+    C_PrefBar_Background,
+    C_PrefBar_Text,
+    C_PrefBar_Icon,
+    C_PrefBar_ButtonHover,
+    C_PrefBar_CloseHover,
+
+    // ── Nested "panel" widget (Blender-style collapsible) ──
+    // Header is flat (no accent/colour change on hover/select). Body colour
+    // darkens with nesting depth so deeper sub-panels recede.
+    C_Panel_HeaderBackground,   // header band (all depths)
+    C_Panel_BodyL1,             // level-1 body + its direct children
+    C_Panel_BodyL2,             // an opened child's body (a bit darker)
+    C_Panel_BodyL3,             // deeper child body (darker still)
+    C_Panel_Border,             // level-1 outer border
+    C_Panel_Text,               // header label
+    C_Panel_OverrideBadge,      // "has override" marker tint
+    C_Panel_Gap,                // vertical gap before each level-1 panel
+    C_Panel_CornerRadius,       // panel rounding (small control radius, not editor radius)
+
+    // ── Outliner rows: a tree list whose rows carry interaction state. Each row
+    // background + the row text reference the semantic state matrix above. There
+    // are NORMAL tokens (default status → grey/blue) and SEARCH tokens (positive
+    // status → green) that the Outliner swaps to while a search is active.
+    C_Outliner_Row_Hover,           // hovered (unselected) row bg
+    C_Outliner_Row_Selected,        // selected (inactive) row bg
+    C_Outliner_Row_SelectedHover,   // selected + hovered row bg
+    C_Outliner_Row_Active,          // selected + active row bg
+    C_Outliner_Row_ActiveHover,     // selected + active + hovered row bg
+    C_Outliner_Text,                // default row label colour
+    C_Outliner_Search_Visual,       // search: a matched-but-idle row bg (faint)
+    C_Outliner_Search_Hover,        // search: hovered matched row bg
+    C_Outliner_Search_Selected,     // search: selected matched row bg
+    C_Outliner_Search_SelectedHover,
+    C_Outliner_Search_Active,
+    C_Outliner_Search_ActiveHover,
+    C_Outliner_Search_Text,         // search: matched row label colour (green text)
+
+    // ── Shared object-STATE colours (Viewport + Outliner + Edit mode) ──
+    // The "active = orange, loose = violet" cues every editor agrees on. Semantic
+    // so a theme can retune them once; they reference the palette, never a literal.
+    // `loose` = the object belongs to no page (page-less) → violet instead of orange.
+    S_State_Active_OnPage,          // active object marker, on a page (orange)
+    S_State_Active_Loose,           // active object marker, page-less (violet)
+    S_State_Selected_OnPage,        // selected (NOT active) on-page object (darker orange)
+    S_State_Selected_Loose,         // selected (not active) page-less object (violet)
+
+    // ── Viewport canvas overlays (chrome drawn over the Vulkan canvas) ──
+    // Cursor/axes/thumbnail cues use the theme-INVARIANT static palette so they
+    // stay legible over any page colour regardless of the active theme.
+    C_Viewport_CanvasArea,          // ruler/canvas backdrop band
+    C_Viewport_Guide,               // alignment guide line (blue)
+    C_Viewport_PageBorder,          // page rectangle edge
+    C_Viewport_PageNameHover,       // hovered page-name label background
+    C_Viewport_OriginOutline,       // object origin dot outline
+    C_Viewport_CursorRing,          // 2D cursor outer ring (white)
+    C_Viewport_CursorRingAccent,    // 2D cursor inner ring (red)
+    C_Viewport_CursorTick,          // −X/−Y crosshair ticks (black)
+    C_Viewport_CursorAxisX,         // +X axis tick (red)
+    C_Viewport_CursorAxisY,         // +Y axis tick (green)
+    C_Viewport_ThumbnailBackground, // thumbnail strip slot fill
+    C_Viewport_ThumbnailBorder,     // thumbnail strip slot border
+
+    // ── Edit-mode overlay: edges, vertices and Bézier handles ──
+    C_EditHandle_Edge,              // unselected edge line
+    C_EditHandle_Vertex,           // unselected vertex dot
+    C_EditHandle_VertexRing,        // vertex highlight ring (white)
+    C_EditHandle_NurbsHull,         // NURBS control polygon (dim)
+    C_EditHandle_Free,              // Free handle (blue)
+    C_EditHandle_Aligned,           // Aligned handle (amber)
+    C_EditHandle_Mirrored,          // Mirrored handle (green)
+    C_EditHandle_Vector,            // Vector handle (purple)
+    C_EditHandle_Default,           // fallback handle colour
+
+    // ── Zone-layout overlays (split corners, join preview, transform dim) ──
+    C_ZoneOverlay_CornerTopLeft,     // split corner tint — top-left (blue)
+    C_ZoneOverlay_CornerTopRight,    // split corner tint — top-right (green)
+    C_ZoneOverlay_CornerBottomLeft,  // split corner tint — bottom-left (amber)
+    C_ZoneOverlay_CornerBottomRight, // split corner tint — bottom-right (pink)
+    C_ZoneOverlay_SplitLine,         // split arm preview line (white)
+    C_ZoneOverlay_JoinKeep,          // join: kept-zone faint fill (white)
+    C_ZoneOverlay_JoinRemove,        // join: removed-zone dim (black)
+    C_ZoneOverlay_JoinResidual,      // join: residual-zone strong dim (black)
+    C_ZoneOverlay_JoinFrame,         // join: final-rect frame (blue)
+    C_ZoneOverlay_TransformDim,      // crop/transform scrim over the canvas
+
+    // ── Object-placement preview (core preference + IOF default) ──
+    P_Config_PreviewPlacement,       // raw 0/1 backing the semantic below
+    S_Config_PreviewPlacement,       // 0/1: place new objects as a cursor-following preview
+    C_Viewport_Crosshair,            // thin crosshair cursor used in preview placement
+    S_Config_PlacementPreviewAlpha,  // 0..1: opacity of the placement ghost preview
 
     // Sentinel — must stay last. Never used as a real token.
     _Count
@@ -1866,6 +2062,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::P_Config_TouchExtraPadding: return "primitive.config.touch-extra-padding";
         case Tok::P_Config_IndentSpacing: return "primitive.config.indent-spacing";
         case Tok::P_Config_ColumnsMinSpacing: return "primitive.config.columns-min-spacing";
+        case Tok::P_Config_UndoSteps: return "primitive.config.undo-steps";
         case Tok::P_Config_DisplayWindowPadding: return "primitive.config.display-window-padding";
         case Tok::P_Config_DisplaySafeAreaPadding: return "primitive.config.display-safe-area-padding";
         case Tok::P_Config_SeparatorTextPadding: return "primitive.config.separator-text-padding";
@@ -1881,6 +2078,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::P_Config_HoverDelayShort: return "primitive.config.hover-delay-short";
         case Tok::P_Config_HoverDelayNormal: return "primitive.config.hover-delay-normal";
         case Tok::P_Config_DragThreshold: return "primitive.config.drag-threshold";
+        case Tok::P_Border_Enabled: return "primitive.border.enabled";
         case Tok::P_Config_AntiAliasedLines: return "primitive.config.anti-aliased-lines";
         case Tok::P_Config_AntiAliasedLinesUseTex: return "primitive.config.anti-aliased-lines-use-tex";
         case Tok::P_Config_AntiAliasedFill: return "primitive.config.anti-aliased-fill";
@@ -1984,6 +2182,49 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::S_Color_Accent_Default: return "semantic.background.accent.default";
         case Tok::S_Color_Accent_Hover: return "semantic.background.accent.hover";
         case Tok::S_Color_Accent_Down: return "semantic.background.accent.pressed";
+        // ── State matrix: semantic.accent.color.<role>.<status> ──
+        case Tok::S_Accent_Visual_Default:         return "semantic.accent.color.visual.default";
+        case Tok::S_Accent_Visual_Positive:        return "semantic.accent.color.visual.positive";
+        case Tok::S_Accent_Visual_Negative:        return "semantic.accent.color.visual.negative";
+        case Tok::S_Accent_Visual_Info:            return "semantic.accent.color.visual.info";
+        case Tok::S_Accent_Visual_Neutral:         return "semantic.accent.color.visual.neutral";
+        case Tok::S_Accent_Visual_Notice:          return "semantic.accent.color.visual.notice";
+        case Tok::S_Accent_Visual_Brand:           return "semantic.accent.color.visual.brand";
+        case Tok::S_Accent_Hover_Default:          return "semantic.accent.color.hover.default";
+        case Tok::S_Accent_Hover_Positive:         return "semantic.accent.color.hover.positive";
+        case Tok::S_Accent_Hover_Negative:         return "semantic.accent.color.hover.negative";
+        case Tok::S_Accent_Hover_Info:             return "semantic.accent.color.hover.info";
+        case Tok::S_Accent_Hover_Neutral:          return "semantic.accent.color.hover.neutral";
+        case Tok::S_Accent_Hover_Notice:           return "semantic.accent.color.hover.notice";
+        case Tok::S_Accent_Hover_Brand:            return "semantic.accent.color.hover.brand";
+        case Tok::S_Accent_Text_Default:           return "semantic.accent.color.text.default";
+        case Tok::S_Accent_Text_Positive:          return "semantic.accent.color.text.positive";
+        case Tok::S_Accent_Text_Negative:          return "semantic.accent.color.text.negative";
+        case Tok::S_Accent_Text_Info:              return "semantic.accent.color.text.info";
+        case Tok::S_Accent_Text_Neutral:           return "semantic.accent.color.text.neutral";
+        case Tok::S_Accent_Text_Notice:            return "semantic.accent.color.text.notice";
+        case Tok::S_Accent_Text_Brand:             return "semantic.accent.color.text.brand";
+        case Tok::S_Accent_Selected_Default:       return "semantic.accent.color.selected.default";
+        case Tok::S_Accent_Selected_Positive:      return "semantic.accent.color.selected.positive";
+        case Tok::S_Accent_Selected_Negative:      return "semantic.accent.color.selected.negative";
+        case Tok::S_Accent_Selected_Info:          return "semantic.accent.color.selected.info";
+        case Tok::S_Accent_Selected_Neutral:       return "semantic.accent.color.selected.neutral";
+        case Tok::S_Accent_Selected_Notice:        return "semantic.accent.color.selected.notice";
+        case Tok::S_Accent_Selected_Brand:         return "semantic.accent.color.selected.brand";
+        case Tok::S_Accent_HoverSelected_Default:  return "semantic.accent.color.hover-selected.default";
+        case Tok::S_Accent_HoverSelected_Positive: return "semantic.accent.color.hover-selected.positive";
+        case Tok::S_Accent_HoverSelected_Negative: return "semantic.accent.color.hover-selected.negative";
+        case Tok::S_Accent_HoverSelected_Info:     return "semantic.accent.color.hover-selected.info";
+        case Tok::S_Accent_HoverSelected_Neutral:  return "semantic.accent.color.hover-selected.neutral";
+        case Tok::S_Accent_HoverSelected_Notice:   return "semantic.accent.color.hover-selected.notice";
+        case Tok::S_Accent_HoverSelected_Brand:    return "semantic.accent.color.hover-selected.brand";
+        case Tok::S_Accent_Active_Default:         return "semantic.accent.color.active.default";
+        case Tok::S_Accent_Active_Positive:        return "semantic.accent.color.active.positive";
+        case Tok::S_Accent_Active_Negative:        return "semantic.accent.color.active.negative";
+        case Tok::S_Accent_Active_Info:            return "semantic.accent.color.active.info";
+        case Tok::S_Accent_Active_Neutral:         return "semantic.accent.color.active.neutral";
+        case Tok::S_Accent_Active_Notice:          return "semantic.accent.color.active.notice";
+        case Tok::S_Accent_Active_Brand:           return "semantic.accent.color.active.brand";
         case Tok::S_Background_Accent_KbdFocus: return "semantic.background.accent.kbd-focus";
         case Tok::S_Background_Info_Default: return "semantic.background.info.default";
         case Tok::S_Background_Info_Hover: return "semantic.background.info.hover";
@@ -2118,6 +2359,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::S_Border_Subtle: return "semantic.border.color.subtle.default";
         case Tok::S_Color_Border_Strong: return "semantic.border.color.strong.default";
         case Tok::S_Border_Disabled: return "semantic.border.color.disabled.default";
+        case Tok::S_Border_Enabled: return "semantic.border.enabled.default";
         case Tok::S_Border_Negative_Default: return "semantic.border.color.negative.default";
         case Tok::S_Border_Negative_Hover: return "semantic.border.color.negative.hover";
         case Tok::S_Border_Negative_Pressed: return "semantic.border.color.negative.pressed";
@@ -2303,6 +2545,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::S_Config_TouchExtraPadding: return "semantic.config.touch-extra-padding";
         case Tok::S_Config_IndentSpacing: return "semantic.config.indent-spacing";
         case Tok::S_Config_ColumnsMinSpacing: return "semantic.config.columns-min-spacing";
+        case Tok::S_Config_UndoSteps: return "semantic.config.undo-steps";
         case Tok::S_Config_DisplayWindowPadding: return "semantic.config.display-window-padding";
         case Tok::S_Config_DisplaySafeAreaPadding: return "semantic.config.display-safe-area-padding";
         case Tok::S_Config_SeparatorTextPadding: return "semantic.config.separator-text-padding";
@@ -2487,6 +2730,8 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Window_MinSize: return "component.window.size.min";
         case Tok::C_Window_TitleAlign: return "component.window.title.text-align";
         case Tok::C_Window_MenuButtonPosition: return "component.window.menu-button.position";
+        case Tok::C_Window_ShadowColor: return "component.window.shadow.color.default";
+        case Tok::C_Window_ShadowSize: return "component.window.shadow.size.default";
         case Tok::C_Child_Background: return "component.child.background.color.default";
         case Tok::C_Child_BackgroundOpacity: return "component.child.background.opacity.default";
         case Tok::C_Child_CornerRadius: return "component.child.corner-radius.default";
@@ -2544,6 +2789,11 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Scrollbar_Size: return "component.scrollbar.size.default";
         case Tok::C_Scrollbar_CornerRadius: return "component.scrollbar.corner-radius.default";
         case Tok::C_Scrollbar_Padding: return "component.scrollbar.padding.default";
+        case Tok::C_Scrollbar_OverlayMargin: return "component.scrollbar.overlay.margin.default";
+        case Tok::C_Scrollbar_OverlayWidthRest: return "component.scrollbar.overlay.width.rest";
+        case Tok::C_Scrollbar_OverlayWidthHover: return "component.scrollbar.overlay.width.hover";
+        case Tok::C_Scrollbar_OverlayProximity: return "component.scrollbar.overlay.proximity.default";
+        case Tok::C_Scrollbar_OverlayPadding: return "component.scrollbar.overlay.padding.default";
         case Tok::C_Slider_Grab: return "component.slider.grab.color.default";
         case Tok::C_Slider_GrabDown: return "component.slider.grab.color.down";
         case Tok::C_Slider_CornerRadius: return "component.slider.corner-radius.default";
@@ -2570,6 +2820,8 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Docking_SeparatorSize: return "component.docking.separator.size.default";
         case Tok::C_Zone_SeparatorSize: return "component.zone.separator.size.default";
         case Tok::C_Zone_SeparatorColor: return "component.zone.separator.color.default";
+        case Tok::C_Zone_SeparatorColorContinuation: return "component.zone.separator.color.continuation";
+        case Tok::C_Zone_SeparatorContinuationOpacity: return "component.zone.separator.continuation.opacity.default";
         case Tok::C_DragDropTarget_CornerRadius: return "component.drop-target.corner-radius.default";
         case Tok::C_DragDropTarget_BorderWidth: return "component.drop-target.border.width.default";
         case Tok::C_DragDropTarget_Padding: return "component.drop-target.padding.default";
@@ -2671,11 +2923,19 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Menu_Border: return "component.menu.border.color.default";
         case Tok::C_Menu_BorderWidth: return "component.menu.border.width.default";
         case Tok::P_Color_Gray_850: return "primitive.color.gray.850";
-        case Tok::S_Color_Background_EditorSurface: return "semantic.background.editor-surface.default";
         case Tok::C_Editor_Background: return "component.editor.background.color.default";
         case Tok::C_Editor_TopBarBackground: return "component.editor.top-bar.background.color.default";
+        case Tok::S_Spacing_EditorInset: return "semantic.spacing.editor-inset";
+        case Tok::C_Editor_ContentInset: return "component.editor.content.inset.default";
         case Tok::C_Cursor_Color: return "component.cursor.icon.color.default";
         case Tok::C_Menu_ItemPaddingX: return "component.menu.item.padding.horizontal";
+        case Tok::C_Menu_TitleText: return "component.menu.title.label.color.default";
+        case Tok::C_Tooltip_Background: return "component.tooltip.background.color.default";
+        case Tok::C_Tooltip_Text: return "component.tooltip.label.color.default";
+        case Tok::C_Tooltip_Border: return "component.tooltip.border.color.default";
+        case Tok::C_Tooltip_BorderWidth: return "component.tooltip.border.width.default";
+        case Tok::C_Tooltip_CornerRadius: return "component.tooltip.corner-radius.default";
+        case Tok::C_Tooltip_Padding: return "component.tooltip.padding.default";
         case Tok::P_Color_WhiteTransparent: return "primitive.color.white-transparent";
         case Tok::P_Color_Gray_875: return "primitive.color.gray.875";
         case Tok::C_ZoneTab_Gap: return "component.zone-tab.gap.default";
@@ -2693,6 +2953,95 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_ZoneTab_PreviewAnimDuration: return "component.zone-tab.drop-preview.anim-duration";
         case Tok::C_ZoneTab_DragThreshold: return "component.zone-tab.drag.threshold";
         case Tok::C_ZoneTab_ShowSolo: return "component.zone-tab.show-solo";
+        case Tok::C_TitleBar_Background: return "component.title-bar.background.color.default";
+        case Tok::C_TitleBar_Icon: return "component.title-bar.icon.color.default";
+        case Tok::C_TitleBar_Text: return "component.title-bar.label.color.default";
+        case Tok::C_TitleBar_ButtonHover: return "component.title-bar.button.background.color.hover";
+        case Tok::C_TitleBar_CloseHover: return "component.title-bar.close.background.color.hover";
+        case Tok::C_Splash_Background: return "component.splash.background.color.default";
+        case Tok::C_Splash_Link: return "component.splash.link.color.default";
+        case Tok::C_Splash_VersionText: return "component.splash.version-text.color.default";
+        case Tok::C_Dropdown_BackgroundHoverMinimal: return "component.dropdown.background.color.hover-minimal";
+        case Tok::P_Color_Gray_780: return "primitive.color.gray.780";
+        case Tok::P_Color_Gray_760: return "primitive.color.gray.760";
+        case Tok::P_Color_Gray_740: return "primitive.color.gray.740";
+        case Tok::S_Background_App_Control: return "semantic.background.app.control";
+        case Tok::S_Surface_Canvas: return "semantic.background.surface.canvas";
+        case Tok::S_Surface_Raised: return "semantic.background.surface.raised";
+        case Tok::S_Background_App_Child: return "semantic.background.app.child";
+        case Tok::S_Background_App_Frame: return "semantic.background.app.frame";
+        case Tok::C_PrefBar_Background: return "component.preferences-title-bar.background.color.default";
+        case Tok::C_PrefBar_Text: return "component.preferences-title-bar.label.color.default";
+        case Tok::C_PrefBar_Icon: return "component.preferences-title-bar.icon.color.default";
+        case Tok::C_PrefBar_ButtonHover: return "component.preferences-title-bar.button.background.color.hover";
+        case Tok::C_PrefBar_CloseHover: return "component.preferences-title-bar.close.background.color.hover";
+        case Tok::C_Panel_HeaderBackground: return "component.panel.header.background.color.default";
+        case Tok::C_Panel_BodyL1: return "component.panel.body.background.color.level-1";
+        case Tok::C_Panel_BodyL2: return "component.panel.body.background.color.level-2";
+        case Tok::C_Panel_BodyL3: return "component.panel.body.background.color.level-3";
+        case Tok::C_Panel_Border: return "component.panel.border.color.default";
+        case Tok::C_Panel_Text: return "component.panel.label.color.default";
+        case Tok::C_Panel_OverrideBadge: return "component.panel.override-badge.color.default";
+        case Tok::C_Panel_Gap: return "component.panel.gap.size.default";
+        case Tok::C_Panel_CornerRadius: return "component.panel.corner-radius.default";
+        case Tok::C_Outliner_Row_Hover:           return "component.outliner.row.background.hover";
+        case Tok::C_Outliner_Row_Selected:        return "component.outliner.row.background.selected";
+        case Tok::C_Outliner_Row_SelectedHover:   return "component.outliner.row.background.selected-hover";
+        case Tok::C_Outliner_Row_Active:          return "component.outliner.row.background.active";
+        case Tok::C_Outliner_Row_ActiveHover:     return "component.outliner.row.background.active-hover";
+        case Tok::C_Outliner_Text:                return "component.outliner.row.text.default";
+        case Tok::C_Outliner_Search_Visual:       return "component.outliner.row.search.background.visual";
+        case Tok::C_Outliner_Search_Hover:        return "component.outliner.row.search.background.hover";
+        case Tok::C_Outliner_Search_Selected:     return "component.outliner.row.search.background.selected";
+        case Tok::C_Outliner_Search_SelectedHover:return "component.outliner.row.search.background.selected-hover";
+        case Tok::C_Outliner_Search_Active:       return "component.outliner.row.search.background.active";
+        case Tok::C_Outliner_Search_ActiveHover:  return "component.outliner.row.search.background.active-hover";
+        case Tok::C_Outliner_Search_Text:         return "component.outliner.row.search.text.default";
+
+        case Tok::S_State_Active_OnPage:    return "semantic.state.active.on-page";
+        case Tok::S_State_Active_Loose:     return "semantic.state.active.loose";
+        case Tok::S_State_Selected_OnPage:  return "semantic.state.selected.on-page";
+        case Tok::S_State_Selected_Loose:   return "semantic.state.selected.loose";
+
+        case Tok::C_Viewport_CanvasArea:        return "component.viewport.canvas.background";
+        case Tok::C_Viewport_Guide:             return "component.viewport.guide.color";
+        case Tok::C_Viewport_PageBorder:        return "component.viewport.page.border";
+        case Tok::C_Viewport_PageNameHover:     return "component.viewport.page-name.background.hover";
+        case Tok::C_Viewport_OriginOutline:     return "component.viewport.origin.outline";
+        case Tok::C_Viewport_CursorRing:        return "component.viewport.cursor.ring";
+        case Tok::C_Viewport_CursorRingAccent:  return "component.viewport.cursor.ring-accent";
+        case Tok::C_Viewport_CursorTick:        return "component.viewport.cursor.tick";
+        case Tok::C_Viewport_CursorAxisX:       return "component.viewport.cursor.axis-x";
+        case Tok::C_Viewport_CursorAxisY:       return "component.viewport.cursor.axis-y";
+        case Tok::C_Viewport_ThumbnailBackground: return "component.viewport.thumbnail.background";
+        case Tok::C_Viewport_ThumbnailBorder:   return "component.viewport.thumbnail.border";
+
+        case Tok::C_EditHandle_Edge:        return "component.edit-handle.edge";
+        case Tok::C_EditHandle_Vertex:      return "component.edit-handle.vertex";
+        case Tok::C_EditHandle_VertexRing:  return "component.edit-handle.vertex-ring";
+        case Tok::C_EditHandle_NurbsHull:   return "component.edit-handle.nurbs-hull";
+        case Tok::C_EditHandle_Free:        return "component.edit-handle.free";
+        case Tok::C_EditHandle_Aligned:     return "component.edit-handle.aligned";
+        case Tok::C_EditHandle_Mirrored:    return "component.edit-handle.mirrored";
+        case Tok::C_EditHandle_Vector:      return "component.edit-handle.vector";
+        case Tok::C_EditHandle_Default:     return "component.edit-handle.default";
+
+        case Tok::C_ZoneOverlay_CornerTopLeft:     return "component.zone-overlay.corner.top-left";
+        case Tok::C_ZoneOverlay_CornerTopRight:    return "component.zone-overlay.corner.top-right";
+        case Tok::C_ZoneOverlay_CornerBottomLeft:  return "component.zone-overlay.corner.bottom-left";
+        case Tok::C_ZoneOverlay_CornerBottomRight: return "component.zone-overlay.corner.bottom-right";
+        case Tok::C_ZoneOverlay_SplitLine:         return "component.zone-overlay.split-line";
+        case Tok::C_ZoneOverlay_JoinKeep:          return "component.zone-overlay.join.keep";
+        case Tok::C_ZoneOverlay_JoinRemove:        return "component.zone-overlay.join.remove";
+        case Tok::C_ZoneOverlay_JoinResidual:      return "component.zone-overlay.join.residual";
+        case Tok::C_ZoneOverlay_JoinFrame:         return "component.zone-overlay.join.frame";
+        case Tok::C_ZoneOverlay_TransformDim:      return "component.zone-overlay.transform-dim";
+
+        case Tok::P_Config_PreviewPlacement: return "primitive.config.preview-placement";
+        case Tok::S_Config_PreviewPlacement: return "semantic.config.preview-placement";
+        case Tok::C_Viewport_Crosshair:      return "component.viewport.crosshair";
+        case Tok::S_Config_PlacementPreviewAlpha: return "semantic.config.placement-preview-alpha";
+
         case Tok::_Count: return "";
     }
     return "";
