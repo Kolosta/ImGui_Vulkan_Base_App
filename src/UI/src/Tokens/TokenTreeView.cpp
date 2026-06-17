@@ -1,5 +1,6 @@
 #include <UI/Tokens/TokenTreeView.h>
 #include <UI/Widgets/IconWidgets.h>
+#include <UI/Widgets/ScrollArea.h>
 #include <DesignSystem/DesignSystem.h>
 #include <DesignSystem/Tokens/TokenRegistry.h>
 #include <DesignSystem/Tokens/Token.h>
@@ -116,15 +117,15 @@ void TokenTreeView::Render(Context& ctx, OverrideManager& mgr) {
                              searchBuffer_, sizeof(searchBuffer_));
     ImGui::Separator();
 
-    ImGui::BeginChild("TreePane", ImVec2(340.0f, 0.0f), true);
+    UI::BeginScroll("TreePane", ImVec2(340.0f, 0.0f), ImGuiChildFlags_Borders);
     RenderTreeForLevel("Primitive Tokens", TokenLevel::Primitive);
     RenderTreeForLevel("Semantic Tokens",  TokenLevel::Semantic);
     RenderTreeForLevel("Component Tokens", TokenLevel::Component);
-    ImGui::EndChild();
+    UI::EndScroll();
 
     ImGui::SameLine();
 
-    ImGui::BeginChild("TreeDetailsPane", ImVec2(0.0f, 0.0f), true);
+    UI::BeginScroll("TreeDetailsPane", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders);
     if (!selectedTokenId_.empty()) {
         inspector_.RenderDetails(selectedTokenId_, ctx, mgr);
         ImGui::Separator();
@@ -161,7 +162,7 @@ void TokenTreeView::Render(Context& ctx, OverrideManager& mgr) {
     } else {
         ImGui::TextWrapped("Select a token in the tree to see its details.");
     }
-    ImGui::EndChild();
+    UI::EndScroll();
 }
 
 } // namespace DesignSystem

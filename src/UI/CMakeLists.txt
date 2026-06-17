@@ -5,6 +5,10 @@ add_library(UI STATIC
     src/Widgets/IconWidgets.cpp
     src/Widgets/ButtonGroup.cpp
     src/Widgets/Dropdown.cpp
+    src/Widgets/PopupMenu.cpp
+    src/Widgets/Panel.cpp
+    src/Widgets/ScrollArea.cpp
+    src/Widgets/SidePanel.cpp
     src/Tokens/TokenEditor.cpp
     src/Tokens/TokenInspector.cpp
     src/Tokens/TokenTreeView.cpp
@@ -14,6 +18,8 @@ add_library(UI STATIC
     src/Shortcuts/ShortcutCaptureField.cpp
     src/Shortcuts/KeyCap.cpp
     src/Chrome/StatusBar.cpp
+    src/Settings/SettingsWindow.cpp
+    src/Settings/TokenPropertyRow.cpp
 )
 
 target_include_directories(UI
@@ -36,4 +42,5 @@ target_link_libraries(UI PUBLIC
     VectorGraphics
     Vulkan::Vulkan
     Freetype::Freetype
+    SDL3::SDL3-shared
 )

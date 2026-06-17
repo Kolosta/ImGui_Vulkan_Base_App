@@ -1,5 +1,6 @@
 #include <UI/Tokens/UserThemeEditor.h>
 #include <UI/Widgets/IconWidgets.h>
+#include <UI/Widgets/ScrollArea.h>
 #include <DesignSystem/DesignSystem.h>
 #include <DesignSystem/Tokens/TokenIds.h>
 #include <DesignSystem/Override/OverrideManager.h>
@@ -323,7 +324,7 @@ void UserThemeEditor::Render(Context& ctx, OverrideManager& mgr) {
     for (const auto& s : ds.GetScopes())
         zones.push_back({ s.path, s.label, s.depth });
 
-    ImGui::BeginChild("UserThemeScroll", ImVec2(0, 0), false);
+    UI::BeginScroll("UserThemeScroll", ImVec2(0, 0));
 
     int zoneIdx = 0;
     for (const ScopeEntry& z : zones) {
@@ -394,7 +395,7 @@ void UserThemeEditor::Render(Context& ctx, OverrideManager& mgr) {
         ImGui::PopID();
     }
 
-    ImGui::EndChild();
+    UI::EndScroll();
 }
 
 } // namespace DesignSystem
