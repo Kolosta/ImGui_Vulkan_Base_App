@@ -44,11 +44,31 @@ void ShortcutManager::RegisterAction(const Action& action,
         b.enabled  = true;
         bindings_[action.id] = b;
     } else {
-        // refresh defaults (the caller may have re-registered with a new
-        // default set after a code change). Keep current overrides.
+        // The binding already exists (loaded from shortcuts.dat). Keep the
+        // user's current overrides, but reconcile with the code-side defaults:
+        //   • NEW defaults added in code (absent from BOTH the old defaults and
+        //     current) are appended to current — otherwise a freshly added
+        //     shortcut (e.g. a second binding for an existing action) would
+        //     never appear for users who already have a saved shortcuts.dat.
+        //   • Removing a default in code does NOT strip it from current (that
+        //     could be a user binding); only pure additions are merged in.
+        const std::vector<EventSignature> oldDefaults = it->second.defaults;
         it->second.defaults = defaultBindings;
         if (it->second.current.empty() && !defaultBindings.empty()) {
             it->second.current = defaultBindings;
+        } else {
+            auto contains = [](const std::vector<EventSignature>& v,
+                               const EventSignature& s) {
+                for (const auto& e : v) if (e == s) return true;
+                return false;
+            };
+            for (const EventSignature& d : defaultBindings) {
+                if (!contains(oldDefaults, d) && !contains(it->second.current, d)) {
+                    it->second.current.push_back(d);
+                    if (!it->second.currentEnabled.empty())
+                        it->second.currentEnabled.push_back(1);
+                }
+            }
         }
     }
 }
@@ -351,6 +371,7 @@ void ShortcutManager::BeginFrame() {
     currentContext_.mode.clear();
     currentContext_.tool   = Tools::ToolManager::Instance().GetActiveTool();
     currentContext_.focusedItemId = static_cast<int>(ImGui::GetHoveredID());
+    transientHints_.clear();   // app refills per frame based on its live state
 }
 
 void ShortcutManager::RegisterRegionContext(const char* windowName,
@@ -421,6 +442,12 @@ bool ShortcutManager::DispatchEvent(const Event& observedEvent) {
         if (!b.enabled) continue;
         const Action* a = GetAction(id);
         if (!a) continue;
+        // Blender-style focus gate: when the driving window is only hovered (not
+        // keyboard-focused), suppress GLOBAL actions (no required context) so
+        // they never fire over an unfocused window. Context-scoped actions still
+        // fire if their zone is hovered (currentContext_ is filled by
+        // RegisterRegionContext regardless of window focus).
+        if (!windowFocused_ && a->requiredContext.Specificity() == 0) continue;
         if (!a->requiredContext.Matches(currentContext_)) continue;
         if (a->pollFn && !a->pollFn()) continue;
 

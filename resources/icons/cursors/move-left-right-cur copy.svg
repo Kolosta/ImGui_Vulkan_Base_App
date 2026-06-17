@@ -1,0 +1,13 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="160 -660 640 360"
+  preserveAspectRatio="xMidYMid meet"
+  fill="#e3e3e3"
+>
+  <path
+    class="ds-primary"
+    d="M564-356L620-300 800-480 620-660 564-604 688-480 564-356ZM160-480L340-300 396-356 272-480 396-604 340-660 160-480Z"
+  />
+</svg>

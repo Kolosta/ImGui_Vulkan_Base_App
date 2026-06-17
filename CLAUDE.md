@@ -16,19 +16,64 @@ cmake --build "out/build/GCC 15.2.0 x86_64-w64-mingw32 (mingw64)" --config Debug
 
 SDL3 and ImGui (docking branch, enabled but not yet wired up) are fetched via CMake FetchContent. The Rust `resvg-bindings` library is built automatically via `cargo build` during the CMake build (target: `x86_64-pc-windows-gnu`, static CRT). The `icon_compiler` Rust binary pre-processes SVG icons into `IconData.h`.
 
+Icons: a normal build regenerates `IconData.h` automatically when any
+`resources/icons/**` SVG changes (no clean needed). For the icons-only fast path
+(`tools/rebuild-icons.ps1` / the `generate_icon_data` target) and the SVG
+authoring contract, see `docs/SVG_FORMAT.md`.
+
 ## Architecture
 
-The application is a **design system demonstrator** with five static library subsystems linked into one executable.
+The application is a vector graphics editor (built on a design-system foundation) with six static library subsystems linked into one executable. The vector document is rendered **exclusively in Vulkan** (`src/Renderer/`); ImGui drives only the application interface.
 
 ### Application Layer (`src/Application/`)
 
-`Application` owns the Vulkan + SDL3 + ImGui lifecycle:
-- `ApplicationInit.cpp` — Vulkan device/swapchain setup, subsystem initialization
-- `Application.cpp` — main loop: `ProcessEvents() → Update() → Render() → Present()`
-- `ApplicationUI.cpp` — main menu bar, toolbar, docking layout
-- `ApplicationWindows.cpp` — demo/test content panels
+Organised by responsibility (not "everything in Core"). `Application` owns the
+Vulkan + SDL3 + ImGui lifecycle; its methods are split across folders by concern:
 
-All three major subsystems are singletons initialized in `InitializeSubsystems()`.
+- `App/` — technical core: `Application.cpp` (main loop: `ProcessEvents() → Update()
+  → Render() → Present()`), `ApplicationInit.cpp` (Vulkan device/swapchain setup,
+  subsystem init, the borderless hit-test), `SecondaryWindow.*` (detached OS window).
+- `Chrome/` — window chrome: `TitleBar.cpp` (custom borderless title bar + window
+  ops), `Splash.cpp` (start screen / About), `MainUI.cpp` (toolbar + docking layout
+  host + status-bar host).
+- `Editors/<Editor>/` — one folder per editor, each with its own complexity:
+  `Viewport/` (`Viewport.cpp` canvas + `ViewportTools.cpp` drawing-tool state machine
+  + `EditMode.cpp` vertex/edge/handle editing), `Outliner/` (object/collection/page
+  tree + `OutlinerState.h`), `Properties/`, `Info/`.
+- `Project/` — `Project.h` (shared project, wraps a `Renderer::Document`),
+  `ProjectFile.cpp` (the `.acu` file format, see `docs/acu-format.md`), `Undo.cpp` +
+  `UndoStack.h` (snapshot undo/redo).
+- `Layout/` — the Blender-style dynamic zone tree (`ZoneLayout*`, `PageLayout`).
+- `Util/` — small self-contained helpers (`PngWrite.h`).
+- `Dev/` — debug/test panels and the design-system window (`DevPanels.cpp`,
+  `Windows.cpp`).
+
+Every sub-folder is on the include path, so source files use flat includes
+(`#include "Application.h"`, `"ZoneLayout.h"`, `"ViewportTools.h"`) regardless of
+folder. All three major subsystems are singletons initialized in
+`InitializeSubsystems()`.
+
+**Editors are registry-based, not a fixed enum.** `EditorRegistry`
+(`Layout/EditorRegistry.h`) maps a string id (`core.viewport`, `iof.mapsettings`,
+…) to an `EditorDescriptor` (name/icon/scope/draw/topBar/flags). The core registers
+its editors in `Application::RegisterCoreEditors()` (MainUI.cpp); the zone layout
+stores ids and draws each zone by registry lookup. The `.acu` LAYOUT blob stores
+the id (v4; old enum-index blobs migrate). This is what lets modules/plugins add
+editors without touching core code.
+
+### Modules (`src/Modules/`)
+
+A **module** specialises the app for a use case. The app boots in Classic mode;
+the splash "Modules" column opens one (`Application::RequestOpenModule`), which —
+after the unsaved-changes guard — creates a fresh project and applies the module's
+layout/editors/Shift+A/capabilities. `ModuleAPI.h` is the stable contract (the only
+header an external plugin needs); `IModule` is the interface; `ModuleHost` (which
+`Application` implements) is the slice of app services a module may drive.
+`ModuleRegistry` holds the catalogue; internal modules are built in
+`RegisterInternal()` (`Typography/`, `IofMapping/`); external DLL plugins are
+designed-for but not yet loaded. Module wiring on `Application` lives in
+`ModuleManager.cpp`. **Put reusable features in the core, not in a module.** See
+`src/Modules/README.md`.
 
 ### DesignSystem (`src/DesignSystem/`)
 
@@ -46,9 +91,17 @@ Blender-inspired hierarchical shortcut engine. A 5-level context (window → edi
 
 SVG icons are rasterized at runtime by `resvg` (Rust, exposed via C FFI in `src/tools/resvg-bindings/`). `IconManager` maintains an LRU cache of Vulkan textures keyed on `(iconId, size, colorMetadata)`. Color zones map SVG element IDs to design tokens, enabling runtime recoloring without re-parsing SVG files.
 
+### Renderer (`src/Renderer/`)
+
+The **Vulkan-only vector engine**. Owns the vector document model (`Document` → `Artboard` → `Shape`, pure data under `include/Renderer/Document/`), CPU tessellation (`Tessellator`, shapes → triangle `Mesh`), and an offscreen Vulkan pipeline (`CanvasRenderer` + `RenderTarget`). Each Viewport zone is rendered into its own offscreen `VkImage`, exposed as an `ImTextureID` and blitted by the application with `ImGui::Image`. **ImGui never draws the vector artwork** — only the editor chrome (rulers, guides, tool palette, panels). GLSL shaders in `shaders/` are compiled to SPIR-V by `glslc` at build time (target `renderer_shaders`) and loaded from `<exe-dir>/shaders` at runtime. `CanvasRenderer` shares the main Vulkan device/queue/pools; the per-view camera (pan/zoom/unitScale) mirrors the Viewport's `D2S` mapping. See `src/Renderer/README.md`.
+
 ### UI (`src/UI/`)
 
 Stateless ImGui components — `TokenEditor`, `ShortcutEditor`, `FontManager` — that render into the docking layout. No independent state; they read from and write to the singletons above.
+
+### Shell (`src/Shell/`) — Windows only
+
+Makes `.acu` files show a page preview + the app logo in Explorer (like `.blend`). The `Shell` static lib does per-user registry registration (HKCU, no admin); `acu_thumbs.dll` is an `IThumbnailProvider` COM server Explorer loads to render the preview from the `.acu` `THMB` section (PNG, decoded with stb_image). The app generates the `.ico` from the logo (resvg) and calls `ShellReg::EnsureRegistered` at launch. The C++ namespace is `ShellReg`, not `Shell` — the Windows SDK already declares a global COM type named `Shell`. See `src/Shell/README.md`. Windows does NOT preview unknown formats without such a registered COM handler.
 
 ## Language
 
@@ -82,6 +135,11 @@ Any work that touches visual style **must go through design-system tokens**. Nev
 | `imgui.ini` | ImGui (automatic) |
 
 These are written to the working directory (binary output dir at runtime). They are **not tracked by git**.
+
+The **project document** is a separate, user-chosen `*.acu` file (the proprietary
+project format — a single versioned binary holding the vector document *and* the
+zone layout/tabs/cameras). Managed by `App::ProjectFile`; see `docs/acu-format.md`.
+`.acu` files are user data, not tracked by git.
 
 ---
 
@@ -121,6 +179,8 @@ Use the subsystem name, lowercase, hyphenated:
 | `design-system` | `src/DesignSystem/` |
 | `shortcuts` | `src/Shortcuts/` |
 | `vector-graphics` | `src/VectorGraphics/` |
+| `renderer` | `src/Renderer/` |
+| `shell` | `src/Shell/` (Windows shell integration) |
 | `ui` | `src/UI/` |
 | `icon-compiler` | `src/tools/resvg-bindings/` |
 | `assets` | `resources/` |

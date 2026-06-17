@@ -1,10 +1,14 @@
 #pragma once
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 #include <imgui.h>
+#include <UI/Widgets/SidePanel.h>
+#include "OutlinerState.h"
+#include "EditorRegistry.h"
 
 namespace App {
 
@@ -25,46 +29,165 @@ namespace App {
 //  target → X cursor, click does nothing).
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum class EditorKind {
-    Viewport, Outliner, Timeline, DevPanels, Count
-};
-const char* EditorKindName(EditorKind k);
-const char* EditorKindIcon(EditorKind k);
+// Editors are identified by STRING id via EditorRegistry (see EditorRegistry.h),
+// not a fixed enum, so modules/plugins can add their own. Core ids live in the
+// CoreEditor:: namespace. The historical enum order is preserved ONLY as a
+// migration table for old (v<4) .acu LAYOUT blobs — see ZoneLayoutCore.cpp.
 
 // Per-leaf VIEW state. The project / artboards are shared (App::Project),
 // not stored here — every Viewport shows the same pages. Only the view
 // (camera, zoom, unit, pending view requests) is per-zone.
+// ── Per-viewport PAGE LAYOUT (Lot 3) ──────────────────────────────────────────
+// Pages have ONE shared position (Artboard::pos) used by Manual mode. An auto
+// layout does NOT move the pages — it computes, PER VIEWPORT, a DISPLAY OFFSET
+// applied to each page only when rendering/picking in that viewport. So two
+// Viewports can show the same document in different arrangements at once.
+enum class PageLayoutMode : uint8_t {
+    Manual = 0,   // use Artboard::pos as-is (free move)
+    LeftToRight,  // pages in a row, left→right
+    RightToLeft,  // pages in a row, right→left
+    TopToBottom,  // pages in a column, top→bottom
+    BottomToTop,  // pages in a column, bottom→top
+    Grid,         // wrapped grid (auto columns)
+    BookLeft,     // 2-up spreads, first page on the LEFT
+    BookRight,    // 2-up spreads, first page on the RIGHT
+    SinglePage,   // ONE page at a time (the N-panel "Pages" tab switches it)
+    SingleBookLeft,  // one SPREAD at a time, first page on the left
+    SingleBookRight, // one spread at a time, first page on the right
+};
+const char* PageLayoutModeName(PageLayoutMode m);
+
+struct PageLayout {
+    PageLayoutMode mode = PageLayoutMode::Manual;
+    float gap = 40.0f;          // doc-unit gutter between pages (auto modes)
+    int   gridCols = 3;         // columns for Grid mode
+    // For the Single Spread modes: show the FIRST page alone (a cover), then pair
+    // 2-3, 4-5… (like a book's cover). Off → straight pairs 1-2, 3-4…
+    bool  spreadCover = false;
+    bool  singlePage = false;   // show only `pageIndex` in this viewport
+    int   pageIndex = 0;        // which page when singlePage (clamped on use)
+    // Per-viewport hidden pages (distinct from object Hide): page id → hidden.
+    // Stored as ids so it survives reorder. Empty = all visible.
+    std::vector<uint64_t> hiddenPages;
+};
+
 struct EditorState {
     // Camera: screen = canvasMin + (doc - pan) * zoom.
     ImVec2 pan{0, 0};
     float  zoom = 1.0f;
     int    docUnit = 0;             // index into the viewport unit table
     // Pending view requests, consumed by this leaf's RenderViewport only.
-    bool   reqFitDoc      = false;  // frame the project's artboards
-    bool   reqResetOrigin = false;
-    bool   openNewDoc     = false;  // request opening the New Artboard popup
+    bool   reqFitDoc       = false;  // frame the project's artboards
+    bool   reqFitSelection = false;  // frame the selected/active object(s) (Numpad .)
+    bool   reqResetOrigin  = false;
+    bool   openNewDoc      = false;  // request opening the New Artboard popup
+    // This viewport's page arrangement (Lot 3). Per-leaf, so each Viewport can
+    // show a different layout / page subset of the SAME shared document.
+    PageLayout pageLayout;
+    // Ruler coordinate space: Viewport = absolute document coords; Page =
+    // coords RELATIVE to the active/selected page's top-left (0,0 at the page
+    // corner). Falls back to Viewport when no page is implied by the selection.
+    enum class RulerSpace : uint8_t { Viewport = 0, Page };
+    RulerSpace rulerSpace = RulerSpace::Viewport;
+
+    // Right-side reusable EditorSidePanel (the "N" panel). Generic UI state
+    // (stage/width/tab) lives in `sidePanel`; viewport-specific options are kept
+    // alongside it. The panel holds the "Pages" tab (Single* modes only).
+    UI::SidePanelState sidePanel;
+    bool   nPanelShowOrphans = true; // Pages tab: show page-less (orphan) objects
+
+    // Screen rects of the floating UI overlays drawn OVER this viewport leaf's
+    // canvas (tool palette, operator redo panel, …). The canvas hover-test excludes
+    // them so a click on a panel/button never falls through to the canvas (e.g.
+    // selecting an object underneath the operator panel). Published each frame (the
+    // overlays draw after the tool handler runs, so these are last frame's rects —
+    // fine, the overlays are stable corner anchors). Cleared at the start of the
+    // leaf's render, repopulated by each overlay.
+    std::vector<ImVec4> overlayRects;   // each = (minX,minY,maxX,maxY) screen px
+
+    // Per-Outliner state (display/filters/search/selection/viewport-sync). Only
+    // meaningful for an Outliner leaf, but carried by every EditorState so a tab
+    // can switch kind / move between zones without losing it. See OutlinerState.h.
+    OutlinerState outliner;
 };
 
-// One tab inside a zone: an editor kind plus its own independent view state.
+// One tab inside a zone: an editor id plus its own independent view state.
 // Moving a tab between zones carries its state (Tab is a value type).
 struct Tab {
-    EditorKind  kind = EditorKind::Viewport;
+    std::string editorId = CoreEditor::Viewport;
     EditorState state;
 };
 
-// drawEditor(kind, contentSize, leafState) — called once per leaf.
-using DrawEditorFn  = std::function<void(EditorKind, ImVec2, EditorState&)>;
-// topBarExtras(kind, leafState) — drawn in the leaf top bar, right of the
-// editor selector (e.g. the Viewport "+" new-document button). Optional.
-using TopBarExtraFn = std::function<void(EditorKind, EditorState&)>;
+// An editor's top bar (right of the always-present editor-kind picker) is laid
+// out in THREE groups — left, middle (centred), right — that never overlap:
+//   • the middle group is centred but pushed aside (keeping the gap) when it
+//     would touch the left group, and likewise the right group pushes the middle;
+//   • if the right group still can't fit, it overflows OFF the editor's right
+//     edge and is clipped (overflow:hidden — not drawn/clickable outside).
+// The hook fills this: a draw callback + the group's natural pixel width (so the
+// layout can place each group before drawing it). Any group may be empty.
+struct EditorBarGroup {
+    std::function<void(ImVec2 pos, float height)> draw;   // draws at the given pos
+    float width = 0.0f;                                   // natural pixel width
+};
+struct EditorBar {
+    EditorBarGroup left, middle, right;
+};
+
+// Predefined zone arrangements offered on the splash "New File" start screen.
+//   General — the default workspace (Viewport/Timeline | Outliner/Properties).
+//   Layout  — no timeline; large Viewport (single spread, right) + Outliner over
+//             a small Properties on the right.
+//   Data    — large Outliner on the left; small Viewport (top), Properties and
+//             Info stacked on the right.
+enum class LayoutPreset { General, Layout, Data };
+
+// A declarative, copyable zone-tree spec a module returns from BuildLayout().
+// Either a LEAF (editorId set, no children) or a SPLIT (two children + ratio).
+// Built with the Leaf()/Split() helpers; consumed by ZoneLayout::BuildFromSpec.
+struct LayoutSpec {
+    std::string                 editorId;          // leaf editor id ("" for split)
+    bool                        vertical = false;  // split axis (true = side by side)
+    float                       ratio    = 0.5f;   // first child fraction
+    std::shared_ptr<LayoutSpec> a, b;              // children (split only)
+
+    bool isLeaf() const { return !a && !b; }
+
+    static LayoutSpec Leaf(std::string id) {
+        LayoutSpec s; s.editorId = std::move(id); return s;
+    }
+    static LayoutSpec Split(bool vertical, float ratio, LayoutSpec a, LayoutSpec b) {
+        LayoutSpec s; s.vertical = vertical; s.ratio = ratio;
+        s.a = std::make_shared<LayoutSpec>(std::move(a));
+        s.b = std::make_shared<LayoutSpec>(std::move(b));
+        return s;
+    }
+};
 
 class ZoneLayout {
 public:
     ZoneLayout();
 
-    // Draw the whole tree into the current window content region.
-    void Render(const DrawEditorFn& drawEditor,
-                const TopBarExtraFn& topBarExtras = {});
+    // Replace the whole zone tree with a predefined arrangement (splash presets).
+    // Rebuilds root_ from scratch — any current splits/tabs are discarded.
+    void ApplyPreset(LayoutPreset preset);
+    // Replace the whole tree from a module-provided spec (editor ids). See
+    // ModuleAPI.h LayoutSpec. Discards the current tree.
+    void BuildFromSpec(const LayoutSpec& spec);
+
+    // Restrict the per-zone editor picker to these ids (Classic = core ids, a
+    // module = its AllowedEditors()). A zone keeps showing its own editor even if
+    // it's not in the list. Empty = no restriction (every registered editor).
+    void SetEditorFilter(std::vector<std::string> ids) { editorFilter_ = std::move(ids); }
+
+    // Set the document-unit index (viewport unit table) on EVERY tab's EditorState
+    // across the whole tree. Used when a module declares a default unit (IOF → mm)
+    // and on return to Classic (→ px). A no-op for unit < 0.
+    void ApplyDocUnitToAll(int unit);
+
+    // Draw the whole tree into the current window content region. Editors are
+    // drawn by looking each zone's id up in EditorRegistry — no per-call hooks.
+    void Render();
 
     // The editor state of the Viewport leaf the mouse is currently over
     // (and not occluded by a floating window). nullptr if none — camera
@@ -74,18 +197,46 @@ public:
     // hovered, non-occluded one (strict IsWindowHovered). Last writer wins.
     void SetHoveredEditorState(EditorState* st) { hoveredState_ = st; }
 
-    // Switch the editor kind of the leaf currently under the mouse (resolved
-    // each Render() into hoveredLeaf_). No-op if no zone is hovered. Used by
-    // the editor.* switch shortcuts so they target the zone the user points at.
-    // Replaces the ACTIVE tab's kind (same behaviour as the old single-editor
-    // leaf). Defined out-of-line because it needs the private ActiveTab helper.
-    void SetHoveredEditor(EditorKind k);
+    // True while a layout-level gesture owns the mouse: dragging a separator,
+    // an armed corner add/join, a context-menu split guide, or a live tab drag.
+    // Viewport tools query this to avoid arming the canvas box-select when the
+    // user is really resizing/splitting/moving a zone over the canvas.
+    bool LayoutGestureActive() const {
+        return sepDragging_ != nullptr || addArm_.armed || splitArm_.active ||
+               join_.active || tabDrag_.armed || tabDrag_.active;
+    }
+
+    // How many leaves currently have a tab of editor `id` (counts every tab, not
+    // just the active one). Used to disable the Outliner sync button when no
+    // Viewport exists.
+    int  CountEditors(const std::string& id) const { return CountEditorsRec(root_.get(), id); }
+    // True if `st` is the EditorState of some live tab of editor `id` in the tree.
+    // Validates the Outliner's sync target against the current layout each frame.
+    bool IsLiveEditorState(const EditorState* st, const std::string& id) const {
+        return st && FindEditorStateRec(root_.get(), st, id);
+    }
+
+    // Switch the editor of the leaf currently under the mouse (resolved each
+    // Render() into hoveredLeaf_). No-op if no zone is hovered. Used by the
+    // editor.* switch shortcuts so they target the zone the user points at.
+    // Replaces the ACTIVE tab's editor id. Defined out-of-line (needs ActiveTab).
+    void SetHoveredEditor(const std::string& id);
 
     // Tab navigation (driven by shortcuts).
     //   Cycle next/previous tab of the HOVERED zone (wraps).
     void HoveredTabCycle(int dir);
     //   Select the first / last tab of the ACTIVE zone.
     void ActiveTabSelectEdge(bool last);
+
+    // ── Persistence (.acu LAYOUT section) ───────────────────────────────────
+    // Serialize the whole zone tree (splits: orientation + absolute firstPx +
+    // init ratio; leaves: tabs with their EditorKind + per-leaf EditorState
+    // camera/unit) into a compact binary blob, and rebuild it from one. The
+    // blob is versioned internally so the format can evolve with migration.
+    // Deserialize replaces the current tree; on a malformed blob it leaves the
+    // existing tree untouched and returns false.
+    std::vector<uint8_t> Serialize() const;
+    bool                 Deserialize(const std::vector<uint8_t>& blob);
 
 private:
     struct Node {
@@ -124,7 +275,7 @@ private:
                  ? (int)n->tabs.size() - 1 : n->activeTab));
         return n->tabs[(size_t)i];
     }
-    static EditorKind  LeafKind(Node* n)  { return ActiveTab(n).kind; }
+    static const std::string& LeafEditorId(Node* n) { return ActiveTab(n).editorId; }
     static EditorState& LeafState(Node* n) { return ActiveTab(n).state; }
 
     // Interaction state for the pending Join gesture.
@@ -239,6 +390,7 @@ private:
     AddArm       addArm_;
     SplitArm     splitArm_;
     EditorState* hoveredState_ = nullptr;  // recomputed every Render()
+    std::vector<std::string> editorFilter_; // ids selectable in the picker (empty=all)
     Node*        hoveredLeaf_   = nullptr;  // leaf under the mouse (any editor),
                                            // recomputed every Render() — drives
                                            // editor.* switch shortcuts
@@ -259,6 +411,15 @@ private:
     static bool IsInSubtree(Node* subtree, Node* target);
     static void DimSubtree(Node* n, ImDrawList* dl, ImU32 col);
     static void HighlightSubtree(Node* n, ImDrawList* dl, ImU32 col);
+    // Tree walks backing CountEditors / IsLiveEditorState (see public wrappers).
+    static int  CountEditorsRec(const Node* n, const std::string& id);
+    static bool FindEditorStateRec(const Node* n, const EditorState* st, const std::string& id);
+
+    // Leaf/split Node builders shared by ApplyPreset and BuildFromSpec.
+    static std::unique_ptr<Node> MakeLeafNode(std::string id, EditorState st);
+    static std::unique_ptr<Node> MakeSplitNode(bool vertical, float initRatio,
+                                               std::unique_ptr<Node> a,
+                                               std::unique_ptr<Node> b);
 
     // Replace `target` in the tree by `replacement`.
     void ReplaceNode(Node* target, std::unique_ptr<Node> replacement);
@@ -268,17 +429,11 @@ private:
     // Recursively compute pos/size for the subtree.
     void Layout(Node* n, ImVec2 pos, ImVec2 size, float gap);
     // Pass 1: draw every leaf as a real ImGui window.
-    void DrawLeaves(Node* n, float gap,
-                    const DrawEditorFn& drawEditor,
-                    const TopBarExtraFn& topBarExtras);
+    void DrawLeaves(Node* n, float gap);
     // Pass 2: separators + join + add-area, on the overlay (above zones).
-    void DrawNode(Node* n, float gap,
-                  const DrawEditorFn& drawEditor,
-                  const TopBarExtraFn& topBarExtras);
+    void DrawNode(Node* n, float gap);
     // Draw one leaf (top bar selector + content child).
-    void DrawLeaf(Node* n, float gap,
-                  const DrawEditorFn& drawEditor,
-                  const TopBarExtraFn& topBarExtras);
+    void DrawLeaf(Node* n, float gap);
     // Separator between a split's two children: cursor, correlated drag,
     // right-click Swap/Join/Split menu, Join preview/commit.
     void DrawSeparator(Node* split, float gap);

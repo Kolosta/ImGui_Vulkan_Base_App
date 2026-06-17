@@ -105,7 +105,19 @@ public:
     IconMetadata GetDefaultMetadata(const std::string& iconId) const;
     const std::vector<ColorMapping>& GetColorMappings(const std::string& iconId) const;
     const std::vector<ColorZone>& GetColorZones(const std::string& iconId) const;
-    
+
+    // Upload an RGBA8 pixel buffer as a sampled Vulkan texture and return it as
+    // an ImTextureID-bearing handle. Reusable for arbitrary images (e.g. the
+    // splash screen), not just rasterized SVG icons.
+    IconTexture CreateVulkanTextureFromRGBA(
+        const uint8_t* pixelData, int width, int height);
+
+    // Rasterise an SVG FILE (original colours, no token recolouring) to an
+    // `width`×`height` RGBA8 buffer via resvg. Used to build the .acu extension
+    // icon from the app logo. Returns false on parse/read failure.
+    bool RasterizeSvgFile(const std::string& svgPath, int width, int height,
+                          std::vector<uint8_t>& outRGBA);
+
 private:
     IconManager();
     ~IconManager();
@@ -157,18 +169,6 @@ private:
     uint32_t GetColorForToken(const std::string& tokenName) const;
     ImVec4 ColorU32ToVec4(uint32_t color) const;
     uint32_t ColorVec4ToU32(const ImVec4& color) const;
-    
-    // Vulkan texture creation
-    // ImTextureID CreateVulkanTextureFromRGBA(
-    //     const uint8_t* pixelData,
-    //     int width,
-    //     int height
-    // );
-    IconTexture CreateVulkanTextureFromRGBA(
-        const uint8_t* pixelData,
-        int width,
-        int height
-    );
     
     void DestroyVulkanTexture(const IconTexture& texture);
     

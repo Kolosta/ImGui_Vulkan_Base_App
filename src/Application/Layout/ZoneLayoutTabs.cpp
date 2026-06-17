@@ -10,6 +10,18 @@
 #include <vector>
 
 namespace App {
+// Tab display name / icon resolved from the editor registry (falls back safely).
+static const char* TabName(const Tab& t) {
+    if (const EditorDescriptor* d = EditorRegistry::Instance().Get(t.editorId))
+        return d->name.c_str();
+    return t.editorId.c_str();
+}
+static const char* TabIcon(const Tab& t) {
+    if (const EditorDescriptor* d = EditorRegistry::Instance().Get(t.editorId))
+        return d->icon.c_str();
+    return "";
+}
+
 void ZoneLayout::SplitLeafWithTab(Node* leaf, const Tab& moved,
                                   bool vertical, bool freshFirst) {
     auto oldContent = std::make_unique<Node>();
@@ -57,12 +69,15 @@ void ZoneLayout::DrawTabBar(Node* n, float barH, ImVec2 origin, ImVec2 size) {
     const ImVec4 txtDef  = ds.GetColor(DesignSystem::Tok::C_ZoneTab_Text);
     const ImVec4 txtAct  = ds.GetColor(DesignSystem::Tok::C_ZoneTab_TextActive);
 
+    // NoBackground: the rounded bar background is painted by DrawLeaf underneath
+    // (so its top corners follow the zone radius). A ChildBg here would stack a
+    // square rectangle over those rounded corners.
     ImGui::SetCursorPos(ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, barBg);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::BeginChild("##tabs", size, false, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("##tabs", size, false,
+                      ImGuiWindowFlags_NoScrollbar |
+                      ImGuiWindowFlags_NoBackground);
     ImGui::PopStyleVar();
-    ImGui::PopStyleColor();
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 base = ImGui::GetWindowPos();   // screen-space top-left
@@ -80,8 +95,8 @@ void ZoneLayout::DrawTabBar(Node* n, float barH, ImVec2 origin, ImVec2 size) {
 
     // Draws a tab's icon + label, vertically centred in its box.
     auto drawTabContent = [&](const Tab& t, ImVec2 tabMin, const ImVec4& fg) {
-        const char* name = EditorKindName(t.kind);
-        const char* icon = EditorKindIcon(t.kind);
+        const char* name = TabName(t);
+        const char* icon = TabIcon(t);
         ImVec2 ts = ImGui::CalcTextSize(name);
         auto md = iconMgr.GetDefaultMetadata(icon);
         md.scheme = VectorGraphics::IconColorScheme::Multicolor;
@@ -102,7 +117,7 @@ void ZoneLayout::DrawTabBar(Node* n, float barH, ImVec2 origin, ImVec2 size) {
     {
         float x = tabPad.x;
         for (int i = 0; i < (int)n->tabs.size(); ++i) {
-            ImVec2 ts = ImGui::CalcTextSize(EditorKindName(n->tabs[(size_t)i].kind));
+            ImVec2 ts = ImGui::CalcTextSize(TabName(n->tabs[(size_t)i]));
             float tabW = tabPad.x + iconSz + gap + ts.x + tabPad.x;
             ImVec2 tabMin(base.x + x, base.y + tabPad.y);
             ImVec2 tabMax(tabMin.x + tabW, tabMin.y + tabH);
@@ -142,37 +157,39 @@ void ZoneLayout::DrawTabBar(Node* n, float barH, ImVec2 origin, ImVec2 size) {
     const float r = radius;
     const float PI = 3.14159265358979f;
 
-    // Draw the active tab body + concave nibs FIRST (lowest), so a hovered
-    // neighbour painted afterwards covers the nib overhang instead of being
-    // clipped by it. The active tab is the menu-bar colour and reaches the bar;
-    // its bottom corners flare out with a concave fillet into the menu bar.
+    // Draw the active tab body FIRST (lowest), so a hovered neighbour painted
+    // afterwards covers any overhang. The active tab is the menu-bar colour and
+    // reaches the bar; its bottom corners flare OUT with concave fillets that
+    // merge into the menu bar below.
+    //
+    // The whole shape is ONE filled path in actCol only — no re-paint of the
+    // concave area with the bar colour. The bar background is already painted
+    // underneath (by DrawLeaf), so the concave cut-outs simply expose whatever
+    // is there, adapting automatically to any bar/editor colour (and to
+    // transparency). Path, clockwise from the top-left rounded corner:
+    //   TL convex → TR convex → down right side → right concave fillet flaring
+    //   out to barBottom → across the bottom → left concave fillet back up.
+    (void)barCol;
     if (activeIdx >= 0) {
         ImVec2 aMin = tabMins[(size_t)activeIdx], aMax = tabMaxs[(size_t)activeIdx];
         if (r > 0.5f) {
-            auto concave = [&](float cornerX, bool leftSide) {
-                ImVec2 sqA, sqB, center; float a0, a1;
-                if (leftSide) {
-                    sqA = ImVec2(cornerX - r, barBottom - r);
-                    sqB = ImVec2(cornerX,     barBottom);
-                    center = ImVec2(cornerX - r, barBottom - r);
-                    a0 = 0.0f;        a1 = 0.5f * PI;
-                } else {
-                    sqA = ImVec2(cornerX,     barBottom - r);
-                    sqB = ImVec2(cornerX + r, barBottom);
-                    center = ImVec2(cornerX + r, barBottom - r);
-                    a0 = 0.5f * PI;   a1 = PI;
-                }
-                dl->AddRectFilled(sqA, sqB, actCol);
-                dl->PathClear();
-                dl->PathLineTo(center);
-                dl->PathArcTo(center, r, a0, a1, 16);
-                dl->PathFillConvex(barCol);
-            };
-            concave(aMin.x, true);
-            concave(aMax.x, false);
+            dl->PathClear();
+            // Top-left convex corner (center inside the tab).
+            dl->PathArcTo(ImVec2(aMin.x + r, aMin.y + r), r, PI, 1.5f * PI, 12);
+            // Top-right convex corner.
+            dl->PathArcTo(ImVec2(aMax.x - r, aMin.y + r), r, 1.5f * PI, 2.0f * PI, 12);
+            // Right concave fillet: arc centred OUTSIDE the tab (at aMax.x + r),
+            // sweeping from the tab's right edge down-and-out to barBottom.
+            dl->PathArcTo(ImVec2(aMax.x + r, barBottom - r), r, PI, 0.5f * PI, 12);
+            // Left concave fillet: arc centred outside at aMin.x - r, sweeping
+            // from the bottom back up to the tab's left edge.
+            dl->PathArcTo(ImVec2(aMin.x - r, barBottom - r), r, 0.5f * PI, 0.0f, 12);
+            // The shape is non-convex (the bottom fillets curve inward), so it
+            // must be filled with the concave-aware polygon fill.
+            dl->PathFillConcave(actCol);
+        } else {
+            dl->AddRectFilled(aMin, ImVec2(aMax.x, barBottom), actCol);
         }
-        dl->AddRectFilled(aMin, ImVec2(aMax.x, barBottom),
-                          actCol, radius, ImDrawFlags_RoundCornersTop);
     }
 
     // Inactive / hovered tabs (above the active nibs) + their content.
