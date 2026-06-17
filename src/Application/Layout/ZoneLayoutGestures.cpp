@@ -83,8 +83,12 @@ void ZoneLayout::DrawSeparator(Node* s, float gap) {
     //     between — at FULL opacity (the swap/join base pair).
     if (primarySep_ == s || act) {
         ImDrawList* sdl = ImGui::GetWindowDrawList();
-        ImVec4 cFull = ds.GetColor(DesignSystem::Tok::S_Color_Border_Default);
-        ImVec4 cDim  = cFull; cDim.w *= 0.35f;
+        // Primary segment (under cursor) + colinear continuation: distinct
+        // tokens so each can carry its own colour, and the continuation its own
+        // opacity (component.zone.separator.*).
+        ImVec4 cFull = ds.GetColor(DesignSystem::Tok::C_Zone_SeparatorColor);
+        ImVec4 cDim  = ds.GetColor(DesignSystem::Tok::C_Zone_SeparatorColorContinuation);
+        cDim.w = ds.GetFloat(DesignSystem::Tok::C_Zone_SeparatorContinuationOpacity);
         ImU32 colFull = ImGui::GetColorU32(cFull);
         ImU32 colDim  = ImGui::GetColorU32(cDim);
         // The highlight band fills EXACTLY the inter-zone gap (no +border), so
@@ -268,7 +272,7 @@ void ZoneLayout::SplitLeaf(Node* leaf, bool vertical, bool freshFirst) {
     oldContent->activeTab = leaf->activeTab;
 
     auto fresh = std::make_unique<Node>();
-    fresh->tabs.push_back(Tab{EditorKind::Viewport, {}});
+    fresh->tabs.push_back(Tab{CoreEditor::Viewport, {}});
     fresh->activeTab = 0;
 
     // Fresh zone ≈ 30% of the leaf's extent along the split axis, in
@@ -335,7 +339,8 @@ void ZoneLayout::DrawSplitPreview() {
     RequestCursor(splitArm_.vertical ? Cursor::SplitVertical
                                      : Cursor::SplitHorizontal);
     ImDrawList* dl = ImGui::GetWindowDrawList();   // below floating windows
-    ImU32 col = IM_COL32(255, 255, 255, 230);
+    ImU32 col = ImGui::GetColorU32(DesignSystem::DesignSystem::Instance().GetColor(
+        DesignSystem::Tok::C_ZoneOverlay_SplitLine));
 
     if (splitArm_.vertical) {
         float x = std::clamp(m.x, leaf->pos.x + 4.0f,
@@ -384,13 +389,10 @@ void ZoneLayout::PickPrimarySeparator(Node* n, float gap) {
 
 // ── Pass 1: draw every leaf (a real ImGui window each) ───────────────────────
 
-void ZoneLayout::DrawNode(
-    Node* n, float gap,
-    const DrawEditorFn& drawEditor, const TopBarExtraFn& topBarExtras) {
-    (void)drawEditor; (void)topBarExtras;
+void ZoneLayout::DrawNode(Node* n, float gap) {
     if (n->isLeaf()) { HandleAddArea(n, gap); return; }
-    DrawNode(n->a.get(), gap, drawEditor, topBarExtras);
-    DrawNode(n->b.get(), gap, drawEditor, topBarExtras);
+    DrawNode(n->a.get(), gap);
+    DrawNode(n->b.get(), gap);
     DrawSeparator(n, gap);
 
     // Join preview & commit. The pair of target leaves is FROZEN at the
@@ -492,20 +494,23 @@ void ZoneLayout::DrawNode(
             dl->AddRectFilled(keep->pos,
                 ImVec2(keep->pos.x + keep->size.x,
                        keep->pos.y + keep->size.y),
-                IM_COL32(255, 255, 255, 25));
+                ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::C_ZoneOverlay_JoinKeep)));
 
             ImVec2 rm0(std::max(remove->pos.x, final_p0.x),
                        std::max(remove->pos.y, final_p0.y));
             ImVec2 rm1(std::min(remove->pos.x + remove->size.x, final_p1.x),
                        std::min(remove->pos.y + remove->size.y, final_p1.y));
             if (rm1.x > rm0.x && rm1.y > rm0.y)
-                dl->AddRectFilled(rm0, rm1, IM_COL32(0, 0, 0, 90));
+                dl->AddRectFilled(rm0, rm1, ImGui::GetColorU32(ds.GetColor(
+                    DesignSystem::Tok::C_ZoneOverlay_JoinRemove)));
 
             for (const auto& res : residuals)
-                dl->AddRectFilled(res.p0, res.p1, IM_COL32(0, 0, 0, 180));
+                dl->AddRectFilled(res.p0, res.p1, ImGui::GetColorU32(ds.GetColor(
+                    DesignSystem::Tok::C_ZoneOverlay_JoinResidual)));
 
             dl->AddRect(final_p0, final_p1,
-                        IM_COL32(80, 150, 255, 220), rnd, 0, 2.0f);
+                        ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::C_ZoneOverlay_JoinFrame)),
+                        rnd, 0, 2.0f);
 
             // Menu-Join commits on CLICK; drag-Join commits on RELEASE
             // (the mouse button is held down for the whole corner-drag).
