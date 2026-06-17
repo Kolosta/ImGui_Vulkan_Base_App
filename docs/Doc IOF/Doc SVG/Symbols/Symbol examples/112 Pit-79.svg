@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Calque_1" data-name="Calque 1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 150 150">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: #d07512;
+      }
+
+      .cls-1, .cls-2, .cls-3 {
+        fill-rule: evenodd;
+      }
+
+      .cls-1, .cls-2, .cls-3, .cls-4 {
+        stroke-width: 0px;
+      }
+
+      .cls-5 {
+        stroke: #e30b17;
+        stroke-miterlimit: 22.93;
+        stroke-width: .28px;
+      }
+
+      .cls-5, .cls-4 {
+        fill: none;
+      }
+
+      .cls-2 {
+        fill: #ececec;
+      }
+
+      .cls-3, .cls-6 {
+        fill: #e30b17;
+      }
+
+      .cls-6 {
+        font-family: ArialNarrow, Arial;
+        font-size: 7px;
+      }
+
+      .cls-7 {
+        clip-path: url(#clippath);
+      }
+    </style>
+    <clipPath id="clippath">
+      <rect class="cls-4" x="54.28" y="65.26" width="74.98" height="22.4"/>
+    </clipPath>
+  </defs>
+  <polygon class="cls-1" points="84.29 81.09 82.31 86.2 80.32 81.09 81.34 81.09 82.31 83.8 83.28 81.09 84.29 81.09"/>
+  <g class="cls-7">
+    <text class="cls-6" transform="translate(118.09 75.09)"><tspan x="0" y="0">0.18</tspan></text>
+    <text class="cls-6" transform="translate(78.86 72.52)"><tspan x="0" y="0">0.7 (OM) </tspan></text>
+    <text class="cls-6" transform="translate(93.94 86.19)"><tspan x="0" y="0">0.8 (OM) </tspan></text>
+    <path class="cls-2" d="m81.85,65.26c-.16,0-.29.13-.29.29s.13.29.29.29.29-.13.29-.29-.13-.29-.29-.29"/>
+    <line class="cls-5" x1="80.32" y1="78.25" x2="80.32" y2="74"/>
+    <line class="cls-5" x1="92.23" y1="86.2" x2="87.98" y2="86.2"/>
+    <line class="cls-5" x1="84.29" y1="78.25" x2="84.29" y2="74"/>
+    <line class="cls-5" x1="92.23" y1="81.09" x2="87.98" y2="81.09"/>
+    <polygon class="cls-3" points="57.55 70.06 60.79 76.35 58.62 76.35 58.62 86.2 56.45 86.2 56.45 76.35 54.28 76.35 57.55 70.06"/>
+  </g>
+</svg>

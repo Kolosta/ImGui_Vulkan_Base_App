@@ -105,6 +105,17 @@ public:
     void SetCurrentContext(const ShortcutContext& ctx) { currentContext_ = ctx; }
     const ShortcutContext& GetCurrentContext() const { return currentContext_; }
 
+    /** Whether the window driving THIS frame's ProcessInput holds keyboard
+     *  focus. When false (the window is only hovered, not active — e.g. another
+     *  app or another of our windows is focused), ProcessInput dispatches ONLY
+     *  context-scoped actions (requiredContext non-empty) that match the hovered
+     *  zone; GLOBAL actions (requiredContext empty: Ctrl+N, toggle settings…) are
+     *  suppressed so they can't fire over an unfocused window and clash with
+     *  whatever app actually has focus. Blender-style. Set per window before
+     *  ProcessInput(); defaults to true. */
+    void SetWindowFocused(bool focused) { windowFocused_ = focused; }
+    bool IsWindowFocused() const { return windowFocused_; }
+
     /** Called once per frame by Application before any panel renders, to clear
      *  the per-frame "best hover" state and pull tool from ToolManager. */
     void BeginFrame();
@@ -118,6 +129,19 @@ public:
     /** Up to `maxCount` most relevant actions to display, sorted by
      *  context specificity desc then category. */
     std::vector<const Action*> GetStatusBarActions(int maxCount = 5) const;
+
+    /** Transient, app-published status-bar hints for the CURRENT interaction
+     *  (e.g. while a G/R/S transform runs: X/Y to constrain, Enter confirm, Esc
+     *  cancel; or between editors: right-click to merge/swap). When non-empty,
+     *  the status bar shows THESE instead of the generic context actions — the
+     *  most precise advert of what the user can do right now. Set every frame
+     *  (cleared by BeginFrame); the app fills them based on its live state. */
+    void SetTransientHints(std::vector<ModalKeymapHint> hints) {
+        transientHints_ = std::move(hints);
+    }
+    const std::vector<ModalKeymapHint>& TransientHints() const {
+        return transientHints_;
+    }
 
     // ─── Persistence (manual; auto-saved on every mutation) ───────────────
     void Save();
@@ -134,7 +158,9 @@ private:
     std::map<std::string, ShortcutBinding> bindings_;
     ShortcutContext                        currentContext_;
     int                                    bestHoverSpecificity_ = 0;
+    bool                                   windowFocused_ = true;  // see SetWindowFocused
     std::vector<std::unique_ptr<ModalSession>> modalStack_;
+    std::vector<ModalKeymapHint>           transientHints_;  // see SetTransientHints
 
     // persistence
     static constexpr uint32_t kMagic   = 0x53484354; // "SHCT"
