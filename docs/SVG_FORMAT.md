@@ -116,3 +116,38 @@ Icons are grouped by **functional category** under `resources/icons/`
 (e.g. `tools/`, `actions/`, `navigation/`, `editor/`, `view/`, `shapes/`).
 Use lowercase kebab-case names that describe the concept, not the source asset
 (`chevron-down.svg`, not `arrow_drop_down_24dp_E3E3E3_FILL0_wght400.svg`).
+
+The **iconId** used in C++ (`IconManager`, `DrawIcon`, etc.) is the file name
+without its extension — `resources/icons/actions/eye.svg` → `"eye"`. Folders are
+for organisation only; they are **not** part of the id, so names must be unique
+across the whole tree.
+
+## Regenerating `IconData.h`
+
+At build time `icon_compiler` packs every SVG under `resources/icons/` into the
+generated `IconData.h` (in the build tree, not committed). The CMake rule that
+runs it **depends on the SVG files** (`file(GLOB_RECURSE … CONFIGURE_DEPENDS)`),
+so in practice:
+
+- **Normally you do nothing.** Add / edit / remove an SVG, then build as usual
+  (IDE F5/F7 or `cmake --build …`); `IconData.h` is regenerated automatically.
+  There is **no need** to delete `out/` or do a clean rebuild.
+- **Fast path (icons only).** To refresh just the header in a couple of seconds
+  without relinking the app — handy while iterating on a new icon — run from the
+  **repository root**:
+
+  ```powershell
+  # convenience wrapper: auto-detects the newest out/build/<preset> directory
+  pwsh tools/rebuild-icons.ps1
+
+  # or invoke the CMake target directly (any working dir; quote the build path)
+  cmake --build "out/build/GCC 15.2.0 x86_64-w64-mingw32 (mingw64)" --target generate_icon_data
+  ```
+
+  `generate_icon_data` is a standalone CMake target that runs only the icon
+  compiler. `tools/rebuild-icons.ps1` is a thin wrapper around it that locates
+  the build directory for you (override with `-BuildDir`).
+
+If a freshly added icon still isn't found at runtime, re-run CMake configure once
+(`CONFIGURE_DEPENDS` re-globs on the next build, but a brand-new file is only
+guaranteed to be seen after a configure).
