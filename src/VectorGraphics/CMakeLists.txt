@@ -117,6 +117,13 @@ add_dependencies(resvg_c build_resvg_bindings)
 # Icon compiler execution (generates IconData.h)
 # ================================================================
 
+# Glob every source SVG so the generation re-runs whenever an icon is ADDED,
+# REMOVED or EDITED — not only when the compiler binary changes. CONFIGURE_DEPENDS
+# makes CMake re-glob at build time, so a brand-new .svg is picked up without a
+# manual re-configure. (Adding/removing a file still ideally wants a reconfigure,
+# but CONFIGURE_DEPENDS triggers it automatically on the next build.)
+file(GLOB_RECURSE ICON_SVG_FILES CONFIGURE_DEPENDS "${ICONS_DIR}/*.svg")
+
 add_custom_command(
     OUTPUT ${ICON_COMPILER_OUTPUT}
 
@@ -126,12 +133,16 @@ add_custom_command(
 
     DEPENDS
         ${ICON_COMPILER_EXE}
+        ${ICON_SVG_FILES}        # any SVG change → regenerate IconData.h
 
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Compiling icons to IconData.h"
     VERBATIM
 )
 
+# `generate_icon_data` is built as part of ALL, but is also a standalone target:
+#   cmake --build <build-dir> --target generate_icon_data
+# regenerates ONLY IconData.h (seconds), without relinking the whole app.
 add_custom_target(generate_icon_data ALL
     DEPENDS ${ICON_COMPILER_OUTPUT}
 )

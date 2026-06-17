@@ -41,6 +41,21 @@ shortcuts.dat
 
 # ── Generated files (produced by build steps) ─────────────────────────────────
 resvg_c.h
+# Compiled shaders (GLSL → SPIR-V via glslc). The .vert/.frag sources are
+# tracked; the .spv output is a build artifact.
+*.spv
 
-# ── Claude Code (machine-local only; CLAUDE.md and settings.json are tracked) ──
+# ── Test project files (the .acu document format is user data, not source) ────
+*.acu
+
+# ── Temporary token generator (NEVER a source of truth) ───────────────────────
+# The token schema is hand-edited in TokenIds.h / TokenSchema.cpp. This Python
+# scratchpad is throwaway tooling and must never be committed or relied upon.
+.tmp_tokengen/
+
+# ── Build / debug logs ────────────────────────────────────────────────────────
+*.log
+build_err.log
+
+# ── Machine-local editor/agent settings (tracked settings.json stays) ──
 .claude/settings.local.json

@@ -1,0 +1,12 @@
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="80 -580 800 200"
+  preserveAspectRatio="xMidYMid meet"
+  fill="#e3e3e3"
+>
+  <path class="ds-primary"
+    d="M480-380q-31 0-56-17t-36-43H80v-80h308q11-26 36-43t56-17q31 0 56 17t36 43h308v80H572q-11 26-36 43t-56 17Z"
+  />
+</svg>

@@ -1,0 +1,1648 @@
+#include <DesignSystem/Tokens/TokenSchema.h>
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  The token schema — the ONE place tokens are declared (with TokenIds.h).
+//
+//  TIERS:
+//   • PRIMITIVE — raw palette / scale values. The full colour palette
+//                 (gray + 17 hues × 16 steps + transparent black/white + a few
+//                 theme-invariant "static" colours) lives here, plus opacity /
+//                 spacing / radius / border-width / size / scale ladders.
+//   • SEMANTIC  — design roles following TOKEN_SYSTEM.md taxonomy
+//                 ({property}.{role}.{modifier?}.{state}), role colour scales
+//                 semantic.{role}.color.{100..1600}, data-viz roles, and grouped
+//                 ImGuiStyle config (spacing / alignment / interaction /
+//                 rendering / size).
+//   • COMPONENT — real, nameable widgets grouping coherent properties; they
+//                 reference semantic / primitive tokens.
+//
+//  Order MUST match `enum class Tok`. A compile-time check proves row i has
+//  id Tok(i); references are validated for existence, tier and acyclicity.
+//  Colour defaults are the design-source values (used as the Dark/default
+//  theme); per-theme overrides are not authored here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace DesignSystem {
+
+using namespace schema_detail;
+
+namespace {
+
+using CS = ConstraintSpec;
+constexpr CS Alpha()        { return CS::Range(0.0, 1.0, "alpha in [0..1]"); }
+constexpr CS Round12()      { return CS::Range(0.0, 12.0, "px rounding"); }
+constexpr CS Border4()      { return CS::Range(0.0, 4.0, "px border"); }
+constexpr CS Px(double hi)  { return CS::Range(0.0, hi, "px"); }
+constexpr CS PadXY()        { return CS::Range(0.0, 40.0, "px"); }
+constexpr CS Align()        { return CS::Range(0.0, 1.0, "0..1"); }
+constexpr CS Multiplier()   { return CS::Range(0.25, 4.0, "multiplier"); }
+constexpr CS FontScaleR()   { return CS::Range(0.5, 3.0, "multiplier"); }
+constexpr CS Bool01()       { return CS::OneOf({0.0, 1.0}, "off / on"); }
+constexpr CS Dir012()       { return CS::OneOf({-1.0, 0.0, 1.0}, "None/Left/Right"); }
+constexpr CS Delay()        { return CS::Range(0.0, 2.0, "seconds"); }
+
+constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
+    std::array<TokenDef, kTokenCount> s{};
+    std::size_t i = 0;
+    auto put = [&](TokenDef d) { s[static_cast<std::size_t>(d.id)] = d; ++i; };
+
+    put(Color(Tok::P_Color_Gray_25, TokenLevel::Primitive, Hex(0xFFFFFF), "gray 25"));
+    put(Color(Tok::P_Color_Gray_50, TokenLevel::Primitive, Hex(0xF8F8F8), "gray 50"));
+    put(Color(Tok::P_Color_Gray_75, TokenLevel::Primitive, Hex(0xF3F3F3), "gray 75"));
+    put(Color(Tok::P_Color_Gray_100, TokenLevel::Primitive, Hex(0xE9E9E9), "gray 100"));
+    put(Color(Tok::P_Color_Gray_200, TokenLevel::Primitive, Hex(0xE1E1E1), "gray 200"));
+    put(Color(Tok::P_Color_Gray_300, TokenLevel::Primitive, Hex(0xDADADA), "gray 300"));
+    put(Color(Tok::P_Color_Gray_400, TokenLevel::Primitive, Hex(0xC6C6C6), "gray 400"));
+    put(Color(Tok::P_Color_Gray_500, TokenLevel::Primitive, Hex(0x8F8F8F), "gray 500"));
+    put(Color(Tok::P_Color_Gray_600, TokenLevel::Primitive, Hex(0x717171), "gray 600"));
+    put(Color(Tok::P_Color_Gray_700, TokenLevel::Primitive, Hex(0x505050), "gray 700"));
+    put(Color(Tok::P_Color_Gray_800, TokenLevel::Primitive, Hex(0x292929), "gray 800"));
+    put(Color(Tok::P_Color_Gray_900, TokenLevel::Primitive, Hex(0x131313), "gray 900"));
+    put(Color(Tok::P_Color_Gray_1000, TokenLevel::Primitive, Hex(0x000000), "gray 1000"));
+    put(Color(Tok::P_Color_Blue_100, TokenLevel::Primitive, Hex(0xF5F9FF), "blue 100"));
+    put(Color(Tok::P_Color_Blue_200, TokenLevel::Primitive, Hex(0xE5F0FE), "blue 200"));
+    put(Color(Tok::P_Color_Blue_300, TokenLevel::Primitive, Hex(0xCBE2FE), "blue 300"));
+    put(Color(Tok::P_Color_Blue_400, TokenLevel::Primitive, Hex(0xACCFFD), "blue 400"));
+    put(Color(Tok::P_Color_Blue_500, TokenLevel::Primitive, Hex(0x8EB9FC), "blue 500"));
+    put(Color(Tok::P_Color_Blue_600, TokenLevel::Primitive, Hex(0x729EFD), "blue 600"));
+    put(Color(Tok::P_Color_Blue_700, TokenLevel::Primitive, Hex(0x5D89FF), "blue 700"));
+    put(Color(Tok::P_Color_Blue_800, TokenLevel::Primitive, Hex(0x4B75FF), "blue 800"));
+    put(Color(Tok::P_Color_Blue_900, TokenLevel::Primitive, Hex(0x3B63FB), "blue 900"));
+    put(Color(Tok::P_Color_Blue_1000, TokenLevel::Primitive, Hex(0x274DEA), "blue 1000"));
+    put(Color(Tok::P_Color_Blue_1100, TokenLevel::Primitive, Hex(0x1D3ECF), "blue 1100"));
+    put(Color(Tok::P_Color_Blue_1200, TokenLevel::Primitive, Hex(0x1532AD), "blue 1200"));
+    put(Color(Tok::P_Color_Blue_1300, TokenLevel::Primitive, Hex(0x10288C), "blue 1300"));
+    put(Color(Tok::P_Color_Blue_1400, TokenLevel::Primitive, Hex(0x0C1F69), "blue 1400"));
+    put(Color(Tok::P_Color_Blue_1500, TokenLevel::Primitive, Hex(0x0E1843), "blue 1500"));
+    put(Color(Tok::P_Color_Blue_1600, TokenLevel::Primitive, Hex(0x070B1E), "blue 1600"));
+    put(Color(Tok::P_Color_Brown_100, TokenLevel::Primitive, Hex(0xFCF7F2), "brown 100"));
+    put(Color(Tok::P_Color_Brown_200, TokenLevel::Primitive, Hex(0xF7EEE1), "brown 200"));
+    put(Color(Tok::P_Color_Brown_300, TokenLevel::Primitive, Hex(0xEFDDC3), "brown 300"));
+    put(Color(Tok::P_Color_Brown_400, TokenLevel::Primitive, Hex(0xE5C89D), "brown 400"));
+    put(Color(Tok::P_Color_Brown_500, TokenLevel::Primitive, Hex(0xD6B17B), "brown 500"));
+    put(Color(Tok::P_Color_Brown_600, TokenLevel::Primitive, Hex(0xBE9B68), "brown 600"));
+    put(Color(Tok::P_Color_Brown_700, TokenLevel::Primitive, Hex(0xAB8A5A), "brown 700"));
+    put(Color(Tok::P_Color_Brown_800, TokenLevel::Primitive, Hex(0x9A7B4D), "brown 800"));
+    put(Color(Tok::P_Color_Brown_900, TokenLevel::Primitive, Hex(0x8B6D42), "brown 900"));
+    put(Color(Tok::P_Color_Brown_1000, TokenLevel::Primitive, Hex(0x775B32), "brown 1000"));
+    put(Color(Tok::P_Color_Brown_1100, TokenLevel::Primitive, Hex(0x674C23), "brown 1100"));
+    put(Color(Tok::P_Color_Brown_1200, TokenLevel::Primitive, Hex(0x583D15), "brown 1200"));
+    put(Color(Tok::P_Color_Brown_1300, TokenLevel::Primitive, Hex(0x463111), "brown 1300"));
+    put(Color(Tok::P_Color_Brown_1400, TokenLevel::Primitive, Hex(0x34250D), "brown 1400"));
+    put(Color(Tok::P_Color_Brown_1500, TokenLevel::Primitive, Hex(0x261A09), "brown 1500"));
+    put(Color(Tok::P_Color_Brown_1600, TokenLevel::Primitive, Hex(0x100C04), "brown 1600"));
+    put(Color(Tok::P_Color_Celery_100, TokenLevel::Primitive, Hex(0xEBFFDC), "celery 100"));
+    put(Color(Tok::P_Color_Celery_200, TokenLevel::Primitive, Hex(0xC5FF9C), "celery 200"));
+    put(Color(Tok::P_Color_Celery_300, TokenLevel::Primitive, Hex(0x9DF75C), "celery 300"));
+    put(Color(Tok::P_Color_Celery_400, TokenLevel::Primitive, Hex(0x81E43A), "celery 400"));
+    put(Color(Tok::P_Color_Celery_500, TokenLevel::Primitive, Hex(0x6ECE2A), "celery 500"));
+    put(Color(Tok::P_Color_Celery_600, TokenLevel::Primitive, Hex(0x5DB41F), "celery 600"));
+    put(Color(Tok::P_Color_Celery_700, TokenLevel::Primitive, Hex(0x52A119), "celery 700"));
+    put(Color(Tok::P_Color_Celery_800, TokenLevel::Primitive, Hex(0x489014), "celery 800"));
+    put(Color(Tok::P_Color_Celery_900, TokenLevel::Primitive, Hex(0x408111), "celery 900"));
+    put(Color(Tok::P_Color_Celery_1000, TokenLevel::Primitive, Hex(0x346D0C), "celery 1000"));
+    put(Color(Tok::P_Color_Celery_1100, TokenLevel::Primitive, Hex(0x2C5C09), "celery 1100"));
+    put(Color(Tok::P_Color_Celery_1200, TokenLevel::Primitive, Hex(0x234B06), "celery 1200"));
+    put(Color(Tok::P_Color_Celery_1300, TokenLevel::Primitive, Hex(0x1B3C03), "celery 1300"));
+    put(Color(Tok::P_Color_Celery_1400, TokenLevel::Primitive, Hex(0x132E00), "celery 1400"));
+    put(Color(Tok::P_Color_Celery_1500, TokenLevel::Primitive, Hex(0x0C2100), "celery 1500"));
+    put(Color(Tok::P_Color_Celery_1600, TokenLevel::Primitive, Hex(0x040F00), "celery 1600"));
+    put(Color(Tok::P_Color_Chartreuse_100, TokenLevel::Primitive, Hex(0xF6FBDE), "chartreuse 100"));
+    put(Color(Tok::P_Color_Chartreuse_200, TokenLevel::Primitive, Hex(0xEAF6AD), "chartreuse 200"));
+    put(Color(Tok::P_Color_Chartreuse_300, TokenLevel::Primitive, Hex(0xD0EC46), "chartreuse 300"));
+    put(Color(Tok::P_Color_Chartreuse_400, TokenLevel::Primitive, Hex(0xB6DB00), "chartreuse 400"));
+    put(Color(Tok::P_Color_Chartreuse_500, TokenLevel::Primitive, Hex(0xA3C400), "chartreuse 500"));
+    put(Color(Tok::P_Color_Chartreuse_600, TokenLevel::Primitive, Hex(0x8FAC00), "chartreuse 600"));
+    put(Color(Tok::P_Color_Chartreuse_700, TokenLevel::Primitive, Hex(0x809900), "chartreuse 700"));
+    put(Color(Tok::P_Color_Chartreuse_800, TokenLevel::Primitive, Hex(0x728900), "chartreuse 800"));
+    put(Color(Tok::P_Color_Chartreuse_900, TokenLevel::Primitive, Hex(0x667A00), "chartreuse 900"));
+    put(Color(Tok::P_Color_Chartreuse_1000, TokenLevel::Primitive, Hex(0x566700), "chartreuse 1000"));
+    put(Color(Tok::P_Color_Chartreuse_1100, TokenLevel::Primitive, Hex(0x495700), "chartreuse 1100"));
+    put(Color(Tok::P_Color_Chartreuse_1200, TokenLevel::Primitive, Hex(0x3C4700), "chartreuse 1200"));
+    put(Color(Tok::P_Color_Chartreuse_1300, TokenLevel::Primitive, Hex(0x2F3900), "chartreuse 1300"));
+    put(Color(Tok::P_Color_Chartreuse_1400, TokenLevel::Primitive, Hex(0x232B00), "chartreuse 1400"));
+    put(Color(Tok::P_Color_Chartreuse_1500, TokenLevel::Primitive, Hex(0x191E00), "chartreuse 1500"));
+    put(Color(Tok::P_Color_Chartreuse_1600, TokenLevel::Primitive, Hex(0x0B0E00), "chartreuse 1600"));
+    put(Color(Tok::P_Color_Cinnamon_100, TokenLevel::Primitive, Hex(0xFDF7F3), "cinnamon 100"));
+    put(Color(Tok::P_Color_Cinnamon_200, TokenLevel::Primitive, Hex(0xF9ECE5), "cinnamon 200"));
+    put(Color(Tok::P_Color_Cinnamon_300, TokenLevel::Primitive, Hex(0xF4DACB), "cinnamon 300"));
+    put(Color(Tok::P_Color_Cinnamon_400, TokenLevel::Primitive, Hex(0xEDC4AC), "cinnamon 400"));
+    put(Color(Tok::P_Color_Cinnamon_500, TokenLevel::Primitive, Hex(0xE5AA88), "cinnamon 500"));
+    put(Color(Tok::P_Color_Cinnamon_600, TokenLevel::Primitive, Hex(0xD4916C), "cinnamon 600"));
+    put(Color(Tok::P_Color_Cinnamon_700, TokenLevel::Primitive, Hex(0xC67E58), "cinnamon 700"));
+    put(Color(Tok::P_Color_Cinnamon_800, TokenLevel::Primitive, Hex(0xB86D46), "cinnamon 800"));
+    put(Color(Tok::P_Color_Cinnamon_900, TokenLevel::Primitive, Hex(0xAA5E38), "cinnamon 900"));
+    put(Color(Tok::P_Color_Cinnamon_1000, TokenLevel::Primitive, Hex(0x934D2B), "cinnamon 1000"));
+    put(Color(Tok::P_Color_Cinnamon_1100, TokenLevel::Primitive, Hex(0x803E20), "cinnamon 1100"));
+    put(Color(Tok::P_Color_Cinnamon_1200, TokenLevel::Primitive, Hex(0x6E3015), "cinnamon 1200"));
+    put(Color(Tok::P_Color_Cinnamon_1300, TokenLevel::Primitive, Hex(0x5C230B), "cinnamon 1300"));
+    put(Color(Tok::P_Color_Cinnamon_1400, TokenLevel::Primitive, Hex(0x481906), "cinnamon 1400"));
+    put(Color(Tok::P_Color_Cinnamon_1500, TokenLevel::Primitive, Hex(0x341204), "cinnamon 1500"));
+    put(Color(Tok::P_Color_Cinnamon_1600, TokenLevel::Primitive, Hex(0x180802), "cinnamon 1600"));
+    put(Color(Tok::P_Color_Cyan_100, TokenLevel::Primitive, Hex(0xEEFAFE), "cyan 100"));
+    put(Color(Tok::P_Color_Cyan_200, TokenLevel::Primitive, Hex(0xD9F4FD), "cyan 200"));
+    put(Color(Tok::P_Color_Cyan_300, TokenLevel::Primitive, Hex(0xB7E7FC), "cyan 300"));
+    put(Color(Tok::P_Color_Cyan_400, TokenLevel::Primitive, Hex(0x8AD5FF), "cyan 400"));
+    put(Color(Tok::P_Color_Cyan_500, TokenLevel::Primitive, Hex(0x5CC0FF), "cyan 500"));
+    put(Color(Tok::P_Color_Cyan_600, TokenLevel::Primitive, Hex(0x30A7FE), "cyan 600"));
+    put(Color(Tok::P_Color_Cyan_700, TokenLevel::Primitive, Hex(0x1D95E7), "cyan 700"));
+    put(Color(Tok::P_Color_Cyan_800, TokenLevel::Primitive, Hex(0x1286CD), "cyan 800"));
+    put(Color(Tok::P_Color_Cyan_900, TokenLevel::Primitive, Hex(0x0B78B3), "cyan 900"));
+    put(Color(Tok::P_Color_Cyan_1000, TokenLevel::Primitive, Hex(0x046691), "cyan 1000"));
+    put(Color(Tok::P_Color_Cyan_1100, TokenLevel::Primitive, Hex(0x005779), "cyan 1100"));
+    put(Color(Tok::P_Color_Cyan_1200, TokenLevel::Primitive, Hex(0x004762), "cyan 1200"));
+    put(Color(Tok::P_Color_Cyan_1300, TokenLevel::Primitive, Hex(0x00394E), "cyan 1300"));
+    put(Color(Tok::P_Color_Cyan_1400, TokenLevel::Primitive, Hex(0x002B3B), "cyan 1400"));
+    put(Color(Tok::P_Color_Cyan_1500, TokenLevel::Primitive, Hex(0x001F2B), "cyan 1500"));
+    put(Color(Tok::P_Color_Cyan_1600, TokenLevel::Primitive, Hex(0x000E14), "cyan 1600"));
+    put(Color(Tok::P_Color_Fuchsia_100, TokenLevel::Primitive, Hex(0xFEF6FF), "fuchsia 100"));
+    put(Color(Tok::P_Color_Fuchsia_200, TokenLevel::Primitive, Hex(0xFDE9FF), "fuchsia 200"));
+    put(Color(Tok::P_Color_Fuchsia_300, TokenLevel::Primitive, Hex(0xFAD3FF), "fuchsia 300"));
+    put(Color(Tok::P_Color_Fuchsia_400, TokenLevel::Primitive, Hex(0xF7B5FF), "fuchsia 400"));
+    put(Color(Tok::P_Color_Fuchsia_500, TokenLevel::Primitive, Hex(0xF393FF), "fuchsia 500"));
+    put(Color(Tok::P_Color_Fuchsia_600, TokenLevel::Primitive, Hex(0xEC69FF), "fuchsia 600"));
+    put(Color(Tok::P_Color_Fuchsia_700, TokenLevel::Primitive, Hex(0xDF4DF5), "fuchsia 700"));
+    put(Color(Tok::P_Color_Fuchsia_800, TokenLevel::Primitive, Hex(0xC844DC), "fuchsia 800"));
+    put(Color(Tok::P_Color_Fuchsia_900, TokenLevel::Primitive, Hex(0xB539C8), "fuchsia 900"));
+    put(Color(Tok::P_Color_Fuchsia_1000, TokenLevel::Primitive, Hex(0x9C28AF), "fuchsia 1000"));
+    put(Color(Tok::P_Color_Fuchsia_1100, TokenLevel::Primitive, Hex(0x871B9A), "fuchsia 1100"));
+    put(Color(Tok::P_Color_Fuchsia_1200, TokenLevel::Primitive, Hex(0x710F83), "fuchsia 1200"));
+    put(Color(Tok::P_Color_Fuchsia_1300, TokenLevel::Primitive, Hex(0x5C046D), "fuchsia 1300"));
+    put(Color(Tok::P_Color_Fuchsia_1400, TokenLevel::Primitive, Hex(0x480058), "fuchsia 1400"));
+    put(Color(Tok::P_Color_Fuchsia_1500, TokenLevel::Primitive, Hex(0x360042), "fuchsia 1500"));
+    put(Color(Tok::P_Color_Fuchsia_1600, TokenLevel::Primitive, Hex(0x1D0023), "fuchsia 1600"));
+    put(Color(Tok::P_Color_Green_100, TokenLevel::Primitive, Hex(0xEDFCF1), "green 100"));
+    put(Color(Tok::P_Color_Green_200, TokenLevel::Primitive, Hex(0xD7F7E1), "green 200"));
+    put(Color(Tok::P_Color_Green_300, TokenLevel::Primitive, Hex(0xADEEC5), "green 300"));
+    put(Color(Tok::P_Color_Green_400, TokenLevel::Primitive, Hex(0x6BE3A2), "green 400"));
+    put(Color(Tok::P_Color_Green_500, TokenLevel::Primitive, Hex(0x2BD17D), "green 500"));
+    put(Color(Tok::P_Color_Green_600, TokenLevel::Primitive, Hex(0x12B867), "green 600"));
+    put(Color(Tok::P_Color_Green_700, TokenLevel::Primitive, Hex(0x0BA45D), "green 700"));
+    put(Color(Tok::P_Color_Green_800, TokenLevel::Primitive, Hex(0x079355), "green 800"));
+    put(Color(Tok::P_Color_Green_900, TokenLevel::Primitive, Hex(0x05834E), "green 900"));
+    put(Color(Tok::P_Color_Green_1000, TokenLevel::Primitive, Hex(0x036E45), "green 1000"));
+    put(Color(Tok::P_Color_Green_1100, TokenLevel::Primitive, Hex(0x025D3C), "green 1100"));
+    put(Color(Tok::P_Color_Green_1200, TokenLevel::Primitive, Hex(0x014C34), "green 1200"));
+    put(Color(Tok::P_Color_Green_1300, TokenLevel::Primitive, Hex(0x003D2C), "green 1300"));
+    put(Color(Tok::P_Color_Green_1400, TokenLevel::Primitive, Hex(0x002E22), "green 1400"));
+    put(Color(Tok::P_Color_Green_1500, TokenLevel::Primitive, Hex(0x002119), "green 1500"));
+    put(Color(Tok::P_Color_Green_1600, TokenLevel::Primitive, Hex(0x000F0C), "green 1600"));
+    put(Color(Tok::P_Color_Indigo_100, TokenLevel::Primitive, Hex(0xF7F8FF), "indigo 100"));
+    put(Color(Tok::P_Color_Indigo_200, TokenLevel::Primitive, Hex(0xEBEEFF), "indigo 200"));
+    put(Color(Tok::P_Color_Indigo_300, TokenLevel::Primitive, Hex(0xD8DEFF), "indigo 300"));
+    put(Color(Tok::P_Color_Indigo_400, TokenLevel::Primitive, Hex(0xC0C9FF), "indigo 400"));
+    put(Color(Tok::P_Color_Indigo_500, TokenLevel::Primitive, Hex(0xA7B2FF), "indigo 500"));
+    put(Color(Tok::P_Color_Indigo_600, TokenLevel::Primitive, Hex(0x9197FE), "indigo 600"));
+    put(Color(Tok::P_Color_Indigo_700, TokenLevel::Primitive, Hex(0x8480FE), "indigo 700"));
+    put(Color(Tok::P_Color_Indigo_800, TokenLevel::Primitive, Hex(0x7A6AFD), "indigo 800"));
+    put(Color(Tok::P_Color_Indigo_900, TokenLevel::Primitive, Hex(0x7155FA), "indigo 900"));
+    put(Color(Tok::P_Color_Indigo_1000, TokenLevel::Primitive, Hex(0x6338EE), "indigo 1000"));
+    put(Color(Tok::P_Color_Indigo_1100, TokenLevel::Primitive, Hex(0x5424DB), "indigo 1100"));
+    put(Color(Tok::P_Color_Indigo_1200, TokenLevel::Primitive, Hex(0x4513BF), "indigo 1200"));
+    put(Color(Tok::P_Color_Indigo_1300, TokenLevel::Primitive, Hex(0x3706A0), "indigo 1300"));
+    put(Color(Tok::P_Color_Indigo_1400, TokenLevel::Primitive, Hex(0x2A0081), "indigo 1400"));
+    put(Color(Tok::P_Color_Indigo_1500, TokenLevel::Primitive, Hex(0x1F0062), "indigo 1500"));
+    put(Color(Tok::P_Color_Indigo_1600, TokenLevel::Primitive, Hex(0x110036), "indigo 1600"));
+    put(Color(Tok::P_Color_Magenta_100, TokenLevel::Primitive, Hex(0xFFF5F8), "magenta 100"));
+    put(Color(Tok::P_Color_Magenta_200, TokenLevel::Primitive, Hex(0xFFE8F0), "magenta 200"));
+    put(Color(Tok::P_Color_Magenta_300, TokenLevel::Primitive, Hex(0xFFD5E3), "magenta 300"));
+    put(Color(Tok::P_Color_Magenta_400, TokenLevel::Primitive, Hex(0xFFB9D0), "magenta 400"));
+    put(Color(Tok::P_Color_Magenta_500, TokenLevel::Primitive, Hex(0xFF98BB), "magenta 500"));
+    put(Color(Tok::P_Color_Magenta_600, TokenLevel::Primitive, Hex(0xFF709F), "magenta 600"));
+    put(Color(Tok::P_Color_Magenta_700, TokenLevel::Primitive, Hex(0xFF4885), "magenta 700"));
+    put(Color(Tok::P_Color_Magenta_800, TokenLevel::Primitive, Hex(0xF02D6E), "magenta 800"));
+    put(Color(Tok::P_Color_Magenta_900, TokenLevel::Primitive, Hex(0xD92361), "magenta 900"));
+    put(Color(Tok::P_Color_Magenta_1000, TokenLevel::Primitive, Hex(0xBA1650), "magenta 1000"));
+    put(Color(Tok::P_Color_Magenta_1100, TokenLevel::Primitive, Hex(0xA3053E), "magenta 1100"));
+    put(Color(Tok::P_Color_Magenta_1200, TokenLevel::Primitive, Hex(0x880033), "magenta 1200"));
+    put(Color(Tok::P_Color_Magenta_1300, TokenLevel::Primitive, Hex(0x6F0028), "magenta 1300"));
+    put(Color(Tok::P_Color_Magenta_1400, TokenLevel::Primitive, Hex(0x56001E), "magenta 1400"));
+    put(Color(Tok::P_Color_Magenta_1500, TokenLevel::Primitive, Hex(0x400016), "magenta 1500"));
+    put(Color(Tok::P_Color_Magenta_1600, TokenLevel::Primitive, Hex(0x23000C), "magenta 1600"));
+    put(Color(Tok::P_Color_Orange_100, TokenLevel::Primitive, Hex(0xFFF6E7), "orange 100"));
+    put(Color(Tok::P_Color_Orange_200, TokenLevel::Primitive, Hex(0xFFECCF), "orange 200"));
+    put(Color(Tok::P_Color_Orange_300, TokenLevel::Primitive, Hex(0xFFDA9E), "orange 300"));
+    put(Color(Tok::P_Color_Orange_400, TokenLevel::Primitive, Hex(0xFFC15E), "orange 400"));
+    put(Color(Tok::P_Color_Orange_500, TokenLevel::Primitive, Hex(0xFFA213), "orange 500"));
+    put(Color(Tok::P_Color_Orange_600, TokenLevel::Primitive, Hex(0xFC7D00), "orange 600"));
+    put(Color(Tok::P_Color_Orange_700, TokenLevel::Primitive, Hex(0xE86A00), "orange 700"));
+    put(Color(Tok::P_Color_Orange_800, TokenLevel::Primitive, Hex(0xD45B00), "orange 800"));
+    put(Color(Tok::P_Color_Orange_900, TokenLevel::Primitive, Hex(0xC24E00), "orange 900"));
+    put(Color(Tok::P_Color_Orange_1000, TokenLevel::Primitive, Hex(0xA73E00), "orange 1000"));
+    put(Color(Tok::P_Color_Orange_1100, TokenLevel::Primitive, Hex(0x903300), "orange 1100"));
+    put(Color(Tok::P_Color_Orange_1200, TokenLevel::Primitive, Hex(0x762900), "orange 1200"));
+    put(Color(Tok::P_Color_Orange_1300, TokenLevel::Primitive, Hex(0x5F2000), "orange 1300"));
+    put(Color(Tok::P_Color_Orange_1400, TokenLevel::Primitive, Hex(0x491800), "orange 1400"));
+    put(Color(Tok::P_Color_Orange_1500, TokenLevel::Primitive, Hex(0x341200), "orange 1500"));
+    put(Color(Tok::P_Color_Orange_1600, TokenLevel::Primitive, Hex(0x190800), "orange 1600"));
+    put(Color(Tok::P_Color_Pink_100, TokenLevel::Primitive, Hex(0xFFF6FC), "pink 100"));
+    put(Color(Tok::P_Color_Pink_200, TokenLevel::Primitive, Hex(0xFFE8F7), "pink 200"));
+    put(Color(Tok::P_Color_Pink_300, TokenLevel::Primitive, Hex(0xFFD3F0), "pink 300"));
+    put(Color(Tok::P_Color_Pink_400, TokenLevel::Primitive, Hex(0xFFB5E6), "pink 400"));
+    put(Color(Tok::P_Color_Pink_500, TokenLevel::Primitive, Hex(0xFF94DB), "pink 500"));
+    put(Color(Tok::P_Color_Pink_600, TokenLevel::Primitive, Hex(0xFF67CC), "pink 600"));
+    put(Color(Tok::P_Color_Pink_700, TokenLevel::Primitive, Hex(0xF24CB8), "pink 700"));
+    put(Color(Tok::P_Color_Pink_800, TokenLevel::Primitive, Hex(0xE434A3), "pink 800"));
+    put(Color(Tok::P_Color_Pink_900, TokenLevel::Primitive, Hex(0xCE2A92), "pink 900"));
+    put(Color(Tok::P_Color_Pink_1000, TokenLevel::Primitive, Hex(0xB01F7B), "pink 1000"));
+    put(Color(Tok::P_Color_Pink_1100, TokenLevel::Primitive, Hex(0x981668), "pink 1100"));
+    put(Color(Tok::P_Color_Pink_1200, TokenLevel::Primitive, Hex(0x800C55), "pink 1200"));
+    put(Color(Tok::P_Color_Pink_1300, TokenLevel::Primitive, Hex(0x690344), "pink 1300"));
+    put(Color(Tok::P_Color_Pink_1400, TokenLevel::Primitive, Hex(0x530035), "pink 1400"));
+    put(Color(Tok::P_Color_Pink_1500, TokenLevel::Primitive, Hex(0x3E0027), "pink 1500"));
+    put(Color(Tok::P_Color_Pink_1600, TokenLevel::Primitive, Hex(0x210015), "pink 1600"));
+    put(Color(Tok::P_Color_Purple_100, TokenLevel::Primitive, Hex(0xFBF7FE), "purple 100"));
+    put(Color(Tok::P_Color_Purple_200, TokenLevel::Primitive, Hex(0xF4EBFC), "purple 200"));
+    put(Color(Tok::P_Color_Purple_300, TokenLevel::Primitive, Hex(0xEBDAF9), "purple 300"));
+    put(Color(Tok::P_Color_Purple_400, TokenLevel::Primitive, Hex(0xDDC1F6), "purple 400"));
+    put(Color(Tok::P_Color_Purple_500, TokenLevel::Primitive, Hex(0xD0A7F3), "purple 500"));
+    put(Color(Tok::P_Color_Purple_600, TokenLevel::Primitive, Hex(0xBF8AEE), "purple 600"));
+    put(Color(Tok::P_Color_Purple_700, TokenLevel::Primitive, Hex(0xB272EB), "purple 700"));
+    put(Color(Tok::P_Color_Purple_800, TokenLevel::Primitive, Hex(0xA65CE7), "purple 800"));
+    put(Color(Tok::P_Color_Purple_900, TokenLevel::Primitive, Hex(0x9A47E2), "purple 900"));
+    put(Color(Tok::P_Color_Purple_1000, TokenLevel::Primitive, Hex(0x8628D9), "purple 1000"));
+    put(Color(Tok::P_Color_Purple_1100, TokenLevel::Primitive, Hex(0x730DCC), "purple 1100"));
+    put(Color(Tok::P_Color_Purple_1200, TokenLevel::Primitive, Hex(0x5D00B1), "purple 1200"));
+    put(Color(Tok::P_Color_Purple_1300, TokenLevel::Primitive, Hex(0x4B0090), "purple 1300"));
+    put(Color(Tok::P_Color_Purple_1400, TokenLevel::Primitive, Hex(0x3B006F), "purple 1400"));
+    put(Color(Tok::P_Color_Purple_1500, TokenLevel::Primitive, Hex(0x2C0054), "purple 1500"));
+    put(Color(Tok::P_Color_Purple_1600, TokenLevel::Primitive, Hex(0x17002D), "purple 1600"));
+    put(Color(Tok::P_Color_Red_100, TokenLevel::Primitive, Hex(0xFFF6F5), "red 100"));
+    put(Color(Tok::P_Color_Red_200, TokenLevel::Primitive, Hex(0xFFEBE8), "red 200"));
+    put(Color(Tok::P_Color_Red_300, TokenLevel::Primitive, Hex(0xFFD6D1), "red 300"));
+    put(Color(Tok::P_Color_Red_400, TokenLevel::Primitive, Hex(0xFFBCB4), "red 400"));
+    put(Color(Tok::P_Color_Red_500, TokenLevel::Primitive, Hex(0xFF9D91), "red 500"));
+    put(Color(Tok::P_Color_Red_600, TokenLevel::Primitive, Hex(0xFF7665), "red 600"));
+    put(Color(Tok::P_Color_Red_700, TokenLevel::Primitive, Hex(0xFF513D), "red 700"));
+    put(Color(Tok::P_Color_Red_800, TokenLevel::Primitive, Hex(0xF03823), "red 800"));
+    put(Color(Tok::P_Color_Red_900, TokenLevel::Primitive, Hex(0xD73220), "red 900"));
+    put(Color(Tok::P_Color_Red_1000, TokenLevel::Primitive, Hex(0xB72818), "red 1000"));
+    put(Color(Tok::P_Color_Red_1100, TokenLevel::Primitive, Hex(0x9C2113), "red 1100"));
+    put(Color(Tok::P_Color_Red_1200, TokenLevel::Primitive, Hex(0x811B0E), "red 1200"));
+    put(Color(Tok::P_Color_Red_1300, TokenLevel::Primitive, Hex(0x68150A), "red 1300"));
+    put(Color(Tok::P_Color_Red_1400, TokenLevel::Primitive, Hex(0x501006), "red 1400"));
+    put(Color(Tok::P_Color_Red_1500, TokenLevel::Primitive, Hex(0x3B0B04), "red 1500"));
+    put(Color(Tok::P_Color_Red_1600, TokenLevel::Primitive, Hex(0x1D0502), "red 1600"));
+    put(Color(Tok::P_Color_Seafoam_100, TokenLevel::Primitive, Hex(0xEBFBF6), "seafoam 100"));
+    put(Color(Tok::P_Color_Seafoam_200, TokenLevel::Primitive, Hex(0xD3F6EA), "seafoam 200"));
+    put(Color(Tok::P_Color_Seafoam_300, TokenLevel::Primitive, Hex(0xA9EDD8), "seafoam 300"));
+    put(Color(Tok::P_Color_Seafoam_400, TokenLevel::Primitive, Hex(0x5CE1C2), "seafoam 400"));
+    put(Color(Tok::P_Color_Seafoam_500, TokenLevel::Primitive, Hex(0x10CFA9), "seafoam 500"));
+    put(Color(Tok::P_Color_Seafoam_600, TokenLevel::Primitive, Hex(0x0DB595), "seafoam 600"));
+    put(Color(Tok::P_Color_Seafoam_700, TokenLevel::Primitive, Hex(0x0BA286), "seafoam 700"));
+    put(Color(Tok::P_Color_Seafoam_800, TokenLevel::Primitive, Hex(0x099078), "seafoam 800"));
+    put(Color(Tok::P_Color_Seafoam_900, TokenLevel::Primitive, Hex(0x07816D), "seafoam 900"));
+    put(Color(Tok::P_Color_Seafoam_1000, TokenLevel::Primitive, Hex(0x056C5C), "seafoam 1000"));
+    put(Color(Tok::P_Color_Seafoam_1100, TokenLevel::Primitive, Hex(0x035C50), "seafoam 1100"));
+    put(Color(Tok::P_Color_Seafoam_1200, TokenLevel::Primitive, Hex(0x014B43), "seafoam 1200"));
+    put(Color(Tok::P_Color_Seafoam_1300, TokenLevel::Primitive, Hex(0x003C36), "seafoam 1300"));
+    put(Color(Tok::P_Color_Seafoam_1400, TokenLevel::Primitive, Hex(0x002E28), "seafoam 1400"));
+    put(Color(Tok::P_Color_Seafoam_1500, TokenLevel::Primitive, Hex(0x00211D), "seafoam 1500"));
+    put(Color(Tok::P_Color_Seafoam_1600, TokenLevel::Primitive, Hex(0x000F0E), "seafoam 1600"));
+    put(Color(Tok::P_Color_Silver_100, TokenLevel::Primitive, Hex(0xF7F7F7), "silver 100"));
+    put(Color(Tok::P_Color_Silver_200, TokenLevel::Primitive, Hex(0xEFEFEF), "silver 200"));
+    put(Color(Tok::P_Color_Silver_300, TokenLevel::Primitive, Hex(0xDFDFDF), "silver 300"));
+    put(Color(Tok::P_Color_Silver_400, TokenLevel::Primitive, Hex(0xCCCCCC), "silver 400"));
+    put(Color(Tok::P_Color_Silver_500, TokenLevel::Primitive, Hex(0xB7B7B7), "silver 500"));
+    put(Color(Tok::P_Color_Silver_600, TokenLevel::Primitive, Hex(0xA0A0A0), "silver 600"));
+    put(Color(Tok::P_Color_Silver_700, TokenLevel::Primitive, Hex(0x8F8F8F), "silver 700"));
+    put(Color(Tok::P_Color_Silver_800, TokenLevel::Primitive, Hex(0x808080), "silver 800"));
+    put(Color(Tok::P_Color_Silver_900, TokenLevel::Primitive, Hex(0x727272), "silver 900"));
+    put(Color(Tok::P_Color_Silver_1000, TokenLevel::Primitive, Hex(0x606060), "silver 1000"));
+    put(Color(Tok::P_Color_Silver_1100, TokenLevel::Primitive, Hex(0x515151), "silver 1100"));
+    put(Color(Tok::P_Color_Silver_1200, TokenLevel::Primitive, Hex(0x424242), "silver 1200"));
+    put(Color(Tok::P_Color_Silver_1300, TokenLevel::Primitive, Hex(0x343434), "silver 1300"));
+    put(Color(Tok::P_Color_Silver_1400, TokenLevel::Primitive, Hex(0x272727), "silver 1400"));
+    put(Color(Tok::P_Color_Silver_1500, TokenLevel::Primitive, Hex(0x1C1C1C), "silver 1500"));
+    put(Color(Tok::P_Color_Silver_1600, TokenLevel::Primitive, Hex(0x0C0C0C), "silver 1600"));
+    put(Color(Tok::P_Color_Turquoise_100, TokenLevel::Primitive, Hex(0xEEFBFB), "turquoise 100"));
+    put(Color(Tok::P_Color_Turquoise_200, TokenLevel::Primitive, Hex(0xD1F5F5), "turquoise 200"));
+    put(Color(Tok::P_Color_Turquoise_300, TokenLevel::Primitive, Hex(0xA9ECED), "turquoise 300"));
+    put(Color(Tok::P_Color_Turquoise_400, TokenLevel::Primitive, Hex(0x6FDDE4), "turquoise 400"));
+    put(Color(Tok::P_Color_Turquoise_500, TokenLevel::Primitive, Hex(0x27CAD8), "turquoise 500"));
+    put(Color(Tok::P_Color_Turquoise_600, TokenLevel::Primitive, Hex(0x0FB1C0), "turquoise 600"));
+    put(Color(Tok::P_Color_Turquoise_700, TokenLevel::Primitive, Hex(0x0C9EAB), "turquoise 700"));
+    put(Color(Tok::P_Color_Turquoise_800, TokenLevel::Primitive, Hex(0x0A8D99), "turquoise 800"));
+    put(Color(Tok::P_Color_Turquoise_900, TokenLevel::Primitive, Hex(0x087E89), "turquoise 900"));
+    put(Color(Tok::P_Color_Turquoise_1000, TokenLevel::Primitive, Hex(0x056B74), "turquoise 1000"));
+    put(Color(Tok::P_Color_Turquoise_1100, TokenLevel::Primitive, Hex(0x035A62), "turquoise 1100"));
+    put(Color(Tok::P_Color_Turquoise_1200, TokenLevel::Primitive, Hex(0x014A51), "turquoise 1200"));
+    put(Color(Tok::P_Color_Turquoise_1300, TokenLevel::Primitive, Hex(0x003B41), "turquoise 1300"));
+    put(Color(Tok::P_Color_Turquoise_1400, TokenLevel::Primitive, Hex(0x002C31), "turquoise 1400"));
+    put(Color(Tok::P_Color_Turquoise_1500, TokenLevel::Primitive, Hex(0x002023), "turquoise 1500"));
+    put(Color(Tok::P_Color_Turquoise_1600, TokenLevel::Primitive, Hex(0x000F11), "turquoise 1600"));
+    put(Color(Tok::P_Color_Yellow_100, TokenLevel::Primitive, Hex(0xFFF8CC), "yellow 100"));
+    put(Color(Tok::P_Color_Yellow_200, TokenLevel::Primitive, Hex(0xFFF197), "yellow 200"));
+    put(Color(Tok::P_Color_Yellow_300, TokenLevel::Primitive, Hex(0xFFDE2C), "yellow 300"));
+    put(Color(Tok::P_Color_Yellow_400, TokenLevel::Primitive, Hex(0xF5C700), "yellow 400"));
+    put(Color(Tok::P_Color_Yellow_500, TokenLevel::Primitive, Hex(0xE6AF00), "yellow 500"));
+    put(Color(Tok::P_Color_Yellow_600, TokenLevel::Primitive, Hex(0xD29500), "yellow 600"));
+    put(Color(Tok::P_Color_Yellow_700, TokenLevel::Primitive, Hex(0xC18300), "yellow 700"));
+    put(Color(Tok::P_Color_Yellow_800, TokenLevel::Primitive, Hex(0xAF7400), "yellow 800"));
+    put(Color(Tok::P_Color_Yellow_900, TokenLevel::Primitive, Hex(0x9E6600), "yellow 900"));
+    put(Color(Tok::P_Color_Yellow_1000, TokenLevel::Primitive, Hex(0x865500), "yellow 1000"));
+    put(Color(Tok::P_Color_Yellow_1100, TokenLevel::Primitive, Hex(0x724800), "yellow 1100"));
+    put(Color(Tok::P_Color_Yellow_1200, TokenLevel::Primitive, Hex(0x5D3B00), "yellow 1200"));
+    put(Color(Tok::P_Color_Yellow_1300, TokenLevel::Primitive, Hex(0x4B2F00), "yellow 1300"));
+    put(Color(Tok::P_Color_Yellow_1400, TokenLevel::Primitive, Hex(0x382300), "yellow 1400"));
+    put(Color(Tok::P_Color_Yellow_1500, TokenLevel::Primitive, Hex(0x281900), "yellow 1500"));
+    put(Color(Tok::P_Color_Yellow_1600, TokenLevel::Primitive, Hex(0x120B00), "yellow 1600"));
+    put(Color(Tok::P_Color_TransparentBlack_25, TokenLevel::Primitive, HexA(0x00000000), "transparent black 25"));
+    put(Color(Tok::P_Color_TransparentBlack_50, TokenLevel::Primitive, HexA(0x00000008), "transparent black 50"));
+    put(Color(Tok::P_Color_TransparentBlack_75, TokenLevel::Primitive, HexA(0x0000000D), "transparent black 75"));
+    put(Color(Tok::P_Color_TransparentBlack_100, TokenLevel::Primitive, HexA(0x00000017), "transparent black 100"));
+    put(Color(Tok::P_Color_TransparentBlack_200, TokenLevel::Primitive, HexA(0x0000001F), "transparent black 200"));
+    put(Color(Tok::P_Color_TransparentBlack_300, TokenLevel::Primitive, HexA(0x00000026), "transparent black 300"));
+    put(Color(Tok::P_Color_TransparentBlack_400, TokenLevel::Primitive, HexA(0x00000038), "transparent black 400"));
+    put(Color(Tok::P_Color_TransparentBlack_500, TokenLevel::Primitive, HexA(0x00000070), "transparent black 500"));
+    put(Color(Tok::P_Color_TransparentBlack_600, TokenLevel::Primitive, HexA(0x0000008F), "transparent black 600"));
+    put(Color(Tok::P_Color_TransparentBlack_700, TokenLevel::Primitive, HexA(0x000000B0), "transparent black 700"));
+    put(Color(Tok::P_Color_TransparentBlack_800, TokenLevel::Primitive, HexA(0x000000D6), "transparent black 800"));
+    put(Color(Tok::P_Color_TransparentBlack_900, TokenLevel::Primitive, HexA(0x000000ED), "transparent black 900"));
+    put(Color(Tok::P_Color_TransparentBlack_1000, TokenLevel::Primitive, HexA(0x000000FF), "transparent black 1000"));
+    put(Color(Tok::P_Color_TransparentWhite_25, TokenLevel::Primitive, HexA(0xFFFFFF00), "transparent white 25"));
+    put(Color(Tok::P_Color_TransparentWhite_50, TokenLevel::Primitive, HexA(0xFFFFFF0A), "transparent white 50"));
+    put(Color(Tok::P_Color_TransparentWhite_75, TokenLevel::Primitive, HexA(0xFFFFFF12), "transparent white 75"));
+    put(Color(Tok::P_Color_TransparentWhite_100, TokenLevel::Primitive, HexA(0xFFFFFF1C), "transparent white 100"));
+    put(Color(Tok::P_Color_TransparentWhite_200, TokenLevel::Primitive, HexA(0xFFFFFF24), "transparent white 200"));
+    put(Color(Tok::P_Color_TransparentWhite_300, TokenLevel::Primitive, HexA(0xFFFFFF2B), "transparent white 300"));
+    put(Color(Tok::P_Color_TransparentWhite_400, TokenLevel::Primitive, HexA(0xFFFFFF36), "transparent white 400"));
+    put(Color(Tok::P_Color_TransparentWhite_500, TokenLevel::Primitive, HexA(0xFFFFFF63), "transparent white 500"));
+    put(Color(Tok::P_Color_TransparentWhite_600, TokenLevel::Primitive, HexA(0xFFFFFF82), "transparent white 600"));
+    put(Color(Tok::P_Color_TransparentWhite_700, TokenLevel::Primitive, HexA(0xFFFFFFA8), "transparent white 700"));
+    put(Color(Tok::P_Color_TransparentWhite_800, TokenLevel::Primitive, HexA(0xFFFFFFD9), "transparent white 800"));
+    put(Color(Tok::P_Color_TransparentWhite_900, TokenLevel::Primitive, HexA(0xFFFFFFF0), "transparent white 900"));
+    put(Color(Tok::P_Color_TransparentWhite_1000, TokenLevel::Primitive, HexA(0xFFFFFFFF), "transparent white 1000"));
+    put(Color(Tok::P_Color_Static_Blue_900, TokenLevel::Primitive, Hex(0x3B63FB), "static blue 900"));
+    put(Color(Tok::P_Color_Static_Blue_1000, TokenLevel::Primitive, Hex(0x274DEA), "static blue 1000"));
+    put(Color(Tok::P_Color_Static_Red_400, TokenLevel::Primitive, Hex(0xFFBCB4), "static red 400"));
+    put(Color(Tok::P_Color_Static_Red_600, TokenLevel::Primitive, Hex(0xFF7665), "static red 600"));
+    put(Color(Tok::P_Color_Static_Red_800, TokenLevel::Primitive, Hex(0xF03823), "static red 800"));
+    put(Color(Tok::P_Color_Static_Red_900, TokenLevel::Primitive, Hex(0xD73220), "static red 900"));
+    put(Color(Tok::P_Color_Static_Red_1000, TokenLevel::Primitive, Hex(0xB72818), "static red 1000"));
+    put(Color(Tok::P_Color_Static_Green_400, TokenLevel::Primitive, Hex(0x6BE3A2), "static green 400"));
+    put(Color(Tok::P_Color_Static_Green_600, TokenLevel::Primitive, Hex(0x12B867), "static green 600"));
+    put(Color(Tok::P_Color_Static_Green_800, TokenLevel::Primitive, Hex(0x079355), "static green 800"));
+    put(Color(Tok::P_Color_Static_Orange_400, TokenLevel::Primitive, Hex(0xFFC15E), "static orange 400"));
+    put(Color(Tok::P_Color_Static_Orange_600, TokenLevel::Primitive, Hex(0xFC7D00), "static orange 600"));
+    put(Color(Tok::P_Color_Static_Orange_800, TokenLevel::Primitive, Hex(0xD45B00), "static orange 800"));
+    put(Float(Tok::P_Opacity_0, TokenLevel::Primitive, 0.0f, "opacity 0", Alpha()));
+    put(Float(Tok::P_Opacity_100, TokenLevel::Primitive, 0.1f, "opacity 100", Alpha()));
+    put(Float(Tok::P_Opacity_200, TokenLevel::Primitive, 0.2f, "opacity 200", Alpha()));
+    put(Float(Tok::P_Opacity_300, TokenLevel::Primitive, 0.3f, "opacity 300", Alpha()));
+    put(Float(Tok::P_Opacity_400, TokenLevel::Primitive, 0.4f, "opacity 400", Alpha()));
+    put(Float(Tok::P_Opacity_500, TokenLevel::Primitive, 0.5f, "opacity 500", Alpha()));
+    put(Float(Tok::P_Opacity_600, TokenLevel::Primitive, 0.6f, "opacity 600", Alpha()));
+    put(Float(Tok::P_Opacity_700, TokenLevel::Primitive, 0.7f, "opacity 700", Alpha()));
+    put(Float(Tok::P_Opacity_800, TokenLevel::Primitive, 0.8f, "opacity 800", Alpha()));
+    put(Float(Tok::P_Opacity_900, TokenLevel::Primitive, 0.9f, "opacity 900", Alpha()));
+    put(Float(Tok::P_Opacity_1000, TokenLevel::Primitive, 1.0f, "opacity 1000", Alpha()));
+    put(Float(Tok::P_Spacing_0, TokenLevel::Primitive, 0.f, "spacing 0", Px(256)));
+    put(Float(Tok::P_Spacing_50, TokenLevel::Primitive, 2.f, "spacing 50", Px(256)));
+    put(Float(Tok::P_Spacing_100, TokenLevel::Primitive, 4.f, "spacing 100", Px(256)));
+    put(Float(Tok::P_Spacing_200, TokenLevel::Primitive, 6.f, "spacing 200", Px(256)));
+    put(Float(Tok::P_Spacing_300, TokenLevel::Primitive, 8.f, "spacing 300", Px(256)));
+    put(Float(Tok::P_Spacing_400, TokenLevel::Primitive, 12.f, "spacing 400", Px(256)));
+    put(Float(Tok::P_Spacing_500, TokenLevel::Primitive, 16.f, "spacing 500", Px(256)));
+    put(Float(Tok::P_Spacing_600, TokenLevel::Primitive, 20.f, "spacing 600", Px(256)));
+    put(Float(Tok::P_Spacing_700, TokenLevel::Primitive, 24.f, "spacing 700", Px(256)));
+    put(Float(Tok::P_Spacing_800, TokenLevel::Primitive, 32.f, "spacing 800", Px(256)));
+    put(Float(Tok::P_Spacing_900, TokenLevel::Primitive, 40.f, "spacing 900", Px(256)));
+    put(Float(Tok::P_Spacing_1000, TokenLevel::Primitive, 48.f, "spacing 1000", Px(256)));
+    put(Float(Tok::P_Radius_none, TokenLevel::Primitive, 0.f, "radius none", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_100, TokenLevel::Primitive, 2.f, "radius 100", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_200, TokenLevel::Primitive, 4.f, "radius 200", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_300, TokenLevel::Primitive, 6.f, "radius 300", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_400, TokenLevel::Primitive, 8.f, "radius 400", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_500, TokenLevel::Primitive, 10.f, "radius 500", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_600, TokenLevel::Primitive, 12.f, "radius 600", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_700, TokenLevel::Primitive, 14.f, "radius 700", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_800, TokenLevel::Primitive, 16.f, "radius 800", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::P_Radius_900, TokenLevel::Primitive, 20.f, "radius 900", CS::Range(0.0,32.0,"px")));
+    put(Ratio(Tok::P_Radius_Full, TokenLevel::Primitive, 0.5f, "radius full (50% of min side)"));
+    put(Float(Tok::P_StrokeWidth_100, TokenLevel::Primitive, 1.0f, "stroke width 100", Border4()));
+    put(Float(Tok::P_StrokeWidth_150, TokenLevel::Primitive, 1.5f, "stroke width 150", Border4()));
+    put(Float(Tok::P_StrokeWidth_200, TokenLevel::Primitive, 2.0f, "stroke width 200", Border4()));
+    put(Float(Tok::P_StrokeWidth_300, TokenLevel::Primitive, 3.0f, "stroke width 300", Border4()));
+    put(Float(Tok::P_StrokeWidth_400, TokenLevel::Primitive, 4.0f, "stroke width 400", Border4()));
+    put(Float(Tok::P_StrokeWidth_0, TokenLevel::Primitive, 0.f, "no stroke", Border4()));
+    put(Float(Tok::P_Size_75, TokenLevel::Primitive, 12.f, "size 75", Px(2048)));
+    put(Float(Tok::P_Size_100, TokenLevel::Primitive, 22.f, "size 100", Px(2048)));
+    put(Float(Tok::P_Size_200, TokenLevel::Primitive, 32.f, "size 200", Px(2048)));
+    put(Float(Tok::P_Size_400, TokenLevel::Primitive, 80.f, "size 400", Px(2048)));
+    put(Float(Tok::P_Size_800, TokenLevel::Primitive, 180.f, "size 800", Px(2048)));
+    put(Float(Tok::P_FontSize_10, TokenLevel::Primitive, 10.f, "font size 10", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_20, TokenLevel::Primitive, 11.f, "font size 20", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_30, TokenLevel::Primitive, 12.f, "font size 30", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_40, TokenLevel::Primitive, 13.f, "font size 40", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_50, TokenLevel::Primitive, 14.f, "font size 50", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_60, TokenLevel::Primitive, 15.f, "font size 60", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_70, TokenLevel::Primitive, 16.f, "font size 70", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_80, TokenLevel::Primitive, 18.f, "font size 80", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_90, TokenLevel::Primitive, 20.f, "font size 90", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_100, TokenLevel::Primitive, 24.f, "font size 100", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_110, TokenLevel::Primitive, 28.f, "font size 110", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_120, TokenLevel::Primitive, 32.f, "font size 120", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_130, TokenLevel::Primitive, 36.f, "font size 130", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_140, TokenLevel::Primitive, 40.f, "font size 140", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_150, TokenLevel::Primitive, 48.f, "font size 150", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_160, TokenLevel::Primitive, 56.f, "font size 160", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_170, TokenLevel::Primitive, 64.f, "font size 170", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_180, TokenLevel::Primitive, 80.f, "font size 180", CS::Range(6.0,200.0,"px")));
+    put(Float(Tok::P_FontSize_190, TokenLevel::Primitive, 96.f, "font size 190", CS::Range(6.0,200.0,"px")));
+    put(Int(Tok::P_FontWeight_Thin, TokenLevel::Primitive, 100, "font weight thin", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_ExtraLight, TokenLevel::Primitive, 200, "font weight extra-light", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_Light, TokenLevel::Primitive, 300, "font weight light", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_Regular, TokenLevel::Primitive, 400, "font weight regular", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_Medium, TokenLevel::Primitive, 500, "font weight medium", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_SemiBold, TokenLevel::Primitive, 600, "font weight semi-bold", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_Bold, TokenLevel::Primitive, 700, "font weight bold", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_ExtraBold, TokenLevel::Primitive, 800, "font weight extra-bold", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_Black, TokenLevel::Primitive, 900, "font weight black", CS::Range(1.0,1000.0,"weight")));
+    put(Int(Tok::P_FontWeight_ExtraBlack, TokenLevel::Primitive, 950, "font weight extra-black", CS::Range(1.0,1000.0,"weight")));
+    put(Float(Tok::P_FontScale_Base, TokenLevel::Primitive, 16.f, "typographic base size", CS::Range(8.0,32.0,"px")));
+    put(Float(Tok::P_FontScale_Ratio, TokenLevel::Primitive, 1.25f, "typographic scale ratio", CS::Range(1.0,2.0,"ratio")));
+    put(Float(Tok::P_FontScale_75, TokenLevel::Primitive, 0.75f, "font scale 75", FontScaleR()));
+    put(Float(Tok::P_FontScale_100, TokenLevel::Primitive, 1.0f, "font scale 100", FontScaleR()));
+    put(Float(Tok::P_FontScale_125, TokenLevel::Primitive, 1.25f, "font scale 125", FontScaleR()));
+    put(Float(Tok::P_FontScale_150, TokenLevel::Primitive, 1.5f, "font scale 150", FontScaleR()));
+    put(Float(Tok::P_Scale_75, TokenLevel::Primitive, 0.75f, "ui scale 75", Multiplier()));
+    put(Float(Tok::P_Scale_100, TokenLevel::Primitive, 1.0f, "ui scale 100", Multiplier()));
+    put(Float(Tok::P_Scale_125, TokenLevel::Primitive, 1.25f, "ui scale 125", Multiplier()));
+    put(Float(Tok::P_Scale_150, TokenLevel::Primitive, 1.5f, "ui scale 150", Multiplier()));
+    put(Float(Tok::P_LineHeight_None, TokenLevel::Primitive, 1.0f, "line-height none", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_LineHeight_Tight, TokenLevel::Primitive, 1.15f, "line-height tight", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_LineHeight_Snug, TokenLevel::Primitive, 1.3f, "line-height snug", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_LineHeight_Normal, TokenLevel::Primitive, 1.5f, "line-height normal", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_LineHeight_Relaxed, TokenLevel::Primitive, 1.7f, "line-height relaxed", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_LineHeight_Loose, TokenLevel::Primitive, 2.0f, "line-height loose", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_LineHeightCjk_Compact, TokenLevel::Primitive, 1.5f, "cjk line-height compact", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_LineHeightCjk_Normal, TokenLevel::Primitive, 1.7f, "cjk line-height normal", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_LineHeightCjk_Relaxed, TokenLevel::Primitive, 1.9f, "cjk line-height relaxed", CS::Range(0.8,3.0,"ratio")));
+    put(Float(Tok::P_Tracking_Tighter, TokenLevel::Primitive, -0.05f, "tracking tighter", CS::Range(-0.2,0.5,"em")));
+    put(Float(Tok::P_Tracking_Tight, TokenLevel::Primitive, -0.02f, "tracking tight", CS::Range(-0.2,0.5,"em")));
+    put(Float(Tok::P_Tracking_Normal, TokenLevel::Primitive, 0.0f, "tracking normal", CS::Range(-0.2,0.5,"em")));
+    put(Float(Tok::P_Tracking_Wide, TokenLevel::Primitive, 0.05f, "tracking wide", CS::Range(-0.2,0.5,"em")));
+    put(Float(Tok::P_Tracking_Wider, TokenLevel::Primitive, 0.1f, "tracking wider", CS::Range(-0.2,0.5,"em")));
+    put(Float(Tok::P_Tracking_Widest, TokenLevel::Primitive, 0.2f, "tracking widest", CS::Range(-0.2,0.5,"em")));
+    put(Int(Tok::P_FontStyle_Normal, TokenLevel::Primitive, 0, "normal style", CS::OneOf({0.0,1.0},"normal/italic")));
+    put(Int(Tok::P_FontStyle_Italic, TokenLevel::Primitive, 1, "italic style", CS::OneOf({0.0,1.0},"normal/italic")));
+    put(FontFam(Tok::P_FontFamily_Sans, TokenLevel::Primitive, "NotoSans", "font family sans"));
+    put(FontFam(Tok::P_FontFamily_Serif, TokenLevel::Primitive, "NotoSans", "font family serif"));
+    put(FontFam(Tok::P_FontFamily_Mono, TokenLevel::Primitive, "NotoSans", "font family mono"));
+    put(FontFam(Tok::P_FontFamily_Cjk, TokenLevel::Primitive, "NotoSans", "font family cjk"));
+    put(FontFam(Tok::P_FontFamily_CjkSerif, TokenLevel::Primitive, "NotoSans", "font family cjk-serif"));
+    put(Int(Tok::P_Layer_Ground, TokenLevel::Primitive, 0, "layer ground", CS::Range(0.0,10000.0,"z")));
+    put(Int(Tok::P_Layer_Low, TokenLevel::Primitive, 10, "layer low", CS::Range(0.0,10000.0,"z")));
+    put(Int(Tok::P_Layer_Mid, TokenLevel::Primitive, 100, "layer mid", CS::Range(0.0,10000.0,"z")));
+    put(Int(Tok::P_Layer_High, TokenLevel::Primitive, 200, "layer high", CS::Range(0.0,10000.0,"z")));
+    put(Int(Tok::P_Layer_Veil, TokenLevel::Primitive, 300, "layer veil", CS::Range(0.0,10000.0,"z")));
+    put(Int(Tok::P_Layer_Raised, TokenLevel::Primitive, 400, "layer raised", CS::Range(0.0,10000.0,"z")));
+    put(Int(Tok::P_Layer_Peak, TokenLevel::Primitive, 500, "layer peak", CS::Range(0.0,10000.0,"z")));
+    put(Int(Tok::P_Layer_Critical, TokenLevel::Primitive, 600, "layer critical", CS::Range(0.0,10000.0,"z")));
+    put(Int(Tok::P_Layer_Absolute, TokenLevel::Primitive, 9999, "layer absolute", CS::Range(0.0,10000.0,"z")));
+    put(Float(Tok::P_Duration_Instant, TokenLevel::Primitive, 0.f, "duration instant", CS::Range(0.0,2000.0,"ms")));
+    put(Float(Tok::P_Duration_Fast, TokenLevel::Primitive, 100.f, "duration fast", CS::Range(0.0,2000.0,"ms")));
+    put(Float(Tok::P_Duration_Normal, TokenLevel::Primitive, 200.f, "duration normal", CS::Range(0.0,2000.0,"ms")));
+    put(Float(Tok::P_Duration_Slow, TokenLevel::Primitive, 300.f, "duration slow", CS::Range(0.0,2000.0,"ms")));
+    put(Float(Tok::P_Duration_Slower, TokenLevel::Primitive, 500.f, "duration slower", CS::Range(0.0,2000.0,"ms")));
+    put(Float(Tok::P_Duration_Slowest, TokenLevel::Primitive, 800.f, "duration slowest", CS::Range(0.0,2000.0,"ms")));
+    put(Bezier(Tok::P_Easing_Linear, TokenLevel::Primitive, {0.0f,0.0f,1.0f,1.0f}, "easing linear"));
+    put(Bezier(Tok::P_Easing_Ease, TokenLevel::Primitive, {0.25f,0.1f,0.25f,1.0f}, "easing ease"));
+    put(Bezier(Tok::P_Easing_EaseIn, TokenLevel::Primitive, {0.42f,0.0f,1.0f,1.0f}, "easing ease-in"));
+    put(Bezier(Tok::P_Easing_EaseOut, TokenLevel::Primitive, {0.0f,0.0f,0.58f,1.0f}, "easing ease-out"));
+    put(Bezier(Tok::P_Easing_EaseInOut, TokenLevel::Primitive, {0.42f,0.0f,0.58f,1.0f}, "easing ease-in-out"));
+    put(Bezier(Tok::P_Easing_Spring, TokenLevel::Primitive, {0.5f,1.5f,0.5f,1.0f}, "easing spring"));
+    put(Bezier(Tok::P_Easing_Decelerate, TokenLevel::Primitive, {0.0f,0.0f,0.2f,1.0f}, "easing decelerate"));
+    put(Bezier(Tok::P_Easing_Accelerate, TokenLevel::Primitive, {0.4f,0.0f,1.0f,1.0f}, "easing accelerate"));
+    put(Bezier(Tok::P_Easing_Overshoot, TokenLevel::Primitive, {0.34f,1.56f,0.64f,1.0f}, "easing overshoot"));
+    put(Float(Tok::P_GradientAngle_0, TokenLevel::Primitive, 0.f, "gradient angle 0", CS::Range(0.0,360.0,"deg")));
+    put(Float(Tok::P_GradientAngle_45, TokenLevel::Primitive, 45.f, "gradient angle 45", CS::Range(0.0,360.0,"deg")));
+    put(Float(Tok::P_GradientAngle_90, TokenLevel::Primitive, 90.f, "gradient angle 90", CS::Range(0.0,360.0,"deg")));
+    put(Float(Tok::P_GradientAngle_135, TokenLevel::Primitive, 135.f, "gradient angle 135", CS::Range(0.0,360.0,"deg")));
+    put(Float(Tok::P_GradientAngle_180, TokenLevel::Primitive, 180.f, "gradient angle 180", CS::Range(0.0,360.0,"deg")));
+    put(Float(Tok::P_GradientAngle_225, TokenLevel::Primitive, 225.f, "gradient angle 225", CS::Range(0.0,360.0,"deg")));
+    put(Float(Tok::P_GradientAngle_270, TokenLevel::Primitive, 270.f, "gradient angle 270", CS::Range(0.0,360.0,"deg")));
+    put(Float(Tok::P_GradientAngle_315, TokenLevel::Primitive, 315.f, "gradient angle 315", CS::Range(0.0,360.0,"deg")));
+    put(Float(Tok::P_GradientStop_0, TokenLevel::Primitive, 0.0f, "gradient stop 0", Align()));
+    put(Float(Tok::P_GradientStop_25, TokenLevel::Primitive, 0.25f, "gradient stop 25", Align()));
+    put(Float(Tok::P_GradientStop_50, TokenLevel::Primitive, 0.5f, "gradient stop 50", Align()));
+    put(Float(Tok::P_GradientStop_75, TokenLevel::Primitive, 0.75f, "gradient stop 75", Align()));
+    put(Float(Tok::P_GradientStop_100, TokenLevel::Primitive, 1.0f, "gradient stop 100", Align()));
+    put(Float(Tok::P_Align_Start, TokenLevel::Primitive, 0.0f, "align start", Align()));
+    put(Float(Tok::P_Align_Center, TokenLevel::Primitive, 0.5f, "align center", Align()));
+    put(Float(Tok::P_Align_End, TokenLevel::Primitive, 1.0f, "align end", Align()));
+    put(Vec2(Tok::P_Config_ItemSpacing, TokenLevel::Primitive, {8.0f,4.0f}, "item spacing", PadXY()));
+    put(Vec2(Tok::P_Config_ItemInnerSpacing, TokenLevel::Primitive, {4.0f,4.0f}, "inner item spacing", PadXY()));
+    put(Vec2(Tok::P_Config_CellPadding, TokenLevel::Primitive, {4.0f,2.0f}, "cell padding", PadXY()));
+    put(Vec2(Tok::P_Config_TouchExtraPadding, TokenLevel::Primitive, {0.0f,0.0f}, "touch padding", Px(10)));
+    put(Float(Tok::P_Config_IndentSpacing, TokenLevel::Primitive, 21.f, "tree indent", Px(48)));
+    put(Float(Tok::P_Config_ColumnsMinSpacing, TokenLevel::Primitive, 6.f, "columns min", Px(48)));
+    put(Int(Tok::P_Config_UndoSteps, TokenLevel::Primitive, 256, "undo history depth (steps kept per window)", CS::Range(2.0, 4096.0, "steps")));
+    put(Vec2(Tok::P_Config_DisplayWindowPadding, TokenLevel::Primitive, {19.0f,19.0f}, "display window pad", Px(64)));
+    put(Vec2(Tok::P_Config_DisplaySafeAreaPadding, TokenLevel::Primitive, {3.0f,3.0f}, "safe area pad", Px(64)));
+    put(Vec2(Tok::P_Config_SeparatorTextPadding, TokenLevel::Primitive, {20.0f,3.0f}, "separator text pad", PadXY()));
+    put(Vec2(Tok::P_Config_ButtonTextAlign, TokenLevel::Primitive, {0.5f,0.5f}, "button text align", Align()));
+    put(Vec2(Tok::P_Config_SelectableTextAlign, TokenLevel::Primitive, {0.0f,0.0f}, "selectable align", Align()));
+    put(Vec2(Tok::P_Config_SeparatorTextAlign, TokenLevel::Primitive, {0.0f,0.5f}, "separator align", Align()));
+    put(Int(Tok::P_Config_ColorButtonPosition, TokenLevel::Primitive, 1, "color button side", CS::OneOf({0.0,1.0},"Left/Right")));
+    put(Float(Tok::P_Config_GrabMinSize, TokenLevel::Primitive, 12.f, "min grab", CS::Range(1.0,32.0,"px")));
+    put(Float(Tok::P_Config_LogSliderDeadzone, TokenLevel::Primitive, 4.f, "log slider deadzone", Px(64)));
+    put(Float(Tok::P_Config_ColorMarkerSize, TokenLevel::Primitive, 3.f, "color marker", Px(8)));
+    put(Float(Tok::P_Config_MouseCursorScale, TokenLevel::Primitive, 1.f, "cursor scale", Multiplier()));
+    put(Float(Tok::P_Config_HoverDelayStationary, TokenLevel::Primitive, 0.15f, "hover stationary", Delay()));
+    put(Float(Tok::P_Config_HoverDelayShort, TokenLevel::Primitive, 0.15f, "hover short", Delay()));
+    put(Float(Tok::P_Config_HoverDelayNormal, TokenLevel::Primitive, 0.40f, "hover normal", Delay()));
+    put(Float(Tok::P_Config_DragThreshold, TokenLevel::Primitive, 6.f, "drag threshold", CS::Range(2.0,64.0,"px")));
+    put(Int(Tok::P_Border_Enabled, TokenLevel::Primitive, 1, "global borders on/off", Bool01()));
+    put(Int(Tok::P_Config_AntiAliasedLines, TokenLevel::Primitive, 1, "AA lines", Bool01()));
+    put(Int(Tok::P_Config_AntiAliasedLinesUseTex, TokenLevel::Primitive, 1, "AA lines tex", Bool01()));
+    put(Int(Tok::P_Config_AntiAliasedFill, TokenLevel::Primitive, 1, "AA fill", Bool01()));
+    put(Float(Tok::P_Config_CurveTessellationTol, TokenLevel::Primitive, 1.25f, "curve tess", CS::Range(0.10,10.0,"px")));
+    put(Float(Tok::P_Config_CircleTessellationMaxError, TokenLevel::Primitive, 0.30f, "circle tess", CS::Range(0.10,5.0,"px")));
+    put(Int(Tok::P_Config_TreeLinesFlags, TokenLevel::Primitive, 0, "tree lines mode", CS::OneOf({0.0,1.0,2.0},"None/Full/ToNodes")));
+    put(Float(Tok::P_Config_TreeLinesSize, TokenLevel::Primitive, 1.f, "tree line size", Border4()));
+    put(RefT4(Tok::S_Accent_Color_100, TokenLevel::Semantic, "accent role scale 100", Tok::P_Color_Blue_100, Tok::P_Color_Blue_100, Tok::P_Color_Green_100, Tok::P_Color_Blue_100));
+    put(RefT4(Tok::S_Accent_Color_200, TokenLevel::Semantic, "accent role scale 200", Tok::P_Color_Blue_200, Tok::P_Color_Blue_200, Tok::P_Color_Green_200, Tok::P_Color_Blue_200));
+    put(RefT4(Tok::S_Accent_Color_300, TokenLevel::Semantic, "accent role scale 300", Tok::P_Color_Blue_300, Tok::P_Color_Blue_300, Tok::P_Color_Green_300, Tok::P_Color_Blue_300));
+    put(RefT4(Tok::S_Accent_Color_400, TokenLevel::Semantic, "accent role scale 400", Tok::P_Color_Blue_400, Tok::P_Color_Blue_400, Tok::P_Color_Green_400, Tok::P_Color_Blue_400));
+    put(RefT4(Tok::S_Accent_Color_500, TokenLevel::Semantic, "accent role scale 500", Tok::P_Color_Blue_500, Tok::P_Color_Blue_500, Tok::P_Color_Green_500, Tok::P_Color_Blue_500));
+    put(RefT4(Tok::S_Accent_Color_600, TokenLevel::Semantic, "accent role scale 600", Tok::P_Color_Blue_600, Tok::P_Color_Blue_600, Tok::P_Color_Green_600, Tok::P_Color_Blue_600));
+    put(RefT4(Tok::S_Accent_Color_700, TokenLevel::Semantic, "accent role scale 700", Tok::P_Color_Blue_700, Tok::P_Color_Blue_700, Tok::P_Color_Green_700, Tok::P_Color_Blue_700));
+    put(RefT4(Tok::S_Accent_Color_800, TokenLevel::Semantic, "accent role scale 800", Tok::P_Color_Blue_800, Tok::P_Color_Blue_800, Tok::P_Color_Green_800, Tok::P_Color_Blue_800));
+    put(RefT4(Tok::S_Accent_Color_900, TokenLevel::Semantic, "accent role scale 900", Tok::P_Color_Blue_900, Tok::P_Color_Blue_900, Tok::P_Color_Green_900, Tok::P_Color_Blue_900));
+    put(RefT4(Tok::S_Accent_Color_1000, TokenLevel::Semantic, "accent role scale 1000", Tok::P_Color_Blue_1000, Tok::P_Color_Blue_1000, Tok::P_Color_Green_1000, Tok::P_Color_Blue_1000));
+    put(RefT4(Tok::S_Accent_Color_1100, TokenLevel::Semantic, "accent role scale 1100", Tok::P_Color_Blue_1100, Tok::P_Color_Blue_1100, Tok::P_Color_Green_1100, Tok::P_Color_Blue_1100));
+    put(RefT4(Tok::S_Accent_Color_1200, TokenLevel::Semantic, "accent role scale 1200", Tok::P_Color_Blue_1200, Tok::P_Color_Blue_1200, Tok::P_Color_Green_1200, Tok::P_Color_Blue_1200));
+    put(RefT4(Tok::S_Accent_Color_1300, TokenLevel::Semantic, "accent role scale 1300", Tok::P_Color_Blue_1300, Tok::P_Color_Blue_1300, Tok::P_Color_Green_1300, Tok::P_Color_Blue_1300));
+    put(RefT4(Tok::S_Accent_Color_1400, TokenLevel::Semantic, "accent role scale 1400", Tok::P_Color_Blue_1400, Tok::P_Color_Blue_1400, Tok::P_Color_Green_1400, Tok::P_Color_Blue_1400));
+    put(RefT4(Tok::S_Accent_Color_1500, TokenLevel::Semantic, "accent role scale 1500", Tok::P_Color_Blue_1500, Tok::P_Color_Blue_1500, Tok::P_Color_Green_1500, Tok::P_Color_Blue_1500));
+    put(RefT4(Tok::S_Accent_Color_1600, TokenLevel::Semantic, "accent role scale 1600", Tok::P_Color_Blue_1600, Tok::P_Color_Blue_1600, Tok::P_Color_Green_1600, Tok::P_Color_Blue_1600));
+    put(Ref(Tok::S_Info_Color_100, TokenLevel::Semantic, Tok::P_Color_Blue_100, "info role scale 100"));
+    put(Ref(Tok::S_Info_Color_200, TokenLevel::Semantic, Tok::P_Color_Blue_200, "info role scale 200"));
+    put(Ref(Tok::S_Info_Color_300, TokenLevel::Semantic, Tok::P_Color_Blue_300, "info role scale 300"));
+    put(Ref(Tok::S_Info_Color_400, TokenLevel::Semantic, Tok::P_Color_Blue_400, "info role scale 400"));
+    put(Ref(Tok::S_Info_Color_500, TokenLevel::Semantic, Tok::P_Color_Blue_500, "info role scale 500"));
+    put(Ref(Tok::S_Info_Color_600, TokenLevel::Semantic, Tok::P_Color_Blue_600, "info role scale 600"));
+    put(Ref(Tok::S_Info_Color_700, TokenLevel::Semantic, Tok::P_Color_Blue_700, "info role scale 700"));
+    put(Ref(Tok::S_Info_Color_800, TokenLevel::Semantic, Tok::P_Color_Blue_800, "info role scale 800"));
+    put(Ref(Tok::S_Info_Color_900, TokenLevel::Semantic, Tok::P_Color_Blue_900, "info role scale 900"));
+    put(Ref(Tok::S_Info_Color_1000, TokenLevel::Semantic, Tok::P_Color_Blue_1000, "info role scale 1000"));
+    put(Ref(Tok::S_Info_Color_1100, TokenLevel::Semantic, Tok::P_Color_Blue_1100, "info role scale 1100"));
+    put(Ref(Tok::S_Info_Color_1200, TokenLevel::Semantic, Tok::P_Color_Blue_1200, "info role scale 1200"));
+    put(Ref(Tok::S_Info_Color_1300, TokenLevel::Semantic, Tok::P_Color_Blue_1300, "info role scale 1300"));
+    put(Ref(Tok::S_Info_Color_1400, TokenLevel::Semantic, Tok::P_Color_Blue_1400, "info role scale 1400"));
+    put(Ref(Tok::S_Info_Color_1500, TokenLevel::Semantic, Tok::P_Color_Blue_1500, "info role scale 1500"));
+    put(Ref(Tok::S_Info_Color_1600, TokenLevel::Semantic, Tok::P_Color_Blue_1600, "info role scale 1600"));
+    put(Ref(Tok::S_Negative_Color_100, TokenLevel::Semantic, Tok::P_Color_Red_100, "negative role scale 100"));
+    put(Ref(Tok::S_Negative_Color_200, TokenLevel::Semantic, Tok::P_Color_Red_200, "negative role scale 200"));
+    put(Ref(Tok::S_Negative_Color_300, TokenLevel::Semantic, Tok::P_Color_Red_300, "negative role scale 300"));
+    put(Ref(Tok::S_Negative_Color_400, TokenLevel::Semantic, Tok::P_Color_Red_400, "negative role scale 400"));
+    put(Ref(Tok::S_Negative_Color_500, TokenLevel::Semantic, Tok::P_Color_Red_500, "negative role scale 500"));
+    put(Ref(Tok::S_Negative_Color_600, TokenLevel::Semantic, Tok::P_Color_Red_600, "negative role scale 600"));
+    put(Ref(Tok::S_Negative_Color_700, TokenLevel::Semantic, Tok::P_Color_Red_700, "negative role scale 700"));
+    put(Ref(Tok::S_Negative_Color_800, TokenLevel::Semantic, Tok::P_Color_Red_800, "negative role scale 800"));
+    put(Ref(Tok::S_Negative_Color_900, TokenLevel::Semantic, Tok::P_Color_Red_900, "negative role scale 900"));
+    put(Ref(Tok::S_Negative_Color_1000, TokenLevel::Semantic, Tok::P_Color_Red_1000, "negative role scale 1000"));
+    put(Ref(Tok::S_Negative_Color_1100, TokenLevel::Semantic, Tok::P_Color_Red_1100, "negative role scale 1100"));
+    put(Ref(Tok::S_Negative_Color_1200, TokenLevel::Semantic, Tok::P_Color_Red_1200, "negative role scale 1200"));
+    put(Ref(Tok::S_Negative_Color_1300, TokenLevel::Semantic, Tok::P_Color_Red_1300, "negative role scale 1300"));
+    put(Ref(Tok::S_Negative_Color_1400, TokenLevel::Semantic, Tok::P_Color_Red_1400, "negative role scale 1400"));
+    put(Ref(Tok::S_Negative_Color_1500, TokenLevel::Semantic, Tok::P_Color_Red_1500, "negative role scale 1500"));
+    put(Ref(Tok::S_Negative_Color_1600, TokenLevel::Semantic, Tok::P_Color_Red_1600, "negative role scale 1600"));
+    put(Ref(Tok::S_Positive_Color_100, TokenLevel::Semantic, Tok::P_Color_Green_100, "positive role scale 100"));
+    put(Ref(Tok::S_Positive_Color_200, TokenLevel::Semantic, Tok::P_Color_Green_200, "positive role scale 200"));
+    put(Ref(Tok::S_Positive_Color_300, TokenLevel::Semantic, Tok::P_Color_Green_300, "positive role scale 300"));
+    put(Ref(Tok::S_Positive_Color_400, TokenLevel::Semantic, Tok::P_Color_Green_400, "positive role scale 400"));
+    put(Ref(Tok::S_Positive_Color_500, TokenLevel::Semantic, Tok::P_Color_Green_500, "positive role scale 500"));
+    put(Ref(Tok::S_Positive_Color_600, TokenLevel::Semantic, Tok::P_Color_Green_600, "positive role scale 600"));
+    put(Ref(Tok::S_Positive_Color_700, TokenLevel::Semantic, Tok::P_Color_Green_700, "positive role scale 700"));
+    put(Ref(Tok::S_Positive_Color_800, TokenLevel::Semantic, Tok::P_Color_Green_800, "positive role scale 800"));
+    put(Ref(Tok::S_Positive_Color_900, TokenLevel::Semantic, Tok::P_Color_Green_900, "positive role scale 900"));
+    put(Ref(Tok::S_Positive_Color_1000, TokenLevel::Semantic, Tok::P_Color_Green_1000, "positive role scale 1000"));
+    put(Ref(Tok::S_Positive_Color_1100, TokenLevel::Semantic, Tok::P_Color_Green_1100, "positive role scale 1100"));
+    put(Ref(Tok::S_Positive_Color_1200, TokenLevel::Semantic, Tok::P_Color_Green_1200, "positive role scale 1200"));
+    put(Ref(Tok::S_Positive_Color_1300, TokenLevel::Semantic, Tok::P_Color_Green_1300, "positive role scale 1300"));
+    put(Ref(Tok::S_Positive_Color_1400, TokenLevel::Semantic, Tok::P_Color_Green_1400, "positive role scale 1400"));
+    put(Ref(Tok::S_Positive_Color_1500, TokenLevel::Semantic, Tok::P_Color_Green_1500, "positive role scale 1500"));
+    put(Ref(Tok::S_Positive_Color_1600, TokenLevel::Semantic, Tok::P_Color_Green_1600, "positive role scale 1600"));
+    put(Ref(Tok::S_Notice_Color_100, TokenLevel::Semantic, Tok::P_Color_Orange_100, "notice role scale 100"));
+    put(Ref(Tok::S_Notice_Color_200, TokenLevel::Semantic, Tok::P_Color_Orange_200, "notice role scale 200"));
+    put(Ref(Tok::S_Notice_Color_300, TokenLevel::Semantic, Tok::P_Color_Orange_300, "notice role scale 300"));
+    put(Ref(Tok::S_Notice_Color_400, TokenLevel::Semantic, Tok::P_Color_Orange_400, "notice role scale 400"));
+    put(Ref(Tok::S_Notice_Color_500, TokenLevel::Semantic, Tok::P_Color_Orange_500, "notice role scale 500"));
+    put(Ref(Tok::S_Notice_Color_600, TokenLevel::Semantic, Tok::P_Color_Orange_600, "notice role scale 600"));
+    put(Ref(Tok::S_Notice_Color_700, TokenLevel::Semantic, Tok::P_Color_Orange_700, "notice role scale 700"));
+    put(Ref(Tok::S_Notice_Color_800, TokenLevel::Semantic, Tok::P_Color_Orange_800, "notice role scale 800"));
+    put(Ref(Tok::S_Notice_Color_900, TokenLevel::Semantic, Tok::P_Color_Orange_900, "notice role scale 900"));
+    put(Ref(Tok::S_Notice_Color_1000, TokenLevel::Semantic, Tok::P_Color_Orange_1000, "notice role scale 1000"));
+    put(Ref(Tok::S_Notice_Color_1100, TokenLevel::Semantic, Tok::P_Color_Orange_1100, "notice role scale 1100"));
+    put(Ref(Tok::S_Notice_Color_1200, TokenLevel::Semantic, Tok::P_Color_Orange_1200, "notice role scale 1200"));
+    put(Ref(Tok::S_Notice_Color_1300, TokenLevel::Semantic, Tok::P_Color_Orange_1300, "notice role scale 1300"));
+    put(Ref(Tok::S_Notice_Color_1400, TokenLevel::Semantic, Tok::P_Color_Orange_1400, "notice role scale 1400"));
+    put(Ref(Tok::S_Notice_Color_1500, TokenLevel::Semantic, Tok::P_Color_Orange_1500, "notice role scale 1500"));
+    put(Ref(Tok::S_Notice_Color_1600, TokenLevel::Semantic, Tok::P_Color_Orange_1600, "notice role scale 1600"));
+    put(Ref(Tok::S_Neutral_Color_25, TokenLevel::Semantic, Tok::P_Color_Gray_25, "neutral role scale 25"));
+    put(Ref(Tok::S_Neutral_Color_50, TokenLevel::Semantic, Tok::P_Color_Gray_50, "neutral role scale 50"));
+    put(Ref(Tok::S_Neutral_Color_75, TokenLevel::Semantic, Tok::P_Color_Gray_75, "neutral role scale 75"));
+    put(Ref(Tok::S_Neutral_Color_100, TokenLevel::Semantic, Tok::P_Color_Gray_100, "neutral role scale 100"));
+    put(Ref(Tok::S_Neutral_Color_200, TokenLevel::Semantic, Tok::P_Color_Gray_200, "neutral role scale 200"));
+    put(Ref(Tok::S_Neutral_Color_300, TokenLevel::Semantic, Tok::P_Color_Gray_300, "neutral role scale 300"));
+    put(Ref(Tok::S_Neutral_Color_400, TokenLevel::Semantic, Tok::P_Color_Gray_400, "neutral role scale 400"));
+    put(Ref(Tok::S_Neutral_Color_500, TokenLevel::Semantic, Tok::P_Color_Gray_500, "neutral role scale 500"));
+    put(Ref(Tok::S_Neutral_Color_600, TokenLevel::Semantic, Tok::P_Color_Gray_600, "neutral role scale 600"));
+    put(Ref(Tok::S_Neutral_Color_700, TokenLevel::Semantic, Tok::P_Color_Gray_700, "neutral role scale 700"));
+    put(Ref(Tok::S_Neutral_Color_800, TokenLevel::Semantic, Tok::P_Color_Gray_800, "neutral role scale 800"));
+    put(Ref(Tok::S_Neutral_Color_900, TokenLevel::Semantic, Tok::P_Color_Gray_900, "neutral role scale 900"));
+    put(Ref(Tok::S_Neutral_Color_1000, TokenLevel::Semantic, Tok::P_Color_Gray_1000, "neutral role scale 1000"));
+    put(Ref(Tok::S_Color_Accent_Default, TokenLevel::Semantic, Tok::S_Accent_Color_700, "background accent default"));
+    put(Ref(Tok::S_Color_Accent_Hover, TokenLevel::Semantic, Tok::S_Accent_Color_600, "background accent hover"));
+    put(Ref(Tok::S_Color_Accent_Down, TokenLevel::Semantic, Tok::S_Accent_Color_600, "background accent pressed"));
+
+    // ── Interaction-STATE matrix (semantic.accent.color.<role>.<status>) ──────
+    // Per role we pick a consistent shade across status scales (dark theme):
+    //   visual=1300/900, hover=1200/800, text=300, selected=700, hover-sel=600,
+    //   active=700. `default` is grey (neutral) for the passive roles and blue
+    //   (accent) for the selection roles; `neutral` is grey throughout; `brand`
+    //   is purple. These feed component tokens (e.g. the Outliner rows).
+    // visual
+    put(Ref(Tok::S_Accent_Visual_Default,  TokenLevel::Semantic, Tok::S_Neutral_Color_900,  "state visual default (grey)"));
+    put(Ref(Tok::S_Accent_Visual_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_1300, "state visual positive"));
+    put(Ref(Tok::S_Accent_Visual_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_1300, "state visual negative"));
+    put(Ref(Tok::S_Accent_Visual_Info,     TokenLevel::Semantic, Tok::S_Info_Color_1300,     "state visual info"));
+    put(Ref(Tok::S_Accent_Visual_Neutral,  TokenLevel::Semantic, Tok::S_Neutral_Color_900,   "state visual neutral"));
+    put(Ref(Tok::S_Accent_Visual_Notice,   TokenLevel::Semantic, Tok::S_Notice_Color_1300,   "state visual notice"));
+    put(Ref(Tok::S_Accent_Visual_Brand,    TokenLevel::Semantic, Tok::P_Color_Purple_1300,   "state visual brand"));
+    // hover — a LIGHT, lightly-tinted cue (drawn semi-transparent over the row),
+    // so hovering even a light zebra stripe still reads. Mid-light shades.
+    put(Ref(Tok::S_Accent_Hover_Default,   TokenLevel::Semantic, Tok::S_Neutral_Color_500,   "state hover default (grey)"));
+    put(Ref(Tok::S_Accent_Hover_Positive,  TokenLevel::Semantic, Tok::S_Positive_Color_700,  "state hover positive"));
+    put(Ref(Tok::S_Accent_Hover_Negative,  TokenLevel::Semantic, Tok::S_Negative_Color_700,  "state hover negative"));
+    put(Ref(Tok::S_Accent_Hover_Info,      TokenLevel::Semantic, Tok::S_Info_Color_700,      "state hover info"));
+    put(Ref(Tok::S_Accent_Hover_Neutral,   TokenLevel::Semantic, Tok::S_Neutral_Color_500,   "state hover neutral"));
+    put(Ref(Tok::S_Accent_Hover_Notice,    TokenLevel::Semantic, Tok::S_Notice_Color_700,    "state hover notice"));
+    put(Ref(Tok::S_Accent_Hover_Brand,     TokenLevel::Semantic, Tok::P_Color_Purple_700,    "state hover brand"));
+    // text
+    put(Ref(Tok::S_Accent_Text_Default,    TokenLevel::Semantic, Tok::S_Neutral_Color_300,   "state text default (grey)"));
+    put(Ref(Tok::S_Accent_Text_Positive,   TokenLevel::Semantic, Tok::S_Positive_Color_300,  "state text positive"));
+    put(Ref(Tok::S_Accent_Text_Negative,   TokenLevel::Semantic, Tok::S_Negative_Color_300,  "state text negative"));
+    put(Ref(Tok::S_Accent_Text_Info,       TokenLevel::Semantic, Tok::S_Info_Color_300,      "state text info"));
+    put(Ref(Tok::S_Accent_Text_Neutral,    TokenLevel::Semantic, Tok::S_Neutral_Color_300,   "state text neutral"));
+    put(Ref(Tok::S_Accent_Text_Notice,     TokenLevel::Semantic, Tok::S_Notice_Color_300,    "state text notice"));
+    put(Ref(Tok::S_Accent_Text_Brand,      TokenLevel::Semantic, Tok::P_Color_Purple_300,    "state text brand"));
+    // selected — a DIMMER tone (sits quietly); active is brighter so the two are
+    // clearly distinct. selected=800, hover-selected=700, active=600, active-
+    // hover=500. (default selection roles stay blue/accent.)
+    put(Ref(Tok::S_Accent_Selected_Default,  TokenLevel::Semantic, Tok::S_Accent_Color_800,   "state selected default (blue, dim)"));
+    put(Ref(Tok::S_Accent_Selected_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_800, "state selected positive"));
+    put(Ref(Tok::S_Accent_Selected_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_800, "state selected negative"));
+    put(Ref(Tok::S_Accent_Selected_Info,     TokenLevel::Semantic, Tok::S_Info_Color_800,     "state selected info"));
+    put(Ref(Tok::S_Accent_Selected_Neutral,  TokenLevel::Semantic, Tok::S_Neutral_Color_800,  "state selected neutral"));
+    put(Ref(Tok::S_Accent_Selected_Notice,   TokenLevel::Semantic, Tok::S_Notice_Color_800,   "state selected notice"));
+    put(Ref(Tok::S_Accent_Selected_Brand,    TokenLevel::Semantic, Tok::P_Color_Purple_800,   "state selected brand"));
+    // hover-selected (selected + hovered → one step brighter than selected)
+    put(Ref(Tok::S_Accent_HoverSelected_Default,  TokenLevel::Semantic, Tok::S_Accent_Color_700,   "state hover-selected default (blue)"));
+    put(Ref(Tok::S_Accent_HoverSelected_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_700, "state hover-selected positive"));
+    put(Ref(Tok::S_Accent_HoverSelected_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_700, "state hover-selected negative"));
+    put(Ref(Tok::S_Accent_HoverSelected_Info,     TokenLevel::Semantic, Tok::S_Info_Color_700,     "state hover-selected info"));
+    put(Ref(Tok::S_Accent_HoverSelected_Neutral,  TokenLevel::Semantic, Tok::S_Neutral_Color_700,  "state hover-selected neutral"));
+    put(Ref(Tok::S_Accent_HoverSelected_Notice,   TokenLevel::Semantic, Tok::S_Notice_Color_700,   "state hover-selected notice"));
+    put(Ref(Tok::S_Accent_HoverSelected_Brand,    TokenLevel::Semantic, Tok::P_Color_Purple_700,   "state hover-selected brand"));
+    // active — BRIGHTER than selected so an active-selected row clearly stands out
+    put(Ref(Tok::S_Accent_Active_Default,  TokenLevel::Semantic, Tok::S_Accent_Color_600,   "state active default (blue, bright)"));
+    put(Ref(Tok::S_Accent_Active_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_600, "state active positive"));
+    put(Ref(Tok::S_Accent_Active_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_600, "state active negative"));
+    put(Ref(Tok::S_Accent_Active_Info,     TokenLevel::Semantic, Tok::S_Info_Color_600,     "state active info"));
+    put(Ref(Tok::S_Accent_Active_Neutral,  TokenLevel::Semantic, Tok::S_Neutral_Color_600,  "state active neutral"));
+    put(Ref(Tok::S_Accent_Active_Notice,   TokenLevel::Semantic, Tok::S_Notice_Color_600,   "state active notice"));
+    put(Ref(Tok::S_Accent_Active_Brand,    TokenLevel::Semantic, Tok::P_Color_Purple_600,   "state active brand"));
+
+    put(Ref(Tok::S_Background_Accent_KbdFocus, TokenLevel::Semantic, Tok::S_Accent_Color_600, "background accent kbd-focus"));
+    put(Ref(Tok::S_Background_Info_Default, TokenLevel::Semantic, Tok::S_Info_Color_700, "background info default"));
+    put(Ref(Tok::S_Background_Info_Hover, TokenLevel::Semantic, Tok::S_Info_Color_600, "background info hover"));
+    put(Ref(Tok::S_Background_Info_Pressed, TokenLevel::Semantic, Tok::S_Info_Color_600, "background info pressed"));
+    put(Ref(Tok::S_Background_Info_KbdFocus, TokenLevel::Semantic, Tok::S_Info_Color_600, "background info kbd-focus"));
+    put(Ref(Tok::S_Color_Negative_Default, TokenLevel::Semantic, Tok::S_Negative_Color_700, "background negative default"));
+    put(Ref(Tok::S_Background_Negative_Hover, TokenLevel::Semantic, Tok::S_Negative_Color_600, "background negative hover"));
+    put(Ref(Tok::S_Background_Negative_Pressed, TokenLevel::Semantic, Tok::S_Negative_Color_600, "background negative pressed"));
+    put(Ref(Tok::S_Background_Negative_KbdFocus, TokenLevel::Semantic, Tok::S_Negative_Color_600, "background negative kbd-focus"));
+    put(Ref(Tok::S_Color_Positive_Default, TokenLevel::Semantic, Tok::S_Positive_Color_700, "background positive default"));
+    put(Ref(Tok::S_Background_Positive_Hover, TokenLevel::Semantic, Tok::S_Positive_Color_600, "background positive hover"));
+    put(Ref(Tok::S_Background_Positive_Pressed, TokenLevel::Semantic, Tok::S_Positive_Color_600, "background positive pressed"));
+    put(Ref(Tok::S_Background_Positive_KbdFocus, TokenLevel::Semantic, Tok::S_Positive_Color_600, "background positive kbd-focus"));
+    put(Ref(Tok::S_Color_Notice_Default, TokenLevel::Semantic, Tok::S_Notice_Color_600, "background notice default"));
+    put(Ref(Tok::S_Background_Neutral_Default, TokenLevel::Semantic, Tok::S_Neutral_Color_500, "background neutral default"));
+    put(Ref(Tok::S_Background_Neutral_Hover, TokenLevel::Semantic, Tok::S_Neutral_Color_400, "background neutral hover"));
+    put(Ref(Tok::S_Background_Neutral_Pressed, TokenLevel::Semantic, Tok::S_Neutral_Color_400, "background neutral pressed"));
+    put(Ref(Tok::S_Background_Neutral_KbdFocus, TokenLevel::Semantic, Tok::S_Neutral_Color_400, "background neutral kbd-focus"));
+    put(Ref(Tok::S_Background_Accent_Subtle, TokenLevel::Semantic, Tok::S_Accent_Color_1400, "background accent subtle"));
+    put(Ref(Tok::S_Background_Info_Subtle, TokenLevel::Semantic, Tok::S_Info_Color_1400, "background info subtle"));
+    put(Ref(Tok::S_Background_Negative_Subtle, TokenLevel::Semantic, Tok::S_Negative_Color_1400, "background negative subtle"));
+    put(Ref(Tok::S_Background_Positive_Subtle, TokenLevel::Semantic, Tok::S_Positive_Color_1400, "background positive subtle"));
+    put(Ref(Tok::S_Background_Notice_Subtle, TokenLevel::Semantic, Tok::S_Notice_Color_1400, "background notice subtle"));
+    put(Ref(Tok::S_Background_Neutral_Subtle, TokenLevel::Semantic, Tok::S_Neutral_Color_800, "background neutral subtle"));
+    put(Ref(Tok::S_Background_Blue_Default, TokenLevel::Semantic, Tok::P_Color_Blue_600, "background blue"));
+    put(Ref(Tok::S_Background_Blue_Subtle, TokenLevel::Semantic, Tok::P_Color_Blue_1400, "background blue subtle"));
+    put(Ref(Tok::S_Background_Blue_Visual, TokenLevel::Semantic, Tok::P_Color_Blue_500, "background blue visual"));
+    put(Ref(Tok::S_Background_Brown_Default, TokenLevel::Semantic, Tok::P_Color_Brown_600, "background brown"));
+    put(Ref(Tok::S_Background_Brown_Subtle, TokenLevel::Semantic, Tok::P_Color_Brown_1400, "background brown subtle"));
+    put(Ref(Tok::S_Background_Brown_Visual, TokenLevel::Semantic, Tok::P_Color_Brown_500, "background brown visual"));
+    put(Ref(Tok::S_Background_Celery_Default, TokenLevel::Semantic, Tok::P_Color_Celery_600, "background celery"));
+    put(Ref(Tok::S_Background_Celery_Subtle, TokenLevel::Semantic, Tok::P_Color_Celery_1400, "background celery subtle"));
+    put(Ref(Tok::S_Background_Celery_Visual, TokenLevel::Semantic, Tok::P_Color_Celery_500, "background celery visual"));
+    put(Ref(Tok::S_Background_Chartreuse_Default, TokenLevel::Semantic, Tok::P_Color_Chartreuse_600, "background chartreuse"));
+    put(Ref(Tok::S_Background_Chartreuse_Subtle, TokenLevel::Semantic, Tok::P_Color_Chartreuse_1400, "background chartreuse subtle"));
+    put(Ref(Tok::S_Background_Chartreuse_Visual, TokenLevel::Semantic, Tok::P_Color_Chartreuse_500, "background chartreuse visual"));
+    put(Ref(Tok::S_Background_Cinnamon_Default, TokenLevel::Semantic, Tok::P_Color_Cinnamon_600, "background cinnamon"));
+    put(Ref(Tok::S_Background_Cinnamon_Subtle, TokenLevel::Semantic, Tok::P_Color_Cinnamon_1400, "background cinnamon subtle"));
+    put(Ref(Tok::S_Background_Cinnamon_Visual, TokenLevel::Semantic, Tok::P_Color_Cinnamon_500, "background cinnamon visual"));
+    put(Ref(Tok::S_Background_Cyan_Default, TokenLevel::Semantic, Tok::P_Color_Cyan_600, "background cyan"));
+    put(Ref(Tok::S_Background_Cyan_Subtle, TokenLevel::Semantic, Tok::P_Color_Cyan_1400, "background cyan subtle"));
+    put(Ref(Tok::S_Background_Cyan_Visual, TokenLevel::Semantic, Tok::P_Color_Cyan_500, "background cyan visual"));
+    put(Ref(Tok::S_Background_Fuchsia_Default, TokenLevel::Semantic, Tok::P_Color_Fuchsia_600, "background fuchsia"));
+    put(Ref(Tok::S_Background_Fuchsia_Subtle, TokenLevel::Semantic, Tok::P_Color_Fuchsia_1400, "background fuchsia subtle"));
+    put(Ref(Tok::S_Background_Fuchsia_Visual, TokenLevel::Semantic, Tok::P_Color_Fuchsia_500, "background fuchsia visual"));
+    put(Ref(Tok::S_Background_Green_Default, TokenLevel::Semantic, Tok::P_Color_Green_600, "background green"));
+    put(Ref(Tok::S_Background_Green_Subtle, TokenLevel::Semantic, Tok::P_Color_Green_1400, "background green subtle"));
+    put(Ref(Tok::S_Background_Green_Visual, TokenLevel::Semantic, Tok::P_Color_Green_500, "background green visual"));
+    put(Ref(Tok::S_Background_Indigo_Default, TokenLevel::Semantic, Tok::P_Color_Indigo_600, "background indigo"));
+    put(Ref(Tok::S_Background_Indigo_Subtle, TokenLevel::Semantic, Tok::P_Color_Indigo_1400, "background indigo subtle"));
+    put(Ref(Tok::S_Background_Indigo_Visual, TokenLevel::Semantic, Tok::P_Color_Indigo_500, "background indigo visual"));
+    put(Ref(Tok::S_Background_Magenta_Default, TokenLevel::Semantic, Tok::P_Color_Magenta_600, "background magenta"));
+    put(Ref(Tok::S_Background_Magenta_Subtle, TokenLevel::Semantic, Tok::P_Color_Magenta_1400, "background magenta subtle"));
+    put(Ref(Tok::S_Background_Magenta_Visual, TokenLevel::Semantic, Tok::P_Color_Magenta_500, "background magenta visual"));
+    put(Ref(Tok::S_Background_Orange_Default, TokenLevel::Semantic, Tok::P_Color_Orange_600, "background orange"));
+    put(Ref(Tok::S_Background_Orange_Subtle, TokenLevel::Semantic, Tok::P_Color_Orange_1400, "background orange subtle"));
+    put(Ref(Tok::S_Background_Orange_Visual, TokenLevel::Semantic, Tok::P_Color_Orange_500, "background orange visual"));
+    put(Ref(Tok::S_Background_Pink_Default, TokenLevel::Semantic, Tok::P_Color_Pink_600, "background pink"));
+    put(Ref(Tok::S_Background_Pink_Subtle, TokenLevel::Semantic, Tok::P_Color_Pink_1400, "background pink subtle"));
+    put(Ref(Tok::S_Background_Pink_Visual, TokenLevel::Semantic, Tok::P_Color_Pink_500, "background pink visual"));
+    put(Ref(Tok::S_Background_Purple_Default, TokenLevel::Semantic, Tok::P_Color_Purple_600, "background purple"));
+    put(Ref(Tok::S_Background_Purple_Subtle, TokenLevel::Semantic, Tok::P_Color_Purple_1400, "background purple subtle"));
+    put(Ref(Tok::S_Background_Purple_Visual, TokenLevel::Semantic, Tok::P_Color_Purple_500, "background purple visual"));
+    put(Ref(Tok::S_Background_Red_Default, TokenLevel::Semantic, Tok::P_Color_Red_600, "background red"));
+    put(Ref(Tok::S_Background_Red_Subtle, TokenLevel::Semantic, Tok::P_Color_Red_1400, "background red subtle"));
+    put(Ref(Tok::S_Background_Red_Visual, TokenLevel::Semantic, Tok::P_Color_Red_500, "background red visual"));
+    put(Ref(Tok::S_Background_Seafoam_Default, TokenLevel::Semantic, Tok::P_Color_Seafoam_600, "background seafoam"));
+    put(Ref(Tok::S_Background_Seafoam_Subtle, TokenLevel::Semantic, Tok::P_Color_Seafoam_1400, "background seafoam subtle"));
+    put(Ref(Tok::S_Background_Seafoam_Visual, TokenLevel::Semantic, Tok::P_Color_Seafoam_500, "background seafoam visual"));
+    put(Ref(Tok::S_Background_Silver_Default, TokenLevel::Semantic, Tok::P_Color_Silver_600, "background silver"));
+    put(Ref(Tok::S_Background_Silver_Subtle, TokenLevel::Semantic, Tok::P_Color_Silver_1400, "background silver subtle"));
+    put(Ref(Tok::S_Background_Silver_Visual, TokenLevel::Semantic, Tok::P_Color_Silver_500, "background silver visual"));
+    put(Ref(Tok::S_Background_Turquoise_Default, TokenLevel::Semantic, Tok::P_Color_Turquoise_600, "background turquoise"));
+    put(Ref(Tok::S_Background_Turquoise_Subtle, TokenLevel::Semantic, Tok::P_Color_Turquoise_1400, "background turquoise subtle"));
+    put(Ref(Tok::S_Background_Turquoise_Visual, TokenLevel::Semantic, Tok::P_Color_Turquoise_500, "background turquoise visual"));
+    put(Ref(Tok::S_Background_Yellow_Default, TokenLevel::Semantic, Tok::P_Color_Yellow_600, "background yellow"));
+    put(Ref(Tok::S_Background_Yellow_Subtle, TokenLevel::Semantic, Tok::P_Color_Yellow_1400, "background yellow subtle"));
+    put(Ref(Tok::S_Background_Yellow_Visual, TokenLevel::Semantic, Tok::P_Color_Yellow_500, "background yellow visual"));
+    put(Ref(Tok::S_Background_Gray_Default, TokenLevel::Semantic, Tok::P_Color_Gray_500, "background gray"));
+    put(Ref(Tok::S_Background_Gray_Subtle, TokenLevel::Semantic, Tok::P_Color_Gray_800, "background gray subtle"));
+    put(Ref(Tok::S_Background_Gray_Visual, TokenLevel::Semantic, Tok::P_Color_Gray_500, "background gray visual"));
+    put(RefT4(Tok::S_Color_Background_Default, TokenLevel::Semantic, "app canvas base", Tok::P_Color_Gray_900, Tok::P_Color_Gray_50, Tok::P_Color_Gray_900, Tok::P_Color_Gray_1000));
+    put(RefT4(Tok::S_Color_Background_Layer1, TokenLevel::Semantic, "recessed surface", Tok::P_Color_Gray_1000, Tok::P_Color_Gray_100, Tok::P_Color_Gray_1000, Tok::P_Color_Gray_1000));
+    put(RefT4(Tok::S_Color_Background_Layer2, TokenLevel::Semantic, "raised surface / card", Tok::P_Color_Gray_800, Tok::P_Color_Gray_25, Tok::P_Color_Gray_800, Tok::P_Color_Gray_900));
+    put(RefT4(Tok::S_Color_Background_Popup, TokenLevel::Semantic, "floating surface / popover", Tok::P_Color_Gray_800, Tok::P_Color_Gray_25, Tok::P_Color_Gray_800, Tok::P_Color_Gray_900));
+    put(Ref(Tok::S_Background_Dim, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_500, "scrim / dim layer"));
+    put(Ref(Tok::S_Content_Accent_Default, TokenLevel::Semantic, Tok::S_Accent_Color_500, "text accent default"));
+    put(Ref(Tok::S_Content_Accent_Hover, TokenLevel::Semantic, Tok::S_Accent_Color_400, "text accent hover"));
+    put(Ref(Tok::S_Content_Accent_Pressed, TokenLevel::Semantic, Tok::S_Accent_Color_400, "text accent pressed"));
+    put(Ref(Tok::S_Content_Accent_KbdFocus, TokenLevel::Semantic, Tok::S_Accent_Color_400, "text accent kbd-focus"));
+    put(Ref(Tok::S_Content_Accent_Selected, TokenLevel::Semantic, Tok::S_Accent_Color_400, "text accent selected"));
+    put(Ref(Tok::S_Content_Negative_Default, TokenLevel::Semantic, Tok::S_Negative_Color_500, "text negative default"));
+    put(Ref(Tok::S_Content_Negative_Hover, TokenLevel::Semantic, Tok::S_Negative_Color_400, "text negative hover"));
+    put(Ref(Tok::S_Content_Negative_Pressed, TokenLevel::Semantic, Tok::S_Negative_Color_400, "text negative pressed"));
+    put(Ref(Tok::S_Content_Negative_KbdFocus, TokenLevel::Semantic, Tok::S_Negative_Color_400, "text negative kbd-focus"));
+    put(Ref(Tok::S_Content_Neutral_Default, TokenLevel::Semantic, Tok::S_Neutral_Color_200, "text neutral default"));
+    put(Ref(Tok::S_Content_Neutral_Hover, TokenLevel::Semantic, Tok::S_Neutral_Color_100, "text neutral hover"));
+    put(Ref(Tok::S_Content_Neutral_Pressed, TokenLevel::Semantic, Tok::S_Neutral_Color_100, "text neutral pressed"));
+    put(Ref(Tok::S_Content_Neutral_KbdFocus, TokenLevel::Semantic, Tok::S_Neutral_Color_100, "text neutral kbd-focus"));
+    put(RefT4(Tok::S_Color_Text_Default, TokenLevel::Semantic, "primary text", Tok::P_Color_Gray_100, Tok::P_Color_Gray_900, Tok::P_Color_Gray_100, Tok::P_Color_Gray_25));
+    put(RefT4(Tok::S_Color_Text_Subtle, TokenLevel::Semantic, "secondary text", Tok::P_Color_Gray_300, Tok::P_Color_Gray_700, Tok::P_Color_Gray_300, Tok::P_Color_Gray_100));
+    put(RefT4(Tok::S_Text_Tertiary, TokenLevel::Semantic, "tertiary text", Tok::P_Color_Gray_400, Tok::P_Color_Gray_600, Tok::P_Color_Gray_400, Tok::P_Color_Gray_200));
+    put(RefT4(Tok::S_Color_Text_Disabled, TokenLevel::Semantic, "disabled text", Tok::P_Color_Gray_500, Tok::P_Color_Gray_400, Tok::P_Color_Gray_500, Tok::P_Color_Gray_400));
+    put(Ref(Tok::S_Color_Text_Link, TokenLevel::Semantic, Tok::S_Accent_Color_500, "hyperlink"));
+    put(RefT4(Tok::S_Text_Placeholder, TokenLevel::Semantic, "placeholder text", Tok::P_Color_Gray_500, Tok::P_Color_Gray_500, Tok::P_Color_Gray_500, Tok::P_Color_Gray_300));
+    put(Ref(Tok::S_Text_Blue, TokenLevel::Semantic, Tok::P_Color_Blue_500, "text blue"));
+    put(Ref(Tok::S_Text_Magenta, TokenLevel::Semantic, Tok::P_Color_Magenta_500, "text magenta"));
+    put(Ref(Tok::S_Text_Green, TokenLevel::Semantic, Tok::P_Color_Green_500, "text green"));
+    put(Ref(Tok::S_Text_Red, TokenLevel::Semantic, Tok::P_Color_Red_500, "text red"));
+    put(Ref(Tok::S_Text_Yellow, TokenLevel::Semantic, Tok::P_Color_Yellow_500, "text yellow"));
+    put(Ref(Tok::S_Text_Purple, TokenLevel::Semantic, Tok::P_Color_Purple_500, "text purple"));
+    put(Ref(Tok::S_Text_Orange, TokenLevel::Semantic, Tok::P_Color_Orange_500, "text orange"));
+    put(Ref(Tok::S_Text_Cyan, TokenLevel::Semantic, Tok::P_Color_Cyan_500, "text cyan"));
+    put(RefT4(Tok::S_Color_Icon_Primary, TokenLevel::Semantic, "primary icon", Tok::P_Color_Gray_100, Tok::P_Color_Gray_900, Tok::P_Color_Gray_100, Tok::P_Color_Gray_25));
+    put(RefT4(Tok::S_Color_Icon_Secondary, TokenLevel::Semantic, "secondary icon", Tok::P_Color_Gray_400, Tok::P_Color_Gray_600, Tok::P_Color_Gray_400, Tok::P_Color_Gray_100));
+    put(RefT4(Tok::S_Color_Icon_Tertiary, TokenLevel::Semantic, "tertiary icon", Tok::P_Color_Gray_500, Tok::P_Color_Gray_500, Tok::P_Color_Gray_500, Tok::P_Color_Gray_200));
+    put(Ref(Tok::S_Icon_Disabled, TokenLevel::Semantic, Tok::P_Color_Gray_500, "disabled icon"));
+    put(Ref(Tok::S_Icon_Accent, TokenLevel::Semantic, Tok::S_Accent_Color_500, "accent icon"));
+    put(Ref(Tok::S_Icon_Negative, TokenLevel::Semantic, Tok::S_Negative_Color_500, "negative icon"));
+    put(Ref(Tok::S_Icon_Positive, TokenLevel::Semantic, Tok::S_Positive_Color_500, "positive icon"));
+    put(Ref(Tok::S_Icon_Notice, TokenLevel::Semantic, Tok::S_Notice_Color_500, "notice icon"));
+    put(Ref(Tok::S_Icon_Info, TokenLevel::Semantic, Tok::S_Info_Color_500, "info icon"));
+    put(Ref(Tok::S_Icon_Blue, TokenLevel::Semantic, Tok::P_Color_Blue_500, "icon blue"));
+    put(Ref(Tok::S_Icon_Magenta, TokenLevel::Semantic, Tok::P_Color_Magenta_500, "icon magenta"));
+    put(Ref(Tok::S_Icon_Green, TokenLevel::Semantic, Tok::P_Color_Green_500, "icon green"));
+    put(Ref(Tok::S_Icon_Red, TokenLevel::Semantic, Tok::P_Color_Red_500, "icon red"));
+    put(Ref(Tok::S_Icon_Yellow, TokenLevel::Semantic, Tok::P_Color_Yellow_500, "icon yellow"));
+    put(Ref(Tok::S_Icon_Purple, TokenLevel::Semantic, Tok::P_Color_Purple_500, "icon purple"));
+    put(Ref(Tok::S_Icon_Orange, TokenLevel::Semantic, Tok::P_Color_Orange_500, "icon orange"));
+    put(Ref(Tok::S_Icon_Cyan, TokenLevel::Semantic, Tok::P_Color_Cyan_500, "icon cyan"));
+    put(RefT4(Tok::S_Color_Border_Default, TokenLevel::Semantic, "default border", Tok::P_Color_Gray_600, Tok::P_Color_Gray_300, Tok::P_Color_Gray_600, Tok::P_Color_Gray_25));
+    put(RefT4(Tok::S_Border_Subtle, TokenLevel::Semantic, "divider / separator", Tok::P_Color_Gray_700, Tok::P_Color_Gray_200, Tok::P_Color_Gray_700, Tok::P_Color_Gray_100));
+    put(RefT4(Tok::S_Color_Border_Strong, TokenLevel::Semantic, "strong border", Tok::P_Color_Gray_500, Tok::P_Color_Gray_400, Tok::P_Color_Gray_500, Tok::P_Color_Gray_25));
+    put(RefT4(Tok::S_Border_Disabled, TokenLevel::Semantic, "disabled border", Tok::P_Color_Gray_700, Tok::P_Color_Gray_300, Tok::P_Color_Gray_700, Tok::P_Color_Gray_300));
+    // Global borders on/off (1/0). When 0, every border width collapses to 0 at
+    // resolution time (see DesignSystem::BordersEnabled / GetBorderWidth), so the
+    // whole UI can go border-less without editing each *.border.width token.
+    // Semantic tokens must reference a primitive (no literals at this tier).
+    put(Ref(Tok::S_Border_Enabled, TokenLevel::Semantic, Tok::P_Border_Enabled, "global borders on/off"));
+    put(Ref(Tok::S_Border_Negative_Default, TokenLevel::Semantic, Tok::S_Negative_Color_500, "negative border default"));
+    put(Ref(Tok::S_Border_Negative_Hover, TokenLevel::Semantic, Tok::S_Negative_Color_400, "negative border hover"));
+    put(Ref(Tok::S_Border_Negative_Pressed, TokenLevel::Semantic, Tok::S_Negative_Color_300, "negative border pressed"));
+    put(Ref(Tok::S_Border_Negative_Focus, TokenLevel::Semantic, Tok::S_Negative_Color_400, "negative border focus"));
+    put(Ref(Tok::S_Border_Negative_KbdFocus, TokenLevel::Semantic, Tok::S_Negative_Color_400, "negative border kbd-focus"));
+    put(Ref(Tok::S_Border_Accent_Default, TokenLevel::Semantic, Tok::S_Accent_Color_500, "accent border"));
+    put(Ref(Tok::S_Border_Focus, TokenLevel::Semantic, Tok::S_Accent_Color_500, "focus ring"));
+    put(Ref(Tok::S_Border_Blue, TokenLevel::Semantic, Tok::P_Color_Blue_500, "border blue"));
+    put(Ref(Tok::S_Border_Magenta, TokenLevel::Semantic, Tok::P_Color_Magenta_500, "border magenta"));
+    put(Ref(Tok::S_Border_Green, TokenLevel::Semantic, Tok::P_Color_Green_500, "border green"));
+    put(Ref(Tok::S_Border_Red, TokenLevel::Semantic, Tok::P_Color_Red_500, "border red"));
+    put(Ref(Tok::S_Border_Yellow, TokenLevel::Semantic, Tok::P_Color_Yellow_500, "border yellow"));
+    put(Ref(Tok::S_Border_Purple, TokenLevel::Semantic, Tok::P_Color_Purple_500, "border purple"));
+    put(Ref(Tok::S_Border_Orange, TokenLevel::Semantic, Tok::P_Color_Orange_500, "border orange"));
+    put(Ref(Tok::S_Border_Cyan, TokenLevel::Semantic, Tok::P_Color_Cyan_500, "border cyan"));
+    put(Ref(Tok::S_Focus_Indicator, TokenLevel::Semantic, Tok::P_Color_Blue_500, "focus indicator"));
+    put(Ref(Tok::S_Accent_Visual, TokenLevel::Semantic, Tok::S_Accent_Color_500, "accent visual"));
+    put(Ref(Tok::S_Info_Visual, TokenLevel::Semantic, Tok::S_Info_Color_500, "info visual"));
+    put(Ref(Tok::S_Negative_Visual, TokenLevel::Semantic, Tok::S_Negative_Color_500, "negative visual"));
+    put(Ref(Tok::S_Positive_Visual, TokenLevel::Semantic, Tok::S_Positive_Color_500, "positive visual"));
+    put(Ref(Tok::S_Notice_Visual, TokenLevel::Semantic, Tok::S_Notice_Color_500, "notice visual"));
+    put(Ref(Tok::S_Neutral_Visual, TokenLevel::Semantic, Tok::P_Color_Gray_500, "neutral visual"));
+    put(Ref(Tok::S_Disabled_Background, TokenLevel::Semantic, Tok::P_Color_Gray_100, "disabled bg"));
+    put(Ref(Tok::S_Disabled_Border, TokenLevel::Semantic, Tok::P_Color_Gray_300, "disabled border"));
+    put(Ref(Tok::S_Disabled_Content, TokenLevel::Semantic, Tok::P_Color_Gray_400, "disabled content"));
+    put(Ref(Tok::S_Disabled_StaticBlackBackground, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_100, "disabled static-black bg"));
+    put(Ref(Tok::S_Disabled_StaticBlackBorder, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_300, "disabled static-black border"));
+    put(Ref(Tok::S_Disabled_StaticBlackContent, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_400, "disabled static-black content"));
+    put(Ref(Tok::S_Disabled_StaticWhiteBackground, TokenLevel::Semantic, Tok::P_Color_TransparentWhite_100, "disabled static-white bg"));
+    put(Ref(Tok::S_Disabled_StaticWhiteBorder, TokenLevel::Semantic, Tok::P_Color_TransparentWhite_300, "disabled static-white border"));
+    put(Ref(Tok::S_Disabled_StaticWhiteContent, TokenLevel::Semantic, Tok::P_Color_TransparentWhite_400, "disabled static-white content"));
+    put(Ref(Tok::S_Static_BlackText, TokenLevel::Semantic, Tok::P_Color_Gray_1000, "static black text"));
+    put(Ref(Tok::S_Static_WhiteText, TokenLevel::Semantic, Tok::P_Color_Gray_25, "static white text"));
+    put(Ref(Tok::S_Static_BlackTrack, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_300, "static black track"));
+    put(Ref(Tok::S_Static_WhiteTrack, TokenLevel::Semantic, Tok::P_Color_TransparentWhite_300, "static white track"));
+    put(Ref(Tok::S_Static_BlackTrackIndicator, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_900, "static black track indicator"));
+    put(Ref(Tok::S_Static_WhiteTrackIndicator, TokenLevel::Semantic, Tok::P_Color_TransparentWhite_900, "static white track indicator"));
+    put(Ref(Tok::S_Static_BlackFocus, TokenLevel::Semantic, Tok::P_Color_Gray_1000, "static black focus"));
+    put(Ref(Tok::S_Static_WhiteFocus, TokenLevel::Semantic, Tok::P_Color_Gray_25, "static white focus"));
+    put(Ref(Tok::S_Track_Color, TokenLevel::Semantic, Tok::P_Color_Gray_300, "track"));
+    put(Ref(Tok::S_Title_Color, TokenLevel::Semantic, Tok::P_Color_Gray_900, "title"));
+    put(Ref(Tok::S_Color_Background_TextSelection, TokenLevel::Semantic, Tok::S_Accent_Color_900, "selected text bg"));
+    put(Ref(Tok::S_Shadow_100_Color, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_100, "shadow 100 color"));
+    put(Ref(Tok::S_Shadow_200_Color, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_200, "shadow 200 color"));
+    put(Ref(Tok::S_Shadow_300_Color, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_300, "shadow 300 color"));
+    put(Ref(Tok::S_Shadow_400_Color, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_300, "shadow 400 color"));
+    put(Ref(Tok::S_Shadow_500_Color, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_300, "shadow 500 color"));
+    put(Ref(Tok::S_Shadow_600_Color, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_300, "shadow 600 color"));
+    put(Ref(Tok::S_Shadow_Xs, TokenLevel::Semantic, Tok::S_Shadow_100_Color, "shadow xs"));
+    put(Ref(Tok::S_Shadow_S, TokenLevel::Semantic, Tok::S_Shadow_200_Color, "shadow s"));
+    put(Ref(Tok::S_Shadow_M, TokenLevel::Semantic, Tok::S_Shadow_300_Color, "shadow m"));
+    put(Ref(Tok::S_Shadow_L, TokenLevel::Semantic, Tok::S_Shadow_400_Color, "shadow l"));
+    put(Ref(Tok::S_Shadow_Xl, TokenLevel::Semantic, Tok::S_Shadow_500_Color, "shadow xl"));
+    // Spacing/inset/gap/indent are NOT re-exported as semantic tokens: they
+    // were a 1:1 duplication of the primitive spacing scale. Consume the
+    // primitives directly (P_Spacing_50 / _100 / _200 / …) instead.
+    put(Ref(Tok::S_Size_Xxs, TokenLevel::Semantic, Tok::P_Size_75, "size xxs"));
+    put(Ref(Tok::S_Size_Xs, TokenLevel::Semantic, Tok::P_Size_75, "size xs"));
+    put(Ref(Tok::S_Size_S, TokenLevel::Semantic, Tok::P_Size_100, "size s"));
+    put(Ref(Tok::S_Size_M, TokenLevel::Semantic, Tok::P_Size_100, "size m"));
+    put(Ref(Tok::S_Size_L, TokenLevel::Semantic, Tok::P_Size_200, "size l"));
+    put(Ref(Tok::S_Size_Xl, TokenLevel::Semantic, Tok::P_Size_400, "size xl"));
+    put(Ref(Tok::S_Size_2xl, TokenLevel::Semantic, Tok::P_Size_400, "size 2xl"));
+    put(Ref(Tok::S_Size_3xl, TokenLevel::Semantic, Tok::P_Size_800, "size 3xl"));
+    put(Ref(Tok::S_CornerRadius_None, TokenLevel::Semantic, Tok::P_Radius_none, "radius none"));
+    put(Ref(Tok::S_Radius_Xs, TokenLevel::Semantic, Tok::P_Radius_100, "radius xs"));
+    put(Ref(Tok::S_CornerRadius_Small, TokenLevel::Semantic, Tok::P_Radius_200, "radius s"));
+    put(Ref(Tok::S_CornerRadius_Default, TokenLevel::Semantic, Tok::P_Radius_300, "radius m"));
+    put(Ref(Tok::S_Radius_L, TokenLevel::Semantic, Tok::P_Radius_500, "radius l"));
+    put(Ref(Tok::S_Radius_Xl, TokenLevel::Semantic, Tok::P_Radius_700, "radius xl"));
+    put(Ref(Tok::S_Radius_Full, TokenLevel::Semantic, Tok::P_Radius_Full, "radius full"));
+    put(RefT4(Tok::S_BorderWidth_Thin, TokenLevel::Semantic, "border-width thin", Tok::P_StrokeWidth_100, Tok::P_StrokeWidth_100, Tok::P_StrokeWidth_100, Tok::P_StrokeWidth_200));
+    put(RefT4(Tok::S_BorderWidth_Medium, TokenLevel::Semantic, "border-width medium", Tok::P_StrokeWidth_200, Tok::P_StrokeWidth_200, Tok::P_StrokeWidth_200, Tok::P_StrokeWidth_300));
+    put(RefT4(Tok::S_BorderWidth_Thick, TokenLevel::Semantic, "border-width thick", Tok::P_StrokeWidth_300, Tok::P_StrokeWidth_300, Tok::P_StrokeWidth_300, Tok::P_StrokeWidth_400));
+    put(RefT4(Tok::S_BorderWidth_Focus, TokenLevel::Semantic, "border-width focus", Tok::P_StrokeWidth_200, Tok::P_StrokeWidth_200, Tok::P_StrokeWidth_200, Tok::P_StrokeWidth_300));
+    put(Ref(Tok::S_BorderWidth_None, TokenLevel::Semantic, Tok::P_StrokeWidth_0, "no border"));
+    put(Ref(Tok::S_Opacity_Ghost, TokenLevel::Semantic, Tok::P_Opacity_200, "opacity ghost"));
+    put(Ref(Tok::S_Opacity_Faint, TokenLevel::Semantic, Tok::P_Opacity_300, "opacity faint"));
+    put(Ref(Tok::S_Opacity_Reduced, TokenLevel::Semantic, Tok::P_Opacity_400, "opacity reduced"));
+    put(Ref(Tok::S_Opacity_Moderate, TokenLevel::Semantic, Tok::P_Opacity_600, "opacity moderate"));
+    put(Ref(Tok::S_Opacity_Strong, TokenLevel::Semantic, Tok::P_Opacity_800, "opacity strong"));
+    put(Ref(Tok::S_Opacity_Full, TokenLevel::Semantic, Tok::P_Opacity_1000, "opacity full"));
+    put(Ref(Tok::S_Opacity_Transparent, TokenLevel::Semantic, Tok::P_Opacity_0, "transparent"));
+    put(Ref(Tok::S_Opacity_Default, TokenLevel::Semantic, Tok::P_Opacity_1000, "default alpha"));
+    put(Ref(Tok::S_Opacity_Disabled, TokenLevel::Semantic, Tok::P_Opacity_300, "disabled alpha"));
+    put(Ref(Tok::S_Opacity_DimLight, TokenLevel::Semantic, Tok::S_Opacity_Moderate, "dim light"));
+    put(Ref(Tok::S_Opacity_DimHeavy, TokenLevel::Semantic, Tok::S_Opacity_Strong, "dim heavy"));
+    put(Ref(Tok::S_Opacity_ContentDisabled, TokenLevel::Semantic, Tok::S_Opacity_Reduced, "disabled content"));
+    put(Ref(Tok::S_FontSize_Default, TokenLevel::Semantic, Tok::P_FontSize_50, "base font size"));
+    put(Ref(Tok::S_FontScale_Default, TokenLevel::Semantic, Tok::P_FontScale_100, "font scale"));
+    put(Ref(Tok::S_Scale_Default, TokenLevel::Semantic, Tok::P_Scale_100, "ui scale"));
+    put(Ref(Tok::S_FontSize_DisplayL, TokenLevel::Semantic, Tok::P_FontSize_190, "font size display.l"));
+    put(Ref(Tok::S_FontSize_DisplayM, TokenLevel::Semantic, Tok::P_FontSize_180, "font size display.m"));
+    put(Ref(Tok::S_FontSize_DisplayS, TokenLevel::Semantic, Tok::P_FontSize_170, "font size display.s"));
+    put(Ref(Tok::S_FontSize_HeadingXl, TokenLevel::Semantic, Tok::P_FontSize_140, "font size heading.xl"));
+    put(Ref(Tok::S_FontSize_HeadingL, TokenLevel::Semantic, Tok::P_FontSize_120, "font size heading.l"));
+    put(Ref(Tok::S_FontSize_HeadingM, TokenLevel::Semantic, Tok::P_FontSize_100, "font size heading.m"));
+    put(Ref(Tok::S_FontSize_HeadingS, TokenLevel::Semantic, Tok::P_FontSize_90, "font size heading.s"));
+    put(Ref(Tok::S_FontSize_HeadingXs, TokenLevel::Semantic, Tok::P_FontSize_80, "font size heading.xs"));
+    put(Ref(Tok::S_FontSize_BodyL, TokenLevel::Semantic, Tok::P_FontSize_70, "font size body.l"));
+    put(Ref(Tok::S_FontSize_BodyM, TokenLevel::Semantic, Tok::P_FontSize_60, "font size body.m"));
+    put(Ref(Tok::S_FontSize_BodyS, TokenLevel::Semantic, Tok::P_FontSize_50, "font size body.s"));
+    put(Ref(Tok::S_FontSize_DetailL, TokenLevel::Semantic, Tok::P_FontSize_50, "font size detail.l"));
+    put(Ref(Tok::S_FontSize_DetailM, TokenLevel::Semantic, Tok::P_FontSize_40, "font size detail.m"));
+    put(Ref(Tok::S_FontSize_DetailS, TokenLevel::Semantic, Tok::P_FontSize_30, "font size detail.s"));
+    put(Ref(Tok::S_FontSize_LabelL, TokenLevel::Semantic, Tok::P_FontSize_60, "font size label.l"));
+    put(Ref(Tok::S_FontSize_LabelM, TokenLevel::Semantic, Tok::P_FontSize_50, "font size label.m"));
+    put(Ref(Tok::S_FontSize_LabelS, TokenLevel::Semantic, Tok::P_FontSize_40, "font size label.s"));
+    put(Ref(Tok::S_FontSize_MonoL, TokenLevel::Semantic, Tok::P_FontSize_70, "font size mono.l"));
+    put(Ref(Tok::S_FontSize_MonoM, TokenLevel::Semantic, Tok::P_FontSize_60, "font size mono.m"));
+    put(Ref(Tok::S_FontSize_MonoS, TokenLevel::Semantic, Tok::P_FontSize_50, "font size mono.s"));
+    put(Ref(Tok::S_FontSize_CodeM, TokenLevel::Semantic, Tok::P_FontSize_60, "font size code.m"));
+    put(Ref(Tok::S_FontWeight_DisplayL, TokenLevel::Semantic, Tok::P_FontWeight_Bold, "font weight display.l"));
+    put(Ref(Tok::S_FontWeight_HeadingXl, TokenLevel::Semantic, Tok::P_FontWeight_SemiBold, "font weight heading.xl"));
+    put(Ref(Tok::S_FontWeight_HeadingL, TokenLevel::Semantic, Tok::P_FontWeight_SemiBold, "font weight heading.l"));
+    put(Ref(Tok::S_FontWeight_HeadingM, TokenLevel::Semantic, Tok::P_FontWeight_SemiBold, "font weight heading.m"));
+    put(Ref(Tok::S_FontWeight_HeadingS, TokenLevel::Semantic, Tok::P_FontWeight_SemiBold, "font weight heading.s"));
+    put(Ref(Tok::S_FontWeight_BodyM, TokenLevel::Semantic, Tok::P_FontWeight_Regular, "font weight body.m"));
+    put(Ref(Tok::S_FontWeight_LabelM, TokenLevel::Semantic, Tok::P_FontWeight_Medium, "font weight label.m"));
+    put(Ref(Tok::S_FontWeight_MonoM, TokenLevel::Semantic, Tok::P_FontWeight_Regular, "font weight mono.m"));
+    put(Ref(Tok::S_LineHeight_DisplayL, TokenLevel::Semantic, Tok::P_LineHeight_Tight, "line-height display.l"));
+    put(Ref(Tok::S_LineHeight_HeadingXl, TokenLevel::Semantic, Tok::P_LineHeight_Tight, "line-height heading.xl"));
+    put(Ref(Tok::S_LineHeight_HeadingM, TokenLevel::Semantic, Tok::P_LineHeight_Snug, "line-height heading.m"));
+    put(Ref(Tok::S_LineHeight_BodyM, TokenLevel::Semantic, Tok::P_LineHeight_Normal, "line-height body.m"));
+    put(Ref(Tok::S_LineHeight_DetailS, TokenLevel::Semantic, Tok::P_LineHeight_Normal, "line-height detail.s"));
+    put(Ref(Tok::S_LineHeight_LabelM, TokenLevel::Semantic, Tok::P_LineHeight_Snug, "line-height label.m"));
+    put(Ref(Tok::S_LineHeightCjk_HeadingM, TokenLevel::Semantic, Tok::P_LineHeightCjk_Compact, "cjk line-height heading m"));
+    put(Ref(Tok::S_LineHeightCjk_BodyM, TokenLevel::Semantic, Tok::P_LineHeightCjk_Normal, "cjk line-height body m"));
+    put(Ref(Tok::S_Tracking_HeadingXl, TokenLevel::Semantic, Tok::P_Tracking_Tight, "tracking heading.xl"));
+    put(Ref(Tok::S_Tracking_BodyM, TokenLevel::Semantic, Tok::P_Tracking_Normal, "tracking body.m"));
+    put(Ref(Tok::S_Tracking_LabelM, TokenLevel::Semantic, Tok::P_Tracking_Wide, "tracking label.m"));
+    put(Ref(Tok::S_FontFamily_Heading, TokenLevel::Semantic, Tok::P_FontFamily_Serif, "font family heading"));
+    put(Ref(Tok::S_FontFamily_Body, TokenLevel::Semantic, Tok::P_FontFamily_Sans, "font family body"));
+    put(Ref(Tok::S_FontFamily_Mono, TokenLevel::Semantic, Tok::P_FontFamily_Mono, "font family mono"));
+    put(Ref(Tok::S_FontFamily_Cjk, TokenLevel::Semantic, Tok::P_FontFamily_Cjk, "font family cjk"));
+    put(Ref(Tok::S_TextMarginTop_HeadingXl, TokenLevel::Semantic, Tok::P_Spacing_600, "text margin top heading.xl"));
+    put(Ref(Tok::S_TextMarginTop_HeadingL, TokenLevel::Semantic, Tok::P_Spacing_500, "text margin top heading.l"));
+    put(Ref(Tok::S_TextMarginTop_HeadingM, TokenLevel::Semantic, Tok::P_Spacing_400, "text margin top heading.m"));
+    put(Ref(Tok::S_TextMarginTop_BodyM, TokenLevel::Semantic, Tok::P_Spacing_300, "text margin top body.m"));
+    put(Ref(Tok::S_TextMarginBottom_HeadingXl, TokenLevel::Semantic, Tok::P_Spacing_300, "text margin bottom heading.xl"));
+    put(Ref(Tok::S_TextMarginBottom_HeadingM, TokenLevel::Semantic, Tok::P_Spacing_200, "text margin bottom heading.m"));
+    put(Ref(Tok::S_TextMarginBottom_BodyM, TokenLevel::Semantic, Tok::P_Spacing_200, "text margin bottom body.m"));
+    put(TextStyle(Tok::S_Text_DisplayL, TokenLevel::Semantic, Tok::P_FontFamily_Serif, Tok::S_FontSize_DisplayL, Tok::P_FontWeight_Bold, Tok::P_LineHeight_Tight, Tok::P_Tracking_Normal, "text style display.l"));
+    put(TextStyle(Tok::S_Text_DisplayM, TokenLevel::Semantic, Tok::P_FontFamily_Serif, Tok::S_FontSize_DisplayM, Tok::P_FontWeight_Bold, Tok::P_LineHeight_Tight, Tok::P_Tracking_Normal, "text style display.m"));
+    put(TextStyle(Tok::S_Text_DisplayS, TokenLevel::Semantic, Tok::P_FontFamily_Serif, Tok::S_FontSize_DisplayS, Tok::P_FontWeight_Bold, Tok::P_LineHeight_Tight, Tok::P_Tracking_Normal, "text style display.s"));
+    put(TextStyle(Tok::S_Text_HeadingXl, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_HeadingXl, Tok::P_FontWeight_SemiBold, Tok::P_LineHeight_Tight, Tok::P_Tracking_Tight, "text style heading.xl"));
+    put(TextStyle(Tok::S_Text_HeadingL, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_HeadingL, Tok::P_FontWeight_SemiBold, Tok::P_LineHeight_Snug, Tok::P_Tracking_Normal, "text style heading.l"));
+    put(TextStyle(Tok::S_Text_HeadingM, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_HeadingM, Tok::P_FontWeight_SemiBold, Tok::P_LineHeight_Snug, Tok::P_Tracking_Normal, "text style heading.m"));
+    put(TextStyle(Tok::S_Text_HeadingS, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_HeadingS, Tok::P_FontWeight_SemiBold, Tok::P_LineHeight_Snug, Tok::P_Tracking_Normal, "text style heading.s"));
+    put(TextStyle(Tok::S_Text_HeadingXs, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_HeadingXs, Tok::P_FontWeight_SemiBold, Tok::P_LineHeight_Snug, Tok::P_Tracking_Normal, "text style heading.xs"));
+    put(TextStyle(Tok::S_Text_BodyL, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_BodyL, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style body.l"));
+    put(TextStyle(Tok::S_Text_BodyM, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_BodyM, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style body.m"));
+    put(TextStyle(Tok::S_Text_BodyS, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_BodyS, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style body.s"));
+    put(TextStyle(Tok::S_Text_DetailL, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_DetailL, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style detail.l"));
+    put(TextStyle(Tok::S_Text_DetailM, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_DetailM, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style detail.m"));
+    put(TextStyle(Tok::S_Text_DetailS, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_DetailS, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style detail.s"));
+    put(TextStyle(Tok::S_Text_LabelL, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_LabelL, Tok::P_FontWeight_Medium, Tok::P_LineHeight_Snug, Tok::P_Tracking_Wide, "text style label.l"));
+    put(TextStyle(Tok::S_Text_LabelM, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_LabelM, Tok::P_FontWeight_Medium, Tok::P_LineHeight_Snug, Tok::P_Tracking_Wide, "text style label.m"));
+    put(TextStyle(Tok::S_Text_LabelS, TokenLevel::Semantic, Tok::P_FontFamily_Sans, Tok::S_FontSize_LabelS, Tok::P_FontWeight_Medium, Tok::P_LineHeight_Snug, Tok::P_Tracking_Wide, "text style label.s"));
+    put(TextStyle(Tok::S_Text_MonoL, TokenLevel::Semantic, Tok::P_FontFamily_Mono, Tok::S_FontSize_MonoL, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style mono.l"));
+    put(TextStyle(Tok::S_Text_MonoM, TokenLevel::Semantic, Tok::P_FontFamily_Mono, Tok::S_FontSize_MonoM, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style mono.m"));
+    put(TextStyle(Tok::S_Text_MonoS, TokenLevel::Semantic, Tok::P_FontFamily_Mono, Tok::S_FontSize_MonoS, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style mono.s"));
+    put(TextStyle(Tok::S_Text_CodeM, TokenLevel::Semantic, Tok::P_FontFamily_Mono, Tok::S_FontSize_CodeM, Tok::P_FontWeight_Regular, Tok::P_LineHeight_Normal, Tok::P_Tracking_Normal, "text style code.m"));
+    put(Ref(Tok::S_AnimDuration_Enter, TokenLevel::Semantic, Tok::P_Duration_Fast, "anim duration enter"));
+    put(Ref(Tok::S_AnimDuration_Exit, TokenLevel::Semantic, Tok::P_Duration_Fast, "anim duration exit"));
+    put(Ref(Tok::S_AnimDuration_Expand, TokenLevel::Semantic, Tok::P_Duration_Normal, "anim duration expand"));
+    put(Ref(Tok::S_AnimDuration_Collapse, TokenLevel::Semantic, Tok::P_Duration_Normal, "anim duration collapse"));
+    put(Ref(Tok::S_AnimDuration_Page, TokenLevel::Semantic, Tok::P_Duration_Slow, "anim duration page"));
+    put(Ref(Tok::S_AnimDuration_Pulse, TokenLevel::Semantic, Tok::P_Duration_Slower, "anim duration pulse"));
+    put(Ref(Tok::S_AnimEasing_Enter, TokenLevel::Semantic, Tok::P_Easing_Decelerate, "anim easing enter"));
+    put(Ref(Tok::S_AnimEasing_Exit, TokenLevel::Semantic, Tok::P_Easing_Accelerate, "anim easing exit"));
+    put(Ref(Tok::S_AnimEasing_Interact, TokenLevel::Semantic, Tok::P_Easing_Spring, "anim easing interact"));
+    put(Ref(Tok::S_AnimEasing_Move, TokenLevel::Semantic, Tok::P_Easing_EaseInOut, "anim easing move"));
+    put(Ref(Tok::S_GradientAngle_Upward, TokenLevel::Semantic, Tok::P_GradientAngle_0, "gradient upward angle"));
+    put(Ref(Tok::S_GradientAngle_Downward, TokenLevel::Semantic, Tok::P_GradientAngle_180, "gradient downward angle"));
+    put(Ref(Tok::S_Layer_Dropdown, TokenLevel::Semantic, Tok::P_Layer_High, "layer dropdown"));
+    put(Ref(Tok::S_Layer_Sticky, TokenLevel::Semantic, Tok::P_Layer_Mid, "layer sticky"));
+    put(Ref(Tok::S_Layer_Overlay, TokenLevel::Semantic, Tok::P_Layer_Veil, "layer overlay"));
+    put(Ref(Tok::S_Layer_Modal, TokenLevel::Semantic, Tok::P_Layer_Raised, "layer modal"));
+    put(Ref(Tok::S_Layer_Popover, TokenLevel::Semantic, Tok::P_Layer_Peak, "layer popover"));
+    put(Ref(Tok::S_Layer_Toast, TokenLevel::Semantic, Tok::P_Layer_Critical, "layer toast"));
+    put(Ref(Tok::S_Layer_Tooltip, TokenLevel::Semantic, Tok::P_Layer_Absolute, "layer tooltip"));
+    put(Ref(Tok::S_Config_ItemSpacing, TokenLevel::Semantic, Tok::P_Config_ItemSpacing, "semantic.config.item-spacing"));
+    put(Ref(Tok::S_Config_ItemInnerSpacing, TokenLevel::Semantic, Tok::P_Config_ItemInnerSpacing, "semantic.config.item-inner-spacing"));
+    put(Ref(Tok::S_Config_CellPadding, TokenLevel::Semantic, Tok::P_Config_CellPadding, "semantic.config.cell-padding"));
+    put(Ref(Tok::S_Config_TouchExtraPadding, TokenLevel::Semantic, Tok::P_Config_TouchExtraPadding, "semantic.config.touch-extra-padding"));
+    put(Ref(Tok::S_Config_IndentSpacing, TokenLevel::Semantic, Tok::P_Config_IndentSpacing, "semantic.config.indent-spacing"));
+    put(Ref(Tok::S_Config_ColumnsMinSpacing, TokenLevel::Semantic, Tok::P_Config_ColumnsMinSpacing, "semantic.config.columns-min-spacing"));
+    put(Ref(Tok::S_Config_UndoSteps, TokenLevel::Semantic, Tok::P_Config_UndoSteps, "semantic.config.undo-steps"));
+    put(Ref(Tok::S_Config_DisplayWindowPadding, TokenLevel::Semantic, Tok::P_Config_DisplayWindowPadding, "semantic.config.display-window-padding"));
+    put(Ref(Tok::S_Config_DisplaySafeAreaPadding, TokenLevel::Semantic, Tok::P_Config_DisplaySafeAreaPadding, "semantic.config.display-safe-area-padding"));
+    put(Ref(Tok::S_Config_SeparatorTextPadding, TokenLevel::Semantic, Tok::P_Config_SeparatorTextPadding, "semantic.config.separator-text-padding"));
+    put(Ref(Tok::S_Config_ButtonTextAlign, TokenLevel::Semantic, Tok::P_Config_ButtonTextAlign, "semantic.config.button-text-align"));
+    put(Ref(Tok::S_Config_SelectableTextAlign, TokenLevel::Semantic, Tok::P_Config_SelectableTextAlign, "semantic.config.selectable-text-align"));
+    put(Ref(Tok::S_Config_SeparatorTextAlign, TokenLevel::Semantic, Tok::P_Config_SeparatorTextAlign, "semantic.config.separator-text-align"));
+    put(Ref(Tok::S_Config_ColorButtonPosition, TokenLevel::Semantic, Tok::P_Config_ColorButtonPosition, "semantic.config.color-button-position"));
+    put(Ref(Tok::S_Config_GrabMinSize, TokenLevel::Semantic, Tok::P_Config_GrabMinSize, "semantic.config.grab-min-size"));
+    put(Ref(Tok::S_Config_LogSliderDeadzone, TokenLevel::Semantic, Tok::P_Config_LogSliderDeadzone, "semantic.config.log-slider-deadzone"));
+    put(Ref(Tok::S_Config_ColorMarkerSize, TokenLevel::Semantic, Tok::P_Config_ColorMarkerSize, "semantic.config.color-marker-size"));
+    put(Ref(Tok::S_Config_MouseCursorScale, TokenLevel::Semantic, Tok::P_Config_MouseCursorScale, "semantic.config.mouse-cursor-scale"));
+    put(Ref(Tok::S_Config_HoverDelayStationary, TokenLevel::Semantic, Tok::P_Config_HoverDelayStationary, "semantic.config.hover-delay-stationary"));
+    put(Ref(Tok::S_Config_HoverDelayShort, TokenLevel::Semantic, Tok::P_Config_HoverDelayShort, "semantic.config.hover-delay-short"));
+    put(Ref(Tok::S_Config_HoverDelayNormal, TokenLevel::Semantic, Tok::P_Config_HoverDelayNormal, "semantic.config.hover-delay-normal"));
+    put(Ref(Tok::S_Config_DragThreshold, TokenLevel::Semantic, Tok::P_Config_DragThreshold, "semantic.config.drag-threshold"));
+    put(Ref(Tok::S_Config_AntiAliasedLines, TokenLevel::Semantic, Tok::P_Config_AntiAliasedLines, "semantic.config.anti-aliased-lines"));
+    put(Ref(Tok::S_Config_AntiAliasedLinesUseTex, TokenLevel::Semantic, Tok::P_Config_AntiAliasedLinesUseTex, "semantic.config.anti-aliased-lines-use-tex"));
+    put(Ref(Tok::S_Config_AntiAliasedFill, TokenLevel::Semantic, Tok::P_Config_AntiAliasedFill, "semantic.config.anti-aliased-fill"));
+    put(Ref(Tok::S_Config_CurveTessellationTol, TokenLevel::Semantic, Tok::P_Config_CurveTessellationTol, "semantic.config.curve-tessellation-tol"));
+    put(Ref(Tok::S_Config_CircleTessellationMaxError, TokenLevel::Semantic, Tok::P_Config_CircleTessellationMaxError, "semantic.config.circle-tessellation-max-error"));
+    put(Ref(Tok::S_Config_TreeLinesFlags, TokenLevel::Semantic, Tok::P_Config_TreeLinesFlags, "semantic.config.tree-lines-flags"));
+    put(Ref(Tok::S_Config_TreeLinesSize, TokenLevel::Semantic, Tok::P_Config_TreeLinesSize, "semantic.config.tree-lines-size"));
+    put(Ref(Tok::S_DataViz_Cat_1, TokenLevel::Semantic, Tok::P_Color_Static_Blue_900, "categorical 1"));
+    put(Ref(Tok::S_DataViz_Cat_2, TokenLevel::Semantic, Tok::P_Color_Static_Orange_600, "categorical 2"));
+    put(Ref(Tok::S_DataViz_Cat_3, TokenLevel::Semantic, Tok::P_Color_Static_Green_600, "categorical 3"));
+    put(Ref(Tok::S_DataViz_Cat_4, TokenLevel::Semantic, Tok::P_Color_Static_Red_800, "categorical 4"));
+    put(Ref(Tok::S_DataViz_Cat_5, TokenLevel::Semantic, Tok::P_Color_Static_Blue_1000, "categorical 5"));
+    put(Ref(Tok::S_DataViz_Cat_6, TokenLevel::Semantic, Tok::P_Color_Static_Orange_800, "categorical 6"));
+    put(Ref(Tok::S_DataViz_Cat_7, TokenLevel::Semantic, Tok::P_Color_Static_Green_400, "categorical 7"));
+    put(Ref(Tok::S_DataViz_Cat_8, TokenLevel::Semantic, Tok::P_Color_Static_Red_400, "categorical 8"));
+    put(Ref(Tok::S_DataViz_Cat_9, TokenLevel::Semantic, Tok::P_Color_Static_Red_600, "categorical 9"));
+    put(Ref(Tok::S_DataViz_Cat_10, TokenLevel::Semantic, Tok::P_Color_Static_Orange_400, "categorical 10"));
+    put(Ref(Tok::S_DataViz_Cat_11, TokenLevel::Semantic, Tok::P_Color_Static_Green_800, "categorical 11"));
+    put(Ref(Tok::S_DataViz_Cat_12, TokenLevel::Semantic, Tok::P_Color_Static_Blue_900, "categorical 12"));
+    put(Ref(Tok::S_DataViz_Ord_1, TokenLevel::Semantic, Tok::P_Color_Blue_100, "ordinal 1"));
+    put(Ref(Tok::S_DataViz_Ord_2, TokenLevel::Semantic, Tok::P_Color_Blue_300, "ordinal 2"));
+    put(Ref(Tok::S_DataViz_Ord_3, TokenLevel::Semantic, Tok::P_Color_Blue_500, "ordinal 3"));
+    put(Ref(Tok::S_DataViz_Ord_4, TokenLevel::Semantic, Tok::P_Color_Blue_700, "ordinal 4"));
+    put(Ref(Tok::S_DataViz_Ord_5, TokenLevel::Semantic, Tok::P_Color_Blue_800, "ordinal 5"));
+    put(Ref(Tok::S_DataViz_Ord_6, TokenLevel::Semantic, Tok::P_Color_Blue_900, "ordinal 6"));
+    put(Ref(Tok::S_DataViz_Ord_7, TokenLevel::Semantic, Tok::P_Color_Blue_1100, "ordinal 7"));
+    put(Ref(Tok::S_DataViz_Ord_8, TokenLevel::Semantic, Tok::P_Color_Blue_1300, "ordinal 8"));
+    put(Ref(Tok::S_DataViz_Ord_9, TokenLevel::Semantic, Tok::P_Color_Blue_1500, "ordinal 9"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_100, TokenLevel::Semantic, Tok::P_Color_Green_100, "viridis 100"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_200, TokenLevel::Semantic, Tok::P_Color_Green_200, "viridis 200"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_300, TokenLevel::Semantic, Tok::P_Color_Green_300, "viridis 300"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_400, TokenLevel::Semantic, Tok::P_Color_Green_400, "viridis 400"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_500, TokenLevel::Semantic, Tok::P_Color_Green_500, "viridis 500"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_600, TokenLevel::Semantic, Tok::P_Color_Green_600, "viridis 600"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_700, TokenLevel::Semantic, Tok::P_Color_Green_700, "viridis 700"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_800, TokenLevel::Semantic, Tok::P_Color_Green_800, "viridis 800"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_900, TokenLevel::Semantic, Tok::P_Color_Green_900, "viridis 900"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_1000, TokenLevel::Semantic, Tok::P_Color_Green_1000, "viridis 1000"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_1100, TokenLevel::Semantic, Tok::P_Color_Green_1100, "viridis 1100"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_1200, TokenLevel::Semantic, Tok::P_Color_Green_1200, "viridis 1200"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_1300, TokenLevel::Semantic, Tok::P_Color_Green_1300, "viridis 1300"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_1400, TokenLevel::Semantic, Tok::P_Color_Green_1400, "viridis 1400"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_1500, TokenLevel::Semantic, Tok::P_Color_Green_1500, "viridis 1500"));
+    put(Ref(Tok::S_DataViz_Seq_Viridis_1600, TokenLevel::Semantic, Tok::P_Color_Green_1600, "viridis 1600"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_100, TokenLevel::Semantic, Tok::P_Color_Magenta_100, "magma 100"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_200, TokenLevel::Semantic, Tok::P_Color_Magenta_200, "magma 200"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_300, TokenLevel::Semantic, Tok::P_Color_Magenta_300, "magma 300"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_400, TokenLevel::Semantic, Tok::P_Color_Magenta_400, "magma 400"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_500, TokenLevel::Semantic, Tok::P_Color_Magenta_500, "magma 500"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_600, TokenLevel::Semantic, Tok::P_Color_Magenta_600, "magma 600"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_700, TokenLevel::Semantic, Tok::P_Color_Magenta_700, "magma 700"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_800, TokenLevel::Semantic, Tok::P_Color_Magenta_800, "magma 800"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_900, TokenLevel::Semantic, Tok::P_Color_Magenta_900, "magma 900"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_1000, TokenLevel::Semantic, Tok::P_Color_Magenta_1000, "magma 1000"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_1100, TokenLevel::Semantic, Tok::P_Color_Magenta_1100, "magma 1100"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_1200, TokenLevel::Semantic, Tok::P_Color_Magenta_1200, "magma 1200"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_1300, TokenLevel::Semantic, Tok::P_Color_Magenta_1300, "magma 1300"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_1400, TokenLevel::Semantic, Tok::P_Color_Magenta_1400, "magma 1400"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_1500, TokenLevel::Semantic, Tok::P_Color_Magenta_1500, "magma 1500"));
+    put(Ref(Tok::S_DataViz_Seq_Magma_1600, TokenLevel::Semantic, Tok::P_Color_Magenta_1600, "magma 1600"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_100, TokenLevel::Semantic, Tok::P_Color_Purple_100, "plasma 100"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_200, TokenLevel::Semantic, Tok::P_Color_Purple_200, "plasma 200"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_300, TokenLevel::Semantic, Tok::P_Color_Purple_300, "plasma 300"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_400, TokenLevel::Semantic, Tok::P_Color_Purple_400, "plasma 400"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_500, TokenLevel::Semantic, Tok::P_Color_Purple_500, "plasma 500"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_600, TokenLevel::Semantic, Tok::P_Color_Purple_600, "plasma 600"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_700, TokenLevel::Semantic, Tok::P_Color_Purple_700, "plasma 700"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_800, TokenLevel::Semantic, Tok::P_Color_Purple_800, "plasma 800"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_900, TokenLevel::Semantic, Tok::P_Color_Purple_900, "plasma 900"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_1000, TokenLevel::Semantic, Tok::P_Color_Purple_1000, "plasma 1000"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_1100, TokenLevel::Semantic, Tok::P_Color_Purple_1100, "plasma 1100"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_1200, TokenLevel::Semantic, Tok::P_Color_Purple_1200, "plasma 1200"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_1300, TokenLevel::Semantic, Tok::P_Color_Purple_1300, "plasma 1300"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_1400, TokenLevel::Semantic, Tok::P_Color_Purple_1400, "plasma 1400"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_1500, TokenLevel::Semantic, Tok::P_Color_Purple_1500, "plasma 1500"));
+    put(Ref(Tok::S_DataViz_Seq_Plasma_1600, TokenLevel::Semantic, Tok::P_Color_Purple_1600, "plasma 1600"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_100, TokenLevel::Semantic, Tok::P_Color_Orange_100, "inferno 100"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_200, TokenLevel::Semantic, Tok::P_Color_Orange_200, "inferno 200"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_300, TokenLevel::Semantic, Tok::P_Color_Orange_300, "inferno 300"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_400, TokenLevel::Semantic, Tok::P_Color_Orange_400, "inferno 400"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_500, TokenLevel::Semantic, Tok::P_Color_Orange_500, "inferno 500"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_600, TokenLevel::Semantic, Tok::P_Color_Orange_600, "inferno 600"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_700, TokenLevel::Semantic, Tok::P_Color_Orange_700, "inferno 700"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_800, TokenLevel::Semantic, Tok::P_Color_Orange_800, "inferno 800"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_900, TokenLevel::Semantic, Tok::P_Color_Orange_900, "inferno 900"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_1000, TokenLevel::Semantic, Tok::P_Color_Orange_1000, "inferno 1000"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_1100, TokenLevel::Semantic, Tok::P_Color_Orange_1100, "inferno 1100"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_1200, TokenLevel::Semantic, Tok::P_Color_Orange_1200, "inferno 1200"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_1300, TokenLevel::Semantic, Tok::P_Color_Orange_1300, "inferno 1300"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_1400, TokenLevel::Semantic, Tok::P_Color_Orange_1400, "inferno 1400"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_1500, TokenLevel::Semantic, Tok::P_Color_Orange_1500, "inferno 1500"));
+    put(Ref(Tok::S_DataViz_Seq_Inferno_1600, TokenLevel::Semantic, Tok::P_Color_Orange_1600, "inferno 1600"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_100, TokenLevel::Semantic, Tok::P_Color_Yellow_100, "cividis 100"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_200, TokenLevel::Semantic, Tok::P_Color_Yellow_200, "cividis 200"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_300, TokenLevel::Semantic, Tok::P_Color_Yellow_300, "cividis 300"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_400, TokenLevel::Semantic, Tok::P_Color_Yellow_400, "cividis 400"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_500, TokenLevel::Semantic, Tok::P_Color_Yellow_500, "cividis 500"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_600, TokenLevel::Semantic, Tok::P_Color_Yellow_600, "cividis 600"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_700, TokenLevel::Semantic, Tok::P_Color_Yellow_700, "cividis 700"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_800, TokenLevel::Semantic, Tok::P_Color_Yellow_800, "cividis 800"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_900, TokenLevel::Semantic, Tok::P_Color_Yellow_900, "cividis 900"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_1000, TokenLevel::Semantic, Tok::P_Color_Yellow_1000, "cividis 1000"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_1100, TokenLevel::Semantic, Tok::P_Color_Yellow_1100, "cividis 1100"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_1200, TokenLevel::Semantic, Tok::P_Color_Yellow_1200, "cividis 1200"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_1300, TokenLevel::Semantic, Tok::P_Color_Yellow_1300, "cividis 1300"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_1400, TokenLevel::Semantic, Tok::P_Color_Yellow_1400, "cividis 1400"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_1500, TokenLevel::Semantic, Tok::P_Color_Yellow_1500, "cividis 1500"));
+    put(Ref(Tok::S_DataViz_Seq_Cividis_1600, TokenLevel::Semantic, Tok::P_Color_Yellow_1600, "cividis 1600"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_100, TokenLevel::Semantic, Tok::P_Color_Red_1600, "rd-bu 100"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_200, TokenLevel::Semantic, Tok::P_Color_Red_1500, "rd-bu 200"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_300, TokenLevel::Semantic, Tok::P_Color_Red_1400, "rd-bu 300"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_400, TokenLevel::Semantic, Tok::P_Color_Red_1300, "rd-bu 400"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_500, TokenLevel::Semantic, Tok::P_Color_Red_1200, "rd-bu 500"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_600, TokenLevel::Semantic, Tok::P_Color_Red_1100, "rd-bu 600"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_700, TokenLevel::Semantic, Tok::P_Color_Red_1000, "rd-bu 700"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_800, TokenLevel::Semantic, Tok::P_Color_Red_900, "rd-bu 800"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_900, TokenLevel::Semantic, Tok::P_Color_Blue_900, "rd-bu 900"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_1000, TokenLevel::Semantic, Tok::P_Color_Blue_1000, "rd-bu 1000"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_1100, TokenLevel::Semantic, Tok::P_Color_Blue_1100, "rd-bu 1100"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_1200, TokenLevel::Semantic, Tok::P_Color_Blue_1200, "rd-bu 1200"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_1300, TokenLevel::Semantic, Tok::P_Color_Blue_1300, "rd-bu 1300"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_1400, TokenLevel::Semantic, Tok::P_Color_Blue_1400, "rd-bu 1400"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_1500, TokenLevel::Semantic, Tok::P_Color_Blue_1500, "rd-bu 1500"));
+    put(Ref(Tok::S_DataViz_Div_RdBu_1600, TokenLevel::Semantic, Tok::P_Color_Blue_1600, "rd-bu 1600"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_100, TokenLevel::Semantic, Tok::P_Color_Purple_1600, "pu-gn 100"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_200, TokenLevel::Semantic, Tok::P_Color_Purple_1500, "pu-gn 200"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_300, TokenLevel::Semantic, Tok::P_Color_Purple_1400, "pu-gn 300"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_400, TokenLevel::Semantic, Tok::P_Color_Purple_1300, "pu-gn 400"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_500, TokenLevel::Semantic, Tok::P_Color_Purple_1200, "pu-gn 500"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_600, TokenLevel::Semantic, Tok::P_Color_Purple_1100, "pu-gn 600"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_700, TokenLevel::Semantic, Tok::P_Color_Purple_1000, "pu-gn 700"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_800, TokenLevel::Semantic, Tok::P_Color_Purple_900, "pu-gn 800"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_900, TokenLevel::Semantic, Tok::P_Color_Green_900, "pu-gn 900"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_1000, TokenLevel::Semantic, Tok::P_Color_Green_1000, "pu-gn 1000"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_1100, TokenLevel::Semantic, Tok::P_Color_Green_1100, "pu-gn 1100"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_1200, TokenLevel::Semantic, Tok::P_Color_Green_1200, "pu-gn 1200"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_1300, TokenLevel::Semantic, Tok::P_Color_Green_1300, "pu-gn 1300"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_1400, TokenLevel::Semantic, Tok::P_Color_Green_1400, "pu-gn 1400"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_1500, TokenLevel::Semantic, Tok::P_Color_Green_1500, "pu-gn 1500"));
+    put(Ref(Tok::S_DataViz_Div_PuGn_1600, TokenLevel::Semantic, Tok::P_Color_Green_1600, "pu-gn 1600"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_100, TokenLevel::Semantic, Tok::P_Color_Brown_1600, "br-teal 100"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_200, TokenLevel::Semantic, Tok::P_Color_Brown_1500, "br-teal 200"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_300, TokenLevel::Semantic, Tok::P_Color_Brown_1400, "br-teal 300"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_400, TokenLevel::Semantic, Tok::P_Color_Brown_1300, "br-teal 400"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_500, TokenLevel::Semantic, Tok::P_Color_Brown_1200, "br-teal 500"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_600, TokenLevel::Semantic, Tok::P_Color_Brown_1100, "br-teal 600"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_700, TokenLevel::Semantic, Tok::P_Color_Brown_1000, "br-teal 700"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_800, TokenLevel::Semantic, Tok::P_Color_Brown_900, "br-teal 800"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_900, TokenLevel::Semantic, Tok::P_Color_Turquoise_900, "br-teal 900"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_1000, TokenLevel::Semantic, Tok::P_Color_Turquoise_1000, "br-teal 1000"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_1100, TokenLevel::Semantic, Tok::P_Color_Turquoise_1100, "br-teal 1100"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_1200, TokenLevel::Semantic, Tok::P_Color_Turquoise_1200, "br-teal 1200"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_1300, TokenLevel::Semantic, Tok::P_Color_Turquoise_1300, "br-teal 1300"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_1400, TokenLevel::Semantic, Tok::P_Color_Turquoise_1400, "br-teal 1400"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_1500, TokenLevel::Semantic, Tok::P_Color_Turquoise_1500, "br-teal 1500"));
+    put(Ref(Tok::S_DataViz_Div_BrTeal_1600, TokenLevel::Semantic, Tok::P_Color_Turquoise_1600, "br-teal 1600"));
+    put(Ref(Tok::S_DataViz_Axis, TokenLevel::Semantic, Tok::P_Color_Gray_400, "axis"));
+    put(Ref(Tok::S_DataViz_Grid, TokenLevel::Semantic, Tok::P_Color_Gray_200, "grid"));
+    put(Ref(Tok::S_DataViz_Label, TokenLevel::Semantic, Tok::P_Color_Gray_700, "label"));
+    put(Ref(Tok::S_DataViz_Highlight, TokenLevel::Semantic, Tok::S_Accent_Color_900, "highlight"));
+    put(Ref(Tok::C_Window_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "window bg"));
+    put(Ref(Tok::C_Window_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "window rounding"));
+    put(Ref(Tok::C_Window_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "window border width"));
+    put(Ref(Tok::C_Window_BorderColor, TokenLevel::Component, Tok::S_Color_Border_Default, "window border"));
+    put(Float(Tok::C_Window_BorderHoverPadding, TokenLevel::Component, 4.f, "window border hit pad", Px(20)));
+    put(Ref(Tok::C_Window_Padding, TokenLevel::Component, Tok::S_Config_ItemSpacing, "window padding"));
+    put(Vec2(Tok::C_Window_MinSize, TokenLevel::Component, {32.0f,32.0f}, "min window size", Px(2048)));
+    put(Ref(Tok::C_Window_TitleAlign, TokenLevel::Component, Tok::S_Config_SeparatorTextAlign, "title align"));
+    put(Int(Tok::C_Window_MenuButtonPosition, TokenLevel::Component, 1, "menu button side", Dir012()));
+    // Detached-window drop shadow (SecondaryWindow). A soft dark edge giving the
+    // floating window a sense of depth; tint carries its own alpha.
+    put(Color(Tok::C_Window_ShadowColor, TokenLevel::Component, HexA(0x00000040), "detached window shadow"));
+    put(Float(Tok::C_Window_ShadowSize, TokenLevel::Component, 18.f, "detached window shadow size", Px(64)));
+    put(Ref(Tok::C_Child_Background, TokenLevel::Component, Tok::S_Background_App_Child, "child bg (inner zones inside an editor)"));
+    put(Ref(Tok::C_Child_BackgroundOpacity, TokenLevel::Component, Tok::S_Opacity_Transparent, "child bg opacity"));
+    put(Ref(Tok::C_Child_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "child rounding"));
+    put(Ref(Tok::C_Child_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "child border"));
+    put(Ref(Tok::C_Popup_Background, TokenLevel::Component, Tok::S_Color_Background_Popup, "popup bg"));
+    put(Ref(Tok::C_Popup_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "popup rounding"));
+    put(Ref(Tok::C_Popup_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "popup border"));
+    put(Ref(Tok::C_Popup_MenuBarBackground, TokenLevel::Component, Tok::S_Color_Background_Layer1, "menu bar bg"));
+    put(Ref(Tok::C_Frame_Background, TokenLevel::Component, Tok::S_Background_App_Frame, "frame/input bg (the lightest surface)"));
+    put(Ref(Tok::C_Frame_BackgroundHover, TokenLevel::Component, Tok::S_Background_App_Frame, "frame bg hover"));
+    put(Ref(Tok::C_Frame_BackgroundDown, TokenLevel::Component, Tok::S_Background_App_Child, "frame bg down"));
+    put(Ref(Tok::C_Frame_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "frame rounding"));
+    put(Ref(Tok::C_Frame_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "frame border"));
+    put(Ref(Tok::C_Frame_Padding, TokenLevel::Component, Tok::S_Config_ItemInnerSpacing, "frame padding"));
+    put(Ref(Tok::C_Frame_InputTextCursor, TokenLevel::Component, Tok::S_Color_Text_Default, "input caret"));
+    put(Ref(Tok::C_Button_Background, TokenLevel::Component, Tok::S_Color_Accent_Default, "button bg"));
+    put(Ref(Tok::C_Button_BackgroundHover, TokenLevel::Component, Tok::S_Color_Accent_Hover, "button bg hover"));
+    put(Ref(Tok::C_Button_BackgroundDown, TokenLevel::Component, Tok::S_Color_Accent_Down, "button bg down"));
+    put(Ref(Tok::C_Button_Label, TokenLevel::Component, Tok::S_Color_Text_Default, "button text"));
+    put(Ref(Tok::C_Combo_Background, TokenLevel::Component, Tok::S_Color_Background_Layer1, "combo bg"));
+    put(Ref(Tok::C_Combo_BackgroundHover, TokenLevel::Component, Tok::S_Color_Background_Layer1, "combo bg hover"));
+    put(Ref(Tok::C_Combo_BackgroundDown, TokenLevel::Component, Tok::S_Color_Background_Layer2, "combo bg down"));
+    put(Ref(Tok::C_Combo_PreviewText, TokenLevel::Component, Tok::S_Color_Text_Default, "combo label"));
+    put(Ref(Tok::C_Combo_ArrowIcon, TokenLevel::Component, Tok::S_Color_Text_Subtle, "combo arrow"));
+    put(Ref(Tok::C_Combo_PopupBackground, TokenLevel::Component, Tok::S_Color_Background_Popup, "combo popup bg"));
+    put(Ref(Tok::C_Combo_ItemBackgroundHover, TokenLevel::Component, Tok::S_Color_Accent_Hover, "combo item hover"));
+    put(Ref(Tok::C_Combo_ItemBackgroundSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "combo item selected"));
+    put(Ref(Tok::C_Combo_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "combo border"));
+    put(Ref(Tok::C_Combo_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "combo rounding"));
+    put(Ref(Tok::C_Combo_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "combo border width"));
+    put(Ref(Tok::C_Combo_Padding, TokenLevel::Component, Tok::S_Config_ItemInnerSpacing, "combo padding"));
+    put(Ref(Tok::C_Tab_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "tab"));
+    put(Ref(Tok::C_Tab_BackgroundHover, TokenLevel::Component, Tok::S_Color_Accent_Hover, "tab hover"));
+    put(Ref(Tok::C_Tab_BackgroundSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "tab selected"));
+    put(Ref(Tok::C_Tab_OverlineSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "tab overline selected"));
+    put(Ref(Tok::C_Tab_BackgroundDimmed, TokenLevel::Component, Tok::S_Color_Background_Default, "tab dimmed"));
+    put(Ref(Tok::C_Tab_BackgroundDimmedSelected, TokenLevel::Component, Tok::S_Color_Background_Layer1, "tab dimmed selected"));
+    put(Color(Tok::C_Tab_OverlineDimmed, TokenLevel::Component, {0.5f,0.5f,0.5f,0.0f}, "tab overline dimmed"));
+    put(Ref(Tok::C_Tab_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Small, "tab rounding"));
+    put(Ref(Tok::C_Tab_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_None, "tab border"));
+    put(Ref(Tok::C_Tab_BarBorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "tab bar border"));
+    put(Float(Tok::C_Tab_BarOverlineWidth, TokenLevel::Component, 1.f, "tab bar overline", Px(8)));
+    put(Float(Tok::C_Tab_MinWidthBase, TokenLevel::Component, 1.f, "tab min width", CS::Range(1.0,500.0,"px")));
+    put(Float(Tok::C_Tab_MinWidthShrink, TokenLevel::Component, 80.f, "tab min width shrink", CS::Range(1.0,500.0,"px")));
+    put(Float(Tok::C_Tab_CloseButtonMinWidthSelected, TokenLevel::Component, -1.f, "close btn min sel", CS::Range(-1.0,100.0)));
+    put(Float(Tok::C_Tab_CloseButtonMinWidthUnselected, TokenLevel::Component, 0.f, "close btn min unsel", CS::Range(-1.0,100.0)));
+    put(Ref(Tok::C_Tab_UnsavedMarker, TokenLevel::Component, Tok::S_Color_Text_Default, "unsaved marker"));
+    put(Ref(Tok::C_Header_Background, TokenLevel::Component, Tok::S_Color_Accent_Default, "header"));
+    put(Ref(Tok::C_Header_BackgroundHover, TokenLevel::Component, Tok::S_Color_Accent_Hover, "header hover"));
+    put(Ref(Tok::C_Header_BackgroundDown, TokenLevel::Component, Tok::S_Color_Accent_Down, "header down"));
+    put(Ref(Tok::C_Scrollbar_Background, TokenLevel::Component, Tok::S_Color_Background_Layer1, "scrollbar track"));
+    // Rest colour kept discreet/dark (subtle border = gray-700 on dark); it
+    // brightens toward the hover/active colours as the cursor nears the grab.
+    put(Ref(Tok::C_Scrollbar_Grab, TokenLevel::Component, Tok::S_Border_Subtle, "scrollbar grab"));
+    put(Ref(Tok::C_Scrollbar_GrabHover, TokenLevel::Component, Tok::S_Color_Border_Strong, "scrollbar grab hover"));
+    put(Ref(Tok::C_Scrollbar_GrabDown, TokenLevel::Component, Tok::S_Text_Tertiary, "scrollbar grab down"));
+    put(Float(Tok::C_Scrollbar_Size, TokenLevel::Component, 14.f, "scrollbar size", CS::Range(1.0,32.0,"px")));
+    put(Ref(Tok::C_Scrollbar_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "scrollbar rounding"));
+    put(Float(Tok::C_Scrollbar_Padding, TokenLevel::Component, 2.f, "scrollbar padding", Px(10)));
+    // Custom overlay scrollbar (UI::BeginScroll/EndScroll). The grab floats in
+    // the component's right margin (overlay → no reserved space) and grows from
+    // its rest thickness to its hover thickness (≈ the margin) as the cursor
+    // approaches within `proximity` px. Grab colours reuse the scrollbar grab
+    // tokens above (rest = grab, near/hover = grab hover).
+    put(Float(Tok::C_Scrollbar_OverlayMargin,     TokenLevel::Component, 7.f, "overlay scrollbar gutter width", Px(20)));
+    put(Float(Tok::C_Scrollbar_OverlayWidthRest,  TokenLevel::Component, 3.f, "overlay scrollbar width at rest", Px(20)));
+    put(Float(Tok::C_Scrollbar_OverlayWidthHover, TokenLevel::Component, 5.f, "overlay scrollbar width near/hover", Px(20)));
+    put(Float(Tok::C_Scrollbar_OverlayProximity,  TokenLevel::Component, 48.f, "overlay scrollbar proximity reach", Px(200)));
+    put(Float(Tok::C_Scrollbar_OverlayPadding,    TokenLevel::Component, 4.f, "overlay scrollbar top/bottom inset", Px(20)));
+    put(Ref(Tok::C_Slider_Grab, TokenLevel::Component, Tok::S_Color_Accent_Default, "slider grab"));
+    put(Ref(Tok::C_Slider_GrabDown, TokenLevel::Component, Tok::S_Color_Accent_Down, "slider grab down"));
+    put(Ref(Tok::C_Slider_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "slider rounding"));
+    put(Ref(Tok::C_Checkbox_Mark, TokenLevel::Component, Tok::S_Color_Accent_Default, "checkbox mark"));
+    put(Ref(Tok::C_Checkbox_BackgroundSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "checkbox selected"));
+    put(Ref(Tok::C_Separator_Color, TokenLevel::Component, Tok::S_Color_Border_Default, "separator"));
+    put(Ref(Tok::C_Separator_Hover, TokenLevel::Component, Tok::S_Color_Accent_Down, "separator hover"));
+    put(Ref(Tok::C_Separator_Down, TokenLevel::Component, Tok::S_Color_Accent_Down, "separator down"));
+    put(Float(Tok::C_Separator_Size, TokenLevel::Component, 1.f, "separator size", CS::Range(1.0,10.0,"px")));
+    put(Float(Tok::C_Separator_TextBorderWidth, TokenLevel::Component, 3.f, "separator text border", Px(10)));
+    put(Ref(Tok::C_ResizeGrip_Color, TokenLevel::Component, Tok::S_Color_Accent_Default, "resize grip"));
+    put(Ref(Tok::C_ResizeGrip_Hover, TokenLevel::Component, Tok::S_Color_Accent_Hover, "resize grip hover"));
+    put(Ref(Tok::C_ResizeGrip_Down, TokenLevel::Component, Tok::S_Color_Accent_Down, "resize grip down"));
+    put(Ref(Tok::C_Table_HeaderBackground, TokenLevel::Component, Tok::S_Color_Background_Layer2, "table header"));
+    put(Ref(Tok::C_Table_BorderStrong, TokenLevel::Component, Tok::S_Color_Border_Strong, "table strong border"));
+    put(Ref(Tok::C_Table_BorderLight, TokenLevel::Component, Tok::S_Color_Border_Default, "table light border"));
+    put(Color(Tok::C_Table_RowBackground, TokenLevel::Component, {0.0f,0.0f,0.0f,0.0f}, "table row even"));
+    put(Color(Tok::C_Table_RowBackgroundAlt, TokenLevel::Component, {1.0f,1.0f,1.0f,0.06f}, "table row odd"));
+    put(Float(Tok::C_Table_AngledHeadersAngle, TokenLevel::Component, 35.f, "angled header angle", CS::Range(-50.0,50.0,"deg")));
+    put(Ref(Tok::C_Table_AngledHeadersTextAlign, TokenLevel::Component, Tok::S_Config_SeparatorTextAlign, "angled header align"));
+    put(Ref(Tok::C_Image_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "image rounding"));
+    put(Ref(Tok::C_Image_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_None, "image border"));
+    put(Int(Tok::C_Docking_NodeHasCloseButton, TokenLevel::Component, 1, "docking close button", Bool01()));
+    put(Float(Tok::C_Docking_SeparatorSize, TokenLevel::Component, 2.f, "docking separator", Round12()));
+    put(Float(Tok::C_Zone_SeparatorSize, TokenLevel::Component, 4.f, "zone separator size", CS::Range(2.0,20.0,"px")));
+    // Zone separators: the segment UNDER the cursor (primary, full colour) and
+    // the colinear continuation segments between the other zones that would
+    // shift on drag (own colour + own opacity, so it can read fainter or differ
+    // in hue). Both default to the semantic border colour; the continuation's
+    // alpha is driven by its dedicated opacity token (was a hard-coded ×0.35).
+    put(Ref(Tok::C_Zone_SeparatorColor, TokenLevel::Component, Tok::S_Color_Border_Default, "zone separator (under cursor)"));
+    put(Ref(Tok::C_Zone_SeparatorColorContinuation, TokenLevel::Component, Tok::S_Color_Border_Default, "zone separator (between zones)"));
+    put(Ref(Tok::C_Zone_SeparatorContinuationOpacity, TokenLevel::Component, Tok::S_Opacity_Reduced, "zone separator continuation opacity"));
+    put(Ref(Tok::C_DragDropTarget_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "drop target rounding"));
+    put(Float(Tok::C_DragDropTarget_BorderWidth, TokenLevel::Component, 2.f, "drop target border", Border4()));
+    put(Float(Tok::C_DragDropTarget_Padding, TokenLevel::Component, 3.f, "drop target pad", Px(16)));
+    put(Ref(Tok::C_KeyCap_Background, TokenLevel::Component, Tok::S_Background_App_Control, "keycap bg (clickable surface, above app base)"));
+    put(Ref(Tok::C_KeyCap_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "keycap border"));
+    put(Ref(Tok::C_KeyCap_Label, TokenLevel::Component, Tok::S_Color_Text_Default, "keycap text"));
+    put(Ref(Tok::C_KeyCap_CornerRadius, TokenLevel::Component, Tok::S_Radius_Xs, "keycap rounding"));
+    put(Ref(Tok::C_KeyCap_Padding, TokenLevel::Component, Tok::S_Config_ItemInnerSpacing, "keycap padding"));
+    put(Float(Tok::C_KeyCap_FontScale, TokenLevel::Component, 0.85f, "keycap font scale", CS::Range(0.5,2.0,"multiplier")));
+    put(Ref(Tok::C_StatusBar_Background, TokenLevel::Component, Tok::S_Color_Background_Layer2, "status bar bg"));
+    put(Ref(Tok::C_StatusBar_Label, TokenLevel::Component, Tok::S_Color_Text_Subtle, "status bar text"));
+    put(Float(Tok::C_StatusBar_Height, TokenLevel::Component, 22.f, "status bar height", CS::Range(16.0,40.0,"px")));
+    put(Vec2(Tok::C_StatusBar_Padding, TokenLevel::Component, {4.f, 2.f}, "status bar padding (x=horizontal margin, y=vertical inset)", PadXY()));
+    put(Ref(Tok::C_ShortcutRow_BackgroundHover, TokenLevel::Component, Tok::S_Color_Background_Layer2, "shortcut row hover"));
+    put(Ref(Tok::C_ShortcutRow_BackgroundSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "shortcut row selected"));
+    put(Ref(Tok::C_Shortcut_ConflictSoft, TokenLevel::Component, Tok::S_Color_Notice_Default, "shortcut soft conflict"));
+    put(Ref(Tok::C_Shortcut_ConflictHard, TokenLevel::Component, Tok::S_Color_Negative_Default, "shortcut hard conflict"));
+    put(Ref(Tok::C_Shortcut_Recording, TokenLevel::Component, Tok::S_Color_Negative_Default, "shortcut recording"));
+    put(Ref(Tok::C_Shortcut_CaptureBackground, TokenLevel::Component, Tok::S_Color_Background_Layer2, "shortcut capture bg"));
+    put(Ref(Tok::C_SectionHeader_Label, TokenLevel::Component, Tok::S_Color_Text_Default, "section header text"));
+    put(Float(Tok::C_SectionHeader_FontScale, TokenLevel::Component, 1.1f, "section header scale", CS::Range(0.5,2.5,"multiplier")));
+    put(Ref(Tok::C_CaptureField_Background, TokenLevel::Component, Tok::S_Color_Background_Layer2, "capture field bg"));
+    put(Ref(Tok::C_CaptureField_BackgroundRecording, TokenLevel::Component, Tok::S_Color_Background_Layer1, "capture field bg rec"));
+    put(Ref(Tok::C_CaptureField_BackgroundHover, TokenLevel::Component, Tok::S_Color_Background_Layer1, "capture field bg hover"));
+    put(Ref(Tok::C_CaptureField_BackgroundDown, TokenLevel::Component, Tok::S_Color_Background_Layer2, "capture field bg down"));
+    put(Ref(Tok::C_CaptureField_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "capture field border"));
+    put(Ref(Tok::C_CaptureField_BorderRecording, TokenLevel::Component, Tok::S_Color_Negative_Default, "capture field border rec"));
+    put(Ref(Tok::C_CaptureField_Label, TokenLevel::Component, Tok::S_Color_Text_Default, "capture field text"));
+    put(Ref(Tok::C_CaptureField_LabelHint, TokenLevel::Component, Tok::S_Color_Text_Subtle, "capture field hint"));
+    put(Ref(Tok::C_CaptureField_CornerRadius, TokenLevel::Component, Tok::S_Radius_Xs, "capture field rounding"));
+    put(Ref(Tok::C_CaptureField_Padding, TokenLevel::Component, Tok::S_Config_ItemSpacing, "capture field padding"));
+    put(Float(Tok::C_CaptureField_MinWidth, TokenLevel::Component, 180.f, "capture field min width", CS::Range(80.0,600.0,"px")));
+    put(Float(Tok::C_CaptureField_Height, TokenLevel::Component, 28.f, "capture field height", CS::Range(20.0,64.0,"px")));
+    put(Ref(Tok::C_Toggle_Background, TokenLevel::Component, Tok::S_Color_Background_Layer2, "toggle bg off"));
+    put(Ref(Tok::C_Toggle_BackgroundHover, TokenLevel::Component, Tok::S_Color_Background_Layer1, "toggle bg hover"));
+    put(Ref(Tok::C_Toggle_BackgroundSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "toggle bg on"));
+    put(Ref(Tok::C_Toggle_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "toggle border off"));
+    put(Ref(Tok::C_Toggle_BorderSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "toggle border on"));
+    put(Ref(Tok::C_Toggle_Label, TokenLevel::Component, Tok::S_Color_Text_Subtle, "toggle text off"));
+    put(Ref(Tok::C_Toggle_LabelSelected, TokenLevel::Component, Tok::S_Color_Text_Default, "toggle text on"));
+    put(Ref(Tok::C_Toggle_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Small, "toggle rounding"));
+    put(Float(Tok::C_Toggle_BorderWidth, TokenLevel::Component, 1.f, "toggle border", Border4()));
+    put(Ref(Tok::C_IconButton_Background, TokenLevel::Component, Tok::S_Background_App_Control, "icon button bg (clickable surface, above app base)"));
+    put(Ref(Tok::C_IconButton_BackgroundHover, TokenLevel::Component, Tok::S_Surface_Canvas, "icon button bg hover (slightly lighter)"));
+    put(Ref(Tok::C_IconButton_BackgroundDown, TokenLevel::Component, Tok::S_Surface_Raised, "icon button bg down"));
+    put(Ref(Tok::C_IconButton_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "icon button border"));
+    put(Ref(Tok::C_IconButton_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "icon button tint"));
+    put(Ref(Tok::C_IconButton_IconNegative, TokenLevel::Component, Tok::S_Color_Negative_Default, "icon button danger"));
+    put(Ref(Tok::C_IconButton_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "icon button rounding"));
+    put(Ref(Tok::S_Color_DataViz_Line, TokenLevel::Component, Tok::S_DataViz_Cat_1, "plot line"));
+    put(Ref(Tok::S_Color_DataViz_LineHover, TokenLevel::Component, Tok::S_DataViz_Highlight, "plot line hover"));
+    put(Ref(Tok::S_Color_DataViz_Histogram, TokenLevel::Component, Tok::S_DataViz_Cat_2, "plot histogram"));
+    put(Ref(Tok::S_Color_DataViz_HistogramHover, TokenLevel::Component, Tok::S_DataViz_Highlight, "plot histogram hover"));
+    put(Ref(Tok::S_Color_Negative_Recording, TokenLevel::Semantic, Tok::S_Negative_Color_600, "semantic.background.negative.recording"));
+    put(Ref(Tok::S_Color_Background_Child, TokenLevel::Semantic, Tok::P_Color_Gray_900, "semantic.background.child.default"));
+    put(Ref(Tok::S_Color_Background_MenuBar, TokenLevel::Semantic, Tok::P_Color_Gray_1000, "semantic.background.menu-bar.default"));
+    put(Ref(Tok::S_Color_Background_Title, TokenLevel::Semantic, Tok::P_Color_Gray_1000, "semantic.background.title.default"));
+    put(Ref(Tok::S_Color_Background_TitleActive, TokenLevel::Semantic, Tok::S_Accent_Color_700, "semantic.background.title.active"));
+    put(Ref(Tok::S_Color_Background_TitleCollapsed, TokenLevel::Semantic, Tok::P_Color_Gray_1000, "semantic.background.title.collapsed"));
+    put(Ref(Tok::S_Color_Background_ScrollbarTrack, TokenLevel::Semantic, Tok::P_Color_Gray_1000, "semantic.background.scrollbar-track.default"));
+    put(Ref(Tok::S_Color_Background_DimWindowing, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_500, "semantic.background.dim.windowing"));
+    put(Ref(Tok::S_Color_Background_DimModal, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_500, "semantic.background.dim.modal"));
+    put(Ref(Tok::S_Color_Background_DockingEmpty, TokenLevel::Semantic, Tok::P_Color_Gray_1000, "semantic.background.docking-empty.default"));
+    put(Ref(Tok::S_Color_Background_DropTarget, TokenLevel::Semantic, Tok::S_Accent_Color_600, "semantic.background.drop-target.default"));
+    put(Ref(Tok::S_Color_Foreground_ScrollbarGrab, TokenLevel::Semantic, Tok::P_Color_Gray_500, "semantic.foreground.scrollbar-grab.default"));
+    put(Ref(Tok::S_Color_Border_Shadow, TokenLevel::Semantic, Tok::P_Color_TransparentBlack_500, "semantic.border.color.shadow.default"));
+    put(Ref(Tok::S_Color_Border_TreeLine, TokenLevel::Semantic, Tok::P_Color_Gray_600, "semantic.border.color.tree-line.default"));
+    put(Ref(Tok::S_Color_Focus_Default, TokenLevel::Semantic, Tok::S_Accent_Color_500, "semantic.focus.color.default"));
+    put(Ref(Tok::S_Color_Focus_Windowing, TokenLevel::Semantic, Tok::P_Color_Gray_100, "semantic.focus.color.windowing"));
+    put(Ref(Tok::S_Color_Accent_DropTarget, TokenLevel::Semantic, Tok::P_Color_Yellow_500, "semantic.background.accent.drop-target"));
+    put(Ref(Tok::S_Color_Accent_DockingPreview, TokenLevel::Semantic, Tok::S_Accent_Color_500, "semantic.background.accent.docking-preview"));
+    put(Float(Tok::C_EditorTopBar_Padding, TokenLevel::Component, 6.f, "editor top-bar padding", CS::Range(0.0,24.0,"px")));
+    put(Float(Tok::C_StatusBar_Gap, TokenLevel::Component, 12.f, "status bar group gap", CS::Range(0.0,48.0,"px")));
+    put(Float(Tok::P_UiUnit, TokenLevel::Primitive, 20.f, "ui unit (base control height)", Px(64)));
+    put(Ref(Tok::S_Size_ControlHeight, TokenLevel::Semantic, Tok::P_UiUnit, "control height"));
+    put(Ref(Tok::C_Dropdown_Height, TokenLevel::Component, Tok::S_Size_ControlHeight, "dropdown height"));
+    put(Vec2(Tok::C_Dropdown_Padding, TokenLevel::Component, {8.f, 2.f}, "dropdown padding (x=side margin, y=vertical inset)", PadXY()));
+    put(Float(Tok::C_Dropdown_ChevronSize, TokenLevel::Component, 8.f, "dropdown chevron size", Px(32)));
+    put(Float(Tok::C_Dropdown_IconSize, TokenLevel::Component, 16.f, "dropdown icon size", Px(64)));
+    put(Ref(Tok::C_Dropdown_Background, TokenLevel::Component, Tok::S_Background_App_Control, "dropdown bg (clickable surface, above app base)"));
+    put(Ref(Tok::C_Dropdown_BackgroundHover, TokenLevel::Component, Tok::S_Surface_Canvas, "dropdown bg hover (slightly lighter)"));
+    put(Ref(Tok::C_Dropdown_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "dropdown text"));
+    put(Ref(Tok::C_Dropdown_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "dropdown icon tint"));
+    put(Ref(Tok::C_Dropdown_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "dropdown rounding"));
+    put(Ref(Tok::C_Menu_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "menu bg"));
+    put(Ref(Tok::C_Menu_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "menu rounding"));
+    put(Ref(Tok::C_Menu_ItemHoverBg, TokenLevel::Component, Tok::S_Color_Background_Layer2, "menu item bg hover (lighter than the menu bg)"));
+    put(Ref(Tok::C_Menu_ItemSelectedBg, TokenLevel::Component, Tok::S_Color_Accent_Default, "menu item bg selected"));
+    put(Ref(Tok::C_Menu_ColumnHeaderText, TokenLevel::Component, Tok::S_Color_Text_Subtle, "menu column header text"));
+    put(Vec2(Tok::C_Menu_Padding, TokenLevel::Component, {8.f, 6.f}, "menu padding", PadXY()));
+    put(Float(Tok::C_Menu_ColumnGap, TokenLevel::Component, 16.f, "menu column gap", CS::Range(0.0,64.0,"px")));
+    put(Float(Tok::C_Menu_ItemGap, TokenLevel::Component, 2.f, "menu item gap", CS::Range(0.0,16.0,"px")));
+    // Two-layer radius: containers (windows/zones) keep radius.m (6px);
+    // interactive UI elements (button/icon-button/dropdown/tooltip/menu) use a
+    // smaller control radius (3px).
+    put(Float(Tok::P_Radius_150, TokenLevel::Primitive, 3.f, "radius 150", CS::Range(0.0,32.0,"px")));
+    put(Ref(Tok::S_CornerRadius_Control, TokenLevel::Semantic, Tok::P_Radius_150, "radius control (small UI elements)"));
+    put(Ref(Tok::C_Dropdown_Border, TokenLevel::Component, Tok::S_Neutral_Color_700, "dropdown border (subtle at rest)"));
+    put(Ref(Tok::C_Dropdown_BorderHover, TokenLevel::Component, Tok::S_Neutral_Color_600, "dropdown border hover (slightly brighter)"));
+    put(Ref(Tok::C_Dropdown_BackgroundDown, TokenLevel::Component, Tok::S_Surface_Raised, "dropdown bg pressed/open"));
+    put(Ref(Tok::C_Dropdown_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "dropdown border width"));
+    put(Ref(Tok::C_Menu_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "menu border"));
+    put(Ref(Tok::C_Menu_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "menu border width"));
+    put(Color(Tok::P_Color_Gray_850, TokenLevel::Primitive, Hex(0x1E1E1E), "gray 850"));
+    put(Ref(Tok::C_Editor_Background, TokenLevel::Component, Tok::S_Surface_Canvas, "editor zone bg"));
+    put(Ref(Tok::C_Editor_TopBarBackground, TokenLevel::Component, Tok::S_Surface_Raised, "editor top-bar / menu bar bg"));
+    // Tooltip: same surface as the editor menu bar, control corner radius, thin
+    // border (honours the global border toggle), and a real padding.
+    put(Ref(Tok::C_Tooltip_Background, TokenLevel::Component, Tok::C_Editor_TopBarBackground, "tooltip bg (= editor menu bar)"));
+    put(Ref(Tok::C_Tooltip_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "tooltip text"));
+    put(Ref(Tok::C_Tooltip_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "tooltip border"));
+    put(Ref(Tok::C_Tooltip_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "tooltip border width"));
+    put(Ref(Tok::C_Tooltip_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "tooltip rounding"));
+    put(Vec2(Tok::C_Tooltip_Padding, TokenLevel::Component, {8.f, 6.f}, "tooltip padding", PadXY()));
+    // Editor content inset: a dedicated semantic (referencing a spacing
+    // primitive) so it can be tuned at the semantic tier; the component points
+    // at the semantic. Drives the panel-editor padding (Outliner/Properties/
+    // Timeline/Dev); surfaced in Preferences ▸ Customisation ▸ Editor frame.
+    put(Ref(Tok::S_Spacing_EditorInset, TokenLevel::Semantic, Tok::P_Spacing_300, "editor content inset (panel editors)"));
+    put(Ref(Tok::C_Editor_ContentInset, TokenLevel::Component, Tok::S_Spacing_EditorInset, "inset/padding around panel-editor content (Outliner/Properties/Timeline/Dev)"));
+    put(Ref(Tok::C_Cursor_Color, TokenLevel::Component, Tok::S_Static_WhiteText, "custom mouse cursor icon tint (white, theme-invariant)"));
+    put(Float(Tok::C_Menu_ItemPaddingX, TokenLevel::Component, 6.f, "menu item horizontal padding", CS::Range(0.0,24.0,"px")));
+    put(Ref(Tok::C_Menu_TitleText, TokenLevel::Component, Tok::S_Color_Text_Subtle, "floating-menu title (header) text — a touch greyer than item text"));
+    // ── Tabbed zones (Graphite-style) ──
+    put(Color(Tok::P_Color_WhiteTransparent, TokenLevel::Primitive, HexA(0xFFFFFF2E), "white ~18% (drop preview)"));
+    put(Color(Tok::P_Color_Gray_875, TokenLevel::Primitive, Hex(0x232323), "gray 875"));
+    put(Float(Tok::C_ZoneTab_Gap, TokenLevel::Component, 2.f, "gap between zone tabs", CS::Range(0.0,24.0,"px")));
+    put(Vec2(Tok::C_ZoneTab_Padding, TokenLevel::Component, {8.f, 2.f}, "zone tab inset (x=side, y=vertical)", PadXY()));
+    // Tab bar sits a notch DARKER than the menu bar. The ACTIVE tab matches the
+    // menu-bar colour so it visually merges with it; inactive tabs match the
+    // bar; hover is a hair lighter than the bar but still darker than the menu
+    // bar (never pure black).
+    put(Ref(Tok::C_ZoneTab_Background, TokenLevel::Component, Tok::S_Surface_Canvas, "zone tab bg (= editor bg)"));
+    put(Ref(Tok::C_ZoneTab_BackgroundActive, TokenLevel::Component, Tok::C_Editor_TopBarBackground, "active zone tab bg (= menu bar)"));
+    put(Ref(Tok::C_ZoneTab_BackgroundHover, TokenLevel::Component, Tok::S_Surface_Raised, "zone tab bg hover (toward the menu bar)"));
+    put(Ref(Tok::C_ZoneTab_Text, TokenLevel::Component, Tok::S_Color_Text_Subtle, "zone tab text"));
+    put(Ref(Tok::C_ZoneTab_TextActive, TokenLevel::Component, Tok::S_Color_Text_Default, "active zone tab text"));
+    put(Ref(Tok::C_ZoneTab_BarBackground, TokenLevel::Component, Tok::S_Surface_Canvas, "zone tab bar bg (= editor bg)"));
+    put(Ref(Tok::C_ZoneTab_InsertLineColor, TokenLevel::Component, Tok::S_Color_Accent_Default, "zone tab insertion line"));
+    put(Float(Tok::C_ZoneTab_InsertLineWidth, TokenLevel::Component, 2.f, "zone tab insertion line width", CS::Range(1.0,6.0,"px")));
+    put(Ref(Tok::C_ZoneTab_DropPreviewFill, TokenLevel::Component, Tok::P_Color_WhiteTransparent, "drop preview fill"));
+    put(Float(Tok::C_ZoneTab_DropCenterInset, TokenLevel::Component, 6.f, "center drop inset", CS::Range(0.0,32.0,"px")));
+    put(Float(Tok::C_ZoneTab_PreviewAnimDuration, TokenLevel::Component, 0.06f, "drop preview anim seconds", CS::Range(0.0,1.0,"s")));
+    put(Float(Tok::C_ZoneTab_DragThreshold, TokenLevel::Component, 5.f, "zone tab drag arm distance", CS::Range(1.0,20.0,"px")));
+    put(Int(Tok::C_ZoneTab_ShowSolo, TokenLevel::Component, 0, "always show tab bar for solo zones", Bool01()));
+    // ── Custom application title bar + splash screen ──
+    put(Ref(Tok::C_TitleBar_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "title bar bg (= semantic.background.base, the darkest surface)"));
+    put(Ref(Tok::C_TitleBar_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "title bar icon tint"));
+    put(Ref(Tok::C_TitleBar_Text, TokenLevel::Component, Tok::S_Color_Text_Subtle, "title bar text"));
+    put(Ref(Tok::C_TitleBar_ButtonHover, TokenLevel::Component, Tok::S_Background_App_Control, "title bar button hover (a hair lighter than the bar)"));
+    put(Ref(Tok::C_TitleBar_CloseHover, TokenLevel::Component, Tok::S_Color_Negative_Default, "title bar close hover"));
+    put(Ref(Tok::C_Splash_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "splash bg (base)"));
+    put(Ref(Tok::C_Splash_Link, TokenLevel::Component, Tok::S_Color_Accent_Default, "splash link color"));
+    // Version label sits over the LIGHT splash image → always dark (a fixed
+    // neutral, not a theme-dependent text colour that would go light on dark).
+    put(Ref(Tok::C_Splash_VersionText, TokenLevel::Component, Tok::S_Neutral_Color_900, "splash version text (dark on light image)"));
+
+    // ── Surface ROLES (semantic) + component surfaces ──
+    // ONE coherent grey ladder, named by FUNCTION (not by component), so the
+    // same usage gets the same grey everywhere. Darkest → lightest:
+    //   background.base < app.control < surface.canvas < surface.raised
+    //                   < app.child < app.frame.
+    //   background.base — app canvas + window base (the darkest chrome); this is
+    //                     the EXISTING S_Color_Background_Default role, reused.
+    //   app.control    — clickable chips (dropdown / keycap / icon button).
+    //   surface.canvas — a large content surface (used by the editor canvas).
+    //   surface.raised — a bar/toolbar sitting above a canvas (editor menu bar).
+    //   app.child      — an inner sub-surface inside a content surface.
+    //   app.frame      — text inputs / frames (the lightest field surface).
+    // Precise components reference these roles through COMPONENT tokens below.
+    put(Color(Tok::P_Color_Gray_780, TokenLevel::Primitive, Hex(0x323232), "gray 780"));
+    put(Color(Tok::P_Color_Gray_760, TokenLevel::Primitive, Hex(0x3C3C3C), "gray 760"));
+    put(Color(Tok::P_Color_Gray_740, TokenLevel::Primitive, Hex(0x484848), "gray 740"));
+    put(RefT4(Tok::S_Background_App_Control, TokenLevel::Semantic, "clickable component surface",
+              Tok::P_Color_Gray_850, Tok::P_Color_Gray_100, Tok::P_Color_Gray_850, Tok::P_Color_Gray_900));
+    put(RefT4(Tok::S_Surface_Canvas, TokenLevel::Semantic, "large content surface",
+              Tok::P_Color_Gray_875, Tok::P_Color_Gray_50, Tok::P_Color_Gray_875, Tok::P_Color_Gray_1000));
+    put(RefT4(Tok::S_Surface_Raised, TokenLevel::Semantic, "bar/toolbar above a canvas",
+              Tok::P_Color_Gray_800, Tok::P_Color_Gray_25, Tok::P_Color_Gray_800, Tok::P_Color_Gray_900));
+    put(RefT4(Tok::S_Background_App_Child, TokenLevel::Semantic, "inner child surface",
+              Tok::P_Color_Gray_780, Tok::P_Color_Gray_25, Tok::P_Color_Gray_780, Tok::P_Color_Gray_900));
+    put(RefT4(Tok::S_Background_App_Frame, TokenLevel::Semantic, "input/frame surface (lightest)",
+              Tok::P_Color_Gray_740, Tok::P_Color_Gray_25, Tok::P_Color_Gray_740, Tok::P_Color_Gray_800));
+    // Minimal-style dropdown hover (title-bar menus): no chip, just a subtle
+    // fill a hair lighter than the title bar (= app base), i.e. the control
+    // surface, so the hovered menu item reads without a hard border/background.
+    put(Ref(Tok::C_Dropdown_BackgroundHoverMinimal, TokenLevel::Component, Tok::S_Background_App_Control, "minimal dropdown hover (just above the title bar)"));
+
+    // Preferences-window title bar — independent of the main title bar so each
+    // window's bar text/icons can be themed separately. Defaults mirror the
+    // main bar (base background, bright text/icons), white-ish by default.
+    put(Ref(Tok::C_PrefBar_Background, TokenLevel::Component, Tok::S_Color_Background_Default, "preferences title bar bg (= app base)"));
+    put(Ref(Tok::C_PrefBar_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "preferences title bar text"));
+    put(Ref(Tok::C_PrefBar_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "preferences title bar icon tint"));
+    put(Ref(Tok::C_PrefBar_ButtonHover, TokenLevel::Component, Tok::S_Background_App_Control, "preferences title bar button hover"));
+    put(Ref(Tok::C_PrefBar_CloseHover, TokenLevel::Component, Tok::S_Color_Negative_Default, "preferences title bar close hover"));
+
+    // Nested panel widget. Header is flat; body darkens with depth so deeper
+    // sub-panels recede. Lighter → darker: header/L1 = raised, L2 = canvas,
+    // L3 = base. Header never uses accent (no colour change on hover/select).
+    put(Ref(Tok::C_Panel_HeaderBackground, TokenLevel::Component, Tok::S_Surface_Raised, "panel header bg (flat, all depths)"));
+    put(Ref(Tok::C_Panel_BodyL1, TokenLevel::Component, Tok::S_Surface_Raised, "panel body level 1 (= header)"));
+    put(Ref(Tok::C_Panel_BodyL2, TokenLevel::Component, Tok::S_Surface_Canvas, "panel body level 2 (darker)"));
+    put(Ref(Tok::C_Panel_BodyL3, TokenLevel::Component, Tok::S_Color_Background_Default, "panel body level 3+ (darkest)"));
+    put(Ref(Tok::C_Panel_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "panel level-1 outer border"));
+    put(Ref(Tok::C_Panel_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "panel header label"));
+    put(Ref(Tok::C_Panel_OverrideBadge, TokenLevel::Component, Tok::S_Color_Accent_Default, "panel override badge tint"));
+    put(Float(Tok::C_Panel_Gap, TokenLevel::Component, 2.f, "vertical gap before each level-1 panel", CS::Range(0.0,20.0,"px")));
+    // Panels use the SMALL control radius (like buttons/frames/dropdowns), not
+    // the larger default/editor radius.
+    put(Ref(Tok::C_Panel_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "panel rounding"));
+
+    // ── Outliner rows — reference the semantic state matrix. NORMAL family uses
+    // the `default` status (grey hover, blue selected/active); the SEARCH family
+    // uses the `positive` status (green) so matched rows read as "found".
+    put(Ref(Tok::C_Outliner_Row_Hover,         TokenLevel::Component, Tok::S_Accent_Hover_Default,          "outliner row hover"));
+    put(Ref(Tok::C_Outliner_Row_Selected,      TokenLevel::Component, Tok::S_Accent_Selected_Default,       "outliner row selected"));
+    put(Ref(Tok::C_Outliner_Row_SelectedHover, TokenLevel::Component, Tok::S_Accent_HoverSelected_Default,  "outliner row selected+hover"));
+    put(Ref(Tok::C_Outliner_Row_Active,        TokenLevel::Component, Tok::S_Accent_Active_Default,         "outliner row active"));
+    put(Ref(Tok::C_Outliner_Row_ActiveHover,   TokenLevel::Component, Tok::S_Accent_Active_Default,         "outliner row active+hover"));
+    put(Ref(Tok::C_Outliner_Text,              TokenLevel::Component, Tok::S_Color_Text_Default,            "outliner row text"));
+    put(Ref(Tok::C_Outliner_Search_Visual,       TokenLevel::Component, Tok::S_Accent_Visual_Positive,        "outliner search matched-idle bg"));
+    put(Ref(Tok::C_Outliner_Search_Hover,        TokenLevel::Component, Tok::S_Accent_Hover_Positive,         "outliner search hover"));
+    put(Ref(Tok::C_Outliner_Search_Selected,     TokenLevel::Component, Tok::S_Accent_Selected_Positive,      "outliner search selected"));
+    put(Ref(Tok::C_Outliner_Search_SelectedHover,TokenLevel::Component, Tok::S_Accent_HoverSelected_Positive, "outliner search selected+hover"));
+    put(Ref(Tok::C_Outliner_Search_Active,       TokenLevel::Component, Tok::S_Accent_Active_Positive,        "outliner search active"));
+    put(Ref(Tok::C_Outliner_Search_ActiveHover,  TokenLevel::Component, Tok::S_Accent_Active_Positive,        "outliner search active+hover"));
+    put(Ref(Tok::C_Outliner_Search_Text,         TokenLevel::Component, Tok::S_Accent_Text_Positive,          "outliner search matched text (green)"));
+
+    // ── Shared object-state cues. Semantic → palette; the active/orange and
+    // loose/violet mapping lives here ONCE so Viewport, Outliner and Edit mode
+    // agree. On-page "active" = orange, "selected (not active)" = a darker orange,
+    // so the active element stands out from the rest of the selection everywhere.
+    put(Ref(Tok::S_State_Active_OnPage,   TokenLevel::Semantic, Tok::P_Color_Orange_500, "active object marker, on a page (orange)"));
+    put(Ref(Tok::S_State_Active_Loose,    TokenLevel::Semantic, Tok::P_Color_Purple_700, "active object marker, page-less (violet)"));
+    put(Ref(Tok::S_State_Selected_OnPage, TokenLevel::Semantic, Tok::P_Color_Orange_700, "selected (not active) on-page object (darker orange)"));
+    put(Ref(Tok::S_State_Selected_Loose,  TokenLevel::Semantic, Tok::P_Color_Purple_600, "selected page-less object (violet)"));
+
+    // ── Viewport canvas overlays. Cursor/axes use the theme-invariant STATIC
+    // palette so they stay legible over any page colour; transparent steps carry
+    // their own alpha so no literal alpha is needed in the draw code.
+    put(Ref(Tok::C_Viewport_CanvasArea,        TokenLevel::Component, Tok::S_Surface_Canvas,            "viewport ruler/canvas backdrop"));
+    put(Ref(Tok::C_Viewport_Guide,             TokenLevel::Component, Tok::S_Border_Blue,               "viewport alignment guide (blue)"));
+    put(Ref(Tok::C_Viewport_PageBorder,        TokenLevel::Component, Tok::P_Color_TransparentBlack_500,"viewport page edge"));
+    put(Ref(Tok::C_Viewport_PageNameHover,     TokenLevel::Component, Tok::P_Color_TransparentWhite_300,"hovered page-name label background"));
+    put(Ref(Tok::C_Viewport_OriginOutline,     TokenLevel::Component, Tok::P_Color_TransparentBlack_700,"object origin dot outline"));
+    put(Ref(Tok::C_Viewport_CursorRing,        TokenLevel::Component, Tok::S_Static_WhiteText,          "2D cursor outer ring (white)"));
+    put(Ref(Tok::C_Viewport_CursorRingAccent,  TokenLevel::Component, Tok::P_Color_Static_Red_900,      "2D cursor inner ring (red)"));
+    put(Ref(Tok::C_Viewport_CursorTick,        TokenLevel::Component, Tok::S_Static_BlackText,          "cursor −X/−Y ticks (black)"));
+    put(Ref(Tok::C_Viewport_CursorAxisX,       TokenLevel::Component, Tok::P_Color_Static_Red_800,      "cursor +X axis (red)"));
+    put(Ref(Tok::C_Viewport_CursorAxisY,       TokenLevel::Component, Tok::P_Color_Static_Green_600,    "cursor +Y axis (green)"));
+    put(Ref(Tok::C_Viewport_ThumbnailBackground, TokenLevel::Component, Tok::S_Static_WhiteText,        "thumbnail strip slot fill"));
+    put(Ref(Tok::C_Viewport_ThumbnailBorder,   TokenLevel::Component, Tok::P_Color_TransparentBlack_500,"thumbnail strip slot border"));
+
+    // ── Edit-mode overlay (edges, vertices, per-type Bézier handles). ──
+    put(Ref(Tok::C_EditHandle_Edge,       TokenLevel::Component, Tok::S_Color_Border_Strong,        "edit edge line"));
+    put(Ref(Tok::C_EditHandle_Vertex,     TokenLevel::Component, Tok::P_Color_Gray_900,             "edit vertex dot"));
+    put(Ref(Tok::C_EditHandle_VertexRing, TokenLevel::Component, Tok::P_Color_TransparentWhite_700, "edit vertex highlight ring"));
+    put(Ref(Tok::C_EditHandle_NurbsHull,  TokenLevel::Component, Tok::S_Border_Blue,                "NURBS control polygon (guide)"));
+    put(Ref(Tok::C_EditHandle_Free,       TokenLevel::Component, Tok::S_Border_Blue,                "Free handle (blue)"));
+    put(Ref(Tok::C_EditHandle_Aligned,    TokenLevel::Component, Tok::S_Border_Orange,              "Aligned handle (amber)"));
+    put(Ref(Tok::C_EditHandle_Mirrored,   TokenLevel::Component, Tok::S_Border_Green,               "Mirrored handle (green)"));
+    put(Ref(Tok::C_EditHandle_Vector,     TokenLevel::Component, Tok::S_Border_Purple,              "Vector handle (purple)"));
+    put(Ref(Tok::C_EditHandle_Default,    TokenLevel::Component, Tok::S_Border_Blue,                "fallback handle colour"));
+
+    // ── Zone-layout overlays (split corner hints, join preview, transform dim).
+    // The low-alpha corner tints use the coloured BORDER roles; alpha is applied
+    // at draw time (a functional overlay strength, not a themeable colour).
+    put(Ref(Tok::C_ZoneOverlay_CornerTopLeft,     TokenLevel::Component, Tok::S_Border_Blue,   "split corner — top-left (blue)"));
+    put(Ref(Tok::C_ZoneOverlay_CornerTopRight,    TokenLevel::Component, Tok::S_Border_Green,  "split corner — top-right (green)"));
+    put(Ref(Tok::C_ZoneOverlay_CornerBottomLeft,  TokenLevel::Component, Tok::S_Border_Orange, "split corner — bottom-left (amber)"));
+    put(Ref(Tok::C_ZoneOverlay_CornerBottomRight, TokenLevel::Component, Tok::S_Border_Magenta,"split corner — bottom-right (pink)"));
+    put(Ref(Tok::C_ZoneOverlay_SplitLine,         TokenLevel::Component, Tok::P_Color_TransparentWhite_900, "split arm preview line"));
+    put(Ref(Tok::C_ZoneOverlay_JoinKeep,          TokenLevel::Component, Tok::P_Color_TransparentWhite_200, "join: kept-zone faint fill"));
+    put(Ref(Tok::C_ZoneOverlay_JoinRemove,        TokenLevel::Component, Tok::P_Color_TransparentBlack_500, "join: removed-zone dim"));
+    put(Ref(Tok::C_ZoneOverlay_JoinResidual,      TokenLevel::Component, Tok::P_Color_TransparentBlack_700, "join: residual-zone strong dim"));
+    put(Ref(Tok::C_ZoneOverlay_JoinFrame,         TokenLevel::Component, Tok::S_Border_Blue,                "join: final-rect frame (blue)"));
+    put(Ref(Tok::C_ZoneOverlay_TransformDim,      TokenLevel::Component, Tok::P_Color_TransparentBlack_500, "crop/transform scrim"));
+
+    // Object-placement preview: a boolean preference (Classic) / forced in IOF,
+    // plus the thin crosshair cursor colour.
+    put(Int(Tok::P_Config_PreviewPlacement, TokenLevel::Primitive, 0, "preview placement on/off", Bool01()));
+    put(Ref(Tok::S_Config_PreviewPlacement, TokenLevel::Semantic, Tok::P_Config_PreviewPlacement, "semantic.config.preview-placement"));
+    put(Ref(Tok::C_Viewport_Crosshair, TokenLevel::Component, Tok::S_Static_WhiteText, "crosshair placement cursor"));
+    put(Ref(Tok::S_Config_PlacementPreviewAlpha, TokenLevel::Semantic, Tok::P_Opacity_400, "placement ghost opacity"));
+
+    (void)i;
+    return s;
+}
+
+constexpr std::array<TokenDef, kTokenCount> kSchema = BuildSchema();
+
+// ── COMPILE-TIME GUARANTEES ──────────────────────────────────────────────────
+static_assert(SchemaIsComplete(kSchema),
+    "Token schema incomplete or mis-ordered: every Tok must have exactly one "
+    "row, in enum order. Add/relocate the missing TokenDef row.");
+static_assert(ReferencesAreValid(kSchema),
+    "Invalid token reference: points at a non-existent token, the wrong tier "
+    "(e.g. semantic -> component), or a primitive declares a reference.");
+static_assert(ReferenceGraphIsAcyclic(kSchema),
+    "Token reference cycle detected: the reference graph must be acyclic.");
+static_assert(SemanticsAreReferences(kSchema),
+    "A semantic token carries a literal value: semantic tokens must be a "
+    "reference (or a TextStyle composite of references). Move the literal to "
+    "a primitive and reference it.");
+
+} // namespace
+
+const std::array<TokenDef, kTokenCount> kTokenSchema = kSchema;
+
+} // namespace DesignSystem

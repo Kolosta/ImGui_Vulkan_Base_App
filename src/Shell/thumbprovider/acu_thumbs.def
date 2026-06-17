@@ -1,0 +1,4 @@
+LIBRARY acu_thumbs
+EXPORTS
+    DllGetClassObject   PRIVATE
+    DllCanUnloadNow     PRIVATE

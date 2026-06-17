@@ -153,8 +153,8 @@ void IconEditorWindow::RenderColorZonesConfiguration() {
     if (localMetadata_.scheme == IconColorScheme::Bicolor) {
         auto& ds = DesignSystem::DesignSystem::Instance();
         try {
-            dsPrimary = ds.GetColor("semantic.icon.color.primary");
-            dsSecondary = ds.GetColor("semantic.icon.color.secondary");
+            dsPrimary = ds.GetColor(DesignSystem::Tok::S_Color_Icon_Primary);
+            dsSecondary = ds.GetColor(DesignSystem::Tok::S_Color_Icon_Secondary);
         } catch (...) {
             // Use defaults if tokens not found
             dsPrimary = ImVec4(0.2f, 0.4f, 0.8f, 1.0f);
