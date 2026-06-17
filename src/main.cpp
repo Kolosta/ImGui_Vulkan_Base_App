@@ -1,4 +1,4 @@
-#include "Application/Core/Application.h"
+#include "Application/App/Application.h"
 #include <iostream>
 
 int main(int argc, char** argv) {

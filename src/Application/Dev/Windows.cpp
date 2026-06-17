@@ -14,8 +14,13 @@
 
 namespace App {
 void Application::RenderFloatingWindows() {
-    if (showSettings_)
-        RenderSettings();
+    // NOTE: the Preferences window is NOT drawn here — it lives in its own OS
+    // window + ImGui context, rendered by settingsHost_.RenderFrame() from
+    // Application::RenderFrame(). RenderSettings() is kept as a no-op shim.
+
+    // Old Design System / Shortcuts / Icons editor, kept as a classic window.
+    if (showDesignSystem_)
+        RenderDesignSystemWindow();
 
     RenderDevTestWindow();   // self-gated by showDevWindow_
 
@@ -23,18 +28,22 @@ void Application::RenderFloatingWindows() {
         ImGui::ShowDemoWindow(&showImGuiDemo_);
 }
 
+// Preferences is rendered by settingsHost_ in its own context (see RenderFrame).
+void Application::RenderSettings() {}
+
 // ─────────────────────────────────────────────────────────────────────────────
-//  Settings window - three editors in tabs
+//  Design System window - the former Settings content (three editors in tabs),
+//  moved verbatim into its own classic ImGui window.
 // ─────────────────────────────────────────────────────────────────────────────
 
-void Application::RenderSettings() {
+void Application::RenderDesignSystemWindow() {
     ImGui::SetNextWindowSize(ImVec2(920.0f, 660.0f), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(120.0f, 80.0f),   ImGuiCond_FirstUseEver);
 
     constexpr ImGuiWindowFlags kFlags =
         ImGuiWindowFlags_NoDocking;
 
-    if (!ImGui::Begin("Settings", &showSettings_, kFlags)) {
+    if (!ImGui::Begin("Design System", &showDesignSystem_, kFlags)) {
         ImGui::End();
         return;
     }

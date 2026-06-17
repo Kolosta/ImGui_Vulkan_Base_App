@@ -1,54 +1,301 @@
 #include "ZoneLayout.h"
 #include <UI/Widgets/IconWidgets.h>
 #include <UI/Widgets/Dropdown.h>
+#include <UI/Widgets/PopupMenu.h>
 #include <VectorGraphics/IconManager.h>
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ShortcutManager.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <functional>
 #include <vector>
 
 namespace App {
-const char* EditorKindName(EditorKind k) {
+
+// Migration table for old (v<4) .acu LAYOUT blobs, which stored the editor as a
+// u32 enum index. The historical enum order was Viewport, Outliner, Timeline,
+// DevPanels, Properties, Info — map each old index to its core string id. Unknown
+// indices fall back to the Viewport.
+static std::string LegacyKindToId(uint32_t k) {
     switch (k) {
-        case EditorKind::Viewport:  return "Viewport";
-        case EditorKind::Outliner:  return "Outliner";
-        case EditorKind::Timeline:  return "Timeline";
-        case EditorKind::DevPanels: return "Dev Panels";
-        default:                    return "?";
+        case 0: return CoreEditor::Viewport;
+        case 1: return CoreEditor::Outliner;
+        case 2: return CoreEditor::Timeline;
+        case 3: return CoreEditor::DevPanels;
+        case 4: return CoreEditor::Properties;
+        case 5: return CoreEditor::Info;
+        default: return CoreEditor::Viewport;
     }
 }
-const char* EditorKindIcon(EditorKind k) {
-    switch (k) {
-        case EditorKind::Viewport:  return "image";
-        case EditorKind::Outliner:  return "checklist";
-        case EditorKind::Timeline:  return "find-replace";
-        case EditorKind::DevPanels: return "draw";
-        default:                    return "";
-    }
-}
+
 // Shortcut action id that switches the hovered zone to this editor (the
 
 ZoneLayout::ZoneLayout() {
-    // Initial layout = Blender-like: [ (Viewport / Timeline) | Outliner ].
-    auto mkLeaf = [](EditorKind k) {
+    // The default workspace is the "General" preset.
+    ApplyPreset(LayoutPreset::General);
+}
+
+// Rebuild the whole tree from a predefined arrangement. Each leaf carries its
+// own EditorState, so a preset can also seed per-viewport page-layout options
+// (e.g. the "Layout" preset's single-spread Viewport).
+// Shared leaf/split builders (private static members so they can touch Node).
+std::unique_ptr<ZoneLayout::Node> ZoneLayout::MakeLeafNode(std::string id, EditorState st) {
+    auto n = std::make_unique<Node>();
+    n->tabs.push_back(Tab{ std::move(id), std::move(st) });
+    n->activeTab = 0;
+    return n;
+}
+std::unique_ptr<ZoneLayout::Node> ZoneLayout::MakeSplitNode(bool vertical, float initRatio,
+    std::unique_ptr<Node> a, std::unique_ptr<Node> b) {
+    auto n = std::make_unique<Node>();
+    n->vertical = vertical; n->initRatio = initRatio;
+    n->a = std::move(a); n->b = std::move(b);
+    return n;
+}
+
+void ZoneLayout::ApplyPreset(LayoutPreset preset) {
+    auto mkLeaf = [](std::string id, EditorState st = {}) {
+        return MakeLeafNode(std::move(id), std::move(st));
+    };
+    auto split = [](bool vertical, float initRatio,
+                    std::unique_ptr<Node> a, std::unique_ptr<Node> b) {
+        return MakeSplitNode(vertical, initRatio, std::move(a), std::move(b));
+    };
+
+    switch (preset) {
+        case LayoutPreset::General: {
+            // [ (Viewport top / Timeline bottom, 80/20) | (Outliner / Properties,
+            //   1/3) ], side by side 80/20. (vertical=true → side by side.)
+            auto left  = split(false, 0.80f,
+                               mkLeaf(CoreEditor::Viewport),
+                               mkLeaf(CoreEditor::Timeline));
+            auto right = split(false, 0.3333f,
+                               mkLeaf(CoreEditor::Outliner),
+                               mkLeaf(CoreEditor::Properties));
+            root_ = split(true, 0.80f, std::move(left), std::move(right));
+            break;
+        }
+        case LayoutPreset::Layout: {
+            // No timeline. Big Viewport (single spread, first page on the right,
+            // no cover) on the left; right column = large Outliner over a small
+            // Properties.
+            EditorState vp{};
+            vp.pageLayout.mode        = PageLayoutMode::SingleBookRight;
+            vp.pageLayout.spreadCover = false;
+            auto right = split(false, 0.70f,
+                               mkLeaf(CoreEditor::Outliner),
+                               mkLeaf(CoreEditor::Properties));
+            root_ = split(true, 0.78f,
+                          mkLeaf(CoreEditor::Viewport, std::move(vp)),
+                          std::move(right));
+            break;
+        }
+        case LayoutPreset::Data: {
+            // Large Outliner on the left; right column = small Viewport (top),
+            // Properties (middle), Info (bottom).
+            auto rightLower = split(false, 0.5f,
+                                    mkLeaf(CoreEditor::Properties),
+                                    mkLeaf(CoreEditor::Info));
+            auto right = split(false, 0.30f,
+                               mkLeaf(CoreEditor::Viewport),  // small, top-right
+                               std::move(rightLower));
+            root_ = split(true, 0.30f,
+                          mkLeaf(CoreEditor::Outliner),       // large, left
+                          std::move(right));
+            break;
+        }
+    }
+}
+
+// Build the whole tree from a module-provided LayoutSpec (editor ids). A spec
+// leaf with an unknown id still creates the zone (it renders the "missing editor"
+// placeholder via the registry lookup at draw time).
+void ZoneLayout::BuildFromSpec(const LayoutSpec& spec) {
+    std::function<std::unique_ptr<Node>(const LayoutSpec&)> build =
+        [&](const LayoutSpec& s) -> std::unique_ptr<Node> {
+            if (s.isLeaf())
+                return MakeLeafNode(s.editorId.empty() ? CoreEditor::Viewport
+                                                       : s.editorId, {});
+            return MakeSplitNode(s.vertical, s.ratio,
+                                 build(s.a ? *s.a : LayoutSpec::Leaf(CoreEditor::Viewport)),
+                                 build(s.b ? *s.b : LayoutSpec::Leaf(CoreEditor::Viewport)));
+        };
+    root_ = build(spec);
+}
+
+void ZoneLayout::ApplyDocUnitToAll(int unit) {
+    if (unit < 0) return;
+    std::function<void(Node*)> walk = [&](Node* n) {
+        if (!n) return;
+        if (n->isLeaf()) { for (Tab& t : n->tabs) t.state.docUnit = unit; }
+        else { walk(n->a.get()); walk(n->b.get()); }
+    };
+    walk(root_.get());
+}
+
+// ── Persistence: serialize / rebuild the zone tree ────────────────────────────
+namespace {
+// Tiny little-endian byte writer/reader for the LAYOUT blob.
+struct BW {
+    std::vector<uint8_t> b;
+    void u8(uint8_t v)  { b.push_back(v); }
+    void u32(uint32_t v){ for (int i=0;i<4;++i) b.push_back((uint8_t)(v>>(i*8))); }
+    void u64(uint64_t v){ for (int i=0;i<8;++i) b.push_back((uint8_t)(v>>(i*8))); }
+    void f32(float v)   { uint32_t u; std::memcpy(&u,&v,4); u32(u); }
+    void str(const std::string& s) { u32((uint32_t)s.size());
+                                     for (char c : s) b.push_back((uint8_t)c); }
+};
+struct BR {
+    const uint8_t* p; const uint8_t* end; bool ok = true;
+    BR(const std::vector<uint8_t>& v) : p(v.data()), end(v.data()+v.size()) {}
+    uint8_t u8()  { if (p+1>end){ok=false;return 0;} return *p++; }
+    uint32_t u32(){ if (p+4>end){ok=false;return 0;} uint32_t v=0;
+                    for (int i=0;i<4;++i) v|=(uint32_t)(*p++)<<(i*8); return v; }
+    uint64_t u64(){ if (p+8>end){ok=false;return 0;} uint64_t v=0;
+                    for (int i=0;i<8;++i) v|=(uint64_t)(*p++)<<(i*8); return v; }
+    float f32()   { uint32_t u=u32(); float f; std::memcpy(&f,&u,4); return f; }
+    std::string str() { uint32_t n=u32(); if(!ok||p+n>end){ok=false;return {};}
+                        std::string s((const char*)p, n); p+=n; return s; }
+};
+// v2: per-tab PageLayout (mode/gap/gridCols/singlePage/pageIndex + hiddenPages)
+//     appended after docUnit, so a viewport remembers its page arrangement.
+// v3: per-tab rulerSpace (Viewport/Page) appended after the PageLayout.
+// v4: per-tab editor is a STRING id (was a u32 enum index). Old blobs migrate via
+//     LegacyKindToId. This is what lets modules/plugins persist their editors.
+// v5: per-tab Outliner filter state (show* toggles, objState, invertFilter) +
+//     nPanelShowOrphans appended after rulerSpace, so the Outliner remembers its
+//     filter on reopen. (The live viewport-sync link is runtime-only, not saved.)
+constexpr uint32_t kLayoutBlobVersion = 5;
+} // namespace
+
+// Node encoding: [isLeaf:u8]; split → [vertical][firstPx][initRatio][lastUsable]
+// [child a][child b]; leaf → [activeTab:u32][tabCount:u32] then per tab
+// [kind:u32][pan.x][pan.y][zoom][docUnit:u32].
+std::vector<uint8_t> ZoneLayout::Serialize() const {
+    BW w;
+    w.u32(kLayoutBlobVersion);
+    // Walk via a local recursive lambda over Node (private type, so defined here).
+    std::function<void(const Node*)> write = [&](const Node* n) {
+        if (!n) { w.u8(2); return; }            // 2 = null (shouldn't happen)
+        if (n->isLeaf()) {
+            w.u8(0);
+            w.u32((uint32_t)std::max(0, n->activeTab));
+            w.u32((uint32_t)n->tabs.size());
+            for (const Tab& t : n->tabs) {
+                w.str(t.editorId);                   // v4: editor string id
+                w.f32(t.state.pan.x);
+                w.f32(t.state.pan.y);
+                w.f32(t.state.zoom);
+                w.u32((uint32_t)t.state.docUnit);
+                // v2: per-viewport page layout.
+                const PageLayout& pl = t.state.pageLayout;
+                w.u32((uint32_t)pl.mode);
+                w.f32(pl.gap);
+                w.u32((uint32_t)pl.gridCols);
+                w.u8(pl.singlePage ? 1 : 0);
+                w.u32((uint32_t)pl.pageIndex);
+                w.u32((uint32_t)pl.hiddenPages.size());
+                for (uint64_t id : pl.hiddenPages) w.u64(id);
+                w.u8((uint8_t)t.state.rulerSpace);   // v3
+                // v5: Outliner filter state + orphan toggle.
+                const OutlinerState& o = t.state.outliner;
+                w.u8(o.showObjects ? 1 : 0);
+                w.u8(o.showPages ? 1 : 0);
+                w.u8(o.showCollections ? 1 : 0);
+                w.u8(o.showMeshes ? 1 : 0);
+                w.u8(o.showCurves ? 1 : 0);
+                w.u8((uint8_t)o.objState);
+                w.u8(o.invertFilter ? 1 : 0);
+                w.u8(t.state.nPanelShowOrphans ? 1 : 0);
+            }
+        } else {
+            w.u8(1);
+            w.u8(n->vertical ? 1 : 0);
+            w.f32(n->firstPx);
+            w.f32(n->initRatio);
+            w.f32(n->lastUsable);
+            write(n->a.get());
+            write(n->b.get());
+        }
+    };
+    write(root_.get());
+    return std::move(w.b);
+}
+
+bool ZoneLayout::Deserialize(const std::vector<uint8_t>& blob) {
+    if (blob.empty()) return false;
+    BR r(blob);
+    uint32_t ver = r.u32();
+    if (!r.ok || ver == 0 || ver > kLayoutBlobVersion) return false;
+
+    std::function<std::unique_ptr<Node>()> read = [&]() -> std::unique_ptr<Node> {
+        uint8_t kind = r.u8();
+        if (!r.ok || kind == 2) return nullptr;
         auto n = std::make_unique<Node>();
-        n->tabs.push_back(Tab{k, {}});
-        n->activeTab = 0;
+        if (kind == 0) {                         // leaf
+            uint32_t active = r.u32();
+            uint32_t count  = r.u32();
+            if (!r.ok || count == 0 || count > 64) { r.ok = false; return nullptr; }
+            for (uint32_t i = 0; i < count; ++i) {
+                Tab t;
+                if (ver >= 4) t.editorId = r.str();        // v4: string id
+                else          t.editorId = LegacyKindToId(r.u32());  // migrate
+                if (t.editorId.empty()) t.editorId = CoreEditor::Viewport;
+                t.state.pan.x   = r.f32();
+                t.state.pan.y   = r.f32();
+                t.state.zoom    = r.f32();
+                t.state.docUnit = (int)r.u32();
+                if (ver >= 2) {   // per-viewport page layout
+                    PageLayout& pl = t.state.pageLayout;
+                    pl.mode       = (PageLayoutMode)r.u32();
+                    pl.gap        = r.f32();
+                    pl.gridCols   = (int)r.u32();
+                    pl.singlePage = r.u8() != 0;
+                    pl.pageIndex  = (int)r.u32();
+                    uint32_t nh = r.u32();
+                    pl.hiddenPages.clear();
+                    for (uint32_t h = 0; h < nh && r.ok; ++h)
+                        pl.hiddenPages.push_back(r.u64());
+                    if (ver >= 3)
+                        t.state.rulerSpace = (EditorState::RulerSpace)r.u8();
+                    if (ver >= 5) {   // Outliner filter state + orphan toggle
+                        OutlinerState& o = t.state.outliner;
+                        o.showObjects     = r.u8() != 0;
+                        o.showPages       = r.u8() != 0;
+                        o.showCollections = r.u8() != 0;
+                        o.showMeshes      = r.u8() != 0;
+                        o.showCurves      = r.u8() != 0;
+                        o.objState        = (ObjStateFilter)r.u8();
+                        o.invertFilter    = r.u8() != 0;
+                        t.state.nPanelShowOrphans = r.u8() != 0;
+                    }
+                }
+                n->tabs.push_back(std::move(t));
+            }
+            n->activeTab = (int)std::min(active, count - 1);
+        } else {                                 // split
+            n->vertical   = r.u8() != 0;
+            n->firstPx    = r.f32();
+            n->initRatio  = r.f32();
+            n->lastUsable = r.f32();
+            n->a = read();
+            n->b = read();
+            if (!n->a || !n->b) { r.ok = false; return nullptr; }
+        }
         return n;
     };
-    auto left = std::make_unique<Node>();
-    left->vertical  = false;           // stacked: viewport over timeline
-    left->initRatio = 0.80f;
-    left->a = mkLeaf(EditorKind::Viewport);
-    left->b = mkLeaf(EditorKind::Timeline);
 
-    root_ = std::make_unique<Node>();
-    root_->vertical  = true;           // side by side: left block | outliner
-    root_->initRatio = 0.80f;
-    root_->a = std::move(left);
-    root_->b = mkLeaf(EditorKind::Outliner);
+    auto newRoot = read();
+    if (!r.ok || !newRoot) return false;   // malformed → keep current tree
+    root_ = std::move(newRoot);
+    // Reset transient interaction state that referenced the old tree.
+    hoveredState_ = nullptr; hoveredLeaf_ = nullptr; activeLeaf_ = nullptr;
+    primarySep_ = primarySepDwell_ = sepDragging_ = nullptr;
+    previewLeaf_ = nullptr; revealLeaf_ = nullptr; menuSplit_ = nullptr;
+    tabRectsLeaf_ = nullptr;
+    return true;
 }
 
 // ── Layout pass: assign pos/size to every node ────────────────────────────────
@@ -70,10 +317,13 @@ void ZoneLayout::Layout(Node* n, ImVec2 pos, ImVec2 size, float gap) {
     if (n->firstPx < 0.0f) {
         n->firstPx = usable * n->initRatio;
     } else if (n->lastUsable > 0.0f && usable > 0.0f &&
-               std::abs(usable - n->lastUsable) > 0.01f && n != sepDragging_) {
-        // The window (or a parent zone) resized: keep THIS split's ratio by
-        // rescaling firstPx proportionally. The split being actively dragged
-        // is exempt — a drag stays absolute so it doesn't push siblings.
+               std::abs(usable - n->lastUsable) > 0.01f &&
+               sepDragging_ == nullptr) {
+        // Proportional rescale to KEEP each split's ratio when the WINDOW (or a
+        // parent zone) resizes — recognised by no separator being dragged. While
+        // a separator IS dragged, every split stays ABSOLUTE so dragging one
+        // boundary never redistributes (pushes) sibling/child zones: only the
+        // two zones along that join change. The drag itself moves firstPx in px.
         n->firstPx *= usable / n->lastUsable;
     }
     n->lastUsable = usable;
@@ -128,6 +378,27 @@ bool ZoneLayout::IsInSubtree(Node* subtree, Node* target) {
     if (subtree->isLeaf())   return false;
     return IsInSubtree(subtree->a.get(), target) ||
            IsInSubtree(subtree->b.get(), target);
+}
+
+int ZoneLayout::CountEditorsRec(const Node* n, const std::string& id) {
+    if (!n) return 0;
+    if (n->isLeaf()) {
+        int c = 0;
+        for (const Tab& t : n->tabs) if (t.editorId == id) ++c;
+        return c;
+    }
+    return CountEditorsRec(n->a.get(), id) + CountEditorsRec(n->b.get(), id);
+}
+
+bool ZoneLayout::FindEditorStateRec(const Node* n, const EditorState* st, const std::string& id) {
+    if (!n) return false;
+    if (n->isLeaf()) {
+        for (const Tab& t : n->tabs)
+            if (t.editorId == id && &t.state == st) return true;
+        return false;
+    }
+    return FindEditorStateRec(n->a.get(), st, id) ||
+           FindEditorStateRec(n->b.get(), st, id);
 }
 
 void ZoneLayout::DimSubtree(Node* n, ImDrawList* dl, ImU32 col) {
@@ -262,8 +533,7 @@ bool ZoneLayout::NodeAlive(Node* node) {
 // split and would never be revisited by the per-leaf recursion (that was the
 // "everything blocks after add" bug).
 
-void ZoneLayout::Render(
-    const DrawEditorFn& drawEditor, const TopBarExtraFn& topBarExtras) {
+void ZoneLayout::Render() {
     auto& ds = DesignSystem::DesignSystem::Instance();
     const float gs  = ds.GetGlobalScale();
     float gap = ds.GetFloat(DesignSystem::Tok::C_Zone_SeparatorSize) * gs;
@@ -366,7 +636,7 @@ void ZoneLayout::Render(
 
     // Pass 1: each leaf is its own in-flow ImGui child (token rounding,
     // no native border — the separator bar is the single divider).
-    DrawLeaves(root_.get(), gap, drawEditor, topBarExtras);
+    DrawLeaves(root_.get(), gap);
 
     // Pass 2: separators / join / add-area / split-guide. Drawn inside a
     // dedicated transparent OVERLAY window placed right after the zone
@@ -396,7 +666,7 @@ void ZoneLayout::Render(
     //  4. split-guide preview
     DrawZoneFrames(root_.get());
     DrawCornerZones(root_.get());
-    DrawNode(root_.get(), gap, drawEditor, topBarExtras);
+    DrawNode(root_.get(), gap);
     DrawSplitPreview();
     // Tab drag: promote/draw/dispatch on the overlay draw list (above zones).
     UpdateTabDrag(gap);
@@ -412,36 +682,48 @@ void ZoneLayout::Render(
         std::snprintf(mid, sizeof(mid), "##sepmenu_%p", (void*)menuSplit_);
         if (menuOpenRequest_) { ImGui::OpenPopup(mid);
                                 menuOpenRequest_ = false; }
-        if (ImGui::BeginPopup(mid)) {
-            Node* s = menuSplit_;
-            if (ImGui::MenuItem("Swap Areas")) {
+        Node* s = menuSplit_;
+        std::vector<UI::MenuEntry> entries;
+        {
+            UI::MenuEntry e; e.label = "Swap Areas";
+            e.tooltip = "Swap the contents of the two areas along this border";
+            e.onClick = [this, s]{
                 Node* la = nullptr; Node* lb = nullptr;
                 BorderLeaves(s, &la, &lb, contextMenuPos_);
                 if (la && lb) {
                     std::swap(la->tabs,      lb->tabs);
                     std::swap(la->activeTab, lb->activeTab);
                 }
-            }
-            if (ImGui::MenuItem("Join Areas")) {
+            };
+            entries.push_back(std::move(e));
+        }
+        {
+            UI::MenuEntry e; e.label = "Join Areas";
+            e.tooltip = "Merge two areas into one (then click the area to absorb)";
+            e.onClick = [this, s]{
                 join_.active         = true;
                 join_.splitNode      = s;
                 join_.borderVertical = s->vertical;
                 join_.fromDrag       = false;
                 join_.anchor         = contextMenuPos_;
-            }
-            ImGui::Separator();
-            if (ImGui::MenuItem("Vertical Split")) {
-                splitArm_.active   = true;
-                splitArm_.vertical = true;
-            }
-            if (ImGui::MenuItem("Horizontal Split")) {
-                splitArm_.active   = true;
-                splitArm_.vertical = false;
-            }
-            ImGui::EndPopup();
-        } else if (!menuOpenRequest_) {
-            menuSplit_ = nullptr;            // popup closed → forget it
+            };
+            entries.push_back(std::move(e));
         }
+        {
+            UI::MenuEntry e; e.label = "Vertical Split";
+            e.tooltip = "Split an area into a left and a right area";
+            e.onClick = [this]{ splitArm_.active = true; splitArm_.vertical = true; };
+            entries.push_back(std::move(e));
+        }
+        {
+            UI::MenuEntry e; e.label = "Horizontal Split";
+            e.tooltip = "Split an area into a top and a bottom area";
+            e.onClick = [this]{ splitArm_.active = true; splitArm_.vertical = false; };
+            entries.push_back(std::move(e));
+        }
+        bool open = UI::ContextMenu(mid, contextMenuPos_, entries, "Area options");
+        if (!open && !menuOpenRequest_)
+            menuSplit_ = nullptr;            // popup closed → forget it
     }
 
     // Apply any custom SVG cursor requested by the hit-test code this frame.
@@ -499,9 +781,9 @@ void ZoneLayout::ApplyCursor() {
 
 // ── Tab navigation (shortcut targets) ────────────────────────────────────────
 
-void ZoneLayout::SetHoveredEditor(EditorKind k) {
+void ZoneLayout::SetHoveredEditor(const std::string& id) {
     if (hoveredLeaf_ && hoveredLeaf_->isLeaf() && !hoveredLeaf_->tabs.empty())
-        ActiveTab(hoveredLeaf_).kind = k;
+        ActiveTab(hoveredLeaf_).editorId = id;
 }
 
 void ZoneLayout::HoveredTabCycle(int dir) {

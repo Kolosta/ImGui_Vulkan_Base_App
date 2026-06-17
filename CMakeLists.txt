@@ -69,6 +69,8 @@ add_subdirectory(src/DesignSystem)
 add_subdirectory(src/UI)
 add_subdirectory(src/Shortcuts)
 add_subdirectory(src/VectorGraphics)
+add_subdirectory(src/Renderer)
+add_subdirectory(src/Shell)
 add_subdirectory(src/Application)
 
 # Main executable
@@ -97,6 +99,8 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     UI
     Shortcuts
     VectorGraphics
+    Renderer
+    Shell
     Application
 )
 
@@ -129,6 +133,15 @@ endif()
 # Copy resources
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/resources DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
+# Mirror the compiled SPIR-V shaders next to the executable so CanvasRenderer can
+# load them from "<exe-dir>/shaders" at runtime (the working dir at launch). The
+# renderer_shaders target produces them in ${RENDERER_SHADER_OUT_DIR}.
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${RENDERER_SHADER_OUT_DIR}
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
+    COMMENT "Copying compiled shaders to executable directory")
+
 
 if(WIN32 AND MINGW)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
@@ -148,6 +161,18 @@ if(WIN32 AND MINGW)
                 "$<TARGET_FILE:SDL3::SDL3-shared>"
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>/"
             COMMENT "Copying SDL3 DLL to executable directory"
+        )
+    endif()
+
+    # The .acu thumbnail provider DLL must sit next to the exe so the per-user
+    # registration (HKCU InprocServer32) can point Explorer at a stable path.
+    if(TARGET acu_thumbs)
+        add_dependencies(${PROJECT_NAME} acu_thumbs)   # build the DLL first
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:acu_thumbs>"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/"
+            COMMENT "Copying acu_thumbs.dll to executable directory"
         )
     endif()
 endif()
