@@ -3,6 +3,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cstring>
+#include <fstream>
 #include <DesignSystem/DesignSystem.h>
 #include <imgui_impl_vulkan.h>
 
@@ -339,11 +340,38 @@ IconTexture IconManager::RenderIconToTexture(
     fit_to.value = finalScale;
     
     resvg_render(tree, fit_to, resvg_transform_identity(), width, height, pixmap.data());
-    
+
     resvg_tree_destroy(tree);
-    
+
     // Create Vulkan texture from pixmap buffer - retourne maintenant IconTexture complet
     return CreateVulkanTextureFromRGBA(pixmap.data(), width, height);
+}
+
+bool IconManager::RasterizeSvgFile(const std::string& svgPath, int width, int height,
+                                   std::vector<uint8_t>& outRGBA) {
+    if (width <= 0 || height <= 0) return false;
+    // Read the whole SVG file.
+    std::ifstream f(svgPath, std::ios::binary | std::ios::ate);
+    if (!f) return false;
+    std::streamsize n = f.tellg();
+    if (n <= 0) return false;
+    std::string svg((size_t)n, '\0');
+    f.seekg(0);
+    f.read(svg.data(), n);
+
+    resvg_options* opt = resvg_options_create();
+    resvg_options_load_system_fonts(opt);
+    resvg_render_tree* tree = resvg_parse_tree_from_data(svg.c_str(), svg.length(), opt);
+    resvg_options_destroy(opt);
+    if (!tree) return false;
+
+    resvg_size sz = resvg_get_image_size(tree);
+    float finalScale = std::min((float)width / sz.width, (float)height / sz.height);
+    outRGBA.assign((size_t)width * height * 4, 0);
+    resvg_fit_to fit_to; fit_to.type_ = RESVG_FIT_TO_TYPE_ZOOM; fit_to.value = finalScale;
+    resvg_render(tree, fit_to, resvg_transform_identity(), width, height, outRGBA.data());
+    resvg_tree_destroy(tree);
+    return true;
 }
 
 std::string IconManager::ApplyColorMapping(
