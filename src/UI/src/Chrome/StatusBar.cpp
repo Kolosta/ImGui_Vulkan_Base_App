@@ -94,6 +94,7 @@ void StatusBar::Render(const std::string& versionLabel) {
     float x = origin.x + pad.x;     // running left cursor (after the left inset)
 
     Shortcuts::ModalSession* modal = sm.TopModal();
+    const auto& transient = sm.TransientHints();
     if (modal) {
         char buf[128];
         std::snprintf(buf, sizeof(buf), "[%s]", modal->Name().c_str());
@@ -102,6 +103,14 @@ void StatusBar::Render(const std::string& versionLabel) {
                       ImVec4(0.95f, 0.30f, 0.30f, 1.0f)));
         x += drawText(x, recCol, buf) + groupGap;
         for (const auto& hint : modal->Hints()) {
+            x += KeyCap::DrawShortcutAt(hint.trigger, ImVec2(x, topY), innerH);
+            x += labelGap;
+            x += drawText(x, textCol, hint.label.c_str()) + groupGap;
+        }
+    } else if (!transient.empty()) {
+        // App-published, ultra-contextual hints (e.g. G-move: X/Y constrain,
+        // Enter confirm, Esc cancel; between editors: right-click merge/swap).
+        for (const auto& hint : transient) {
             x += KeyCap::DrawShortcutAt(hint.trigger, ImVec2(x, topY), innerH);
             x += labelGap;
             x += drawText(x, textCol, hint.label.c_str()) + groupGap;
