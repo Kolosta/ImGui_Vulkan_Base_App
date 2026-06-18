@@ -3,7 +3,9 @@ cmake_minimum_required(VERSION 3.22)
 add_library(Application STATIC
     # App: lifecycle, init (Vulkan/SDL), the detached secondary window
     App/Application.cpp
+    App/ApplicationActions.cpp
     App/ApplicationInit.cpp
+    App/ShortcutDefaults.cpp
     App/SecondaryWindow.cpp
 
     # Chrome: window chrome (custom title bar, splash/about, main UI host)
@@ -11,11 +13,22 @@ add_library(Application STATIC
     Chrome/TitleBar.cpp
     Chrome/Splash.cpp
 
-    # Editors: per-editor content, one folder per editor
+    # Editors: per-editor content, one folder per editor.
+    # Viewport: canvas + drawing-tool state machine, split by tool for readability
+    # (ViewportTools* share ViewportToolsShared.h for the common static helpers).
     Editors/Viewport/Viewport.cpp
+    Editors/Viewport/ViewportToolbar.cpp
+    Editors/Viewport/ViewportOverlays.cpp
     Editors/Viewport/ViewportTools.cpp
+    Editors/Viewport/ViewportTransform.cpp
+    Editors/Viewport/ViewportCurveTool.cpp
+    Editors/Viewport/ViewportLineMarkTool.cpp
+    Editors/Viewport/ViewportGesture.cpp
+    Editors/Viewport/ViewportPlacement.cpp
     Editors/Viewport/EditMode.cpp
+    Editors/Viewport/EditModeActions.cpp
     Editors/Outliner/Outliner.cpp
+    Editors/Outliner/OutlinerMenus.cpp
     Editors/Properties/Properties.cpp
     Editors/Info/InfoEditors.cpp
 
@@ -47,6 +60,7 @@ add_library(Application STATIC
     ../Modules/IofMapping/IofSymbolPlates.cpp
     ../Modules/IofMapping/IofSymbolText.cpp
     ../Modules/IofMapping/IofMappingModule.cpp
+    ../Modules/IofMapping/IofMappingPanels.cpp
 )
 
 # Every sub-folder is on the include path so the flat relative includes
