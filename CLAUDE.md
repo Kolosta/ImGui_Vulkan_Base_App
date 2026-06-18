@@ -109,6 +109,8 @@ Makes `.acu` files show a page preview + the app logo in Explorer (like `.blend`
 
 Everything *in the codebase and product*, however, **must be in English**: all UI-visible text (button labels, menu items, tooltips, window titles, action names, action descriptions, status bar strings, error messages), all source code, all comments, and all commit messages. Do not write French strings anywhere in source files.
 
+**All GitHub / repository collaboration artefacts must also be in English** — this includes commit messages, branch names, pull request titles and bodies, issue titles and bodies, PR/issue comments and reviews, release notes, and any text written through `git` or the `gh` CLI. French is reserved for the conversation with the user; anything that lands in the repository or on GitHub is English.
+
 ## Styling — Design System Tokens (CRITICAL)
 
 Any work that touches visual style **must go through design-system tokens**. Never hard-code colors, sizes, radii, paddings, font scales, or border widths as literals in UI code.
