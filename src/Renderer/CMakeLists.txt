@@ -7,8 +7,15 @@ cmake_minimum_required(VERSION 3.22)
 
 add_library(Renderer STATIC
     src/Document/Shape.cpp
+    # Tessellation: the CPU shapes→mesh pipeline; the self-contained curve/B-spline
+    # flattening lives in TessFlatten.cpp (shares TessInternal.h with Tessellator).
     src/Tessellation/Tessellator.cpp
+    src/Tessellation/TessFlatten.cpp
+    # Render: the offscreen Vulkan pipeline, split by concern (device/targets,
+    # pipeline creation, per-frame draw recording). Share CanvasRendererInternal.h.
     src/Render/CanvasRenderer.cpp
+    src/Render/CanvasPipelines.cpp
+    src/Render/CanvasRender.cpp
 )
 
 target_include_directories(Renderer
