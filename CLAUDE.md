@@ -128,6 +128,33 @@ Any work that touches visual style **must go through design-system tokens**. Nev
 - **Vulkan textures for icons** are uploaded once via a staging command buffer and stored as `ImTextureID`. The descriptor pool in `Application` is shared (1000 sets max — don't bypass the LRU eviction in `IconManager`).
 - **Rust FFI boundary** is in `src/tools/resvg-bindings/src/lib.rs`; the generated C header `resvg_c.h` is what C++ includes.
 
+## File Organisation (keep files readable)
+
+Keep source files small enough to read and navigate. **Split logic into
+sub-files / sub-folders as soon as a file's content separates cleanly** — do this
+while writing the code, not as a later clean-up, and apply the same judgement to
+existing files that have grown long.
+
+- **Place new files in a logical path.** Group by responsibility (the
+  `App/`, `Chrome/`, `Editors/<Editor>/`, `Project/`, `Layout/` split is the
+  model). A new editor gets its own `Editors/<Name>/` folder; a self-contained
+  feature gets its own file or folder rather than being appended to an existing
+  one. Promote a folder when several related files accumulate.
+- **One class can span several `.cpp`** grouped by concern (e.g.
+  `Application` → `Application.cpp` / `ApplicationActions.cpp`; the `ViewportTools*`
+  and `ZoneLayout*` clusters). List each `.cpp` in the owning `CMakeLists.txt` and
+  rely on the flat-include path so source files keep `#include "Foo.h"`.
+- **Helpers shared across the split units** (formerly file-static / anonymous-
+  namespace) go into a small internal header next to the `.cpp` and must be
+  `inline` (or a template) — a non-`inline` definition in a header included by
+  more than one `.cpp` is a link-time *multiple definition* error.
+- **Don't force a split that requires reworking logic.** If a file is long only
+  because its helpers are tightly coupled (they funnel into one orchestrating
+  function and can't be separated without exposing most of them), leave it intact
+  rather than scattering a fragile web behind a large shared header. A single
+  large function is intrinsic length — splitting it means changing code, which is
+  out of scope for a pure reorganisation.
+
 ## Persistent State Files
 
 | File | Managed by |
