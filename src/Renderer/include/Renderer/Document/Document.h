@@ -167,6 +167,28 @@ public:
         for (Artboard& ab : artboards) if (ab.id == id) return &ab;
         return nullptr;
     }
+
+    // Remove a page (and its shapes) from the document and unlink it from its
+    // parent collection's child order. Its nested collection children are
+    // re-parented to the page's parent so they aren't lost. No-op if `id` isn't a
+    // page. Returns true on a real removal.
+    bool RemoveArtboard(uint64_t id) {
+        int idx = ArtboardIndexById(id);
+        if (idx < 0) return false;
+        // Re-home nested collection children under this page to the page's parent.
+        uint64_t parent = artboards[(size_t)idx].parentId;
+        std::vector<uint64_t> kids = artboards[(size_t)idx].children;
+        for (uint64_t c : kids) MoveNode(c, parent ? parent : kProjectRootId);
+        // Unlink from the parent's ordered children.
+        if (std::vector<uint64_t>* pc = ChildrenPtr(parent ? parent : kProjectRootId))
+            pc->erase(std::remove(pc->begin(), pc->end(), id), pc->end());
+        // Drop selection of this page's shapes, then erase the artboard.
+        for (const Shape& s : artboards[(size_t)idx].shapes) Deselect(s.id);
+        if (activePage_ == id) activePage_ = 0;
+        artboards.erase(artboards.begin() + idx);
+        ReflowLooseShapes();
+        return true;
+    }
     int ArtboardIndexById(uint64_t id) const {
         for (int i = 0; i < (int)artboards.size(); ++i)
             if (artboards[(size_t)i].id == id) return i;

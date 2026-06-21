@@ -39,18 +39,31 @@ void Application::RenderOutlinerContextMenus() {
         std::vector<UI::MenuEntry> entries;
         const uint64_t id = outlinerCtxId_;
         const bool sel = doc.IsSelected(id);
-        const bool canPaste = !outlinerClipboard_.empty();
+        const bool canPaste = !clipboard_.empty();
+        // Copy/Cut operate on the whole selection when the clicked row is part of
+        // it, else just the clicked row.
+        auto srcIds = [this, id]() -> std::vector<uint64_t> {
+            if (outlinerCur_ &&
+                std::find(outlinerCur_->sel.begin(), outlinerCur_->sel.end(), id)
+                    != outlinerCur_->sel.end())
+                return outlinerCur_->sel;
+            return { id };
+        };
         { UI::MenuEntry e; e.label = "Select";   e.enabled = !sel;
           e.tooltip = "Make this the active selection";
           e.onClick = [this, id]{ project_.document.SelectOnly(id); }; entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Deselect"; e.enabled = sel;
           e.tooltip = "Remove this object from the selection";
           e.onClick = [this, id]{ project_.document.Deselect(id); }; entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Copy"; e.tooltip = "Copy the object to the clipboard";
-          e.onClick = [this, id]{ Action_OutlinerCopy(id); }; entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Paste"; e.enabled = canPaste;
-          e.tooltip = "Paste the clipboard object(s)";
-          e.onClick = [this]{ Action_OutlinerPaste(); }; entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Copy"; e.shortcut = "Ctrl+C";
+          e.tooltip = "Copy the selection to the internal clipboard";
+          e.onClick = [this, srcIds]{ ClipboardCopy(srcIds()); }; entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Cut"; e.shortcut = "Ctrl+X";
+          e.tooltip = "Cut the selection to the internal clipboard";
+          e.onClick = [this, srcIds]{ ClipboardCut(srcIds()); }; entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Paste"; e.enabled = canPaste; e.shortcut = "Ctrl+V";
+          e.tooltip = "Paste the internal clipboard";
+          e.onClick = [this]{ ClipboardPaste(); }; entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Duplicate";
           e.tooltip = "Make an independent copy, nudged slightly";
           e.onClick = [this, id]{ Action_OutlinerDuplicate(id); }; entries.push_back(std::move(e)); }
@@ -146,36 +159,7 @@ void Application::RenderOutlinerContextMenus() {
     }
 }
 
-// ── Clipboard actions ─────────────────────────────────────────────────────────
-void Application::Action_OutlinerCopy(uint64_t shapeId) {
-    Renderer::Shape* s = project_.document.FindShape(shapeId);
-    if (!s) return;
-    outlinerClipboard_.clear();
-    outlinerClipboard_.push_back(*s);          // deep copy
-}
-
-void Application::Action_OutlinerPaste() {
-    if (outlinerClipboard_.empty()) return;
-    auto& doc = project_.document;
-    int ab = doc.artboards.empty() ? -1 : 0;
-    if (doc.ActiveShape()) {                    // paste onto the active object's page
-        int a = doc.ArtboardOfShape(doc.ActiveId());
-        if (a >= 0) ab = a;
-    }
-    if (ab < 0) return;
-    MarkUndoLabel("Paste");
-    uint64_t last = 0;
-    for (const Renderer::Shape& src : outlinerClipboard_) {
-        Renderer::Shape copy = src;
-        copy.name = src.name.empty() ? "Object copy" : src.name + " copy";
-        copy.transform.translate.x += 12.0f;
-        copy.transform.translate.y += 12.0f;
-        last = doc.AddShape(ab, std::move(copy));   // AddShape assigns id + selects
-    }
-    if (last) doc.SelectOnly(last);
-    project_.dirty = true;
-}
-
+// ── Duplicate (the unified copy/cut/paste lives in App/Clipboard.cpp) ─────────
 void Application::Action_OutlinerDuplicate(uint64_t shapeId) {
     MarkUndoLabel("Duplicate");
     uint64_t nid = project_.document.DuplicateShape(shapeId);

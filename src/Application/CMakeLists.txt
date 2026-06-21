@@ -4,6 +4,7 @@ add_library(Application STATIC
     # App: lifecycle, init (Vulkan/SDL), the detached secondary window
     App/Application.cpp
     App/ApplicationActions.cpp
+    App/Clipboard.cpp
     App/ApplicationInit.cpp
     App/ShortcutDefaults.cpp
     App/SecondaryWindow.cpp
