@@ -665,7 +665,14 @@ void ZoneLayout::Render() {
     //  3. separators / join previews     → on top at junctions
     //  4. split-guide preview
     DrawZoneFrames(root_.get());
-    DrawCornerZones(root_.get());
+    // Dev preview of the colour-coded corner hit-zones (Preferences ▸ Dev).
+    {
+        bool show = true;
+        try { show = DesignSystem::DesignSystem::Instance()
+                        .GetInt(DesignSystem::Tok::S_Config_ShowCornerZones) != 0; }
+        catch (...) {}
+        if (show) DrawCornerZones(root_.get());
+    }
     DrawNode(root_.get(), gap);
     DrawSplitPreview();
     // Tab drag: promote/draw/dispatch on the overlay draw list (above zones).
