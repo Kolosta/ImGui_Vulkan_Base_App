@@ -29,7 +29,7 @@ namespace App {
 // trailer is appended after the doc blob with a magic marker so RestoreDocBlob can
 // find it; a blob without the marker (old/foreign) simply keeps the live selection.
 namespace {
-constexpr char kSelMagic[8] = { 'S','E','L','T','R','A','I','L' };
+constexpr char kSelMagic[8] = { 'S','E','L','T','R','A','I','L' }; //TODO : why is it hardcoded letters ?
 void WriteU64(std::string& s, uint64_t v) {
     for (int i = 0; i < 8; ++i) s.push_back((char)((v >> (i * 8)) & 0xFF));
 }

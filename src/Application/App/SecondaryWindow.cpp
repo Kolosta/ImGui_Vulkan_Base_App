@@ -109,7 +109,10 @@ void SecondaryWindow::CreateOsWindow() {
                      SDL_GetError());
         return;
     }
-    SDL_SetWindowHitTest(window_, &SecondaryWindow::HitTest, this);
+    // Wire up the shared borderless behaviour (maximize/restore/fullscreen +
+    // hit-test). The bar reads/drives it via BorderlessWindowController::
+    // FromWindow(window_) inside the content callback.
+    chrome_.Bind(window_, &titleBarHeightPx_);
 
     // Surface + swapchain on the SHARED device.
     VkSurfaceKHR surface = VK_NULL_HANDLE;
@@ -227,11 +230,29 @@ bool SecondaryWindow::HandleEvent(const SDL_Event& ev) {
         closeRequested_ = true; Show(false); return true;
     }
 
+    // NOTE: the borderless maximize/restore-on-drag is NOT handled here. The OS
+    // modal drag loop blocks SDL_PollEvent, so WINDOW_MOVED would arrive far too
+    // late (the window already dragged away from the cursor). It is driven from
+    // the SDL event watch instead — see HandleWindowChromeEvent.
+
     ImGuiContext* save = ImGui::GetCurrentContext();
     ImGui::SetCurrentContext(ctx_);
     ImGui_ImplSDL3_ProcessEvent(&ev);
     ImGui::SetCurrentContext(save);
     return true;
+}
+
+// ── Borderless behaviour, driven from the SDL event watch (see header) ────────
+void SecondaryWindow::HandleWindowChromeEvent(const SDL_Event& ev) {
+    if (!osCreated_ || !window_) return;
+    if (ev.type < SDL_EVENT_WINDOW_FIRST || ev.type > SDL_EVENT_WINDOW_LAST)
+        return;
+    if (ev.window.windowID != SDL_GetWindowID(window_)) return;
+    // A caption double-click / drag-to-top fires WINDOW_MAXIMIZED (HTCAPTION →
+    // OS maximize) which we intercept into our taskbar-aware maximize; dragging
+    // a maximized window (WINDOW_MOVED) restores it under the cursor.
+    if (ev.type == SDL_EVENT_WINDOW_MAXIMIZED) chrome_.OnOsMaximized();
+    else if (ev.type == SDL_EVENT_WINDOW_MOVED) chrome_.OnWindowMoved();
 }
 
 // ── Per-frame render in the secondary context ────────────────────────────────
@@ -365,35 +386,7 @@ void SecondaryWindow::RenderTitleBarAndContent() {
     // swapchain (the shared ImGui Vulkan helper forces OPAQUE composite-alpha)
     // and, on Windows, often DwmEnableBlurBehindWindow — to be tackled in a
     // dedicated pass. The component.window.shadow.* tokens are kept for then.
-}
-
-// ── SDL hit-test: drag on the empty title-bar band, resize on the borders ────
-SDL_HitTestResult SDLCALL SecondaryWindow::HitTest(
-    SDL_Window* win, const SDL_Point* area, void* data) {
-    auto* self = static_cast<SecondaryWindow*>(data);
-    int w = 0, h = 0; SDL_GetWindowSize(win, &w, &h);
-    const int b = 6;
-    const bool L = area->x < b, R = area->x >= w - b;
-    const bool T = area->y < b, B = area->y >= h - b;
-    if (T && L) return SDL_HITTEST_RESIZE_TOPLEFT;
-    if (T && R) return SDL_HITTEST_RESIZE_TOPRIGHT;
-    if (B && L) return SDL_HITTEST_RESIZE_BOTTOMLEFT;
-    if (B && R) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
-    if (T) return SDL_HITTEST_RESIZE_TOP;
-    if (B) return SDL_HITTEST_RESIZE_BOTTOM;
-    if (L) return SDL_HITTEST_RESIZE_LEFT;
-    if (R) return SDL_HITTEST_RESIZE_RIGHT;
-    // Title-bar band: draggable, EXCEPT where an interactive widget sits. The
-    // UI publishes interactive blockers via ImGui; for the shell we treat the
-    // whole band minus the right-hand system-button area as draggable. The UI's
-    // own buttons are submitted as ImGui items and ImGui keeps the mouse, so a
-    // press there is handled before the OS drag starts on release.
-    if ((float)area->y < self->titleBarHeightPx_) {
-        // Right ~3 control-height slots are the min/max/close buttons.
-        if (area->x < w - (int)(self->titleBarHeightPx_ * 3.0f))
-            return SDL_HITTEST_DRAGGABLE;
-    }
-    return SDL_HITTEST_NORMAL;
+    // (The SDL hit-test lives in BorderlessWindowController, installed in Bind.)
 }
 
 } // namespace App

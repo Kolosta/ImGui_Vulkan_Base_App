@@ -7,13 +7,16 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include <UI/Widgets/ListRow.h>
 #include <UI/Tokens/TokenEditor.h>
 #include <UI/Shortcuts/ShortcutEditor.h>
 #include <UI/Chrome/StatusBar.h>
 #include <UI/Settings/SettingsWindow.h>
+#include <UI/Tokens/TokenGraphWindow.h>
 #include <VectorGraphics/editors/IconEditorWindow.h>
 #include <Renderer/Render/CanvasRenderer.h>
 #include "ZoneLayout.h"
@@ -435,6 +438,13 @@ private:
     void OutlinerNodeDropInto(uint64_t collectionId);        // drop a coll/page into collection
     std::vector<uint64_t> OutlinerDraggedIds(uint64_t triggerId); // multi-drag set
     void OutlinerEyeButton(bool& visible, const char* id); // per-row visibility toggle
+    // Collapsed node summary: a row of type icons (+count badge) for the direct
+    // contents of `nodeId` (a collection id|kCollBit, a page id|kPageBit, or a
+    // shape id), drawn inline after the name when the node is collapsed.
+    void OutlinerCollapsedSummary(uint64_t nodeId);
+    // Inline rename field (DragValue-styled: ui-unit tall, no focus ring, spans
+    // only the name column → before the eye). Returns true on Enter.
+    bool OutlinerRenameField(char* buf, size_t bufSize, bool hasIcon);
     void RenderOutlinerContextMenus();                   // the deferred RMB popups
 
     // ── Outliner state ───────────────────────────────────────────────────────
@@ -472,6 +482,25 @@ private:
     // reuse the exact same row chrome with their own selection state.
     RowResult OutlinerRowBegin(uint64_t id, int kind, bool searchHit,
                                int forceSel = -1, int forceActive = -1);
+    // Top Y (screen space) and band extents of the row currently being drawn, set
+    // by OutlinerRowBegin so the eye (and any absolute-positioned chrome) can place
+    // itself on THIS row without depending on the layout cursor (which has already
+    // advanced to the next line by the time the eye is drawn).
+    float outlinerRowTopY_  = 0.0f;
+    float outlinerBandLeft_ = 0.0f;   // selection-band left edge (with margin)
+    float outlinerBandRight_= 0.0f;   // selection-band right edge (with margin)
+    // The generic zebra row currently being drawn (RAII). OutlinerRowBegin opens a
+    // new one (closing the previous); OutlinerRowFinish closes the last one at the
+    // end of the tree. Its destructor advances the layout cursor one stripe.
+    std::optional<UI::ListRow> outlinerRow_;
+    void OutlinerRowFinish();         // close the open row (end of the tree)
+    // Stripe extents (screen Y) of the row most recently opened by OutlinerRowBegin,
+    // used to place vertical tree-guide lines deterministically (the live layout
+    // cursor is unreliable because rows close lazily). A parent reads its own stripe
+    // bottom as the first child's top, and outlinerLastStripeBottom_ after its
+    // children as the last child's bottom.
+    float outlinerLastStripeTop_    = 0.0f;
+    float outlinerLastStripeBottom_ = 0.0f;
     // Search/filter predicates.
     bool OutlinerPassesFilter(uint64_t id, int kind) const;  // kind 0 obj,1 page,2 coll
     bool OutlinerSearchVisible(uint64_t id) const;           // matches or has a matching descendant
@@ -482,12 +511,38 @@ private:
     uint64_t        outlinerCtxId_   = 0;     // shape id or collection id
     ImVec2          outlinerCtxPos_{0, 0};
     bool            outlinerCtxOpen_ = false; // request to open the popup
-    // Object clipboard for Outliner copy / paste (deep copies; pasted into root).
-    std::vector<Renderer::Shape> outlinerClipboard_;
+    // ── Internal copy/paste clipboard (NOT the OS clipboard) ──────────────────
+    // Holds deep copies of whole OBJECTS and/or PAGES (with their objects), so a
+    // selection — from the Viewport or the Outliner — can be copied/cut/pasted.
+    // Pages keep their full Artboard (size, name, shapes); objects keep their
+    // page-relative geometry + the source page origin so paste can reproduce the
+    // world position (or nudge a same-page paste).
+    struct ClipObject {
+        Renderer::Shape shape;       // deep copy (new id assigned on paste)
+        Renderer::Vec2  pageOrigin{0, 0};  // source page top-left (world offset)
+    };
+    struct Clipboard {
+        std::vector<ClipObject>     objects;
+        std::vector<Renderer::Artboard> pages;   // deep copies (incl. their shapes)
+        bool empty() const { return objects.empty() && pages.empty(); }
+        void clear() { objects.clear(); pages.clear(); }
+    };
+    Clipboard clipboard_;
+    // Copy/cut/paste the CURRENT selection. `ids` (when given) overrides the source
+    // selection (e.g. the Outliner's node+object set); empty → use the document
+    // object selection. Cut = copy then delete. Paste clones with fresh ids:
+    // objects onto the active page (nudged), pages as new artboards.
+    void ClipboardGather(const std::vector<uint64_t>& ids);   // fill clipboard_ from ids
+    std::vector<uint64_t> ClipboardSourceIds() const;  // outliner nodes, or {} for doc sel
+    void ClipboardCopy(const std::vector<uint64_t>& ids = {});
+    void ClipboardCut(const std::vector<uint64_t>& ids = {});
+    void ClipboardPaste();
+    void Action_Copy();    // copy the active context's selection (viewport/outliner)
+    void Action_Cut();
+    void Action_Paste();
+
     uint64_t outlinerColorPickColl_ = 0;   // collection whose custom-colour picker is open
     bool     outlinerColorPickOpen_ = false; // one-shot: open the picker this frame
-    void Action_OutlinerCopy(uint64_t shapeId);
-    void Action_OutlinerPaste();
     void Action_OutlinerDuplicate(uint64_t shapeId);
     // Properties editor: the active object's name/transform + per-part fill/
     // stroke (and, in Edit Mode, the active point's handle type). Defined in
@@ -618,6 +673,7 @@ private:
     void        AddRecentFile(const std::string& path);  // dedup, front, cap, save
     void Action_Quit();
     void Action_ToggleSettings();
+    void Action_ToggleTokenGraph();
     void Action_ToggleImGuiDemo();
     static void Action_Zone1();
     static void Action_Zone2();
@@ -946,6 +1002,7 @@ private:
 
     // UI state. Floating windows are unique and non-dockable.
     bool showSettings_      = false;  // new Preferences window
+    bool showTokenGraph_    = false;  // Token Graph editor window
     bool showDesignSystem_  = false;  // old Design System / Shortcuts / Icons window
     bool showImGuiDemo_     = false;
     bool showDevWindow_     = false;   // dev test panels (former main area); off by default
@@ -1022,6 +1079,7 @@ private:
     // placed at the 2D cursor.
     bool              addMenuRequest_ = false;
     ImVec2            addMenuPos_{0, 0};
+    EditorState*      addMenuState_ = nullptr;  // viewport leaf the Add menu opened in
     void RenderAddMenu();                 // the "##addMenu" popup body
     // Shift+G "Select Grouped" picker, deferred like the others (opens in the
     // hovered zone's window).
@@ -1273,6 +1331,12 @@ private:
     // It is one SecondaryWindow among potentially several (future detached
     // editors / dev console / render window) — see secondaryWindows_.
     SecondaryWindow                  settingsHost_;
+
+    // The Token Graph editor: a Geometry-Nodes-style view of every design token,
+    // in its own detached OS window (a second SecondaryWindow). Gated by
+    // showTokenGraph_.
+    UI::TokenGraphWindow             tokenGraphWindow_;
+    SecondaryWindow                  tokenGraphHost_;
 
     // Every detached OS window the app drives. Each shares the main Vulkan
     // device + the main ImGui style (settings stay in sync automatically; see

@@ -131,6 +131,14 @@ void Application::ProcessEvents() {
     if (settingsHost_.ConsumeFocusRequest())
         settingsHost_.FocusNow();
 
+    // Token Graph window: same open/close/focus reconciliation as Preferences.
+    if (tokenGraphHost_.ConsumeCloseRequest())
+        showTokenGraph_ = false;
+    if (tokenGraphHost_.IsOpen() != showTokenGraph_)
+        tokenGraphHost_.Show(showTokenGraph_);
+    if (tokenGraphHost_.ConsumeFocusRequest())
+        tokenGraphHost_.FocusNow();
+
     if (SDL_GetWindowFlags(window_) & SDL_WINDOW_MINIMIZED) {
         SDL_Delay(10);
         return;

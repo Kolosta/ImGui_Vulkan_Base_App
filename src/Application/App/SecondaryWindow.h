@@ -4,6 +4,7 @@
 #include <vulkan/vulkan.h>
 #include <imgui.h>
 #include <imgui_impl_vulkan.h>
+#include <UI/Chrome/BorderlessWindow.h>
 #include <functional>
 #include <string>
 
@@ -114,6 +115,14 @@ public:
     // the event belonged to (and was consumed for) this window.
     bool HandleEvent(const SDL_Event& ev);
 
+    // Drive the borderless behaviour (intercept OS-maximize / restore-on-drag)
+    // for a window event targeting THIS window. MUST be called from the SDL
+    // event WATCH, not the poll loop: the OS modal drag loop blocks
+    // SDL_PollEvent, so a maximized window's WINDOW_MOVED only reaches us live
+    // (while the cursor is still aligned) through the watch — the same reason
+    // the main window handles it there. No-op for events not ours.
+    void HandleWindowChromeEvent(const SDL_Event& ev);
+
     // Render one full frame of this window (no-op when hidden). Switches to the
     // secondary ImGui context, builds the UI, submits + presents its swapchain,
     // and restores the previous context.
@@ -124,9 +133,6 @@ private:
     void DestroyOsWindow();
     void CreateOrResizeSwapchain(int w, int h);
     void RenderTitleBarAndContent();   // custom bar + content, in this context
-
-    static SDL_HitTestResult SDLCALL HitTest(SDL_Window* win,
-                                             const SDL_Point* area, void* data);
 
     VulkanShared shared_{};
     float        dpiScale_ = 1.0f;
@@ -146,6 +152,10 @@ private:
     bool          focusRequested_ = false;// raise+focus asked (deferred)
 
     ImGui_ImplVulkanH_Window wd_{};      // this window's swapchain/frames
+
+    // Borderless window behaviour (maximize/restore/fullscreen/hit-test), shared
+    // with the main window — bar CONTENT is per-window, behaviour is not.
+    UI::BorderlessWindowController chrome_;
 
     // Title bar / hit-test state (window-space px), like the main window.
     float titleBarHeightPx_ = 0.0f;

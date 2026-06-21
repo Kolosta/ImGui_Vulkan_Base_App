@@ -122,6 +122,14 @@ bool Application::Initialize() {
             !app->programmaticMove_ &&
             app->maximized_ && !app->fullscreen_)
             app->RestoreFromDragAtCursor();
+        // Each detached window gets the SAME treatment for ITS own id (it filters
+        // internally). MUST be here in the watch, not the poll loop: the OS modal
+        // drag loop blocks SDL_PollEvent, so a maximized secondary window's
+        // WINDOW_MOVED only reaches it live (cursor still aligned) through here.
+        if (ev->type == SDL_EVENT_WINDOW_MAXIMIZED ||
+            ev->type == SDL_EVENT_WINDOW_MOVED)
+            for (SecondaryWindow* w : app->secondaryWindows_)
+                w->HandleWindowChromeEvent(*ev);
         // Ignore render events fired during init (maximize/show happen before
         // the ImGui backends exist — rendering then would assert). During the OS
         // modal resize loop SDL_PollEvent is blocked, so we render synchronously
@@ -242,6 +250,45 @@ bool Application::Initialize() {
                 activeUndoTarget_ = UndoTarget::Viewport;   // back to default
             });
         secondaryWindows_.push_back(&settingsHost_);
+    }
+
+    // The Token Graph editor gets its own detached OS window too, on the exact
+    // same pattern as Preferences (shared Vulkan handles, 2nd ImGui context,
+    // shared shortcut pipeline). Created hidden; Show() on demand.
+    {
+        SecondaryWindow::VulkanShared sh;
+        sh.instance       = instance_;
+        sh.physicalDevice = physicalDevice_;
+        sh.device         = device_;
+        sh.queue          = queue_;
+        sh.queueFamily    = queueFamily_;
+        sh.descriptorPool = descriptorPool_;
+        sh.minImageCount  = g_MinImageCount;
+        SecondaryWindow::Config cfg;
+        cfg.title = "Token Graph"; cfg.width = 1280; cfg.height = 820;
+        tokenGraphHost_.Init(sh, mainScale_, cfg,
+                             [this](bool* open){ tokenGraphWindow_.Render(open); });
+        // Run the shared shortcut pipeline inside this context too, so pan/zoom
+        // and Tab work here like in the main window. (Undo stays on the main
+        // history for now — the graph edits go straight through OverrideManager.)
+        tokenGraphHost_.SetShortcutHooks(
+            /*pre=*/[]{
+                auto& sm = Shortcuts::ShortcutManager::Instance();
+                auto& norm = Shortcuts::EventNormalizer::Instance();
+                try {
+                    float t = DesignSystem::DesignSystem::Instance()
+                                .GetFloat(DesignSystem::Tok::S_Config_DragThreshold);
+                    norm.SetDragThreshold(t);
+                } catch (...) {}
+                norm.Frame();
+                sm.BeginFrame();
+            },
+            /*post=*/[](bool focused){
+                auto& sm = Shortcuts::ShortcutManager::Instance();
+                sm.SetWindowFocused(focused);
+                sm.ProcessInput();
+            });
+        secondaryWindows_.push_back(&tokenGraphHost_);
     }
 
     // A fresh launch opens the default project with one empty page, ready for
@@ -609,9 +656,10 @@ void Application::Shutdown() {
     VkResult err = vkDeviceWaitIdle(device_);
     check_vk_result(err);
 
-    // Tear down the Preferences OS window (its swapchain/backends/2nd context)
+    // Tear down the detached OS windows (their swapchain/backends/2nd context)
     // while the shared Vulkan device is still alive.
     settingsHost_.Shutdown();
+    tokenGraphHost_.Shutdown();
 
     // Tear down the vector renderer (its offscreen targets/pipeline) and its
     // sampler while the shared device is still alive.
