@@ -256,7 +256,7 @@ Shape BuildSymbolShape(const IofElement& e, float scale) {
     sh.name = IofElementLabel(e);
     sh.isomCode = e.code;
     sh.origin = { 0, 0 };
-    sh.lockScale = true;                  // ISOM symbols are fixed-size
+    sh.SetLockScale(true);                // ISOM symbols are fixed-size (both axes)
     sh.lockRotation = e.northLocked;
 
     auto& P = sh.parts;

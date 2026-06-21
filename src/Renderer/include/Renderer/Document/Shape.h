@@ -155,9 +155,19 @@ struct Shape {
     std::vector<Part> parts;              // ≥1 piece of geometry
     bool              visible = true;
     // Transform constraints (document data). Used by fixed-size / north-oriented
-    // symbols (e.g. IOF/ISOM): a locked shape ignores the matching G/R/S op.
-    bool              lockScale    = false;   // Scale (S) is a no-op on this shape
+    // symbols (e.g. IOF/ISOM) AND by the per-axis padlocks in the Properties panel:
+    // a locked component ignores the matching G/S op (the result is restored to the
+    // operation's start value on that axis). Position and scale lock per-axis;
+    // rotation locks as a whole.
+    bool              lockPosX     = false;   // Move (G) is a no-op on X
+    bool              lockPosY     = false;   // Move (G) is a no-op on Y
+    bool              lockScaleX   = false;   // Scale (S) is a no-op on local X
+    bool              lockScaleY   = false;   // Scale (S) is a no-op on local Y
     bool              lockRotation = false;   // Rotate (R) is a no-op on this shape
+    // Whole-scale convenience: true iff BOTH scale axes are locked (used by modules
+    // that set a single "fixed size" flag, and by the viewport's fast-path skip).
+    bool LockScaleBoth() const { return lockScaleX && lockScaleY; }
+    void SetLockScale(bool v) { lockScaleX = lockScaleY = v; }
     // ISOM symbol code ×10 (so 105.1 → 1051, 203.2 → 2032, 101 → 1010), 0 = none.
     // Set by the IOF module so a symbol carries its identity (catalogue lookup,
     // future re-styling). The visible geometry is baked into `parts` at creation.

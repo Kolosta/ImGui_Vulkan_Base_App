@@ -489,7 +489,7 @@ uint64_t Application::CreateObjectSpec(const Modules::ObjectSpec& spec) {
         }
     }
     s.name = spec.name;
-    s.lockScale    = spec.lockScale;     // fixed-size symbol
+    s.SetLockScale(spec.lockScale);      // fixed-size symbol (both axes)
     s.lockRotation = spec.lockRotation;  // north-oriented symbol
     s.collectionId = spec.collectionId;  // IOF print-layer collection (0 = none)
     CenterOrigin(s);
