@@ -5,11 +5,17 @@ add_library(UI STATIC
     src/Widgets/IconWidgets.cpp
     src/Widgets/ButtonGroup.cpp
     src/Widgets/Dropdown.cpp
+    src/Widgets/Checkbox.cpp
+    src/Widgets/DragValue.cpp
+    src/Widgets/ListRow.cpp
     src/Widgets/PopupMenu.cpp
     src/Widgets/Panel.cpp
     src/Widgets/ScrollArea.cpp
     src/Widgets/SidePanel.cpp
     src/Tokens/TokenEditor.cpp
+    src/Tokens/TokenValueWidgets.cpp
+    src/Tokens/TokenGraphWindow.cpp
+    src/Tokens/TokenJsonExport.cpp
     src/Tokens/TokenInspector.cpp
     src/Tokens/TokenTreeView.cpp
     src/Tokens/TokensViewer.cpp
@@ -18,6 +24,7 @@ add_library(UI STATIC
     src/Shortcuts/ShortcutCaptureField.cpp
     src/Shortcuts/KeyCap.cpp
     src/Chrome/StatusBar.cpp
+    src/Chrome/BorderlessWindow.cpp
     src/Settings/SettingsWindow.cpp
     src/Settings/TokenPropertyRow.cpp
 )

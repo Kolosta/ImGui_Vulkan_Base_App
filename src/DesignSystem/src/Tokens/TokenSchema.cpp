@@ -1248,6 +1248,19 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Frame_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "frame border"));
     put(Ref(Tok::C_Frame_Padding, TokenLevel::Component, Tok::S_Config_ItemInnerSpacing, "frame padding"));
     put(Ref(Tok::C_Frame_InputTextCursor, TokenLevel::Component, Tok::S_Color_Text_Default, "input caret"));
+    // Numeric drag field (UI::DragValue): rest = input/frame surface; hover = a
+    // step lighter (so it reads interactive); drag = lighter still (active).
+    put(Ref(Tok::C_DragValue_Background, TokenLevel::Component, Tok::S_Background_App_Frame, "drag field bg"));
+    put(Ref(Tok::C_DragValue_BackgroundHover, TokenLevel::Component, Tok::S_Background_App_FrameHover, "drag field bg hover (lighter)"));
+    put(Ref(Tok::C_DragValue_BackgroundPressed, TokenLevel::Component, Tok::S_Background_App_Control, "drag field bg pressed (held, pre-drag)"));
+    put(Ref(Tok::C_DragValue_BackgroundDrag, TokenLevel::Component, Tok::S_Background_App_Control, "drag field bg while dragging"));
+    put(Ref(Tok::C_DragValue_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "drag field value text"));
+    put(Ref(Tok::C_DragValue_Unit, TokenLevel::Component, Tok::S_Color_Text_Subtle, "drag field unit suffix"));
+    put(Ref(Tok::C_DragValue_StepButton, TokenLevel::Component, Tok::S_Color_Text_Subtle, "drag field +/- glyph"));
+    put(Ref(Tok::C_DragValue_StepButtonHover, TokenLevel::Component, Tok::S_Background_App_Control, "drag field +/- button hover"));
+    put(Ref(Tok::C_DragValue_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "drag field border"));
+    put(Ref(Tok::C_DragValue_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "drag field rounding"));
+    put(Ref(Tok::C_DragValue_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "drag field border width"));
     put(Ref(Tok::C_Button_Background, TokenLevel::Component, Tok::S_Color_Accent_Default, "button bg"));
     put(Ref(Tok::C_Button_BackgroundHover, TokenLevel::Component, Tok::S_Color_Accent_Hover, "button bg hover"));
     put(Ref(Tok::C_Button_BackgroundDown, TokenLevel::Component, Tok::S_Color_Accent_Down, "button bg down"));
@@ -1305,8 +1318,20 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Slider_Grab, TokenLevel::Component, Tok::S_Color_Accent_Default, "slider grab"));
     put(Ref(Tok::C_Slider_GrabDown, TokenLevel::Component, Tok::S_Color_Accent_Down, "slider grab down"));
     put(Ref(Tok::C_Slider_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Default, "slider rounding"));
-    put(Ref(Tok::C_Checkbox_Mark, TokenLevel::Component, Tok::S_Color_Accent_Default, "checkbox mark"));
-    put(Ref(Tok::C_Checkbox_BackgroundSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "checkbox selected"));
+    put(Ref(Tok::C_Checkbox_Mark, TokenLevel::Component, Tok::S_Color_Text_Default, "checkbox mark (tick on checked box)"));
+    put(Ref(Tok::C_Checkbox_BackgroundSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "checkbox box fill, checked"));
+    // Per-state box backgrounds: unchecked reuses the input/frame surfaces (so a
+    // checkbox reads like the other inputs); checked uses the accent ramp.
+    put(Ref(Tok::C_Checkbox_Background, TokenLevel::Component, Tok::S_Background_App_Frame, "checkbox box fill, unchecked"));
+    put(Ref(Tok::C_Checkbox_BackgroundHover, TokenLevel::Component, Tok::S_Background_App_FrameHover, "checkbox box fill, unchecked hover (lighter than default)"));
+    put(Ref(Tok::C_Checkbox_BackgroundDown, TokenLevel::Component, Tok::S_Background_App_Child, "checkbox box fill, unchecked pressed"));
+    put(Ref(Tok::C_Checkbox_BackgroundSelectedHover, TokenLevel::Component, Tok::S_Color_Accent_Hover, "checkbox box fill, checked hover"));
+    put(Ref(Tok::C_Checkbox_BackgroundSelectedDown, TokenLevel::Component, Tok::S_Color_Accent_Down, "checkbox box fill, checked pressed"));
+    put(Ref(Tok::C_Checkbox_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "checkbox box border, unchecked"));
+    put(Ref(Tok::C_Checkbox_BorderSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "checkbox box border, checked"));
+    put(Float(Tok::C_Checkbox_BoxSize, TokenLevel::Component, 16.f, "checkbox drawn box side", Px(40)));
+    put(Ref(Tok::C_Checkbox_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Small, "checkbox rounding"));
+    put(Float(Tok::C_Checkbox_BorderWidth, TokenLevel::Component, 1.f, "checkbox border", Border4()));
     put(Ref(Tok::C_Separator_Color, TokenLevel::Component, Tok::S_Color_Border_Default, "separator"));
     put(Ref(Tok::C_Separator_Hover, TokenLevel::Component, Tok::S_Color_Accent_Down, "separator hover"));
     put(Ref(Tok::C_Separator_Down, TokenLevel::Component, Tok::S_Color_Accent_Down, "separator down"));
@@ -1434,7 +1459,11 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::S_CornerRadius_Control, TokenLevel::Semantic, Tok::P_Radius_150, "radius control (small UI elements)"));
     put(Ref(Tok::C_Dropdown_Border, TokenLevel::Component, Tok::S_Neutral_Color_700, "dropdown border (subtle at rest)"));
     put(Ref(Tok::C_Dropdown_BorderHover, TokenLevel::Component, Tok::S_Neutral_Color_600, "dropdown border hover (slightly brighter)"));
-    put(Ref(Tok::C_Dropdown_BackgroundDown, TokenLevel::Component, Tok::S_Surface_Raised, "dropdown bg pressed/open"));
+    put(Ref(Tok::C_Dropdown_BackgroundDown, TokenLevel::Component, Tok::S_Surface_Raised, "dropdown bg pressed (transient click)"));
+    // Open state (menu showing): a clearly LIGHTER fill than the rest background so
+    // the trigger reads as active. Minimal/title-bar dropdowns keep their own
+    // (transparent) treatment and do not use this.
+    put(Ref(Tok::C_Dropdown_BackgroundOpen, TokenLevel::Component, Tok::S_Background_App_FrameHover, "dropdown bg while open (lighter than rest)"));
     put(Ref(Tok::C_Dropdown_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "dropdown border width"));
     put(Ref(Tok::C_Menu_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "menu border"));
     put(Ref(Tok::C_Menu_BorderWidth, TokenLevel::Component, Tok::S_BorderWidth_Thin, "menu border width"));
@@ -1518,6 +1547,11 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
               Tok::P_Color_Gray_780, Tok::P_Color_Gray_25, Tok::P_Color_Gray_780, Tok::P_Color_Gray_900));
     put(RefT4(Tok::S_Background_App_Frame, TokenLevel::Semantic, "input/frame surface (lightest)",
               Tok::P_Color_Gray_740, Tok::P_Color_Gray_25, Tok::P_Color_Gray_740, Tok::P_Color_Gray_800));
+    // Hovered input/frame: a step LIGHTER than the frame on dark themes (frame is
+    // already the lightest dark surface, so this is the only way "up"); on light
+    // themes the frame is near-white, so its hover steps slightly DARKER instead.
+    put(RefT4(Tok::S_Background_App_FrameHover, TokenLevel::Semantic, "input/frame surface, hovered",
+              Tok::P_Color_Gray_700, Tok::P_Color_Gray_100, Tok::P_Color_Gray_700, Tok::P_Color_Gray_700));
     // Minimal-style dropdown hover (title-bar menus): no chip, just a subtle
     // fill a hair lighter than the title bar (= app base), i.e. the control
     // surface, so the hovered menu item reads without a hard border/background.
@@ -1543,6 +1577,7 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Panel_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "panel header label"));
     put(Ref(Tok::C_Panel_OverrideBadge, TokenLevel::Component, Tok::S_Color_Accent_Default, "panel override badge tint"));
     put(Float(Tok::C_Panel_Gap, TokenLevel::Component, 2.f, "vertical gap before each level-1 panel", CS::Range(0.0,20.0,"px")));
+    put(Float(Tok::C_PropertyGroup_Gap, TokenLevel::Component, 10.f, "extra vertical gap between property groups", CS::Range(0.0,40.0,"px")));
     // Panels use the SMALL control radius (like buttons/frames/dropdowns), not
     // the larger default/editor radius.
     put(Ref(Tok::C_Panel_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "panel rounding"));
@@ -1556,6 +1591,7 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Outliner_Row_Active,        TokenLevel::Component, Tok::S_Accent_Active_Default,         "outliner row active"));
     put(Ref(Tok::C_Outliner_Row_ActiveHover,   TokenLevel::Component, Tok::S_Accent_Active_Default,         "outliner row active+hover"));
     put(Ref(Tok::C_Outliner_Text,              TokenLevel::Component, Tok::S_Color_Text_Default,            "outliner row text"));
+    put(Float(Tok::C_Outliner_TreeLineInset,   TokenLevel::Component, 4.f, "outliner tree-line top/bottom inset", CS::Range(0.0,16.0,"px")));
     put(Ref(Tok::C_Outliner_Search_Visual,       TokenLevel::Component, Tok::S_Accent_Visual_Positive,        "outliner search matched-idle bg"));
     put(Ref(Tok::C_Outliner_Search_Hover,        TokenLevel::Component, Tok::S_Accent_Hover_Positive,         "outliner search hover"));
     put(Ref(Tok::C_Outliner_Search_Selected,     TokenLevel::Component, Tok::S_Accent_Selected_Positive,      "outliner search selected"));
@@ -1620,6 +1656,9 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::S_Config_PreviewPlacement, TokenLevel::Semantic, Tok::P_Config_PreviewPlacement, "semantic.config.preview-placement"));
     put(Ref(Tok::C_Viewport_Crosshair, TokenLevel::Component, Tok::S_Static_WhiteText, "crosshair placement cursor"));
     put(Ref(Tok::S_Config_PlacementPreviewAlpha, TokenLevel::Semantic, Tok::P_Opacity_400, "placement ghost opacity"));
+    // Dev toggle: the colour-coded editor-corner hit-zone previews (default ON).
+    put(Int(Tok::P_Config_ShowCornerZones, TokenLevel::Primitive, 1, "show corner zones on/off", Bool01()));
+    put(Ref(Tok::S_Config_ShowCornerZones, TokenLevel::Semantic, Tok::P_Config_ShowCornerZones, "semantic.config.show-corner-zones"));
 
     (void)i;
     return s;
