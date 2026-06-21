@@ -1224,6 +1224,18 @@ enum class Tok : std::uint32_t {
     C_Frame_BorderWidth,
     C_Frame_Padding,
     C_Frame_InputTextCursor,
+    // Blender-style numeric drag field (UI::DragValue).
+    C_DragValue_Background,        // fill at rest
+    C_DragValue_BackgroundHover,   // fill, hovered (lighter)
+    C_DragValue_BackgroundPressed, // fill, pressed (held, before a drag begins)
+    C_DragValue_BackgroundDrag,    // fill, while dragging
+    C_DragValue_Text,              // value text
+    C_DragValue_Unit,              // unit suffix text (subtle)
+    C_DragValue_StepButton,        // +/- step glyph tint at rest
+    C_DragValue_StepButtonHover,   // +/- step button hover fill
+    C_DragValue_Border,            // border
+    C_DragValue_CornerRadius,      // rounding
+    C_DragValue_BorderWidth,       // border width
     C_Button_Background,
     C_Button_BackgroundHover,
     C_Button_BackgroundDown,
@@ -1279,6 +1291,17 @@ enum class Tok : std::uint32_t {
     C_Slider_CornerRadius,
     C_Checkbox_Mark,
     C_Checkbox_BackgroundSelected,
+    // Full per-state set for the UI::Checkbox widget (square box, ui-unit row).
+    C_Checkbox_Background,             // box fill, unchecked, at rest
+    C_Checkbox_BackgroundHover,        // box fill, unchecked, hovered
+    C_Checkbox_BackgroundDown,         // box fill, unchecked, pressed
+    C_Checkbox_BackgroundSelectedHover,// box fill, checked, hovered
+    C_Checkbox_BackgroundSelectedDown, // box fill, checked, pressed
+    C_Checkbox_Border,                 // box border, unchecked
+    C_Checkbox_BorderSelected,         // box border, checked
+    C_Checkbox_BoxSize,                // drawn box side length (px, scaled)
+    C_Checkbox_CornerRadius,           // box rounding
+    C_Checkbox_BorderWidth,            // box border width
     C_Separator_Color,
     C_Separator_Hover,
     C_Separator_Down,
@@ -1399,6 +1422,7 @@ enum class Tok : std::uint32_t {
     C_Dropdown_Border,
     C_Dropdown_BorderHover,
     C_Dropdown_BackgroundDown,
+    C_Dropdown_BackgroundOpen,   // trigger fill while the menu is open (lighter than rest)
     C_Dropdown_BorderWidth,
     C_Menu_Border,
     C_Menu_BorderWidth,
@@ -1460,6 +1484,7 @@ enum class Tok : std::uint32_t {
     S_Surface_Raised,           // a bar/toolbar sitting above a canvas
     S_Background_App_Child,     // inner sub-surface inside a content surface
     S_Background_App_Frame,     // text input / frame field (lightest)
+    S_Background_App_FrameHover,// input/frame field, hovered (a step LIGHTER than frame)
 
     // ── Preferences window title bar (independent of the main title bar) ──
     // Each window's title bar controls its own text/icon colours, so they can
@@ -1482,6 +1507,7 @@ enum class Tok : std::uint32_t {
     C_Panel_Text,               // header label
     C_Panel_OverrideBadge,      // "has override" marker tint
     C_Panel_Gap,                // vertical gap before each level-1 panel
+    C_PropertyGroup_Gap,        // extra vertical gap between property groups (> item gap)
     C_Panel_CornerRadius,       // panel rounding (small control radius, not editor radius)
 
     // ── Outliner rows: a tree list whose rows carry interaction state. Each row
@@ -1494,6 +1520,7 @@ enum class Tok : std::uint32_t {
     C_Outliner_Row_Active,          // selected + active row bg
     C_Outliner_Row_ActiveHover,     // selected + active + hovered row bg
     C_Outliner_Text,                // default row label colour
+    C_Outliner_TreeLineInset,       // top/bottom inset of the vertical tree guide line (px)
     C_Outliner_Search_Visual,       // search: a matched-but-idle row bg (faint)
     C_Outliner_Search_Hover,        // search: hovered matched row bg
     C_Outliner_Search_Selected,     // search: selected matched row bg
@@ -1555,6 +1582,10 @@ enum class Tok : std::uint32_t {
     S_Config_PreviewPlacement,       // 0/1: place new objects as a cursor-following preview
     C_Viewport_Crosshair,            // thin crosshair cursor used in preview placement
     S_Config_PlacementPreviewAlpha,  // 0..1: opacity of the placement ghost preview
+
+    // ── Dev / debug toggles (Preferences ▸ Dev) ──
+    P_Config_ShowCornerZones,        // raw 0/1 backing the semantic below
+    S_Config_ShowCornerZones,        // 0/1: draw the colour-coded editor-corner hit-zone previews
 
     // Sentinel — must stay last. Never used as a real token.
     _Count
@@ -2747,6 +2778,17 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Frame_BorderWidth: return "component.frame.border.width.default";
         case Tok::C_Frame_Padding: return "component.frame.padding.default";
         case Tok::C_Frame_InputTextCursor: return "component.frame.input-text.cursor.color.default";
+        case Tok::C_DragValue_Background: return "component.drag-value.background.color.default";
+        case Tok::C_DragValue_BackgroundHover: return "component.drag-value.background.color.hover";
+        case Tok::C_DragValue_BackgroundPressed: return "component.drag-value.background.color.pressed";
+        case Tok::C_DragValue_BackgroundDrag: return "component.drag-value.background.color.drag";
+        case Tok::C_DragValue_Text: return "component.drag-value.text.color.default";
+        case Tok::C_DragValue_Unit: return "component.drag-value.unit.color.default";
+        case Tok::C_DragValue_StepButton: return "component.drag-value.step-button.color.default";
+        case Tok::C_DragValue_StepButtonHover: return "component.drag-value.step-button.background.color.hover";
+        case Tok::C_DragValue_Border: return "component.drag-value.border.color.default";
+        case Tok::C_DragValue_CornerRadius: return "component.drag-value.corner-radius.default";
+        case Tok::C_DragValue_BorderWidth: return "component.drag-value.border.width.default";
         case Tok::C_Button_Background: return "component.button.background.color.default";
         case Tok::C_Button_BackgroundHover: return "component.button.background.color.hover";
         case Tok::C_Button_BackgroundDown: return "component.button.background.color.down";
@@ -2799,6 +2841,16 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Slider_CornerRadius: return "component.slider.corner-radius.default";
         case Tok::C_Checkbox_Mark: return "component.checkbox.mark.color.default";
         case Tok::C_Checkbox_BackgroundSelected: return "component.checkbox.background.color.selected";
+        case Tok::C_Checkbox_Background: return "component.checkbox.background.color.default";
+        case Tok::C_Checkbox_BackgroundHover: return "component.checkbox.background.color.hover";
+        case Tok::C_Checkbox_BackgroundDown: return "component.checkbox.background.color.down";
+        case Tok::C_Checkbox_BackgroundSelectedHover: return "component.checkbox.background.color.selected-hover";
+        case Tok::C_Checkbox_BackgroundSelectedDown: return "component.checkbox.background.color.selected-down";
+        case Tok::C_Checkbox_Border: return "component.checkbox.border.color.default";
+        case Tok::C_Checkbox_BorderSelected: return "component.checkbox.border.color.selected";
+        case Tok::C_Checkbox_BoxSize: return "component.checkbox.box-size.default";
+        case Tok::C_Checkbox_CornerRadius: return "component.checkbox.corner-radius.default";
+        case Tok::C_Checkbox_BorderWidth: return "component.checkbox.border.width.default";
         case Tok::C_Separator_Color: return "component.separator.color.default";
         case Tok::C_Separator_Hover: return "component.separator.color.hover";
         case Tok::C_Separator_Down: return "component.separator.color.down";
@@ -2919,6 +2971,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Dropdown_Border: return "component.dropdown.border.color.default";
         case Tok::C_Dropdown_BorderHover: return "component.dropdown.border.color.hover";
         case Tok::C_Dropdown_BackgroundDown: return "component.dropdown.background.color.down";
+        case Tok::C_Dropdown_BackgroundOpen: return "component.dropdown.background.color.open";
         case Tok::C_Dropdown_BorderWidth: return "component.dropdown.border.width.default";
         case Tok::C_Menu_Border: return "component.menu.border.color.default";
         case Tok::C_Menu_BorderWidth: return "component.menu.border.width.default";
@@ -2970,6 +3023,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::S_Surface_Raised: return "semantic.background.surface.raised";
         case Tok::S_Background_App_Child: return "semantic.background.app.child";
         case Tok::S_Background_App_Frame: return "semantic.background.app.frame";
+        case Tok::S_Background_App_FrameHover: return "semantic.background.app.frame-hover";
         case Tok::C_PrefBar_Background: return "component.preferences-title-bar.background.color.default";
         case Tok::C_PrefBar_Text: return "component.preferences-title-bar.label.color.default";
         case Tok::C_PrefBar_Icon: return "component.preferences-title-bar.icon.color.default";
@@ -2983,6 +3037,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Panel_Text: return "component.panel.label.color.default";
         case Tok::C_Panel_OverrideBadge: return "component.panel.override-badge.color.default";
         case Tok::C_Panel_Gap: return "component.panel.gap.size.default";
+        case Tok::C_PropertyGroup_Gap: return "component.property-group.gap.size.default";
         case Tok::C_Panel_CornerRadius: return "component.panel.corner-radius.default";
         case Tok::C_Outliner_Row_Hover:           return "component.outliner.row.background.hover";
         case Tok::C_Outliner_Row_Selected:        return "component.outliner.row.background.selected";
@@ -2990,6 +3045,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Outliner_Row_Active:          return "component.outliner.row.background.active";
         case Tok::C_Outliner_Row_ActiveHover:     return "component.outliner.row.background.active-hover";
         case Tok::C_Outliner_Text:                return "component.outliner.row.text.default";
+        case Tok::C_Outliner_TreeLineInset:       return "component.outliner.tree-line.inset.default";
         case Tok::C_Outliner_Search_Visual:       return "component.outliner.row.search.background.visual";
         case Tok::C_Outliner_Search_Hover:        return "component.outliner.row.search.background.hover";
         case Tok::C_Outliner_Search_Selected:     return "component.outliner.row.search.background.selected";
@@ -3041,6 +3097,8 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::S_Config_PreviewPlacement: return "semantic.config.preview-placement";
         case Tok::C_Viewport_Crosshair:      return "component.viewport.crosshair";
         case Tok::S_Config_PlacementPreviewAlpha: return "semantic.config.placement-preview-alpha";
+        case Tok::P_Config_ShowCornerZones: return "primitive.config.show-corner-zones";
+        case Tok::S_Config_ShowCornerZones: return "semantic.config.show-corner-zones";
 
         case Tok::_Count: return "";
     }

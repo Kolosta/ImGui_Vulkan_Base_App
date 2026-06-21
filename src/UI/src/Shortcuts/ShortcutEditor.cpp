@@ -4,6 +4,7 @@
 #include <UI/Shortcuts/ShortcutCaptureField.h>
 #include <UI/Widgets/ButtonGroup.h>
 #include <UI/Widgets/ScrollArea.h>
+#include <UI/Widgets/Checkbox.h>
 #include <Shortcuts/ShortcutManager.h>
 #include <Shortcuts/EventNormalizer.h>
 #include <Shortcuts/ToolManager.h>
@@ -234,9 +235,9 @@ void ShortcutEditor::RenderToolbar() {
     ImGui::InputTextWithHint("##search", "Search (action, shortcut, id)...",
                              searchBuf_, sizeof(searchBuf_));
     ImGui::SameLine();
-    ImGui::Checkbox("Conflicts", &showConflicts_);
+    UI::Checkbox("##conflicts", "Conflicts", &showConflicts_);
     ImGui::SameLine();
-    ImGui::Checkbox("Modified only", &showOnlyOverridden_);
+    UI::Checkbox("##modifiedOnly", "Modified only", &showOnlyOverridden_);
 
     ImGui::SameLine();
     if (ImGui::Button("Restore all")) {
@@ -443,7 +444,7 @@ void ShortcutEditor::RenderDetailPane() {
             // ── Per-row enable checkbox (each shortcut entry has its own) ──
             ImGui::AlignTextToFramePadding();
             bool entryEn = b->IsEntryEnabled(i);
-            if (ImGui::Checkbox("##rowen", &entryEn)) {
+            if (UI::CheckboxBox("##rowen", &entryEn)) {
                 sm.SetEntryEnabled(selectedActionId_, static_cast<int>(i), entryEn);
                 b = sm.GetBinding(selectedActionId_);
             }
@@ -934,7 +935,7 @@ void ShortcutEditor::RenderAdvancedEditorFor(const std::string& actionId,
     if (isDragT(sig.type)) {
         float dsDefault = SafeFloat(DesignSystem::Tok::S_Config_DragThreshold, 6.0f);
         bool useCustom = sig.dragThreshold > 0.0f;
-        if (ImGui::Checkbox("Override drag distance", &useCustom)) {
+        if (UI::Checkbox("##overrideDrag", "Override drag distance", &useCustom)) {
             sig.dragThreshold = useCustom ? dsDefault : 0.0f;
             commit();
         }
@@ -989,7 +990,7 @@ void ShortcutEditor::RenderAdvancedEditorFor(const std::string& actionId,
     // ── Repeat (real checkbox) ─────────────────────────────────────────
     ImGui::Spacing();
     bool rep = sig.repeat;
-    if (ImGui::Checkbox("Repeat", &rep)) {
+    if (UI::Checkbox("##repeat", "Repeat", &rep)) {
         sig.repeat = rep;
         commit();
     }

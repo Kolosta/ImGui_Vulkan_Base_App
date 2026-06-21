@@ -2,6 +2,7 @@
 #include <DesignSystem/Tokens/TokenSchema.h>
 #include <DesignSystem/Tokens/TokenIds.h>
 #include <DesignSystem/Core/ValueConstraint.h>
+#include <string>
 #include <vector>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -146,6 +147,59 @@ void TokenRegistry::CreateDefaultComponentTokens() {
                                    ThemeValueOf(o));
         }
         RegisterToken(token);
+    }
+
+    // Apply the generated style (from tools/apply-tokens-json.py), if any. This
+    // rewrites real token values — the base/default layer and/or per-theme
+    // layers — so a style designed in the Token Graph becomes the system's
+    // actual values after a rebuild (not a runtime override). Helpers below let
+    // the generated .inc set values/refs concisely; it is a no-op when empty.
+    {
+        // Set the DEFAULT (Dark/base) value of a token to a literal or a ref.
+        auto SetBaseColor = [&](const char* id, float r, float g, float b, float a) {
+            if (auto t = GetToken(id)) t->SetDefaultValue(TokenValue(ImVec4(r, g, b, a)));
+        };
+        auto SetBaseFloat = [&](const char* id, float v) {
+            if (auto t = GetToken(id)) t->SetDefaultValue(TokenValue(v));
+        };
+        auto SetBaseInt = [&](const char* id, int v) {
+            if (auto t = GetToken(id)) t->SetDefaultValue(TokenValue(v));
+        };
+        auto SetBaseVec2 = [&](const char* id, float x, float y) {
+            if (auto t = GetToken(id)) t->SetDefaultValue(TokenValue(ImVec2(x, y)));
+        };
+        auto SetBaseRatio = [&](const char* id, float v) {
+            if (auto t = GetToken(id)) t->SetDefaultValue(TokenValue::MakeRatio(v));
+        };
+        auto SetBaseBezier = [&](const char* id, float a, float b, float c, float d2) {
+            if (auto t = GetToken(id)) t->SetDefaultValue(TokenValue::MakeBezier(ImVec4(a, b, c, d2)));
+        };
+        auto SetBaseFontFamily = [&](const char* id, const char* fam) {
+            if (auto t = GetToken(id)) t->SetDefaultValue(TokenValue::MakeFontFamily(fam));
+        };
+        auto SetBaseRef = [&](const char* id, const char* target) {
+            if (auto t = GetToken(id)) t->SetDefaultValue(TokenValue(std::string(target)));
+        };
+        // Set a per-THEME layer (value or ref). theme: 0=Dark 1=Light 2=Muted 3=High.
+        auto ThemeOf = [](int i) {
+            switch (i) { case 1: return ThemeType::Light; case 2: return ThemeType::MutedGreen;
+                         case 3: return ThemeType::HighContrast; default: return ThemeType::Dark; }
+        };
+        auto SetThemeColor = [&](const char* id, int th, float r, float g, float b, float a) {
+            if (auto t = GetToken(id)) t->SetContextValue(Context(ThemeOf(th), AccessibilityType::None), TokenValue(ImVec4(r, g, b, a)));
+        };
+        auto SetThemeFloat = [&](const char* id, int th, float v) {
+            if (auto t = GetToken(id)) t->SetContextValue(Context(ThemeOf(th), AccessibilityType::None), TokenValue(v));
+        };
+        auto SetThemeRef = [&](const char* id, int th, const char* target) {
+            if (auto t = GetToken(id)) t->SetContextValue(Context(ThemeOf(th), AccessibilityType::None), TokenValue(std::string(target)));
+        };
+        // Silence unused-helper warnings when the generated block omits a type.
+        (void)SetBaseColor; (void)SetBaseFloat; (void)SetBaseInt; (void)SetBaseVec2;
+        (void)SetBaseRatio; (void)SetBaseBezier; (void)SetBaseFontFamily; (void)SetBaseRef;
+        (void)SetThemeColor; (void)SetThemeFloat; (void)SetThemeRef;
+
+        #include "TokenStyle.generated.inc"
     }
 }
 

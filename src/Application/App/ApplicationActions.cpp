@@ -48,6 +48,16 @@ void Application::Action_ToggleSettings() {
     // to ProcessEvents(), OUTSIDE the NewFrame/Render span.
     showSettings_ = !showSettings_;
 }
+void Application::Action_ToggleTokenGraph() {
+    // Same focus-vs-toggle dance as Settings: if it is open but behind, raise +
+    // focus it instead of closing; otherwise flip the desired state (the Show()
+    // is reconciled in ProcessEvents, outside the ImGui frame).
+    if (showTokenGraph_ && tokenGraphHost_.IsOpen() && !tokenGraphHost_.HasInputFocus()) {
+        tokenGraphHost_.RequestFocus();
+        return;
+    }
+    showTokenGraph_ = !showTokenGraph_;
+}
 void Application::Action_ToggleImGuiDemo() {
     showImGuiDemo_ = !showImGuiDemo_;
 }

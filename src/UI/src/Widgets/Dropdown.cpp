@@ -4,6 +4,7 @@
 #include <DesignSystem/DesignSystem.h>
 #include <imgui_internal.h>
 #include <algorithm>
+#include <unordered_map>
 
 namespace UI {
 
@@ -59,6 +60,10 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                                   : Col(Tok::C_Dropdown_BackgroundHover);
     const ImVec4 dDownV = minimal ? Col(Tok::C_Dropdown_BackgroundHoverMinimal)
                                   : Col(Tok::C_Dropdown_BackgroundDown);
+    // Open state: a lighter fill than the rest bg so an open trigger reads active.
+    // Minimal/title-bar dropdowns keep their subtle (transparent) hover treatment.
+    const ImVec4 dOpenV = minimal ? Col(Tok::C_Dropdown_BackgroundHoverMinimal)
+                                  : Col(Tok::C_Dropdown_BackgroundOpen);
     const ImVec4 dBordV     = minimal ? transparent : Col(Tok::C_Dropdown_Border);
     const ImVec4 dBordHovV  = minimal ? transparent : Col(Tok::C_Dropdown_BorderHover);
     const ImU32  dText  = ImGui::ColorConvertFloat4ToU32(dTextV);
@@ -163,8 +168,17 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     float menuH = mPad.y * 2.0f + headerH +
                   (float)maxRows * rowH +
                   (float)std::max(0, maxRows - 1) * itemGap;
-    // Custom body overrides the computed item-list size.
-    if (cfg.bodyDraw) { menuW = cfg.menuSize.x; menuH = cfg.menuSize.y; }
+    // Custom body: the popup AUTO-RESIZES to its content (width + height) with the
+    // menu padding. We can't know that size before drawing, so for the position/
+    // flip math we use the size MEASURED last frame (cached per dropdown id),
+    // falling back to cfg.menuSize the first frame.
+    static std::unordered_map<ImU32, ImVec2> s_bodySize;
+    const ImU32 bodyKey = ImGui::GetID(cfg.id);
+    if (cfg.bodyDraw) {
+        auto it = s_bodySize.find(bodyKey);
+        ImVec2 sz = (it != s_bodySize.end()) ? it->second : cfg.menuSize;
+        menuW = sz.x; menuH = sz.y;
+    }
 
     // ── Adaptive flip against the main viewport work-rect ─────────────────────
     const ImGuiViewport* vp = ImGui::GetMainViewport();
@@ -210,7 +224,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     //             menu; the brighter border is kept (the menu border continues
     //             it). Border width 0 (token) removes the stroke everywhere.
     {
-        ImVec4 fillV   = isOpen ? dDownV : (hovered ? dHovV : dBgV);
+        ImVec4 fillV   = isOpen ? dOpenV : (hovered ? dHovV : dBgV);
         ImVec4 bordV   = (hovered || isOpen) ? dBordHovV : dBordV;
         ImDrawFlags rounding = isOpen ? triggerRound : ImDrawFlags_RoundCornersAll;
         // Fused: square the corners on the side(s) that touch a linked button so the
@@ -297,7 +311,40 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
         }
     }
 
-    // ── The menu popup ────────────────────────────────────────────────────────
+    // ── Custom-body popup: AUTO-RESIZES to its content (W + H) with real window
+    //    padding, so the menu fits exactly and separators respect the margin. ──
+    if (isOpen && cfg.bodyDraw) {
+        const float menuRadius  = Flt(Tok::C_Menu_CornerRadius) * gs;
+        const float menuBorderW = bordersOn ? Flt(Tok::C_Menu_BorderWidth) * gs : 0.0f;
+        ImGui::SetNextWindowPos(menuPos);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, mPad);  // real padding → content-fit
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding,  menuRadius);
+        ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, menuBorderW);
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, Col(Tok::C_Menu_Background));
+        ImGui::PushStyleColor(ImGuiCol_Border,  Col(Tok::C_Menu_Border));
+        if (ImGui::BeginPopup(popupId,
+                              ImGuiWindowFlags_NoMove |
+                              ImGuiWindowFlags_AlwaysAutoResize |
+                              ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, dTextV);
+            ImGui::BeginGroup();
+            cfg.bodyDraw();
+            ImGui::EndGroup();
+            ImGui::PopStyleColor();
+            // Cache the content size (+ padding) for next frame's position/flip.
+            ImVec2 content = ImGui::GetItemRectSize();
+            s_bodySize[bodyKey] = ImVec2(content.x + mPad.x * 2.0f,
+                                         content.y + mPad.y * 2.0f);
+            ImGui::EndPopup();
+        }
+        ImGui::PopStyleColor(2);
+        ImGui::PopStyleVar(3);
+        ImGui::PopID();
+        return result;
+    }
+
+    // ── The (item-list) menu popup ─────────────────────────────────────────────
     if (isOpen) {
         ImGui::SetNextWindowPos(menuPos);
         ImGui::SetNextWindowSize(ImVec2(menuW, menuH));
@@ -335,21 +382,6 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
             if (menuBorderW > 0.01f)
                 mdl->AddRect(m0, m1, ImGui::ColorConvertFloat4ToU32(borderV),
                              menuRadius, menuRound, menuBorderW);
-
-            // ── Custom body: the caller draws its own widgets inside the chrome ──
-            if (cfg.bodyDraw) {
-                ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, m0.y + mPad.y));
-                ImGui::PushStyleColor(ImGuiCol_Text, dTextV);
-                ImGui::BeginGroup();
-                cfg.bodyDraw();
-                ImGui::EndGroup();
-                ImGui::PopStyleColor();
-                ImGui::EndPopup();
-                ImGui::PopStyleColor();
-                ImGui::PopStyleVar(3);
-                ImGui::PopID();
-                return result;
-            }
 
             ImGuiIO& io = ImGui::GetIO();
 
