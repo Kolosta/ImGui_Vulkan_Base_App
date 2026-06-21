@@ -9,6 +9,7 @@
 #include <UI/Widgets/PopupMenu.h>     // UI::DrawTooltip (shared styled tooltip)
 #include <UI/Widgets/Dropdown.h>      // UI::Dropdown (operator panel params)
 #include <UI/Widgets/ButtonGroup.h>   // UI::ButtonGroup (snap base/affect)
+#include <UI/Widgets/Checkbox.h>      // UI::Checkbox (operator panel bool params)
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cfloat>
@@ -380,7 +381,7 @@ void Application::DrawOperatorPanel(ImVec2 canvasMin, ImVec2 canvasMax, EditorSt
                     }
                 } else { // Bool
                     bool b = p.value != 0;
-                    if (ImGui::Checkbox(p.label.c_str(), &b)) { p.value = b ? 1 : 0; changed = true; }
+                    if (UI::Checkbox("##boolParam", p.label.c_str(), &b)) { p.value = b ? 1 : 0; changed = true; }
                 }
                 ImGui::PopStyleColor();
                 ImGui::PopID();
