@@ -8,6 +8,7 @@
 #include <UI/Widgets/IconWidgets.h>
 #include <UI/Widgets/PopupMenu.h>
 #include <UI/Widgets/Dropdown.h>
+#include <UI/Widgets/Checkbox.h>
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cctype>
@@ -16,83 +17,127 @@
 #include <cstdio>
 #include <cstring>
 #include "OutlinerShared.h"
+#include "OutlinerRowLayout.h"
 
 namespace App {
 
 namespace DST = DesignSystem;
 
 namespace {
-// Zebra row striping: a per-frame row counter (reset at the top of RenderOutliner)
-// so alternate rows get a slightly lighter background — Blender-style, easier to
-// track across the tree. The fill is drawn full-width behind each row.
-static int  s_zebraRow = 0;
-
 const char* kShapePayload = "OUTLINER_SHAPE";   // drag payload: shape id (u64)
 const char* kNodePayload  = "OUTLINER_NODE";    // drag payload: tree node id (u64)
                                                 // (a collection OR a page)
 
-// Draw the zebra background for the row that is ABOUT to be laid out at the
-// current cursor Y, spanning the FULL window width. Call before submitting the
-// row's widgets. Advances the stripe counter. Odd rows get a slightly lighter
-// fill; even rows stay on the editor base (transparent here).
-// Row height used for the zebra stripes (matches a tree/selectable row).
-float ZebraRowHeight() { return ImGui::GetTextLineHeightWithSpacing(); }
-
-void ZebraRowBg() {
+// Left/right edges of a full-width row band, in screen X. The Outliner editor
+// opts OUT of the host content inset (d.contentInset=false), so the content child
+// is flush: WorkRect.Min.x IS the editor's left edge — the zebra reaches it with
+// no left margin. The right runs under the overlay scrollbar gutter so the stripe
+// spans edge to edge. (Row geometry/striping is owned by UI::ListRow now.)
+float OutlinerRowLeft()  { return ImGui::GetCurrentWindow()->WorkRect.Min.x; }
+float OutlinerRowRight() {
+    return ImGui::GetCurrentWindow()->WorkRect.Max.x + ImGui::GetStyle().ScrollbarSize;
+}
+// Left inset of the coloured band + content — the standard editor content inset
+// token (same margin used by every other editor), so the Outliner matches them.
+float OutlinerBandMargin() {
     auto& ds = DST::DesignSystem::Instance();
-    const float h = ZebraRowHeight();
-    ImGuiWindow* w = ImGui::GetCurrentWindow();
-    ImVec2 p = ImGui::GetCursorScreenPos();
-    if (s_zebraRow & 1) {
-        ImVec2 mn(w->WorkRect.Min.x, p.y);
-        ImVec2 mx(w->WorkRect.Max.x + ImGui::GetStyle().ScrollbarSize, p.y + h);
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            mn, mx, ImGui::ColorConvertFloat4ToU32(
-                        ds.GetColor(DST::Tok::S_Color_Background_Layer2)));
-    }
-    ++s_zebraRow;
+    float v = 0.0f;
+    try { v = ds.GetFloat(DST::Tok::C_Editor_ContentInset) * ds.GetGlobalScale(); }
+    catch (...) {}
+    return std::max(0.0f, v);
 }
 
-// A small collapse chevron (Dropdown chevron size), clickable on the GLYPH only.
-// Toggles `open`. Returns the width consumed (so the caller advances past it).
-// Unlike a tree node header, clicking the row's label does NOT collapse — only
-// this chevron does (so the label is free for select / rename / menu).
+// A collapse chevron in a FIXED uniform slot (same width as the icon slot, so the
+// icon column lines up across siblings and indents). Mid-sized glyph, vertically
+// centred on the row, clickable on the slot. Toggles `open`. Returns slot width.
 float OutlinerChevron(const char* id, bool& open) {
     auto& ds      = DST::DesignSystem::Instance();
     auto& iconMgr = VectorGraphics::IconManager::Instance();
-    const float gs   = ds.GetGlobalScale();
-    const float chev = ds.GetFloat(DST::Tok::C_Dropdown_ChevronSize) * gs;
-    const float h    = ImGui::GetTextLineHeight();
-    const float slot = h;                       // square hit slot, line-tall
+    const float chev = OutlinerChevronSize();
+    const float slot = OutlinerChevronSlotW();
+    const float rowH = OutlinerRowH();
     ImGui::PushID(id);
     ImVec2 p0 = ImGui::GetCursorScreenPos();
-    if (ImGui::InvisibleButton("##chev", ImVec2(slot, h))) open = !open;
-    ImVec2 ipos(p0.x + (slot - chev) * 0.5f, p0.y + (h - chev) * 0.5f);
+    if (ImGui::InvisibleButton("##chev", ImVec2(slot, OutlinerItemH()))) open = !open;
+    ImVec2 ipos(p0.x + (slot - chev) * 0.5f, p0.y + (rowH - chev) * 0.5f);
     auto md = iconMgr.GetDefaultMetadata(open ? "chevron-down" : "chevron-right");
     if (!md.colorZones.empty())
         md.colorZones[0].customColor = ds.GetColor(DST::Tok::S_Color_Text_Subtle);
     iconMgr.RenderIcon(ImGui::GetWindowDrawList(),
                        open ? "chevron-down" : "chevron-right", ipos, chev, md);
+    ImGui::SameLine(0.0f, 0.0f);
     ImGui::PopID();
     return slot;
 }
 
-// Reserve a small fixed gutter at the start of EVERY row (so the active dot,
-// drawn at the far left in absolute coords, never overlaps the content). Pure
-// layout: no drawing. Call at the very start of a row's content.
-void OutlinerDotGutter() {
-    const float d = ImGui::GetTextLineHeight() * 0.30f;
-    ImGui::Dummy(ImVec2(d + 4.0f, ImGui::GetTextLineHeight()));
-    ImGui::SameLine(0.0f, 2.0f);
+// Reserve the chevron SLOT at the start of a row that has NO chevron, so its icon
+// column lines up with collapsible siblings. Pure layout (no drawing).
+void OutlinerChevronSpacer() {
+    ImGui::Dummy(ImVec2(OutlinerChevronSlotW(), OutlinerItemH()));
+    ImGui::SameLine(0.0f, 0.0f);
 }
-// Draw the "active" dot at the FAR LEFT of the row (window left edge, ignoring
-// the tree indent), vertically centred on the row. Absolute coords → no layout.
-void OutlinerActiveDotAt(float rowTopY, ImU32 col) {
+
+// Reserve the left gutter for the active dot (so content never overlaps it). The
+// dot itself is drawn inside the selection band by OutlinerActiveDotAt.
+void OutlinerDotGutter() {
+    const float d = ImGui::GetTextLineHeight() * 0.34f;
+    ImGui::Dummy(ImVec2(d + 5.0f * DST::DesignSystem::Instance().GetGlobalScale(),
+                        OutlinerItemH()));
+    ImGui::SameLine(0.0f, 0.0f);
+}
+// Draw the "active" dot INSIDE the row's selection band (inset from the band's
+// left edge `bandL`), vertically centred on the row.
+void OutlinerActiveDotAt(float bandL, float rowTopY, ImU32 col) {
     ImGuiWindow* w = ImGui::GetCurrentWindow();
-    const float rowH = ImGui::GetTextLineHeightWithSpacing();
-    const float d = ImGui::GetTextLineHeight() * 0.30f;     // dot diameter
-    ImVec2 c(w->WorkRect.Min.x + 2.0f + d * 0.5f, rowTopY + rowH * 0.5f);
+    const float rowH = OutlinerRowH();
+    const float gs = DST::DesignSystem::Instance().GetGlobalScale();
+    const float d = ImGui::GetTextLineHeight() * 0.34f;     // dot diameter
+    ImVec2 c(bandL + 4.0f * gs + d * 0.5f, rowTopY + rowH * 0.5f);
     w->DrawList->AddCircleFilled(c, d * 0.5f, col);
+}
+
+// Draw a vertical tree guide line at screen-X `x`, from `yStart` to `yEnd`, in
+// `color`. `dotted` → a dashed line (parented-object subtree); solid otherwise
+// (collection / page). Drawn on the window draw list (absolute coords).
+// Drawn as a pixel-snapped FILLED RECT (not AddLine) so the hairline is crisp —
+// no anti-alias bleed. The thickness is a hairline: 1px, stepping to 2px… only
+// when the global scale crosses an integer (floor(gs)). `x` is snapped to a pixel
+// boundary so the column doesn't straddle two pixels (which is what made it look
+// like 1px + a faint extra pixel).
+// `yStart`/`yEnd` are the FIRST child's stripe top and the LAST child's stripe
+// bottom; this helper applies a uniform top/bottom inset (token) so every line —
+// page, collection, parented object — starts/ends the same small distance inside
+// the child block.
+void OutlinerTreeLine(float x, float yStart, float yEnd, ImU32 color, bool dotted) {
+    auto& ds = DST::DesignSystem::Instance();
+    const float gs = ds.GetGlobalScale();
+    float inset = 4.0f;
+    try { inset = ds.GetFloat(DST::Tok::C_Outliner_TreeLineInset); } catch (...) {}
+    inset *= gs;
+    yStart += inset; yEnd -= inset;
+    if (yEnd <= yStart) return;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float th = std::max(1.0f, std::floor(gs));       // hairline, integer px
+    const float x0 = std::floor(x);                        // snap to pixel grid
+    const float x1 = x0 + th;
+    const float y0 = std::floor(yStart), y1 = std::floor(yEnd);
+    if (!dotted) {
+        dl->AddRectFilled(ImVec2(x0, y0), ImVec2(x1, y1), color);
+    } else {
+        const float dash = std::floor(2.0f * gs), gap = std::floor(2.0f * gs);
+        for (float y = y0; y < y1; y += dash + gap)
+            dl->AddRectFilled(ImVec2(x0, y), ImVec2(x1, std::min(y + dash, y1)), color);
+    }
+}
+
+// The screen-X at which a parent row drawn at indent origin `rowX` places its
+// chevron CENTRE — i.e. where the guide line for that parent's children sits.
+// `rowX` is the parent row's content origin (GetCursorScreenPos().x BEFORE the
+// dot gutter), so add the dot gutter + half a chevron slot.
+float OutlinerGuideX(float rowContentX) {
+    const float gs = DST::DesignSystem::Instance().GetGlobalScale();
+    const float dotGutter = ImGui::GetTextLineHeight() * 0.34f + 5.0f * gs;
+    return rowContentX + dotGutter + OutlinerChevronSlotW() * 0.5f;
 }
 
 // Row label colour: a matched search row is GREEN (the search text token); a
@@ -280,83 +325,77 @@ bool Application::OutlinerSearchVisible(uint64_t id) const {
     return false;
 }
 
-// Menu-style row: a full-width hitbox over the zebra + a state background with a
-// small corner radius and a 1px(v)/2px(h) inset (so the zebra colour shows around
-// it, like a menu item). The hitbox covers the WHOLE row (no dead zone); the
-// content draws on top afterwards. Search remaps the accent → green (positive).
+// Close the row opened by the previous OutlinerRowBegin (its ListRow destructor
+// advances the cursor exactly one stripe). Called at the start of the next row and
+// once at the end of the tree (OutlinerRowFinish).
+void Application::OutlinerRowFinish() { outlinerRow_.reset(); }
+
+// Open one tree row on top of the generic UI::ListRow primitive (zebra stripe,
+// full-width hit zone, ui-unit coloured selection band, uniform tiling). This
+// function just maps the Outliner's per-state COLOUR tokens (normal blue family /
+// search green family) into the generic component and exposes the input + band
+// geometry. The caller then draws the row content inside the band.
 Application::RowResult Application::OutlinerRowBegin(uint64_t id, int kind, bool searchHit,
                                                     int forceSel, int forceActive) {
+    (void)kind;
     auto& ds = DST::DesignSystem::Instance();
-    ImGuiWindow* w = ImGui::GetCurrentWindow();
-    const float rowH = ImGui::GetTextLineHeightWithSpacing();
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();      // row top-left (indented)
-    const float left  = w->WorkRect.Min.x;
-    const float right = w->WorkRect.Max.x;
-
-    // Full-row hitbox: an InvisibleButton spanning the entire content width at the
-    // row's Y. We place it at the window's left edge (full width) so there's no
-    // dead zone, then rewind so the content overdraws it.
-    ImGui::SetCursorScreenPos(ImVec2(left, p0.y));
-    char bid[24]; std::snprintf(bid, sizeof(bid), "##row%llu", (unsigned long long)id);
-    ImGui::SetNextItemAllowOverlap();   // chevron / eye sit on top and win their area
-    ImGui::InvisibleButton(bid, ImVec2(std::max(1.0f, right - left), rowH),
-                           ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
-    RowResult r;
-    r.hovered      = ImGui::IsItemHovered();
-    r.pressed      = ImGui::IsItemActivated();   // mouse-DOWN on the row
-    // A "click" that should change the selection fires on RELEASE without a drag,
-    // so a press on an already-selected row can start a multi-item drag instead.
-    r.clicked      = ImGui::IsItemDeactivated() &&
-                     ImGui::IsItemHovered() &&
-                     !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left);
-    r.rightClicked = ImGui::IsItemClicked(ImGuiMouseButton_Right);
-    r.doubleClicked= ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-
     auto& docA = const_cast<Renderer::Document&>(project_.document);
-    // Selection / active state: explicit override (line-mark rows) or auto from id.
+
     const bool selected = forceSel >= 0 ? (forceSel != 0) : OutlinerIsSelected(id);
     const bool active   = forceActive >= 0 ? (forceActive != 0)
                         : ((outlinerCur_->active == id) ||
                            (docA.FindShape(id) && docA.ActiveId() == id));
-
-    // The six row states map to design-system COMPONENT tokens. There are two
-    // families: NORMAL (default status → grey hover / blue selected/active) and
-    // SEARCH (positive status → green), swapped when a search is active and this
-    // row matched. Selection/active bgs are opaque; hover is drawn semi-
-    // transparent so it stays light over the zebra.
     const bool useSearch = outlinerCur_->searchActive && searchHit;
-    auto tok = [&](DST::Tok normal, DST::Tok search){
-        return ds.GetColor(useSearch ? search : normal);
-    };
-    auto opaque = [](ImVec4 c){ return ImGui::ColorConvertFloat4ToU32(
-        ImVec4(c.x, c.y, c.z, 1.0f)); };
-    auto withA  = [](ImVec4 c, float a){ return ImGui::ColorConvertFloat4ToU32(
-        ImVec4(c.x, c.y, c.z, a)); };
 
+    // Per-state band colours (search swaps the blue family for the green one).
     using T = DST::Tok;
-    ImU32 bg = 0;
-    if (selected && active)
-        bg = opaque(tok(r.hovered ? T::C_Outliner_Row_ActiveHover : T::C_Outliner_Row_Active,
-                        r.hovered ? T::C_Outliner_Search_ActiveHover : T::C_Outliner_Search_Active));
-    else if (selected)
-        bg = opaque(tok(r.hovered ? T::C_Outliner_Row_SelectedHover : T::C_Outliner_Row_Selected,
-                        r.hovered ? T::C_Outliner_Search_SelectedHover : T::C_Outliner_Search_Selected));
-    else if (r.hovered)
-        bg = withA(tok(T::C_Outliner_Row_Hover, T::C_Outliner_Search_Hover), 0.55f);
-    // A matched (but idle) search row shows a faint green tint so it reads "found".
-    if (!selected && !r.hovered && useSearch)
-        bg = withA(ds.GetColor(T::C_Outliner_Search_Visual), 0.45f);
+    auto col = [&](T normal, T search){ return ds.GetColor(useSearch ? search : normal); };
+    auto opaque = [](ImVec4 c){ return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x,c.y,c.z,1.0f)); };
+    auto withA  = [](ImVec4 c, float a){ return ImGui::ColorConvertFloat4ToU32(ImVec4(c.x,c.y,c.z,a)); };
 
-    if (bg) {
-        const float radius = ds.GetFloat(DST::Tok::S_CornerRadius_Control);
-        ImVec2 a(left + 2.0f, p0.y + 1.0f);
-        ImVec2 b(right - 2.0f, p0.y + rowH - 1.0f);
-        w->DrawList->AddRectFilled(a, b, bg, radius);
+    UI::ListRowConfig cfg;
+    cfg.id = (ImGuiID)(id ? id : 1);
+    cfg.zebraOdd   = (UI::ListRowZebraIndex() & 1) != 0;
+    cfg.zebraColor = ImGui::ColorConvertFloat4ToU32(ds.GetColor(T::S_Color_Background_Layer2));
+    cfg.selected   = selected;
+    cfg.active     = active;
+    cfg.bandMarginLeft = OutlinerBandMargin();
+    cfg.cornerRadius   = ds.GetFloat(T::S_CornerRadius_Control);
+    cfg.colors.hover         = withA(col(T::C_Outliner_Row_Hover,         T::C_Outliner_Search_Hover), 0.55f);
+    cfg.colors.selected      = opaque(col(T::C_Outliner_Row_Selected,      T::C_Outliner_Search_Selected));
+    cfg.colors.selectedHover = opaque(col(T::C_Outliner_Row_SelectedHover, T::C_Outliner_Search_SelectedHover));
+    cfg.colors.active        = opaque(col(T::C_Outliner_Row_Active,        T::C_Outliner_Search_Active));
+    cfg.colors.activeHover   = opaque(col(T::C_Outliner_Row_ActiveHover,   T::C_Outliner_Search_ActiveHover));
+    // A matched-but-idle search row keeps a faint green tint.
+    if (useSearch) cfg.colors.idle = withA(ds.GetColor(T::C_Outliner_Search_Visual), 0.45f);
+
+    // Close the previous row, then open this one (RAII; destructor advances the
+    // cursor). Stored in a member so it lives until the next row / tree end.
+    outlinerRow_.reset();
+    outlinerRow_.emplace(cfg);
+    UI::ListRow& row = *outlinerRow_;
+
+    // Expose band geometry for the content helpers (dot / eye / tree lines).
+    outlinerRowTopY_   = row.RowTop();
+    outlinerBandLeft_  = row.BandLeft();
+    outlinerBandRight_ = row.BandRight();
+    outlinerLastStripeTop_    = row.StripeTop();
+    outlinerLastStripeBottom_ = row.StripeBottom();
+
+    // The eye (drawn later) owns the band's right slot — suppress the row's own
+    // click there so toggling visibility doesn't also select/rename the row.
+    {
+        const float gs = ds.GetGlobalScale();
+        const float slot = OutlinerRowH(), pad = 6.0f * gs;
+        row.SuppressInputIn(outlinerBandRight_ - pad - slot, outlinerBandRight_ - pad);
     }
 
-    // Rewind to the row's indented content origin so chevron/icon/label overdraw.
-    ImGui::SetCursorScreenPos(p0);
-    (void)kind;
+    RowResult r;
+    const UI::ListRowInput& in = row.Input();
+    r.hovered = in.hovered; r.pressed = in.pressed; r.clicked = in.clicked;
+    r.rightClicked = in.rightClicked; r.doubleClicked = in.doubleClicked;
+
+    // Cursor sits at the band content origin (ListRow placed it there).
     return r;
 }
 
@@ -366,28 +405,169 @@ Application::RowResult Application::OutlinerRowBegin(uint64_t id, int kind, bool
 void Application::OutlinerEyeButton(bool& visible, const char* id) {
     auto& ds      = DST::DesignSystem::Instance();
     auto& iconMgr = VectorGraphics::IconManager::Instance();
-    const float h = ImGui::GetTextLineHeight();
-    // Place at the right edge of the window's content region (window-local X).
-    float rightX = ImGui::GetWindowContentRegionMax().x - h;
-    ImGui::SameLine(rightX);
+    const float icon = OutlinerIconSize();
+    const float gs   = ds.GetGlobalScale();
+    // Place on THIS row using the cached row top (the layout cursor has already
+    // advanced past the row by now). Sit a small margin inside the band's right
+    // edge. A real InvisibleButton handles the click reliably; we SAVE/RESTORE the
+    // cursor around it so it never extends the row height or shifts the layout.
+    const float pad  = 6.0f * gs;
+    const float slot = OutlinerRowH();               // square slot = band height
+    const float x0 = outlinerBandRight_ - pad - slot;
+    // outlinerRowTopY_ is the BAND top (ListRow::RowTop), so the eye slot spans the
+    // band exactly → vertically centred on the visible row.
+    const float y0 = outlinerRowTopY_;
+    const ImVec2 savedCursor = ImGui::GetCursorScreenPos();
     ImGui::PushID(id);
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                          ds.GetColor(DST::Tok::C_IconButton_BackgroundHover));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-    bool clk = ImGui::Button("##eyebtn", ImVec2(h, h));
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
-    const char* icon = visible ? "eye" : "eye-closed";
+    ImGui::SetCursorScreenPos(ImVec2(x0, y0));
+    ImGui::SetNextItemAllowOverlap();
+    bool clk = ImGui::InvisibleButton("##eyebtn", ImVec2(slot, slot));
+    ImGui::PopID();
+    // Restore the layout cursor to where it was, then submit a zero-size Dummy so
+    // ImGui validates the cursor move (a SetCursorScreenPos NOT followed by an item
+    // trips the "uses SetCursorPos to extend boundaries" assert — the eye is the
+    // last call on the row, so nothing else would validate it).
+    ImGui::SetCursorScreenPos(savedCursor);
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    // No background — just the glyph (subtle for visible, disabled-tint for hidden).
+    const char* ic = visible ? "eye" : "eye-closed";
     ImVec4 tint = ds.GetColor(visible ? DST::Tok::S_Color_Text_Subtle
                                       : DST::Tok::S_Color_Text_Disabled);
-    ImVec2 bmin = ImGui::GetItemRectMin();
-    auto md = iconMgr.GetDefaultMetadata(icon);
+    auto md = iconMgr.GetDefaultMetadata(ic);
     if (!md.colorZones.empty()) md.colorZones[0].customColor = tint;
-    iconMgr.RenderIcon(ImGui::GetWindowDrawList(), icon, bmin, h, md);
-    ImGui::PopID();
+    iconMgr.RenderIcon(ImGui::GetWindowDrawList(), ic,
+                       ImVec2(x0 + (slot - icon) * 0.5f, y0 + (slot - icon) * 0.5f),
+                       icon, md);
     if (clk) { visible = !visible; project_.dirty = true; }
+}
+
+// Draw the inline rename InputText for the row about to be replaced, styled like
+// the DragValue manual-edit field: exactly one ui-unit tall, NO border and NO
+// keyboard-focus ring, and spanning ONLY from the name column (after the chevron
+// + icon slots, where the label would start) to just before the eye slot — so it
+// never overlaps the dot / chevron / icon / eye. `hasIcon` reserves the icon slot
+// (false for the root, which has no type icon). Returns true on Enter/commit.
+bool Application::OutlinerRenameField(char* buf, size_t bufSize, bool hasIcon) {
+    auto& ds = DST::DesignSystem::Instance();
+    const float gs = ds.GetGlobalScale();
+    const float rowH = OutlinerRowH();
+    // Row origin = current cursor (rename runs before any content is laid out).
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float dotGutter = ImGui::GetTextLineHeight() * 0.34f + 5.0f * gs;
+    float nameX = p0.x + OutlinerBandMargin() + dotGutter + OutlinerChevronSlotW();
+    if (hasIcon) nameX += OutlinerIconSlotW() + 4.0f * gs;   // icon slot + its gap
+    const float eyePad  = 6.0f * gs;
+    const float eyeSlot = OutlinerItemH();
+    const float rightX  = outlinerBandRight_ - eyePad - eyeSlot - 4.0f * gs;
+    const float width   = std::max(40.0f, rightX - nameX);
+    const float padY    = std::max(0.0f, (rowH - ImGui::GetTextLineHeight()) * 0.5f);
+
+    ImGui::SetCursorScreenPos(ImVec2(nameX, p0.y));
+    ImGui::SetNextItemWidth(width);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ds.GetColor(DST::Tok::S_Background_App_Frame));
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));   // no focus ring
+    ImGui::PushStyleColor(ImGuiCol_Border,    ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,  ds.GetFloat(DST::Tok::C_Frame_CornerRadius) * gs);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ImGui::GetStyle().FramePadding.x, padY));
+    ImGui::SetKeyboardFocusHere();
+    bool commit = ImGui::InputText("##rename", buf, bufSize,
+                                   ImGuiInputTextFlags_EnterReturnsTrue |
+                                   ImGuiInputTextFlags_AutoSelectAll);
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(3);
+    // Advance the layout cursor by exactly one stripe (like a real row), so the
+    // following rows tile correctly while this one is being renamed.
+    ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCurrentWindow()->WorkRect.Min.x,
+        p0.y + UI::ListRowStripeHeight() - ImGui::GetStyle().ItemSpacing.y));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    return commit;
+}
+
+// Draw a compact summary of a collapsed node's DIRECT contents: one type icon per
+// present category, with a small count badge at its lower-right when >1. Drawn
+// inline on the current line (after the name). Categories: collections, pages,
+// shapes, bezier curves, nurbs curves (and line marks for an object).
+void Application::OutlinerCollapsedSummary(uint64_t nodeId) {
+    auto& doc = project_.document;
+    auto& ds  = DST::DesignSystem::Instance();
+    // Tally direct contents.
+    int nColl = 0, nPage = 0, nShape = 0, nBez = 0, nNurbs = 0, nMark = 0;
+    auto tallyShape = [&](const Renderer::Shape& s) {
+        const char* ic = OutlinerShapeIcon(s);
+        if (ic == kIconNurbs) ++nNurbs; else if (ic == kIconBezier) ++nBez; else ++nShape;
+    };
+    if (nodeId & kCollBit) {
+        uint64_t cid = nodeId & ~kCollBit;
+        if (Renderer::Collection* c = doc.FindCollection(cid)) {
+            for (uint64_t ch : c->children) {
+                if (doc.IsCollectionId(ch)) ++nColl;
+                else if (doc.ArtboardIndexById(ch) >= 0) ++nPage;
+            }
+            for (Renderer::Artboard& ab : doc.artboards)
+                for (Renderer::Shape& s : ab.shapes) if (s.collectionId == cid) tallyShape(s);
+            for (Renderer::Shape& s : doc.looseShapes) if (s.collectionId == cid) tallyShape(s);
+        }
+    } else if (nodeId & kPageBit) {
+        uint64_t pid = nodeId & ~kPageBit;
+        int abi = doc.ArtboardIndexById(pid);
+        if (abi >= 0) {
+            Renderer::Artboard& ab = doc.artboards[(size_t)abi];
+            for (uint64_t ch : ab.children) if (doc.IsCollectionId(ch)) ++nColl;
+            for (Renderer::Shape& s : ab.shapes) if (s.collectionId == 0) tallyShape(s);
+        }
+    } else if (Renderer::Shape* s = doc.FindShape(nodeId)) {
+        for (uint64_t cid : doc.ChildrenOf(s->id))
+            if (Renderer::Shape* c = doc.FindShape(cid)) tallyShape(*c);
+        for (const Renderer::Part& p : s->parts) nMark += (int)p.marks.size();
+    }
+
+    struct Cat { const char* icon; int count; };
+    Cat cats[] = {
+        { kIconPage,  nPage },
+        { kIconShape, nShape },
+        { kIconBezier, nBez },
+        { kIconNurbs, nNurbs },
+    };
+    const float icon = OutlinerIconSize();
+    const float gs   = ds.GetGlobalScale();
+    const float rowH = OutlinerRowH();
+    const ImVec4 tint = ds.GetColor(DST::Tok::S_Color_Text_Subtle);
+    auto& im = VectorGraphics::IconManager::Instance();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    auto drawCat = [&](const char* ic, int count, ImU32 swatch, bool useSwatch) {
+        if (count <= 0) return;
+        ImGui::SameLine(0.0f, 6.0f * gs);
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        float y = p.y + (rowH - icon) * 0.5f;
+        if (useSwatch) {
+            dl->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + icon, y + icon), swatch, 2.0f * gs);
+        } else if (ic && *ic) {
+            auto md = im.GetDefaultMetadata(ic);
+            if (!md.colorZones.empty()) {
+                for (auto& z : md.colorZones) z.customColor = tint;
+                im.RenderIcon(dl, ic, ImVec2(p.x, y), icon, md);
+            }
+        }
+        // Count badge (lower-right), only when more than one.
+        if (count > 1) {
+            char b[8]; std::snprintf(b, sizeof b, "%d", count);
+            ImVec2 ts = ImGui::CalcTextSize(b);
+            float bx = p.x + icon - ts.x * 0.5f;
+            float by = y + icon - ts.y * 0.7f;
+            dl->AddText(ImVec2(bx, by),
+                        ImGui::ColorConvertFloat4ToU32(ds.GetColor(DST::Tok::S_Color_Text_Default)), b);
+        }
+        ImGui::Dummy(ImVec2(icon + (count > 1 ? 8.0f * gs : 0.0f), OutlinerItemH()));
+    };
+
+    // Collections first (swatch — generic subtle), then pages/shapes/curves.
+    if (nColl > 0)
+        drawCat(nullptr, nColl, ImGui::ColorConvertFloat4ToU32(tint), /*useSwatch=*/true);
+    for (const Cat& c : cats) drawCat(c.icon, c.count, 0, false);
+    if (nMark > 0) drawCat(kIconShape, nMark, 0, false);   // marks reuse a neutral glyph
 }
 
 // One object row: menu-style state background + full-row hitbox, with selection
@@ -400,14 +580,10 @@ void Application::OutlinerObjectRow(Renderer::Shape& s) {
     if (!OutlinerSearchVisible(s.id)) return;
     outlinerCur_->rowOrder.push_back(s.id);     // for Shift range select
 
-    ZebraRowBg();
-
     if (s_renameId == s.id) {
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SetKeyboardFocusHere();
-        if (ImGui::InputText("##rename", s_renameBuf, sizeof(s_renameBuf),
-                             ImGuiInputTextFlags_EnterReturnsTrue |
-                             ImGuiInputTextFlags_AutoSelectAll)) {
+        OutlinerRowFinish();                 // close any previous row
+        UI::ListRowAdvanceZebra();           // keep the stripe parity in step
+        if (OutlinerRenameField(s_renameBuf, sizeof(s_renameBuf), /*hasIcon=*/true)) {
             s.name = s_renameBuf; s_renameId = 0; project_.dirty = true;
         }
         if (ImGui::IsItemDeactivated()) { s.name = s_renameBuf; s_renameId = 0; project_.dirty = true; }
@@ -451,7 +627,7 @@ void Application::OutlinerObjectRow(Renderer::Shape& s) {
         ImU32 dotColor = ImGui::GetColorU32(DST::DesignSystem::Instance().GetColor(
             loose ? DesignSystem::Tok::S_State_Active_Loose
                   : DesignSystem::Tok::S_State_Active_OnPage));
-        OutlinerActiveDotAt(ImGui::GetCursorScreenPos().y, dotColor);
+        OutlinerActiveDotAt(outlinerBandLeft_, outlinerRowTopY_, dotColor);
         // Numpad . — recentre this Outliner on the active object's row (Blender's
         // "Frame Selected"). Consumed here so it fires once.
         if (outlinerCur_->reqScrollToActive) {
@@ -474,16 +650,24 @@ void Application::OutlinerObjectRow(Renderer::Shape& s) {
         char ocid[32]; std::snprintf(ocid, sizeof(ocid), "##ochev%llu", (unsigned long long)s.id);
         OutlinerChevron(ocid, open);
         store->SetBool(openKey, open);
-        ImGui::SameLine(0.0f, 2.0f);
+    } else {
+        OutlinerChevronSpacer();           // keep the icon column aligned
     }
     const bool dim = !s.visible;
+    // Type icon (shape / bezier / nurbs), dimmed when hidden.
+    OutlinerSlotIcon(OutlinerShapeIcon(s),
+                     DST::DesignSystem::Instance().GetColor(
+                         dim ? DST::Tok::S_Color_Text_Disabled : DST::Tok::C_Outliner_Text));
     ImU32 txt = OutlinerLabelColor(searchHit, dim);
     ImVec2 tp = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddText(
         ImVec2(tp.x, tp.y + (ImGui::GetTextLineHeightWithSpacing() - ImGui::GetTextLineHeight()) * 0.5f),
         txt, s.name.empty() ? "Object" : s.name.c_str());
     ImGui::Dummy(ImVec2(ImGui::CalcTextSize(s.name.empty() ? "Object" : s.name.c_str()).x,
-                        ImGui::GetTextLineHeightWithSpacing()));
+                        OutlinerItemH()));
+
+    // Collapsed → summarise the hidden contents inline (child objects / marks).
+    if (collapsible && !open) OutlinerCollapsedSummary(s.id);
 
     // Eye toggle at the right edge.
     char eid[32]; std::snprintf(eid, sizeof(eid), "##eye%llu", (unsigned long long)s.id);
@@ -496,9 +680,9 @@ void Application::OutlinerObjectRow(Renderer::Shape& s) {
     // are NOT drag sources / drop targets.
     if (markCount > 0 && open) {
         const float lh = ImGui::GetTextLineHeight();
-        ImGui::Indent(lh * 0.9f);
+        ImGui::Indent(OutlinerChevronSlotW());
         OutlinerMarkRows(s);
-        ImGui::Unindent(lh * 0.9f);
+        ImGui::Unindent(OutlinerChevronSlotW());
     }
 }
 
@@ -511,6 +695,10 @@ void Application::OutlinerObjectSubtree(uint64_t id, uint64_t scopeColl) {
     auto& doc = project_.document;
     Renderer::Shape* s = doc.FindShape(id);
     if (!s) return;
+    // Guide-line X = this object's chevron column. The cursor here is the UN-shifted
+    // indented row origin; the row content is shifted right by the band margin, so
+    // add it to match the chevron's real X.
+    const float guideX = OutlinerGuideX(ImGui::GetCursorScreenPos().x + OutlinerBandMargin());
     OutlinerObjectRow(*s);
     // Honour the row's collapse state (same key OutlinerObjectRow uses) — collapsed
     // → don't draw the child subtree, exactly like a collapsed collection.
@@ -532,9 +720,18 @@ void Application::OutlinerObjectSubtree(uint64_t id, uint64_t scopeColl) {
         return a->name < b->name;
     });
     const float lh = ImGui::GetTextLineHeight();
-    ImGui::Indent(lh * 0.9f);
+    // First child's stripe top == the bottom of the row just drawn (the object row,
+    // or its last mark sub-row). Children tile continuously, so this is exact.
+    const float firstChildTop = outlinerLastStripeBottom_;
+    ImGui::Indent(OutlinerChevronSlotW());
     for (Renderer::Shape* c : kids) OutlinerObjectSubtree(c->id, scopeColl);
-    ImGui::Unindent(lh * 0.9f);
+    ImGui::Unindent(OutlinerChevronSlotW());
+    // A parented-object subtree gets a DOTTED guide line (vs solid for coll/page),
+    // from the first child's stripe top to the last child's stripe bottom.
+    OutlinerTreeLine(guideX, firstChildTop, outlinerLastStripeBottom_,
+                     ImGui::ColorConvertFloat4ToU32(
+                         DST::DesignSystem::Instance().GetColor(DST::Tok::S_Color_Text_Subtle)),
+                     /*dotted=*/true);
 }
 
 // Render the indented mark rows under object `s`. Selectable (single / Shift),
@@ -542,7 +739,6 @@ void Application::OutlinerObjectSubtree(uint64_t id, uint64_t scopeColl) {
 void Application::OutlinerMarkRows(Renderer::Shape& s) {
     auto& doc = project_.document;
     auto& ds  = DST::DesignSystem::Instance();
-    const float lh = ImGui::GetTextLineHeight();
     for (int pi = 0; pi < (int)s.parts.size(); ++pi) {
         Renderer::Part& part = s.parts[(size_t)pi];
         for (int mi = 0; mi < (int)part.marks.size(); ++mi) {
@@ -559,7 +755,6 @@ void Application::OutlinerMarkRows(Renderer::Shape& s) {
             // chrome (zebra/hover/select) via OutlinerRowBegin with explicit state.
             uint64_t rid = (s.id * 131u + (uint64_t)pi * 17u + (uint64_t)mi + 1u)
                            ^ 0xD15A11C0ull;
-            ZebraRowBg();
             const bool sel = doc.IsMarkSelected(ref);
             const bool act = sel && (doc.ActiveMark() == ref);
             RowResult rr = OutlinerRowBegin(rid, /*kind*/0, /*searchHit*/false,
@@ -569,10 +764,11 @@ void Application::OutlinerMarkRows(Renderer::Shape& s) {
                 else                         doc.MarkSelectOnly(ref);
                 doc.SetActive(s.id);
             }
-            // Content over the state bg: indent past the chevron gutter, then label.
+            // Content over the state bg: dot gutter, chevron + icon spacers (so the
+            // mark label lines up with object labels), then the label.
             OutlinerDotGutter();
-            ImGui::Dummy(ImVec2(lh * 0.6f, ImGui::GetTextLineHeightWithSpacing()));  // mark indent
-            ImGui::SameLine(0.0f, 4.0f);
+            OutlinerChevronSpacer();
+            OutlinerChevronSpacer();   // icon-slot spacer (same width) — no mark icon
             ImU32 txt = ImGui::GetColorU32(ds.GetColor(sel
                 ? DesignSystem::Tok::S_Color_Text_Default
                 : DesignSystem::Tok::S_Color_Text_Subtle));
@@ -580,8 +776,7 @@ void Application::OutlinerMarkRows(Renderer::Shape& s) {
             ImGui::GetWindowDrawList()->AddText(
                 ImVec2(tp.x, tp.y + (ImGui::GetTextLineHeightWithSpacing()
                        - ImGui::GetTextLineHeight()) * 0.5f), txt, kindName);
-            ImGui::Dummy(ImVec2(ImGui::CalcTextSize(kindName).x,
-                                ImGui::GetTextLineHeightWithSpacing()));
+            ImGui::Dummy(ImVec2(ImGui::CalcTextSize(kindName).x, OutlinerItemH()));
         }
     }
 }
@@ -724,15 +919,10 @@ void Application::OutlinerCollectionNode(uint64_t collId) {
     outlinerCur_->rowOrder.push_back(collId);
     const float lh = ImGui::GetTextLineHeight();
 
-    ZebraRowBg();
-
     // Rename in place (replaces the whole row while active).
     if (s_renameId == (collId | kCollBit)) {
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SetKeyboardFocusHere();
-        if (ImGui::InputText("##crename", s_renameBuf, sizeof(s_renameBuf),
-                             ImGuiInputTextFlags_EnterReturnsTrue |
-                             ImGuiInputTextFlags_AutoSelectAll)) {
+        OutlinerRowFinish(); UI::ListRowAdvanceZebra();
+        if (OutlinerRenameField(s_renameBuf, sizeof(s_renameBuf), /*hasIcon=*/true)) {
             coll->name = s_renameBuf; s_renameId = 0; project_.dirty = true;
         }
         if (ImGui::IsItemDeactivated()) { coll->name = s_renameBuf; s_renameId = 0; project_.dirty = true; }
@@ -758,24 +948,22 @@ void Application::OutlinerCollectionNode(uint64_t collId) {
     }
 
     // ── Content over the state bg ──
+    const float guideX = OutlinerGuideX(ImGui::GetCursorScreenPos().x);
+    const ImU32 collColor = CollectionIconColor(*coll);
     OutlinerDotGutter();
     char cid[32]; std::snprintf(cid, sizeof(cid), "##cchev%llu", (unsigned long long)collId);
     OutlinerChevron(cid, open);
     store->SetBool(openKey, open);
-    ImGui::SameLine(0.0f, 2.0f);
-    ImVec2 sq = ImGui::GetCursorScreenPos();
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        ImVec2(sq.x, sq.y + lh * 0.2f), ImVec2(sq.x + lh * 0.6f, sq.y + lh * 0.8f),
-        CollectionIconColor(*coll), 2.0f);
-    ImGui::Dummy(ImVec2(lh * 0.8f, lh));
-    ImGui::SameLine(0.0f, 4.0f);
+    // Collection swatch: a coloured square aligned/sized like a type icon.
+    OutlinerSlotSwatch(collColor);
     ImU32 txt = OutlinerLabelColor(searchHit, /*dim=*/false);
     ImVec2 tp = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddText(
         ImVec2(tp.x, tp.y + (ImGui::GetTextLineHeightWithSpacing() - lh) * 0.5f),
         txt, coll->name.c_str());
-    ImGui::Dummy(ImVec2(ImGui::CalcTextSize(coll->name.c_str()).x,
-                        ImGui::GetTextLineHeightWithSpacing()));
+    ImGui::Dummy(ImVec2(ImGui::CalcTextSize(coll->name.c_str()).x, OutlinerItemH()));
+
+    if (!open) OutlinerCollapsedSummary(collId | kCollBit);
 
     // Collection eye: hides/reveals the whole subtree.
     {
@@ -786,7 +974,9 @@ void Application::OutlinerCollectionNode(uint64_t collId) {
         if (vis == hidden) doc.SetCollectionVisible(collId, vis);   // button flipped it
     }
     if (open) {
-        ImGui::Indent(lh);   // deeper child indent → clearer hierarchy
+        // First child's stripe top == this collection row's stripe bottom.
+        const float firstChildTop = outlinerLastStripeBottom_;
+        ImGui::Indent(OutlinerChevronSlotW());   // one slot → children align, shifted by 1
         // Children in their stored order: a child id is either a nested
         // collection or a page (unified tree).
         for (uint64_t childId : coll->children) {
@@ -815,7 +1005,11 @@ void Application::OutlinerCollectionNode(uint64_t collId) {
         };
         for (Renderer::Shape* s : objs)
             if (!parentInThisColl(s)) OutlinerObjectSubtree(s->id, collId);
-        ImGui::Unindent(lh);   // must match the Indent(lh) above (was 0.5f → leak)
+        ImGui::Unindent(OutlinerChevronSlotW());   // must match the Indent above
+        // Vertical guide line in the collection's colour, from the first child's
+        // stripe top to the last child's stripe bottom.
+        OutlinerTreeLine(guideX, firstChildTop, outlinerLastStripeBottom_,
+                         collColor, /*dotted=*/false);
     }
 }
 
@@ -831,14 +1025,9 @@ void Application::OutlinerPageNode(int abIndex) {
     outlinerCur_->rowOrder.push_back(ab.id);
     const float lh = ImGui::GetTextLineHeight();
 
-    ZebraRowBg();
-
     if (s_renameId == (ab.id | kPageBit)) {
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SetKeyboardFocusHere();
-        if (ImGui::InputText("##prename", s_renameBuf, sizeof(s_renameBuf),
-                             ImGuiInputTextFlags_EnterReturnsTrue |
-                             ImGuiInputTextFlags_AutoSelectAll)) {
+        OutlinerRowFinish(); UI::ListRowAdvanceZebra();
+        if (OutlinerRenameField(s_renameBuf, sizeof(s_renameBuf), /*hasIcon=*/true)) {
             ab.name = s_renameBuf; s_renameId = 0; project_.dirty = true;
         }
         if (ImGui::IsItemDeactivated()) { ab.name = s_renameBuf; s_renameId = 0; project_.dirty = true; }
@@ -888,11 +1077,14 @@ void Application::OutlinerPageNode(int abIndex) {
                            pageCtxPos_ = ImGui::GetMousePos(); }
 
     // ── Content over the state bg ──
+    const float guideX = OutlinerGuideX(ImGui::GetCursorScreenPos().x);
+    const ImU32 pageLineColor = ImGui::ColorConvertFloat4ToU32(
+        DST::DesignSystem::Instance().GetColor(DST::Tok::S_Color_Border_Default));
     OutlinerDotGutter();
     char cid[32]; std::snprintf(cid, sizeof(cid), "##pchev%llu", (unsigned long long)ab.id);
     OutlinerChevron(cid, open);
     store->SetBool(openKey, open);
-    ImGui::SameLine(0.0f, 2.0f);
+    OutlinerSlotIcon(kIconPage, DST::DesignSystem::Instance().GetColor(DST::Tok::C_Outliner_Text));
     char label[96];
     std::snprintf(label, sizeof(label), "%s  (%.0f x %.0f)",
                   ab.name.c_str(), ab.size.x, ab.size.y);
@@ -900,7 +1092,9 @@ void Application::OutlinerPageNode(int abIndex) {
     ImVec2 tp = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddText(
         ImVec2(tp.x, tp.y + (ImGui::GetTextLineHeightWithSpacing() - lh) * 0.5f), txt, label);
-    ImGui::Dummy(ImVec2(ImGui::CalcTextSize(label).x, ImGui::GetTextLineHeightWithSpacing()));
+    ImGui::Dummy(ImVec2(ImGui::CalcTextSize(label).x, OutlinerItemH()));
+
+    if (!open) OutlinerCollapsedSummary(ab.id | kPageBit);
 
     // Page eye: hide/show the whole page.
     {
@@ -910,7 +1104,9 @@ void Application::OutlinerPageNode(int abIndex) {
         if (vis != ab.pageVisible) { ab.pageVisible = vis; project_.dirty = true; }
     }
     if (open) {
-        ImGui::Indent(lh);                 // deeper child indent → clearer hierarchy
+        // First child's stripe top == this page row's stripe bottom.
+        const float firstChildTop = outlinerLastStripeBottom_;
+        ImGui::Indent(OutlinerChevronSlotW());   // one slot → children align, shifted by 1
         OutlinerDropIntoCollection(0);     // drop an object here → un-collection
         // Collections nested under this page (a page is a full tree node, 8c).
         for (uint64_t childId : ab.children)
@@ -933,7 +1129,9 @@ void Application::OutlinerPageNode(int abIndex) {
         };
         for (Renderer::Shape* s : objs)
             if (!parentBareOnPage(s)) OutlinerObjectSubtree(s->id, 0);
-        ImGui::Unindent(lh);
+        ImGui::Unindent(OutlinerChevronSlotW());
+        OutlinerTreeLine(guideX, firstChildTop, outlinerLastStripeBottom_,
+                         pageLineColor, /*dotted=*/false);
     }
 }
 
@@ -950,14 +1148,9 @@ void Application::OutlinerPageLayersNode(int abIndex) {
     outlinerCur_->rowOrder.push_back(ab.id);
     const float lh = ImGui::GetTextLineHeight();
 
-    ZebraRowBg();
-
     if (s_renameId == (ab.id | kPageBit)) {
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::SetKeyboardFocusHere();
-        if (ImGui::InputText("##prenameL", s_renameBuf, sizeof(s_renameBuf),
-                             ImGuiInputTextFlags_EnterReturnsTrue |
-                             ImGuiInputTextFlags_AutoSelectAll)) {
+        OutlinerRowFinish(); UI::ListRowAdvanceZebra();
+        if (OutlinerRenameField(s_renameBuf, sizeof(s_renameBuf), /*hasIcon=*/true)) {
             ab.name = s_renameBuf; s_renameId = 0; project_.dirty = true;
         }
         if (ImGui::IsItemDeactivated()) { ab.name = s_renameBuf; s_renameId = 0; project_.dirty = true; }
@@ -984,7 +1177,7 @@ void Application::OutlinerPageLayersNode(int abIndex) {
     char cid[32]; std::snprintf(cid, sizeof(cid), "##plchev%llu", (unsigned long long)ab.id);
     OutlinerChevron(cid, open);
     store->SetBool(openKey, open);
-    ImGui::SameLine(0.0f, 2.0f);
+    OutlinerSlotIcon(kIconPage, DST::DesignSystem::Instance().GetColor(DST::Tok::C_Outliner_Text));
     char label[96];
     std::snprintf(label, sizeof(label), "%s  (%.0f x %.0f)",
                   ab.name.c_str(), ab.size.x, ab.size.y);
@@ -992,7 +1185,7 @@ void Application::OutlinerPageLayersNode(int abIndex) {
     ImVec2 tp = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddText(
         ImVec2(tp.x, tp.y + (ImGui::GetTextLineHeightWithSpacing() - lh) * 0.5f), txt, label);
-    ImGui::Dummy(ImVec2(ImGui::CalcTextSize(label).x, ImGui::GetTextLineHeightWithSpacing()));
+    ImGui::Dummy(ImVec2(ImGui::CalcTextSize(label).x, OutlinerItemH()));
 
     {
         bool vis = ab.pageVisible;
@@ -1001,14 +1194,14 @@ void Application::OutlinerPageLayersNode(int abIndex) {
         if (vis != ab.pageVisible) { ab.pageVisible = vis; project_.dirty = true; }
     }
     if (open) {
-        ImGui::Indent(lh);
+        ImGui::Indent(OutlinerChevronSlotW());
         // Every object on the page, in REVERSE draw order (top of the z-stack at
         // the top of the list). No collection grouping, no parenting nesting — a
         // flat layer list. Parented children still show via the object row's own
         // mark/child handling, but here we list each shape once at top level.
         for (size_t i = ab.shapes.size(); i-- > 0; )
             OutlinerObjectRow(ab.shapes[i]);
-        ImGui::Unindent(lh);
+        ImGui::Unindent(OutlinerChevronSlotW());
     }
 }
 
@@ -1048,7 +1241,7 @@ void Application::RenderOutliner(EditorState& st) {
         }
     }
 
-    s_zebraRow = 0;   // reset stripe parity at the top of the tree
+    UI::ListRowResetZebra();   // reset stripe parity at the top of the tree
     outlinerCur_->rowOrder.clear();          // rebuilt per frame for Shift-range select
     OutlinerRebuildSearch();             // recompute search matches for this frame
 
@@ -1071,19 +1264,35 @@ void Application::RenderOutliner(EditorState& st) {
     doc.EnsureProjectRoot();
     Renderer::Collection* root = doc.FindCollection(Renderer::kProjectRootId);
     std::string title = project_.TabTitle();
-    ZebraRowBg();
     ImGuiStorage* store = ImGui::GetStateStorage();
     ImGuiID rootKey = ImGui::GetID("##prjroot");
     bool rootOpen = store->GetBool(rootKey, true);
-    OutlinerDotGutter();
-    char rcid[16]; std::snprintf(rcid, sizeof(rcid), "##prjchev");
-    OutlinerChevron(rcid, rootOpen);
-    store->SetBool(rootKey, rootOpen);
-    ImGui::SameLine(0.0f, 2.0f);
-    ImGui::TextUnformatted(title.c_str());
-    OutlinerNodeDropInto(Renderer::kProjectRootId);  // drop a node/object onto root
+    // Root row via the generic ListRow (zebra + hit, no selection band). The
+    // chevron + title draw inside the band, aligned like every other row.
+    {
+        UI::ListRowConfig rc;
+        rc.id = (ImGuiID)0x12345678u;   // stable id for the project-root row
+        rc.zebraOdd = (UI::ListRowZebraIndex() & 1) != 0;
+        rc.zebraColor = ImGui::ColorConvertFloat4ToU32(ds.GetColor(DST::Tok::S_Color_Background_Layer2));
+        rc.bandMarginLeft = OutlinerBandMargin();
+        rc.cornerRadius   = ds.GetFloat(DST::Tok::S_CornerRadius_Control);
+        outlinerRow_.reset();
+        outlinerRow_.emplace(rc);
+        OutlinerDotGutter();
+        char rcid[16]; std::snprintf(rcid, sizeof(rcid), "##prjchev");
+        OutlinerChevron(rcid, rootOpen);
+        store->SetBool(rootKey, rootOpen);
+        OutlinerSlotIcon(kIconFolder, ds.GetColor(DST::Tok::C_Outliner_Text));
+        ImVec2 tp = ImGui::GetCursorScreenPos();
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(tp.x, tp.y + (OutlinerRowH() - ImGui::GetTextLineHeight()) * 0.5f),
+            ImGui::ColorConvertFloat4ToU32(ds.GetColor(DST::Tok::C_Outliner_Text)),
+            title.c_str());
+        ImGui::Dummy(ImVec2(ImGui::CalcTextSize(title.c_str()).x, OutlinerItemH()));
+        OutlinerNodeDropInto(Renderer::kProjectRootId);  // drop a node/object onto root
+    }
     if (rootOpen && root) {
-        ImGui::Indent(ImGui::GetTextLineHeight() * 0.5f);
+        ImGui::Indent(OutlinerChevronSlotW());
         if (outlinerCur_->display == OutlinerDisplayMode::Layers) {
             // LAYERS mode: objects per PAGE in DRAW order (z-order), ignoring the
             // collection tree. Each page is a separate render, so they stay split.
@@ -1115,33 +1324,39 @@ void Application::RenderOutliner(EditorState& st) {
                       [](Renderer::Shape* a, Renderer::Shape* b){ return a->name < b->name; });
             for (Renderer::Shape* s : rootLoose) OutlinerObjectRow(*s);
         }
-        ImGui::Unindent(ImGui::GetTextLineHeight() * 0.5f);
+        ImGui::Unindent(OutlinerChevronSlotW());
     }
+
+    // Close the last open row (its destructor advances the cursor one stripe).
+    OutlinerRowFinish();
 
     // Continue the zebra stripes to the BOTTOM of the editor even past the last
     // row, so the alternation never stops mid-panel.
     {
-        const float h = ImGui::GetTextLineHeightWithSpacing();
+        const float h = UI::ListRowStripeHeight();
         ImGuiWindow* w = ImGui::GetCurrentWindow();
         float y = ImGui::GetCursorScreenPos().y;
         const float bottom = w->WorkRect.Max.y;
+        const float L = OutlinerRowLeft(), R = OutlinerRowRight();   // edge to edge
         ImU32 stripe = ImGui::ColorConvertFloat4ToU32(
             ds.GetColor(DST::Tok::S_Color_Background_Layer2));
         while (y < bottom) {
-            if (s_zebraRow & 1)
+            if (UI::ListRowZebraIndex() & 1)
                 ImGui::GetWindowDrawList()->AddRectFilled(
-                    ImVec2(w->WorkRect.Min.x, y),
-                    ImVec2(w->WorkRect.Max.x + ImGui::GetStyle().ScrollbarSize,
-                           std::min(y + h, bottom)),
-                    stripe);
+                    ImVec2(L, y), ImVec2(R, std::min(y + h, bottom)), stripe);
             y += h;
-            ++s_zebraRow;
+            UI::ListRowAdvanceZebra();
         }
     }
 
     // Clicks on the EMPTY background: LMB clears the outliner selection (keeps the
-    // document active object), RMB opens the Add Collection menu.
-    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && !ImGui::IsAnyItemHovered()) {
+    // document active object), RMB opens the Add Collection menu. Suppressed while
+    // any popup/menu is open (a geometric click test would otherwise fire THROUGH
+    // an open context menu drawn over the panel).
+    const bool anyPopupOpen = ImGui::IsPopupOpen(nullptr,
+        ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    if (!anyPopupOpen &&
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && !ImGui::IsAnyItemHovered()) {
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             outlinerCur_->sel.clear(); outlinerCur_->active = 0;
             project_.document.DeselectAll();
@@ -1272,12 +1487,12 @@ void Application::BuildOutlinerTopBar(EditorState& st, EditorBar& bar) {
         fc.menuSize = ImVec2(210.0f * gs, 230.0f * gs);
         fc.bodyDraw = [this, &ds2, gs, &iconMgr, h]() {
             ImGui::TextDisabled("Show");
-            ImGui::Checkbox("Objects",     &outlinerCur_->showObjects);
-            ImGui::Checkbox("Pages",       &outlinerCur_->showPages);
-            ImGui::Checkbox("Collections", &outlinerCur_->showCollections);
+            UI::Checkbox("##fObjects",     "Objects",     &outlinerCur_->showObjects);
+            UI::Checkbox("##fPages",       "Pages",       &outlinerCur_->showPages);
+            UI::Checkbox("##fCollections", "Collections", &outlinerCur_->showCollections);
             ImGui::Separator();
-            ImGui::Checkbox("Meshes", &outlinerCur_->showMeshes);
-            ImGui::Checkbox("Curves", &outlinerCur_->showCurves);
+            UI::Checkbox("##fMeshes", "Meshes", &outlinerCur_->showMeshes);
+            UI::Checkbox("##fCurves", "Curves", &outlinerCur_->showCurves);
             ImGui::Separator();
             // Object state: a nested dropdown + an invert icon button to its right.
             static const char* kStates[] = { "All", "Visible", "Selected", "Active", "Selectable" };
