@@ -32,6 +32,7 @@ public:
         Keymap,
         Navigation,
         Icons,
+        Dev,
     };
 
     // Render the window when *open is true. Sets *open to false when the user
@@ -54,6 +55,7 @@ private:
     void RenderLanguagePage(float width, float height);
     void RenderNavigationPage(float width, float height);
     void RenderIconsPage(float width, float height);
+    void RenderDevPage(float width, float height);
 
     // Shared page scaffold: a left-inset title + an optional one-line caption,
     // followed by a transparent, full-width scroll region the body fills. Keeps

@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#e3e3e3" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Control polygon (thin, connecting the control points) -->
+  <path class="ds-primary" d="M4 18 L 8 5 L 16 19 L 20 6" stroke-width="1"/>
+  <!-- Smooth NURBS curve approximating the control polygon -->
+  <path class="ds-primary" d="M4 18 C 7 11, 9 9, 12 12 C 15 15, 17 11, 20 6"/>
+  <!-- Square control points -->
+  <rect class="ds-primary" x="2.6" y="16.6" width="2.8" height="2.8" fill="#e3e3e3" stroke="none"/>
+  <rect class="ds-primary" x="6.6" y="3.6"  width="2.8" height="2.8" fill="#e3e3e3" stroke="none"/>
+  <rect class="ds-primary" x="14.6" y="17.6" width="2.8" height="2.8" fill="#e3e3e3" stroke="none"/>
+  <rect class="ds-primary" x="18.6" y="4.6"  width="2.8" height="2.8" fill="#e3e3e3" stroke="none"/>
+</svg>

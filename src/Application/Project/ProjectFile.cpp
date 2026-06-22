@@ -120,7 +120,7 @@ constexpr uint32_t TAG_VSET = 0x54455356; // 'VSET' — editor UI settings
 //        (no parent), so they load with a flat object hierarchy — unchanged.
 //   v26: Document.cursorRotation (the 2D cursor's orientation, rotated with R under
 //        the 2D Cursor tool). Older files default 0 (axis-aligned cursor).
-constexpr uint32_t DOC_VERSION = 27;   // v27: Node.junctionId (multi-path branches)
+constexpr uint32_t DOC_VERSION = 28;   // v28: per-axis transform locks (pos X/Y, scale X/Y)
 
 // ── Document encode ──────────────────────────────────────────────────────────
 void EncodePaint(Writer& w, const Renderer::FillStyle& f) {
@@ -219,8 +219,16 @@ void EncodeShape(Writer& w, const Renderer::Shape& s) {
     w.f32(s.transform.translate.x); w.f32(s.transform.translate.y);
     w.f32(s.transform.rotate);
     w.f32(s.transform.scale.x); w.f32(s.transform.scale.y);
-    w.u8(s.lockScale ? 1 : 0);          // v13
+    // v13..v27 wrote a single lockScale u8; v28 writes per-axis locks. The
+    // legacy whole-scale slot is kept (= both scale axes) so a v28 file still
+    // round-trips the old field's meaning for any downstream reader that stops at
+    // v27, and the per-axis bytes follow.
+    w.u8(s.LockScaleBoth() ? 1 : 0);    // v13 (legacy whole-scale)
     w.u8(s.lockRotation ? 1 : 0);       // v13
+    w.u8(s.lockPosX ? 1 : 0);           // v28
+    w.u8(s.lockPosY ? 1 : 0);           // v28
+    w.u8(s.lockScaleX ? 1 : 0);         // v28
+    w.u8(s.lockScaleY ? 1 : 0);         // v28
     w.u32((uint32_t)(int32_t)s.isomCode); // v14
     w.u8(s.allowCapEdit ? 1 : 0);       // v18 cap-editable opt-in
     w.u64(s.parentId);                  // v25 object parenting (0 = none)
@@ -421,8 +429,15 @@ Renderer::Shape DecodeShapeV3(Reader& r, uint32_t ver) {
     s.transform.rotate = r.f32();
     s.transform.scale.x = r.f32(); s.transform.scale.y = r.f32();
     if (ver >= 13) {                    // per-shape transform locks
-        s.lockScale    = r.u8() != 0;
-        s.lockRotation = r.u8() != 0;
+        bool legacyScale = r.u8() != 0; // v13 whole-scale (both axes)
+        s.lockRotation   = r.u8() != 0;
+        s.SetLockScale(legacyScale);    // default per-axis from the legacy field
+        if (ver >= 28) {                // v28 per-axis locks override the legacy bit
+            s.lockPosX   = r.u8() != 0;
+            s.lockPosY   = r.u8() != 0;
+            s.lockScaleX = r.u8() != 0;
+            s.lockScaleY = r.u8() != 0;
+        }
     }
     if (ver >= 14) s.isomCode = (int)(int32_t)r.u32();   // ISOM symbol code
     if (ver >= 18) s.allowCapEdit = r.u8() != 0;         // cap-editable opt-in

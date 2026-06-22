@@ -1216,7 +1216,10 @@ void Application::ApplySymbolStyle(Renderer::Shape& target,
     target.name        = tpl.name;
     target.isomCode    = tpl.isomCode;
     target.allowCapEdit= tpl.allowCapEdit;
-    target.lockScale   = tpl.lockScale;
+    target.lockPosX    = tpl.lockPosX;
+    target.lockPosY    = tpl.lockPosY;
+    target.lockScaleX  = tpl.lockScaleX;
+    target.lockScaleY  = tpl.lockScaleY;
     target.lockRotation= tpl.lockRotation;
 }
 

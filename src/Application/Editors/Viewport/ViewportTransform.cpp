@@ -319,10 +319,12 @@ void Application::UpdateTransformOp(
         Renderer::Shape* sp = project_.document.FindShape(transformOp_.ids[i]);
         if (!sp || i >= transformOp_.snapshot.size()) continue;
         // Honour per-shape transform locks: a fixed-size / north-oriented symbol
-        // (e.g. ISOM) ignores the matching op (a mixed selection still moves the
-        // unlocked ones).
-        if (transformOp_.kind == TransformKind::Scale  && sp->lockScale)    continue;
-        if (transformOp_.kind == TransformKind::Rotate && sp->lockRotation) continue;
+        // (e.g. ISOM) or a per-axis padlock ignores the matching op (a mixed
+        // selection still moves the unlocked ones). Rotation locks wholesale;
+        // move/scale lock per-axis (restored from the snapshot below), so only the
+        // fully-locked scale can early-out here.
+        if (transformOp_.kind == TransformKind::Scale  && sp->LockScaleBoth()) continue;
+        if (transformOp_.kind == TransformKind::Rotate && sp->lockRotation)    continue;
         const Renderer::Transform& snap = transformOp_.snapshot[i];
         Renderer::Transform t = snap;
         // Display origin for THIS viewport (matches ComputePivot) — keeps the
@@ -375,6 +377,11 @@ void Application::UpdateTransformOp(
                                 snap.translate.y + (Ow2.y - Ow.y) };
             }
         }
+        // Restore any per-axis-locked component from the snapshot (no-op on that axis).
+        if (sp->lockPosX)   t.translate.x = snap.translate.x;
+        if (sp->lockPosY)   t.translate.y = snap.translate.y;
+        if (sp->lockScaleX) t.scale.x     = snap.scale.x;
+        if (sp->lockScaleY) t.scale.y     = snap.scale.y;
         sp->transform = t;
     }
 
@@ -768,8 +775,8 @@ void Application::ApplyTransformFromSnapshot(
     for (size_t i = 0; i < ids.size() && i < snap.size(); ++i) {
         Renderer::Shape* sp = doc.FindShape(ids[i]);
         if (!sp) continue;
-        if (kind == TransformKind::Scale  && sp->lockScale)    continue;
-        if (kind == TransformKind::Rotate && sp->lockRotation) continue;
+        if (kind == TransformKind::Scale  && sp->LockScaleBoth()) continue;
+        if (kind == TransformKind::Rotate && sp->lockRotation)    continue;
         const Renderer::Vec2 po = CurPageOriginOfShape(ids[i]);
         Renderer::Transform t = snap[i];
         if (kind == TransformKind::Move) {
@@ -796,6 +803,10 @@ void Application::ApplyTransformFromSnapshot(
                                 snap[i].translate.y + (P.y + sr.y - Ow.y) };
             }
         }
+        if (sp->lockPosX)   t.translate.x = snap[i].translate.x;
+        if (sp->lockPosY)   t.translate.y = snap[i].translate.y;
+        if (sp->lockScaleX) t.scale.x     = snap[i].scale.x;
+        if (sp->lockScaleY) t.scale.y     = snap[i].scale.y;
         sp->transform = t;
     }
     MarkUndoLabel(kind == TransformKind::Move ? "Move"

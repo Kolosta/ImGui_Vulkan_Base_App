@@ -1,6 +1,8 @@
 #include <UI/Settings/SettingsWindow.h>
 #include <UI/Settings/TokenPropertyRow.h>
+#include <UI/Chrome/BorderlessWindow.h>
 #include <UI/Widgets/ButtonGroup.h>
+#include <UI/Widgets/Checkbox.h>
 #include <UI/Widgets/Panel.h>
 #include <UI/Widgets/ScrollArea.h>
 #include <UI/Shortcuts/ShortcutCaptureField.h>
@@ -40,8 +42,8 @@ struct NavItem {
 };
 
 // Groups: [General, Language] · [Theme, Customisation, Accessibility]
-//         · [Inputs, Keymap, Navigation] · [Icons]
-const std::array<NavItem, 9> kNav = {{
+//         · [Inputs, Keymap, Navigation] · [Icons] · [Dev]
+const std::array<NavItem, 10> kNav = {{
     { SettingsWindow::Page::General,       "General",       "settings", 0 },
     { SettingsWindow::Page::Language,      "Language",      "",         0 },
     { SettingsWindow::Page::Theme,         "Theme",         "",         1 },
@@ -51,6 +53,7 @@ const std::array<NavItem, 9> kNav = {{
     { SettingsWindow::Page::Keymap,        "Keymap",        "",         2 },
     { SettingsWindow::Page::Navigation,    "Navigation",    "",         2 },
     { SettingsWindow::Page::Icons,         "Icons",         "",         3 },
+    { SettingsWindow::Page::Dev,           "Dev",           "",         4 },
 }};
 
 const char* PageTitle(SettingsWindow::Page p) {
@@ -221,11 +224,19 @@ void SettingsWindow::RenderTitleBar(float width) {
     SDL_Window* sdlWin = vp
         ? SDL_GetWindowFromID((SDL_WindowID)(intptr_t)vp->PlatformHandle)
         : nullptr;
+    // The borderless behaviour (maximize/restore/fullscreen) is owned by the
+    // window's controller; the bar only chooses glyphs + forwards button hits.
+    BorderlessWindowController* chrome =
+        BorderlessWindowController::FromWindow(sdlWin);
 
     const float btnW = barH;     // square slots
     const ImU32 glyph = ImGui::ColorConvertFloat4ToU32(iconV);
     const ImU32 hovBg = ImGui::ColorConvertFloat4ToU32(Col(Tok::C_PrefBar_ButtonHover));
     const ImU32 closeBg = ImGui::ColorConvertFloat4ToU32(Col(Tok::C_PrefBar_CloseHover));
+
+    // Show the restore glyph (two stacked squares) while maximized, like the
+    // main title bar.
+    const bool maximized = chrome && chrome->IsMaximized();
 
     struct SysBtn { const char* id; int kind; };  // 0 min, 1 max, 2 close
     const SysBtn order[3] = { {"##prefMin",0}, {"##prefMax",1}, {"##prefClose",2} };
@@ -234,7 +245,10 @@ void SettingsWindow::RenderTitleBar(float width) {
         ImGui::SetCursorScreenPos(ImVec2(bx, mn.y));
         ImGui::InvisibleButton(order[i].id, ImVec2(btnW, barH));
         bool hov = ImGui::IsItemHovered();
-        bool clk = ImGui::IsItemClicked();
+        // System buttons fire on RELEASE over the button, not on press — native
+        // window-button behaviour and matching the main title bar. A press that
+        // drags off before release is cancelled.
+        bool clk = ImGui::IsItemDeactivated() && hov;
         ImVec2 bmn = ImGui::GetItemRectMin(), bmx = ImGui::GetItemRectMax();
         if (hov)
             dl->AddRectFilled(bmn, bmx, order[i].kind == 2 ? closeBg : hovBg);
@@ -244,21 +258,34 @@ void SettingsWindow::RenderTitleBar(float width) {
         if (order[i].kind == 0) {                 // minimize
             dl->AddRectFilled(ImVec2(c.x - s, c.y), ImVec2(c.x + s, c.y + t), glyph);
         } else if (order[i].kind == 1) {          // maximize / restore
-            dl->AddRect(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), glyph, 0, 0, t);
+            if (maximized) {
+                const float o = 2.0f * gs;        // back-square offset
+                // Front square (lower-left) + back square top/right edges.
+                dl->AddRect(ImVec2(c.x - s, c.y - s + o),
+                            ImVec2(c.x + s - o, c.y + s), glyph, 0, 0, t);
+                dl->AddLine(ImVec2(c.x - s + o, c.y - s),
+                            ImVec2(c.x + s, c.y - s), glyph, t);
+                dl->AddLine(ImVec2(c.x + s, c.y - s),
+                            ImVec2(c.x + s, c.y + s - o), glyph, t);
+            } else {
+                dl->AddRect(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s),
+                            glyph, 0, 0, t);
+            }
         } else {                                  // close (X)
-            dl->AddLine(ImVec2(c.x - s, c.y - s), ImVec2(c.x + s, c.y + s), glyph, t);
-            dl->AddLine(ImVec2(c.x - s, c.y + s), ImVec2(c.x + s, c.y - s), glyph, t);
+            // Snap the four ends to pixel centres so both diagonals are the
+            // same length (without it the un-snapped ends get eaten unevenly by
+            // AA and the right branches look shorter) — same as the main bar.
+            auto snap = [](float v){ return std::floor(v) + 0.5f; };
+            float fl = snap(c.x - s), fr = snap(c.x + s);
+            float ft = snap(c.y - s), fb = snap(c.y + s);
+            dl->AddLine(ImVec2(fl, ft), ImVec2(fr, fb), glyph, t);
+            dl->AddLine(ImVec2(fl, fb), ImVec2(fr, ft), glyph, t);
         }
         if (clk) {
             if (order[i].kind == 0) {             // minimize
-                if (sdlWin) SDL_MinimizeWindow(sdlWin);
+                if (chrome) chrome->Minimize();
             } else if (order[i].kind == 1) {      // maximize / restore
-                if (sdlWin) {
-                    if (SDL_GetWindowFlags(sdlWin) & SDL_WINDOW_MAXIMIZED)
-                        SDL_RestoreWindow(sdlWin);
-                    else
-                        SDL_MaximizeWindow(sdlWin);
-                }
+                if (chrome) chrome->ToggleMaximizeOrFullscreen();
             } else {                              // close
                 sysClose_ = true;
             }
@@ -280,7 +307,7 @@ void SettingsWindow::RenderLeftColumn(float width, float height) {
 
     // Render one ButtonGroup per visual group, stacked vertically with a gap
     // between groups. Each group is a single column; one button per row.
-    for (int g = 0; g <= 3; ++g) {
+    for (int g = 0; g <= 4; ++g) {
         std::vector<const NavItem*> items;
         for (const NavItem& n : kNav) if (n.group == g) items.push_back(&n);
         if (items.empty()) continue;
@@ -318,6 +345,7 @@ void SettingsWindow::RenderPage(float width, float height) {
         case Page::Language:      RenderLanguagePage(width, height); return;
         case Page::Navigation:    RenderNavigationPage(width, height); return;
         case Page::Icons:         RenderIconsPage(width, height); return;
+        case Page::Dev:           RenderDevPage(width, height); return;
     }
 }
 
@@ -589,6 +617,31 @@ void SettingsWindow::RenderIconsPage(float width, float height) {
     ImGui::TextWrapped("The icon set editor is available in the Design System "
                        "window (Windows menu > Design System > Icons tab).");
     ImGui::Unindent(ipad);
+    EndPageBody();
+}
+
+// ── Dev page: developer/debug toggles (token-backed, persistent app-wide) ────
+// Currently a single toggle for the colour-coded editor-corner hit-zone previews.
+// The drawing code is kept; this only gates whether it shows.
+void SettingsWindow::RenderDevPage(float width, float height) {
+    auto& ds = DS::DesignSystem::Instance();
+    (void)width; (void)height;
+    DS::Context ctx = ds.GetCurrentContext();
+
+    BeginPageBody("Dev",
+                  "Developer / debug toggles. Persisted app-wide.");
+
+    UI::PanelConfig pc; pc.id = "##devOverlays"; pc.label = "Overlays";
+    pc.defaultOpen = true;
+    UI::PanelResult pr = UI::BeginPanel(pc);
+    if (pr.open) {
+        // A 0/1 token → TokenPropertyRow renders it as a checkbox. Edits go global
+        // (a dev flag, not theme-scoped).
+        UI::TokenPropertyRow("##devOverlays", "Show editor corner zones",
+                             Tok::S_Config_ShowCornerZones, ctx, /*editGlobal=*/true);
+    }
+    UI::EndPanel();
+
     EndPageBody();
 }
 
@@ -1233,7 +1286,7 @@ void SettingsWindow::RenderCustomisationPage(float width, float height) {
     ImGui::BeginGroup();
     ImGui::TextUnformatted("Customisation");
     ImGui::SameLine(0.0f, 16.0f * gs);
-    ImGui::Checkbox("Edit globally", &editGlobal_);
+    UI::Checkbox("##editGlobally", "Edit globally", &editGlobal_);
     ImGui::EndGroup();
     ImGui::Spacing();
 
@@ -1468,7 +1521,7 @@ void SettingsWindow::RenderKeymapPage(float width, float height) {
                         for (size_t i = 0; i < b->current.size(); ++i) {
                             ImGui::PushID((int)i);
                             bool en = b->IsEntryEnabled(i);
-                            if (ImGui::Checkbox("##en", &en)) {
+                            if (UI::CheckboxBox("##en", &en)) {
                                 sm.SetEntryEnabled(a->id, (int)i, en);
                                 b = sm.GetBinding(a->id);
                             }
