@@ -482,6 +482,18 @@ void Application::RenderAddMenu() {
         UI::MenuEntry e; e.label = "(select an object first)"; e.enabled = false;
         entries.push_back(std::move(e));
     }
+    // New document — moved here from the viewport top bar. Only in Object mode
+    // (adding a whole document while editing one object's geometry makes no sense).
+    if (!edit) {
+        UI::MenuEntry nd; nd.label = "New Document"; nd.icon = "new";
+        nd.tooltip = "Create a new, empty document";
+        nd.onClick = [this]{
+            // Open the New Artboard popup in the leaf the Add menu belongs to (the
+            // mouse is over the popup by now, so HoveredEditorState() won't do).
+            if (addMenuState_) addMenuState_->openNewDoc = true;
+        };
+        entries.push_back(std::move(nd));
+    }
     UI::ContextMenu("##addMenu", addMenuPos_, entries, "Add");
 }
 

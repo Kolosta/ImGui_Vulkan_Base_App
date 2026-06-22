@@ -1035,6 +1035,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         // top-left viewport with several open.
         if (addMenuRequest_ && scopeHovered) {
             addMenuPos_ = io.MousePos;
+            addMenuState_ = &st;          // remember the leaf (for "New Document")
             ImGui::OpenPopup("##addMenu");
             addMenuRequest_ = false;
         }

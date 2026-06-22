@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <vector>
+#include <unordered_map>
 
 namespace App {
 // Editor metadata (name/icon/column/scope/switch-action) now lives in each
@@ -239,39 +240,59 @@ void ZoneLayout::DrawLeaf(Node* n, float gap) {
     if (desc && desc->topBar) {
         EditorBar bar;
         desc->topBar(LeafState(n), bar);
-        const float gap  = barPad.x;                 // min spacing between groups
+        const float gap  = barPad.x;                 // ONE uniform gap everywhere
         const float availX = avail.x;
         const float groupY = barPad.y;               // vertical-centre like the picker
         const float xMin   = selectorRight + gap;    // left boundary (after picker)
-        const float lW = bar.left.width, mW = bar.middle.width, rW = bar.right.width;
 
-        // Ideal positions (plenty of room): left at xMin, middle centred, right
-        // anchored to the inset.
+        // Group widths are MEASURED automatically (each group is wrapped in a
+        // BeginGroup/EndGroup; its real width is cached and reused next frame for
+        // positioning). This makes placement independent of any hand-declared width
+        // (`bar.*.width` is now only a first-frame hint). One-frame lag is
+        // imperceptible. Cache key = this zone's window id + a group index.
+        static std::unordered_map<ImU32, float> s_groupW;
+        const ImU32 base = ImGui::GetID("##barGroupW");
+        auto cachedW = [&](int idx, float hint) -> float {
+            auto it = s_groupW.find(base + (ImU32)idx);
+            return it != s_groupW.end() ? it->second : hint;
+        };
+        const float lW = bar.left.draw   ? cachedW(0, bar.left.width)   : 0.0f;
+        const float mW = bar.middle.draw ? cachedW(1, bar.middle.width) : 0.0f;
+        const float rW = bar.right.draw  ? cachedW(2, bar.right.width)  : 0.0f;
+
+        // Ideal positions: left after the picker; middle centred on the WHOLE bar;
+        // right anchored to the right inset (same margin as the left, = barPad.x).
         float leftX  = xMin;
         float rightX = availX - barPad.x - rW;
         float midX   = (availX - mW) * 0.5f;
-        // Clamp middle between the neighbours (keep the gap).
+        // Clamp the middle so it never overlaps a neighbour (keep exactly one gap).
         if (lW > 0) midX = std::max(midX, leftX + lW + gap);
         if (rW > 0) midX = std::min(midX, rightX - gap - mW);
-        // If the three don't fit, push the WHOLE block right (overflow clipped),
-        // computing the minimum-width packing from xMin and shifting if needed.
-        float needLeftEnd = leftX + lW;
-        if (mW > 0 && midX < needLeftEnd + gap) midX = needLeftEnd + gap;
-        float needMidEnd = midX + mW;
-        if (rW > 0 && rightX < needMidEnd + gap) rightX = needMidEnd + gap;  // right overflows → clipped
+        // If they still don't fit, push the block right (overflow clipped at the
+        // editor edge): pack left→middle→right with a single gap between each.
+        if (mW > 0 && midX < leftX + lW + gap) midX = leftX + lW + gap;
+        if (rW > 0) {
+            float minRight = (mW > 0 ? midX + mW : leftX + lW) + gap;
+            if (rightX < minRight) rightX = minRight;   // right overflows → clipped
+        }
 
         // Clip the whole bar to the editor (right group can overflow → hidden).
         ImVec2 clipMin = ImGui::GetWindowPos();
         ImVec2 clipMax(clipMin.x + availX, clipMin.y + barH);
         ImGui::PushClipRect(clipMin, clipMax, true);
-        auto drawGroup = [&](const EditorBarGroup& g, float x) {
-            if (!g.draw || g.width <= 0.0f) return;
+        // Draw a group wrapped in BeginGroup so we can measure its real width and
+        // cache it for next frame's positioning.
+        auto drawGroup = [&](const EditorBarGroup& g, int idx, float x) {
+            if (!g.draw) return;
             ImGui::SetCursorPos(ImVec2(x, groupY));
+            ImGui::BeginGroup();
             g.draw(ImVec2(x, groupY), barH);
+            ImGui::EndGroup();
+            s_groupW[base + (ImU32)idx] = ImGui::GetItemRectSize().x;
         };
-        drawGroup(bar.left,   leftX);
-        drawGroup(bar.middle, midX);
-        drawGroup(bar.right,  rightX);
+        drawGroup(bar.left,   0, leftX);
+        drawGroup(bar.middle, 1, midX);
+        drawGroup(bar.right,  2, rightX);
         ImGui::PopClipRect();
     }
     // Anchor the child's full height (we used SetCursorPos for manual layout).

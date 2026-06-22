@@ -40,6 +40,15 @@ void Application::RegisterDefaultShortcuts() {
         sm.RegisterAction(a, { sigKey(ImGuiKey_F1),
                                sigKey(ImGuiKey_Comma, /*ctrl=*/true) });
     }
+    {
+        Action a;
+        a.id = "app.toggleTokenGraph";
+        a.name = "Toggle Token Graph";
+        a.description = "Show or hide the Token Graph editor window";
+        a.category = ActionCategory::Application;
+        a.callback = [this]{ Action_ToggleTokenGraph(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_F2) });
+    }
 
     // ── File ─────────────────────────────────────────────────────────────────
     {
@@ -236,6 +245,29 @@ void Application::RegisterDefaultShortcuts() {
         a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_DeleteSelection(); };
         sm.RegisterAction(a, { sigKey(ImGuiKey_X) });
+    }
+    // ── Internal clipboard: copy / cut / paste objects & pages (Ctrl+C/X/V). ──
+    // Global (no editor scope) so they work from the Viewport or the Outliner.
+    {
+        Action a; a.id = "edit.copy"; a.name = "Copy";
+        a.description = "Copy the selected objects / pages to the internal clipboard";
+        a.category = ActionCategory::Edit;
+        a.callback = [this]{ Action_Copy(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_C, /*ctrl=*/true) });
+    }
+    {
+        Action a; a.id = "edit.cut"; a.name = "Cut";
+        a.description = "Cut the selected objects / pages to the internal clipboard";
+        a.category = ActionCategory::Edit;
+        a.callback = [this]{ Action_Cut(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_X, /*ctrl=*/true) });
+    }
+    {
+        Action a; a.id = "edit.paste"; a.name = "Paste";
+        a.description = "Paste the internal clipboard (objects onto the active page; pages as new artboards)";
+        a.category = ActionCategory::Edit;
+        a.callback = [this]{ Action_Paste(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_V, /*ctrl=*/true) });
     }
     {
         Action a; a.id = "edit.joinSelection"; a.name = "Join";

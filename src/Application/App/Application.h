@@ -541,14 +541,9 @@ private:
     void Action_Cut();
     void Action_Paste();
 
-    // Legacy single-object Outliner clipboard — kept here until the unified
-    // clipboard work removes its last user (Outliner context menu). Retained so
-    // this branch builds on its own; superseded by `clipboard_` above.
-    std::vector<Renderer::Shape> outlinerClipboard_;
+    // Outliner collection custom-colour picker (one-shot open + target id).
     uint64_t outlinerColorPickColl_ = 0;   // collection whose custom-colour picker is open
     bool     outlinerColorPickOpen_ = false; // one-shot: open the picker this frame
-    void Action_OutlinerCopy(uint64_t shapeId);
-    void Action_OutlinerPaste();
     void Action_OutlinerDuplicate(uint64_t shapeId);
     // Properties editor: the active object's name/transform + per-part fill/
     // stroke (and, in Edit Mode, the active point's handle type). Defined in

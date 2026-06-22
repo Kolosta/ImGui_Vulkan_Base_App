@@ -9,6 +9,7 @@
 #include <UI/Chrome/StatusBar.h>
 #include <UI/Widgets/IconWidgets.h>
 #include <UI/Widgets/Dropdown.h>
+#include <UI/Widgets/Checkbox.h>
 #include <UI/Widgets/PopupMenu.h>     // UI::DrawTooltip
 #include <UI/Widgets/ScrollArea.h>    // UI::BeginScroll / EndScroll
 #include <UI/Widgets/SidePanel.h>     // UI::EditorSidePanel
@@ -194,133 +195,83 @@ void Application::RegisterCoreEditors() {
                 DrawSnapWidget(ImGui::GetCursorPos(), kSnapW);
             };
 
-            // RIGHT: Page-Layout dropdown + show/hide-pages + "+" buttons.
+            // RIGHT: a single ICON-ONLY "Viewport overlay" dropdown that gathers the
+            // page-layout mode, the per-page show/hide list, the 2D-cursor toggle and
+            // the performance-metrics toggle into one organised menu.
             const float h = ds.GetFloat(DesignSystem::Tok::S_Size_ControlHeight) * gs;
-            bar.right.width = 60.0f * gs + 6.0f * gs + h + 6.0f * gs + h + 6.0f * gs + h
-                              + 6.0f * gs + h;   // + metrics-toggle button
+            bar.right.width = h + 6.0f * gs;     // just the overlay dropdown trigger
             bar.right.draw  = [this, gs, h, pst](ImVec2 pos, float) {
                 auto& ds2 = DesignSystem::DesignSystem::Instance();
-                auto& iconMgr = VectorGraphics::IconManager::Instance();
-                const float isz = ds2.GetFloat(DesignSystem::Tok::C_Dropdown_IconSize) * gs;
                 ImGui::SetCursorPos(pos);
-                { static const PageLayoutMode kModes[] = {
+
+                static const PageLayoutMode kModes[] = {
                     PageLayoutMode::Manual, PageLayoutMode::LeftToRight, PageLayoutMode::RightToLeft,
                     PageLayoutMode::TopToBottom, PageLayoutMode::BottomToTop, PageLayoutMode::Grid,
                     PageLayoutMode::BookLeft, PageLayoutMode::BookRight,
                     PageLayoutMode::SinglePage, PageLayoutMode::SingleBookLeft, PageLayoutMode::SingleBookRight };
-                  static const char* kTips[] = {
-                    "Pages stay where you placed them (free move)",
-                    "Arrange pages in a row, left to right","Arrange pages in a row, right to left",
-                    "Arrange pages in a column, top to bottom","Arrange pages in a column, bottom to top",
-                    "Arrange pages in a wrapped grid","Two-page spreads, first page on the left",
-                    "Two-page spreads, first page on the right",
-                    "Show one page at a time (use the N panel ▸ Pages to switch)",
-                    "One spread at a time, first page on the left",
-                    "One spread at a time, first page on the right" };
-                  constexpr int kModeCount = (int)(sizeof(kModes)/sizeof(kModes[0]));
-                  UI::DropdownConfig cfg; cfg.id="##pagelayout"; cfg.triggerIcon="image-aspect-ratio";
-                  cfg.triggerLabel = "";
-                  int cur=0; for (int i=0;i<kModeCount;++i){ UI::DropdownItem it; it.label=PageLayoutModeName(kModes[i]); it.tooltip=kTips[i]; cfg.items.push_back(it); if(kModes[i]==pst->pageLayout.mode) cur=i; }
-                  cfg.selectedIndex=cur;
-                  UI::DropdownResult r = UI::Dropdown(cfg);
-                  if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                      UI::DrawTooltip((std::string("Page layout: ") +
-                          PageLayoutModeName(pst->pageLayout.mode)).c_str(), ImGui::GetIO().MousePos);
-                  if (r.changed && r.selected>=0 && r.selected<kModeCount) pst->pageLayout.mode=kModes[r.selected]; }
+                constexpr int kModeCount = (int)(sizeof(kModes)/sizeof(kModes[0]));
+                const float bodyW = 230.0f * gs;
+                const float bodyH = 360.0f * gs;
 
-                ImGui::SameLine(0.0f, 6.0f * gs);
-                ImGui::PushStyleColor(ImGuiCol_Button, ds2.GetColor(DesignSystem::Tok::C_IconButton_Background));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ds2.GetColor(DesignSystem::Tok::C_IconButton_BackgroundHover));
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
-                bool showPagesClk = ImGui::Button("##showpages", ImVec2(h,h));
-                ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
-                { ImVec2 bm = ImGui::GetItemRectMin();
-                  ImVec2 ip = { bm.x + (h-isz)*0.5f, bm.y + (h-isz)*0.5f };
-                  ImVec4 tn = ds2.GetColor(DesignSystem::Tok::S_Color_Text_Default);
-                  auto m2 = iconMgr.GetDefaultMetadata("eye");
-                  if (!m2.colorZones.empty()) { m2.colorZones[0].customColor = tn;
-                      iconMgr.RenderIcon(ImGui::GetWindowDrawList(), "eye", ip, isz, m2); } }
-                if (showPagesClk) ImGui::OpenPopup("##showPagesPopup");
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                    UI::DrawTooltip("Show / hide pages in this viewport", ImGui::GetIO().MousePos);
-                ImGui::PushStyleColor(ImGuiCol_PopupBg, ds2.GetColor(DesignSystem::Tok::S_Color_Background_Layer1));
-                ImGui::PushStyleColor(ImGuiCol_Text,    ds2.GetColor(DesignSystem::Tok::S_Color_Text_Default));
-                if (ImGui::BeginPopup("##showPagesPopup")) {
-                    ImGui::TextDisabled("Pages shown in this viewport");
-                    auto& doc = project_.document;
-                    auto& hidden = pst->pageLayout.hiddenPages;
-                    for (const auto& ab : doc.artboards) {
-                        bool shown = std::find(hidden.begin(), hidden.end(), ab.id) == hidden.end();
-                        if (ImGui::Checkbox(ab.name.c_str(), &shown)) {
-                            if (!shown) {
-                                int shownCount = 0;
-                                for (const auto& a2 : doc.artboards)
-                                    if (std::find(hidden.begin(), hidden.end(), a2.id) == hidden.end()) ++shownCount;
-                                if (shownCount > 1) hidden.push_back(ab.id);
-                            } else {
-                                hidden.erase(std::remove(hidden.begin(), hidden.end(), ab.id), hidden.end());
+                UI::DropdownConfig ov;
+                ov.id = "##viewportOverlay";
+                ov.triggerIcon = "image-aspect-ratio";   // icon-only trigger
+                ov.triggerLabel = "";
+                ov.menuSize = ImVec2(bodyW, bodyH);
+                ov.bodyDraw = [this, &ds2, gs, pst, bodyW]() {
+                    auto subtle = [&](const char* s){
+                        ImGui::PushStyleColor(ImGuiCol_Text, ds2.GetColor(DesignSystem::Tok::S_Color_Text_Subtle));
+                        ImGui::TextUnformatted(s); ImGui::PopStyleColor();
+                    };
+                    // ── Page layout (nested dropdown) ──
+                    subtle("Page layout");
+                    {
+                        UI::DropdownConfig pl; pl.id = "##plmode";
+                        pl.triggerLabel = PageLayoutModeName(pst->pageLayout.mode);
+                        int cur = 0;
+                        for (int i = 0; i < kModeCount; ++i) {
+                            UI::DropdownItem it; it.label = PageLayoutModeName(kModes[i]);
+                            pl.items.push_back(it);
+                            if (kModes[i] == pst->pageLayout.mode) cur = i;
+                        }
+                        pl.selectedIndex = cur;
+                        UI::DropdownResult r = UI::Dropdown(pl);
+                        if (r.changed && r.selected >= 0 && r.selected < kModeCount)
+                            pst->pageLayout.mode = kModes[r.selected];
+                    }
+                    ImGui::Separator();
+                    // ── Pages shown in this viewport (per-page checkboxes) ──
+                    subtle("Show pages");
+                    {
+                        auto& doc = project_.document;
+                        auto& hidden = pst->pageLayout.hiddenPages;
+                        for (const auto& ab : doc.artboards) {
+                            bool shown = std::find(hidden.begin(), hidden.end(), ab.id) == hidden.end();
+                            ImGui::PushID((int)ab.id);
+                            if (UI::Checkbox("##abShown", ab.name.c_str(), &shown)) {
+                                if (!shown) {
+                                    int shownCount = 0;
+                                    for (const auto& a2 : doc.artboards)
+                                        if (std::find(hidden.begin(), hidden.end(), a2.id) == hidden.end()) ++shownCount;
+                                    if (shownCount > 1) hidden.push_back(ab.id);
+                                } else {
+                                    hidden.erase(std::remove(hidden.begin(), hidden.end(), ab.id), hidden.end());
+                                }
                             }
+                            ImGui::PopID();
                         }
                     }
-                    ImGui::EndPopup();
-                }
-                ImGui::PopStyleColor(2);
-
-                // 2D cursor visibility toggle — hides only the drawing (the cursor
-                // still has a position used by transforms / snaps).
-                ImGui::SameLine(0.0f, 6.0f * gs);
-                ImGui::PushStyleColor(ImGuiCol_Button, ds2.GetColor(DesignSystem::Tok::C_IconButton_Background));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ds2.GetColor(DesignSystem::Tok::C_IconButton_BackgroundHover));
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
-                bool curClk = ImGui::Button("##cursortoggle", ImVec2(h,h));
-                ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
-                { ImVec2 bm = ImGui::GetItemRectMin();
-                  ImVec2 ip = { bm.x + (h-isz)*0.5f, bm.y + (h-isz)*0.5f };
-                  ImVec4 tn = ds2.GetColor(show2DCursor_ ? DesignSystem::Tok::S_Color_Text_Default
-                                                         : DesignSystem::Tok::S_Color_Text_Disabled);
-                  const char* icon = show2DCursor_ ? "eye" : "eye-closed";
-                  auto m3 = iconMgr.GetDefaultMetadata(icon);
-                  if (!m3.colorZones.empty()) { m3.colorZones[0].customColor = tn;
-                      iconMgr.RenderIcon(ImGui::GetWindowDrawList(), icon, ip, isz, m3); } }
-                if (curClk) show2DCursor_ = !show2DCursor_;
+                    ImGui::Separator();
+                    // ── Overlays ──
+                    subtle("Overlays");
+                    UI::Checkbox("##show2dcursor", "2D cursor", &show2DCursor_);
+                    UI::Checkbox("##showmetrics",  "Performance metrics", &showMetrics_);
+                };
+                UI::DropdownResult r = UI::Dropdown(ov);
+                (void)r;
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                    UI::DrawTooltip("Show / hide the 2D cursor", ImGui::GetIO().MousePos);
-
-                // Performance metrics overlay toggle (FPS / triangles / cache…).
-                ImGui::SameLine(0.0f, 6.0f * gs);
-                ImGui::PushStyleColor(ImGuiCol_Button, ds2.GetColor(DesignSystem::Tok::C_IconButton_Background));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ds2.GetColor(DesignSystem::Tok::C_IconButton_BackgroundHover));
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
-                bool mtClk = ImGui::Button("##metricstoggle", ImVec2(h,h));
-                ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
-                { ImVec2 bm = ImGui::GetItemRectMin();
-                  ImVec2 ip = { bm.x + (h-isz)*0.5f, bm.y + (h-isz)*0.5f };
-                  ImVec4 tn = ds2.GetColor(showMetrics_ ? DesignSystem::Tok::S_Color_Accent_Default
-                                                        : DesignSystem::Tok::S_Color_Text_Default);
-                  const char* icon = iconMgr.HasIcon("speed") ? "speed"
-                                   : iconMgr.HasIcon("activity") ? "activity" : "info";
-                  auto mm = iconMgr.GetDefaultMetadata(icon);
-                  if (!mm.colorZones.empty()) { mm.colorZones[0].customColor = tn;
-                      iconMgr.RenderIcon(ImGui::GetWindowDrawList(), icon, ip, isz, mm); } }
-                if (mtClk) showMetrics_ = !showMetrics_;
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                    UI::DrawTooltip("Show / hide performance metrics", ImGui::GetIO().MousePos);
-
-                ImGui::SameLine(0.0f, 6.0f * gs);
-                ImGui::PushStyleColor(ImGuiCol_Button, ds2.GetColor(DesignSystem::Tok::C_IconButton_Background));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ds2.GetColor(DesignSystem::Tok::C_IconButton_BackgroundHover));
-                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0,0));
-                bool clicked = ImGui::Button("##newdoc", ImVec2(h,h));
-                ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
-                ImVec2 bmin = ImGui::GetItemRectMin();
-                ImVec2 ipos = { bmin.x + (h-isz)*0.5f, bmin.y + (h-isz)*0.5f };
-                ImVec4 tint = ds2.GetColor(DesignSystem::Tok::S_Color_Text_Default);
-                auto md = iconMgr.GetDefaultMetadata("new");
-                if (!md.colorZones.empty()) { md.colorZones[0].customColor = tint;
-                    iconMgr.RenderIcon(ImGui::GetWindowDrawList(), "new", ipos, isz, md); }
-                if (clicked) pst->openNewDoc = true;
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                    UI::DrawTooltip("New document (Ctrl+Shift+N)", ImGui::GetIO().MousePos);
+                    UI::DrawTooltip("Viewport overlays (page layout, pages, cursor, metrics)",
+                                    ImGui::GetIO().MousePos);
             };
         };
         reg.Register(std::move(d));
@@ -332,6 +283,10 @@ void Application::RegisterCoreEditors() {
         d.id = CoreEditor::Outliner; d.name = "Outliner"; d.icon = "checklist";
         d.column = 2; d.themeScope = "editors/outliner";
         d.switchAction = "editor.outliner";
+        // No content inset: the zebra stripes / selection bands run flush to the
+        // editor's left edge (Blender-style). The overlay scrollbar still keeps its
+        // own right gutter via BeginScroll, so only the left/top padding is dropped.
+        d.contentInset = false;
         d.draw   = [this](ImVec2, EditorState& st) { RenderOutliner(st); };
         d.topBar = [this](EditorState& st, EditorBar& bar) { BuildOutlinerTopBar(st, bar); };
         reg.Register(std::move(d));
@@ -652,6 +607,10 @@ void Application::RenderToolbar() {
         float avail = ImGui::GetWindowHeight();
         float gap = avail - used - kBtn - kPad;
         if (gap > 0.0f) ImGui::Dummy(ImVec2(0.0f, gap));
+
+        if (iconButton("app.tokenGraph", "background-grid-small", "Token Graph",
+                       "app.toggleTokenGraph", showTokenGraph_))
+            Action_ToggleTokenGraph();
 
         if (iconButton("app.settings", "settings", "Settings",
                        "app.toggleSettings", showSettings_))

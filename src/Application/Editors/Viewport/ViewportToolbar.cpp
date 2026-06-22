@@ -9,6 +9,7 @@
 #include <UI/Widgets/PopupMenu.h>     // UI::DrawTooltip (shared styled tooltip)
 #include <UI/Widgets/Dropdown.h>      // UI::Dropdown (operator panel params)
 #include <UI/Widgets/ButtonGroup.h>   // UI::ButtonGroup (snap base/affect)
+#include <UI/Widgets/DragValue.h>     // UI::DragValue (snap increments)
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cfloat>
@@ -144,9 +145,10 @@ void Application::DrawSnapWidget(ImVec2 pos, float widthPx) {
     mag.tooltip = snap_.enabled ? "Snapping ON (click to disable; Ctrl snaps one drag)"
                                 : "Snapping OFF (click to enable; hold Ctrl to snap a drag)";
     cfg.buttons.push_back(mag);
-    // Custom body sized to fit the options.
+    // Custom body sized to fit the options (the Snap To list is now a 6-cell
+    // vertical button group, taller than the old radio list).
     const float bodyW = 230.0f * gs;
-    const float bodyH = 250.0f * gs;
+    const float bodyH = 380.0f * gs;
     cfg.menuSize = ImVec2(bodyW, bodyH);
     cfg.bodyDraw = [this, &ds, gs, bodyW]() {
         using DesignSystem::Tok;
@@ -154,11 +156,32 @@ void Application::DrawSnapWidget(ImVec2 pos, float widthPx) {
             ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(Tok::S_Color_Text_Subtle));
             ImGui::TextUnformatted(s); ImGui::PopStyleColor();
         };
-        // Snap To (radio list).
+        // Snap To — a VERTICAL ButtonGroup (single-toggle), one full-width cell per
+        // mode: icon on the left, label on the right (Align::Left). Only one mode is
+        // selected at a time.
         subtle("Snap To");
-        for (int i = 0; i < 6; ++i)
-            if (ImGui::RadioButton(kSnapModeNames[i], (int)snap_.mode == i))
-                snap_.mode = (SnapSettings::Mode)i;
+        {
+            // Icon per snap mode (Increment, Grid, Vertex, Edge, Face, Edge Center).
+            static const char* kSnapIcons[6] = {
+                "background-dot-small", "grid-on", "line-start-square",
+                "diagonal-line", "crop-free", "line-end-diamond" };
+            const float cellH = ds.GetFloat(Tok::S_Size_ControlHeight) * gs;
+            UI::ButtonGroup g("##snapto");
+            std::vector<float> rows(6, cellH);
+            g.SetGrid({ bodyW }, rows);
+            for (int i = 0; i < 6; ++i) {
+                UI::ButtonGroup::Cell c{};
+                c.label = kSnapModeNames[i];
+                c.icon  = kSnapIcons[i];
+                c.col = 0; c.row = i;
+                c.selected = ((int)snap_.mode == i);
+                c.align = UI::ButtonGroup::Align::Left;
+                g.AddCell(c);
+            }
+            UI::ButtonGroup::Result r = g.Render();
+            if (r.clickedIndex >= 0 && r.clickedIndex < 6)
+                snap_.mode = (SnapSettings::Mode)r.clickedIndex;
+        }
         ImGui::Separator();
         // Snap Base — a 4-cell ButtonGroup (clicking doesn't close the menu: these
         // are real ImGui::Buttons inside the popup, so the popup stays open).
@@ -191,10 +214,29 @@ void Application::DrawSnapWidget(ImVec2 pos, float widthPx) {
         }
         ImGui::Separator();
         subtle("Rotation Increment");
-        ImGui::SetNextItemWidth(90 * gs);
-        ImGui::InputFloat("Increment##rot", &snap_.rotIncrement, 0, 0, "%.1f\xC2\xB0");
-        ImGui::SetNextItemWidth(90 * gs);
-        ImGui::InputFloat("Precision (Shift)##rotprec", &snap_.rotPrecisionIncrement, 0, 0, "%.1f\xC2\xB0");
+        // Label-left / DragValue-right rows, aligned in two columns (like the
+        // Outliner / Properties rows): a fixed label column, the drag fills the rest.
+        auto dragRow = [&](const char* id, const char* label, float* v) {
+            const float full  = bodyW;
+            const float lblW  = full * 0.45f;
+            const float pad   = ImGui::GetStyle().ItemInnerSpacing.x;
+            const float rowH  = ds.GetFloat(Tok::S_Size_ControlHeight) * gs;
+            ImVec2 origin = ImGui::GetCursorScreenPos();
+            float cy = origin.y + std::max(0.0f, (rowH - ImGui::GetTextLineHeight()) * 0.5f);
+            ImGui::SetCursorScreenPos(ImVec2(origin.x, cy));
+            ImGui::TextUnformatted(label);
+            ImGui::SameLine(0, 0);
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + lblW + pad, origin.y));
+            ImGui::PushID(id);
+            UI::DragValueConfig dc;
+            dc.id = "##dv"; dc.speed = 0.5f; dc.min = 0.0f; dc.max = 360.0f;
+            dc.displayDecimals = 1; dc.unit = "\xC2\xB0";
+            dc.width = std::max(40.0f, full - lblW - pad);
+            UI::DragValue(dc, v);
+            ImGui::PopID();
+        };
+        dragRow("rotinc",  "Increment",        &snap_.rotIncrement);
+        dragRow("rotprec", "Precision (Shift)", &snap_.rotPrecisionIncrement);
     };
     UI::DropdownResult r = UI::Dropdown(cfg);
     if (r.buttonClicked == 0) snap_.enabled = !snap_.enabled;   // magnet toggled

@@ -268,71 +268,11 @@ void Application::RenderTitleBar() {
     else if (winSel == 1) showDesignSystem_ = !showDesignSystem_;
     else if (winSel == 2) Action_ToggleImGuiDemo();
 
-    // ── Project tab [title] [+] + test dropdown, pinned to the right ─────────
-    // Compute from the right inward: [system buttons][test dropdown][+][title].
+    // ── System buttons pinned to the right (nothing else on the right now) ────
+    // The former Test dropdown + project-tab [title][+] were removed; the project
+    // name is shown centred below. The right content limit is just left of the
+    // system-button group so the centred title clamps against it.
     if (!kButtonsLeft) drawSystemButtons(winW - sysGroupW);
-
-    // Test dropdown (debug actions → console).
-    {
-        const float testW = 90.0f * gs;
-        float tx = rightX - testW;
-        ImGui::SetCursorPos(ImVec2(tx, pad.y));
-        UI::DropdownConfig cfg;
-        cfg.id = "##testMenu"; cfg.triggerLabel = "Test";
-        cfg.style = UI::DropdownStyle::Minimal;
-        cfg.items = {
-            { "", "Print app info",   "" },
-            { "", "Print window state","" },
-            { "", "Print active theme","" },
-            { "", "Trigger test log", "" },
-        };
-        UI::DropdownResult r = UI::Dropdown(cfg);
-        PushBlocker(titleBarBlockers_);
-        if (r.changed) {
-            int w = 0, h = 0; SDL_GetWindowSize(window_, &w, &h);
-            const bool mx = maximized_;
-            switch (r.selected) {
-                case 0: std::printf("[test] Carto %s — borderless custom title bar\n",
-                                    kVersion); break;
-                case 1: std::printf("[test] window %dx%d, maximized=%d\n",
-                                    w, h, (int)mx); break;
-                case 2: std::printf("[test] active theme print (placeholder)\n"); break;
-                case 3: std::printf("[test] test log triggered\n"); break;
-            }
-        }
-        rightX = tx - pad.x;
-    }
-
-    // Project tabs [title] [+].
-    {
-        auto& dsi = DS::DesignSystem::Instance();
-        std::string title = project_.TabTitle();
-        const float plusW = controlH;
-        ImVec2 ts = ImGui::CalcTextSize(title.c_str());
-        const float titleW = ts.x + pad.x * 2.0f;
-        float px = rightX - plusW;
-        float titleXpos = px - 4.0f * gs - titleW;
-
-        ImGui::SetCursorPos(ImVec2(titleXpos, pad.y));
-        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0,0,0,0));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btnHov);
-        ImGui::PushStyleColor(ImGuiCol_Text, textC);
-        ImGui::Button(title.c_str(), ImVec2(titleW, controlH));
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Current project%s",
-                              project_.dirty ? " — unsaved changes" : "");
-        PushBlocker(titleBarBlockers_);
-        ImGui::SetCursorPos(ImVec2(px, pad.y));
-        if (ImGui::Button("+", ImVec2(plusW, controlH)))
-            Action_NewProject();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("New project");
-        PushBlocker(titleBarBlockers_);
-        ImGui::PopStyleColor(3);
-
-        // Update the right-content limit so the centred title can clamp against
-        // the project tab without overlapping it.
-        rightX = titleXpos - pad.x;
-    }
 
     // ── Centred project name (only when a project is actually open) ───────────
     // A plain label drawn on the bar's draw list — NOT a widget, so the area
