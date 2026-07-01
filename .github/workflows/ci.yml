@@ -26,7 +26,7 @@ permissions:
 # NOTE: We deliberately do NOT set FORCE_JAVASCRIPT_ACTIONS_TO_NODE24.
 # The actions/* actions are already on Node-24-capable majors
 # (checkout@v6, cache@v5, upload-artifact@v7); forcing Node 24 globally
-# crashes actions/cache@v5 during restore. The only remaining Node-20
+# crashes actions/cache@v6 during restore. The only remaining Node-20
 # action is jakoch/install-vulkan-sdk-action@v1, whose deprecation
 # warning is harmless until the June 2026 cutoff.
 
@@ -44,7 +44,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
 
       # ── Rust (gnu target, ABI-matching MinGW) ────────────────────────────
       # Installed first so it is on the Windows PATH ($GITHUB_PATH) before
@@ -80,7 +80,7 @@ jobs:
 
       # ── Caches ───────────────────────────────────────────────────────────
       - name: Cache CMake FetchContent (_deps)
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: out/build/ci/_deps
           key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
@@ -91,7 +91,7 @@ jobs:
       # Windows runners). Cache its registry/git plus the project's
       # cargo build dir for resvg-bindings.
       - name: Cache Cargo
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
