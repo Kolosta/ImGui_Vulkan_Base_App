@@ -1,9 +1,12 @@
-# Compositor — the second Vulkan render engine (living design + roadmap)
+# Compositor — the second Vulkan render engine (SUPERSEDED)
 
-> Status: **Lot 0 in progress.** This document is the source of truth for the
-> from-scratch render-pipeline rewrite. It records the original brief, the target
-> architecture, the locked decisions, and the lot-by-lot roadmap with progress
-> checkboxes. Keep it updated as each lot lands.
+> **Status: SUPERSEDED / QUARANTINED.** The Compositor (and the legacy
+> Renderer) were disconnected from the build and moved to `src/_legacy/`; the
+> rendering stack is being rewritten from scratch as the **Ink** engine — see
+> **`docs/Ink/`** (README, ARCHITECTURE, DOCUMENT_MODEL, RENDER_GRAPH,
+> GEOMETRY, PERF_TESTING, ROADMAP). This document is kept only as a historical
+> record of what the Compositor did and the lessons it produced; do not build
+> new work from it.
 >
 > `RENDER_PIPELINE.md` (next to this file) is the generic industry example that
 > seeded this design — kept as reference, not as the plan.
