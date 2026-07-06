@@ -94,6 +94,7 @@ target_link_libraries(Application PUBLIC
     Shortcuts
     VectorGraphics
     Renderer
+    Compositor      # the second (modern-Vulkan) render engine, behind IViewRenderer
     Shell
     Vulkan::Vulkan
     SDL3::SDL3-shared

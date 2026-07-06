@@ -51,6 +51,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
+# VMA (Vulkan Memory Allocator) — used ONLY by the Compositor render engine (the
+# legacy Renderer keeps manual allocation). Header-only INTERFACE target
+# `GPUOpen::VulkanMemoryAllocator`; the implementation is compiled in one TU
+# (src/Compositor/src/GPU/VmaImpl.cpp with VMA_IMPLEMENTATION).
+FetchContent_Declare(
+    VulkanMemoryAllocator
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG v3.1.0
+)
+FetchContent_MakeAvailable(VulkanMemoryAllocator)
+
 # ImGui sources
 set(IMGUI_DIR ${imgui_SOURCE_DIR})
 set(IMGUI_SOURCES
@@ -70,6 +81,7 @@ add_subdirectory(src/UI)
 add_subdirectory(src/Shortcuts)
 add_subdirectory(src/VectorGraphics)
 add_subdirectory(src/Renderer)
+add_subdirectory(src/Compositor)   # second render engine (modern Vulkan), parallel to Renderer
 add_subdirectory(src/Shell)
 add_subdirectory(src/Application)
 
@@ -100,6 +112,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     Shortcuts
     VectorGraphics
     Renderer
+    Compositor
     Shell
     Application
 )

@@ -32,6 +32,45 @@ enum class ShapeKind : uint8_t {
     Path      = 5,   // generic editable Node[] path (a converted primitive)
 };
 
+// How an object's pixels fuse with what's already on the canvas below it (the
+// standard SVG/Photoshop set). A render-time compositing param: the modern
+// Compositor isolates the object then composites it with this mode; the legacy
+// renderer ignores it (Normal only). See docs/Vulkan/COMPOSITOR_PIPELINE.md (Lot 4b).
+enum class BlendMode : uint8_t {
+    Normal = 0,
+    Multiply, Screen, Overlay, Darken, Lighten,
+    ColorDodge, ColorBurn, HardLight, SoftLight,
+    Difference, Exclusion,
+    Hue, Saturation, Color, Luminosity,
+    // Erase / knock-out (Affinity's erase blend mode): the object SUBTRACTS coverage
+    // from what's below (dst-out) instead of adding colour. It is a BLEND MODE, not a
+    // separate flag. Appended last so existing .acu blend values keep their meaning.
+    Erase,
+};
+
+inline const char* BlendModeName(BlendMode m) {
+    switch (m) {
+        case BlendMode::Normal:      return "Normal";
+        case BlendMode::Multiply:    return "Multiply";
+        case BlendMode::Screen:      return "Screen";
+        case BlendMode::Overlay:     return "Overlay";
+        case BlendMode::Darken:      return "Darken";
+        case BlendMode::Lighten:     return "Lighten";
+        case BlendMode::ColorDodge:  return "Color Dodge";
+        case BlendMode::ColorBurn:   return "Color Burn";
+        case BlendMode::HardLight:   return "Hard Light";
+        case BlendMode::SoftLight:   return "Soft Light";
+        case BlendMode::Difference:  return "Difference";
+        case BlendMode::Exclusion:   return "Exclusion";
+        case BlendMode::Hue:         return "Hue";
+        case BlendMode::Saturation:  return "Saturation";
+        case BlendMode::Color:       return "Color";
+        case BlendMode::Luminosity:  return "Luminosity";
+        case BlendMode::Erase:       return "Erase";
+    }
+    return "Normal";
+}
+
 // Geometry FAMILY of a Part — the dimension Blender keys object operators on
 // (you cannot Join a Mesh to a Curve):
 //   • Mesh  → straight edges + faces; supports vertex / edge / face editing.
@@ -154,6 +193,22 @@ struct Shape {
     Transform         transform;          // placement on the artboard
     std::vector<Part> parts;              // ≥1 piece of geometry
     bool              visible = true;
+    // Object OPACITY [0,1] (default 1 = opaque). A render-time compositing param,
+    // NOT baked into the geometry: the modern Compositor isolates the object and
+    // composites it with this opacity (correct self-overlap). The legacy renderer
+    // ignores it (renders opaque) — this is a Compositor capability. See
+    // docs/Vulkan/COMPOSITOR_PIPELINE.md (Lot 4).
+    float             opacity = 1.0f;
+    // How this object fuses with the canvas below (Normal = plain alpha over;
+    // Erase = knock-out). Like opacity, a Compositor-only compositing param (the
+    // legacy ignores it).
+    BlendMode         blendMode = BlendMode::Normal;
+    // Owning LAYER GROUP (Lot 11/11b), 0 = none. A SEPARATE link from collectionId:
+    // a group is a LAYER concept (page-local z-stack), NOT an organisation node, so
+    // it must not disturb the collection/page tree. The group itself is a Collection
+    // with isLayerGroup=true that carries the group's compositing; this id points at
+    // it. All objects of a group live on the SAME page (enforced at group time).
+    uint64_t          groupId = 0;
     // Transform constraints (document data). Used by fixed-size / north-oriented
     // symbols (e.g. IOF/ISOM) AND by the per-axis padlocks in the Properties panel:
     // a locked component ignores the matching G/S op (the result is restored to the

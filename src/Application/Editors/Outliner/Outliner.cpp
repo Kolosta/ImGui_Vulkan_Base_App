@@ -27,6 +27,7 @@ namespace {
 const char* kShapePayload = "OUTLINER_SHAPE";   // drag payload: shape id (u64)
 const char* kNodePayload  = "OUTLINER_NODE";    // drag payload: tree node id (u64)
                                                 // (a collection OR a page)
+const char* kGroupPayload = "OUTLINER_GROUP";   // drag payload: layer group id (u64)
 
 // Left/right edges of a full-width row band, in screen X. The Outliner editor
 // opts OUT of the host content inset (d.contentInset=false), so the content child
@@ -574,6 +575,147 @@ void Application::OutlinerCollapsedSummary(uint64_t nodeId) {
 // sync, rename, drag source, RMB menu and an eye visibility toggle. Honours the
 // kind/state filters and the search (hidden when neither it nor a descendant
 // matches; the search itself can't have descendants for an object).
+// Content hash for an object's Layers-view preview thumbnail (Lot 11-5): geometry +
+// paint + transform, so the cached render is rebuilt only when the object changes.
+uint64_t Application::OutlinerShapeHash(const Renderer::Shape& s) {
+    return Renderer::Tessellator::HashShape(s, Renderer::Vec2{ 0, 0 });
+}
+
+// Draw an ISOLATED RENDER PREVIEW of `shapes` as a square in the row's icon slot, on
+// a white page-bg card (Lot 11-5). Used by the Layers view in place of the type icon
+// for objects and groups. The render is cached per `key`/`contentHash` by the engine.
+void Application::OutlinerPreviewSlot(const std::vector<Renderer::Shape>& shapes,
+                                      uint64_t key, uint64_t contentHash) {
+    const float sz = OutlinerItemH();                 // square = row band height
+    ImVec2 p = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // White card background (the current page background; transparent/grid come later).
+    ImU32 white = IM_COL32(255, 255, 255, 255);
+    float rnd = DST::DesignSystem::Instance().GetFloat(DST::Tok::S_CornerRadius_Control) * 0.5f;
+    dl->AddRectFilled(p, ImVec2(p.x + sz, p.y + sz), white, rnd);
+    int px = (int)std::lround(sz);
+    if (px > 0) {
+        ImTextureID tex = RenderGlyphTexture(key, contentHash, shapes, px, px,
+                                             /*padFrac=*/0.12f, /*transparent=*/true);
+        if (tex) dl->AddImage(tex, p, ImVec2(p.x + sz, p.y + sz));
+    }
+    ImU32 frame = ImGui::GetColorU32(DST::DesignSystem::Instance().GetColor(
+        DST::Tok::S_Color_Border_Default));
+    dl->AddRect(p, ImVec2(p.x + sz, p.y + sz), frame, rnd);
+    // Advance the cursor past the slot (mirrors OutlinerSlotIcon's layout).
+    ImGui::Dummy(ImVec2(sz + 6.0f, OutlinerItemH()));
+    ImGui::SameLine(0.0f, 0.0f);
+}
+
+// Layers-view header row for a layer GROUP (Lot 11): the group's name, a collapse
+// chevron, and an eye that shows/hides the whole group. Returns the open state (the
+// caller skips the members when collapsed). The group is page-local; this row is
+// only drawn in the Layers view, above its contiguous members.
+bool Application::OutlinerGroupHeaderRow(uint64_t gid) {
+    auto& doc = project_.document;
+    Renderer::Collection* g = doc.FindCollection(gid);
+    if (!g) return true;
+    const float lh = ImGui::GetTextLineHeight();
+
+    // Rename in place.
+    if (s_renameId == (gid | kCollBit)) {
+        OutlinerRowFinish(); UI::ListRowAdvanceZebra();
+        if (OutlinerRenameField(s_renameBuf, sizeof(s_renameBuf), /*hasIcon=*/true)) {
+            g->name = s_renameBuf; s_renameId = 0; project_.dirty = true;
+        }
+        if (ImGui::IsItemDeactivated()) { g->name = s_renameBuf; s_renameId = 0; project_.dirty = true; }
+        return true;
+    }
+
+    ImGuiStorage* store = ImGui::GetStateStorage();
+    ImGuiID openKey = ImGui::GetID((void*)(intptr_t)(gid ^ 0x47524F5550ull));   // "GROUP"
+    bool open = store->GetBool(openKey, true);
+
+    // The group header reflects the GROUP selection (activeGroup_), not the object
+    // selection — so a selected group lights up like any other active row.
+    const bool groupSel = (doc.ActiveGroup() == gid);
+    RowResult rr = OutlinerRowBegin(gid, /*coll*/2, /*searchHit=*/false,
+                                    /*forceSel=*/groupSel ? 1 : 0,
+                                    /*forceActive=*/groupSel ? 1 : 0);
+    // Drag the WHOLE group (reorder its z-index in the Layers view): the header is a
+    // drag source carrying the group id, and a drop target so a group/object can be
+    // dropped onto it. The actual move is deferred (ApplyOutlinerReorder).
+    if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None)) {
+        ImGui::SetDragDropPayload(kGroupPayload, &gid, sizeof(uint64_t));
+        ImGui::TextUnformatted(g->name.empty() ? "Group" : g->name.c_str());
+        ImGui::EndDragDropSource();
+    }
+    // Dropping onto the header anchors at the group's TOP member.
+    if (ImGui::BeginDragDropTarget()) {
+        uint64_t topMember = 0;
+        for (Renderer::Artboard& ab : doc.artboards) {
+            for (size_t i = ab.shapes.size(); i-- > 0; )
+                if (ab.shapes[i].groupId == gid) { topMember = ab.shapes[i].id; break; }
+            if (topMember) break;
+        }
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kShapePayload)) {
+            uint64_t sid = *(const uint64_t*)p->Data;
+            OutlinerReorderReq& q = outlinerReorder_;
+            q.active = true; q.ids = OutlinerDraggedIds(sid); q.draggedGroup = 0;
+            q.targetObj = topMember; q.targetGroup = gid; q.newGroup = gid;  // dropping onto a group header → join it
+        }
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kGroupPayload)) {
+            uint64_t dg = *(const uint64_t*)p->Data;
+            if (dg != gid) {
+                OutlinerReorderReq& q = outlinerReorder_;
+                q.active = true; q.ids.clear(); q.draggedGroup = dg;
+                q.targetObj = topMember; q.targetGroup = gid; q.newGroup = 0;
+            }
+        }
+        ImGui::EndDragDropTarget();
+    }
+    // A group is its own selectable entity: clicking the header selects the GROUP
+    // (Properties shows it). Not routed through OutlinerHandleRowInput (object/coll).
+    if (rr.clicked) { project_.document.SelectGroup(gid); }
+    if (rr.rightClicked) {
+        outlinerCtxKind_ = OutlinerCtxKind::Collection; outlinerCtxId_ = gid;
+        outlinerCtxPos_ = ImGui::GetMousePos(); outlinerCtxOpen_ = true;
+    }
+    if (rr.doubleClicked) { s_renameId = (gid | kCollBit);
+                            std::snprintf(s_renameBuf, sizeof(s_renameBuf), "%s", g->name.c_str()); }
+
+    OutlinerDotGutter();
+    char cid[40]; std::snprintf(cid, sizeof(cid), "##gchev%llu", (unsigned long long)gid);
+    OutlinerChevron(cid, open);
+    store->SetBool(openKey, open);
+    const bool hidden = doc.GroupHidden(gid);
+    // Layers view: an ISOLATED RENDER PREVIEW of the whole group (all its members
+    // composited together) on a white card (Lot 11-5), else the folder glyph.
+    if (UI::ListRowBandScale() > 1.5f) {
+        std::vector<Renderer::Shape> mem;
+        uint64_t h = gid;
+        for (uint64_t mid : doc.GroupMembers(gid))
+            if (Renderer::Shape* ms = doc.FindShape(mid)) {
+                mem.push_back(*ms);
+                h = h * 1099511628211ull ^ OutlinerShapeHash(*ms);
+            }
+        OutlinerPreviewSlot(mem, /*key=*/gid ^ 0x6E5u, /*hash=*/h);
+    } else {
+        OutlinerSlotIcon(kIconFolder,   // reuse the folder glyph as the group/layer icon
+                         DST::DesignSystem::Instance().GetColor(
+                             hidden ? DST::Tok::S_Color_Text_Disabled : DST::Tok::C_Outliner_Text));
+    }
+    ImU32 txt = OutlinerLabelColor(/*searchHit=*/false, hidden);
+    ImVec2 tp = ImGui::GetCursorScreenPos();
+    const char* nm = g->name.empty() ? "Group" : g->name.c_str();
+    ImGui::GetWindowDrawList()->AddText(
+        ImVec2(tp.x, tp.y + (ImGui::GetTextLineHeightWithSpacing() - lh) * 0.5f), txt, nm);
+    ImGui::Dummy(ImVec2(ImGui::CalcTextSize(nm).x, OutlinerItemH()));
+
+    // Eye: show/hide the whole group.
+    bool vis = !hidden;
+    char eid[40]; std::snprintf(eid, sizeof(eid), "##geye%llu", (unsigned long long)gid);
+    OutlinerEyeButton(vis, eid);
+    if (vis == hidden) { doc.SetGroupVisible(gid, vis); project_.dirty = true; }
+
+    return open;
+}
+
 void Application::OutlinerObjectRow(Renderer::Shape& s) {
     auto& doc = project_.document;
     if (!OutlinerPassesFilter(s.id, /*kind object*/0)) return;
@@ -654,10 +796,17 @@ void Application::OutlinerObjectRow(Renderer::Shape& s) {
         OutlinerChevronSpacer();           // keep the icon column aligned
     }
     const bool dim = !s.visible;
-    // Type icon (shape / bezier / nurbs), dimmed when hidden.
-    OutlinerSlotIcon(OutlinerShapeIcon(s),
-                     DST::DesignSystem::Instance().GetColor(
-                         dim ? DST::Tok::S_Color_Text_Disabled : DST::Tok::C_Outliner_Text));
+    // In the Layers view (tall rows) show an ISOLATED RENDER PREVIEW (Lot 11-5) of
+    // this object on a white page-bg square, in place of the type icon. Elsewhere
+    // (Collection view, normal height) keep the type icon.
+    if (UI::ListRowBandScale() > 1.5f) {
+        std::vector<Renderer::Shape> one{ s };
+        OutlinerPreviewSlot(one, /*key=*/s.id ^ 0xB17u, /*hash=*/OutlinerShapeHash(s));
+    } else {
+        OutlinerSlotIcon(OutlinerShapeIcon(s),
+                         DST::DesignSystem::Instance().GetColor(
+                             dim ? DST::Tok::S_Color_Text_Disabled : DST::Tok::C_Outliner_Text));
+    }
     ImU32 txt = OutlinerLabelColor(searchHit, dim);
     ImVec2 tp = ImGui::GetCursorScreenPos();
     ImGui::GetWindowDrawList()->AddText(
@@ -665,6 +814,26 @@ void Application::OutlinerObjectRow(Renderer::Shape& s) {
         txt, s.name.empty() ? "Object" : s.name.c_str());
     ImGui::Dummy(ImVec2(ImGui::CalcTextSize(s.name.empty() ? "Object" : s.name.c_str()).x,
                         OutlinerItemH()));
+
+    // Layer-group badge (Lot 11): a group is a LAYER, not an organisation node, so it
+    // has NO hierarchy of its own in the Collection view — instead each member object
+    // shows a small "[ GroupName ]" tag next to its name. (In the Layers view the
+    // group also gets its own header row; here it's just an indicator.)
+    if (s.groupId != 0) {
+        if (Renderer::Collection* g = doc.FindCollection(s.groupId)) {
+            ImGui::SameLine(0.0f, 8.0f);
+            ImU32 gtxt = ImGui::GetColorU32(DST::DesignSystem::Instance().GetColor(
+                DST::Tok::S_Color_Text_Disabled));
+            ImVec2 gp = ImGui::GetCursorScreenPos();
+            char badge[96];
+            std::snprintf(badge, sizeof(badge), "[%s]",
+                          g->name.empty() ? "Group" : g->name.c_str());
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(gp.x, gp.y + (ImGui::GetTextLineHeightWithSpacing() - ImGui::GetTextLineHeight()) * 0.5f),
+                gtxt, badge);
+            ImGui::Dummy(ImVec2(ImGui::CalcTextSize(badge).x, OutlinerItemH()));
+        }
+    }
 
     // Collapsed → summarise the hidden contents inline (child objects / marks).
     if (collapsible && !open) OutlinerCollapsedSummary(s.id);
@@ -824,29 +993,91 @@ void Application::OutlinerDropIntoCollection(uint64_t collId) {
 void Application::OutlinerReorderDropOnObject(uint64_t targetId) {
     auto& doc = project_.document;
     if (!ImGui::BeginDragDropTarget()) return;
+    // RECORD the reorder; do NOT mutate ab.shapes here — the row loop is still
+    // iterating it, and MakeGroupContiguous moves the vector (use-after-free crash).
     if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kShapePayload)) {
         uint64_t sid = *(const uint64_t*)p->Data;
-        int abi = doc.ArtboardOfShape(targetId);
-        if (abi >= 0) {
-            const Renderer::Artboard& ab = doc.artboards[(size_t)abi];
-            // The shape drawn just after the target (0 = target is top → append).
-            auto nextOf = [&](uint64_t id) -> uint64_t {
-                for (size_t i = 0; i + 1 < ab.shapes.size(); ++i)
-                    if (ab.shapes[i].id == id) return ab.shapes[i + 1].id;
-                return 0;   // target is last (top of stack) → move to the very top
-            };
-            bool any = false;
-            // Move the dragged ids (multi-drag aware), skipping the target itself and
-            // any not on this page. Re-evaluate the anchor after each move so a
-            // multi-select keeps its relative order above the target.
-            for (uint64_t id : OutlinerDraggedIds(sid)) {
-                if (id == targetId || doc.ArtboardOfShape(id) != abi) continue;
-                if (doc.MoveShapeBeforeInPage(id, nextOf(targetId))) any = true;
-            }
-            if (any) { MarkUndoLabel("Reorder layer"); project_.dirty = true; }
-        }
+        OutlinerReorderReq& q = outlinerReorder_;
+        q.active = true;
+        q.ids = OutlinerDraggedIds(sid);
+        q.draggedGroup = 0;
+        q.targetObj = targetId;
+        q.targetGroup = 0;
+        // Membership: the dragged object joins the TARGET's group (or leaves any group
+        // if the target is bare). Resolved at apply time.
+        q.newGroup = 0;
+        if (Renderer::Shape* ts = doc.FindShape(targetId)) q.newGroup = ts->groupId;
+    }
+    if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kGroupPayload)) {
+        uint64_t gid = *(const uint64_t*)p->Data;
+        OutlinerReorderReq& q = outlinerReorder_;
+        q.active = true; q.ids.clear(); q.draggedGroup = gid;
+        q.targetObj = targetId; q.targetGroup = 0; q.newGroup = 0;
     }
     ImGui::EndDragDropTarget();
+}
+
+// Apply a deferred Layers-view reorder/regroup AFTER the Outliner row loop, so the
+// vector moves don't invalidate iterators/pointers the rows still hold.
+void Application::ApplyOutlinerReorder() {
+    OutlinerReorderReq& q = outlinerReorder_;
+    if (!q.active) return;
+    q.active = false;
+    auto& doc = project_.document;
+
+    // The page that owns the anchor (target object or target group header).
+    int abi = q.targetObj ? doc.ArtboardOfShape(q.targetObj) : -1;
+    if (abi < 0 && q.targetGroup) {
+        // group-header anchor: find any member's page (members nest, so any depth).
+        for (Renderer::Artboard& ab : doc.artboards) {
+            for (Renderer::Shape& s : ab.shapes) if (doc.ShapeInGroup(s.id, q.targetGroup)) { abi = doc.ArtboardIndexById(ab.id); break; }
+            if (abi >= 0) break;
+        }
+    }
+    if (abi < 0) return;
+    Renderer::Artboard& ab = doc.artboards[(size_t)abi];
+    auto nextOf = [&](uint64_t id) -> uint64_t {
+        for (size_t i = 0; i + 1 < ab.shapes.size(); ++i)
+            if (ab.shapes[i].id == id) return ab.shapes[i + 1].id;
+        return 0;   // anchor is top of stack → move to the very top
+    };
+
+    std::vector<uint64_t> touched;
+    auto note = [&](uint64_t g){
+        if (g && std::find(touched.begin(), touched.end(), g) == touched.end()) touched.push_back(g);
+    };
+    bool any = false;
+
+    if (q.draggedGroup) {
+        // Can't drop a group into itself / its own subtree.
+        if (q.targetGroup && doc.GroupInGroup(q.targetGroup, q.draggedGroup)) return;
+        // Re-parent the whole group: drop onto a group header → nest under it; else
+        // (onto a bare object / page) → top-level on the page.
+        if (Renderer::Collection* g = doc.FindCollection(q.draggedGroup))
+            if (g->isLayerGroup) { note(g->parentId); g->parentId = q.targetGroup; }
+        // Relocate every member (any depth) just before the anchor, keeping order.
+        std::vector<uint64_t> members;
+        for (Renderer::Shape& s : ab.shapes) if (doc.ShapeInGroup(s.id, q.draggedGroup)) members.push_back(s.id);
+        uint64_t anchor = nextOf(q.targetObj);
+        for (uint64_t id : members)
+            if (doc.MoveShapeBeforeInPage(id, anchor)) any = true;
+        note(q.draggedGroup);
+        note(q.targetGroup);
+    } else {
+        note(q.newGroup);
+        for (uint64_t id : q.ids) {
+            if (id == q.targetObj || doc.ArtboardOfShape(id) != abi) continue;
+            if (Renderer::Shape* ds = doc.FindShape(id)) { note(ds->groupId); ds->groupId = q.newGroup; }
+            if (doc.MoveShapeBeforeInPage(id, nextOf(q.targetObj))) any = true;
+        }
+    }
+    // Recompact every touched group AND its ancestor chain so nesting stays contiguous.
+    std::vector<uint64_t> toCompact = touched;
+    for (uint64_t g : touched)
+        for (uint64_t a : doc.GroupChainFrom(doc.GroupParent(g)))
+            if (std::find(toCompact.begin(), toCompact.end(), a) == toCompact.end()) toCompact.push_back(a);
+    for (uint64_t g : toCompact) doc.MakeGroupContiguous(g);
+    if (any || !touched.empty()) { MarkUndoLabel("Reorder layer"); project_.dirty = true; }
 }
 
 // The set of ids a drag should carry: the WHOLE outliner selection if the
@@ -1195,12 +1426,44 @@ void Application::OutlinerPageLayersNode(int abIndex) {
     }
     if (open) {
         ImGui::Indent(OutlinerChevronSlotW());
-        // Every object on the page, in REVERSE draw order (top of the z-stack at
-        // the top of the list). No collection grouping, no parenting nesting — a
-        // flat layer list. Parented children still show via the object row's own
-        // mark/child handling, but here we list each shape once at top level.
-        for (size_t i = ab.shapes.size(); i-- > 0; )
-            OutlinerObjectRow(ab.shapes[i]);
+        // Every object on the page, REVERSE draw order (top of the z-stack first).
+        // LAYER GROUPS (Lot 11) — possibly NESTED — appear as header rows over their
+        // members (contiguous in draw order — MakeGroupContiguous). A stack of open
+        // group headers is maintained: entering an object whose chain differs from the
+        // open stack closes the groups it left and opens the ones it entered. Members
+        // of a collapsed group are skipped.
+        std::vector<uint64_t> openStack;   // group ids currently open (outer→inner)
+        std::vector<bool>     openVisible;  // whether each open group is expanded
+        auto closeTo = [&](size_t keep) {
+            while (openStack.size() > keep) {
+                ImGui::Unindent(OutlinerChevronSlotW());
+                openStack.pop_back(); openVisible.pop_back();
+            }
+        };
+        for (size_t i = ab.shapes.size(); i-- > 0; ) {
+            Renderer::Shape& s = ab.shapes[i];
+            // Chain outermost→innermost for this shape.
+            std::vector<uint64_t> chainUp = doc.GroupChainFrom(s.groupId);  // inner→top
+            std::vector<uint64_t> chain(chainUp.rbegin(), chainUp.rend());  // top→inner
+            // Common prefix with the currently-open stack.
+            size_t common = 0;
+            while (common < openStack.size() && common < chain.size() &&
+                   openStack[common] == chain[common]) ++common;
+            closeTo(common);
+            // Open the groups newly entered.
+            bool ancestorsVisible = true;
+            for (bool v : openVisible) ancestorsVisible = ancestorsVisible && v;
+            for (size_t d = common; d < chain.size(); ++d) {
+                bool gv = ancestorsVisible ? OutlinerGroupHeaderRow(chain[d]) : false;
+                ImGui::Indent(OutlinerChevronSlotW());
+                openStack.push_back(chain[d]); openVisible.push_back(gv);
+                ancestorsVisible = ancestorsVisible && gv;
+            }
+            bool allVisible = true;
+            for (bool v : openVisible) allVisible = allVisible && v;
+            if (allVisible) OutlinerObjectRow(s);
+        }
+        closeTo(0);
         ImGui::Unindent(OutlinerChevronSlotW());
     }
 }
@@ -1296,12 +1559,16 @@ void Application::RenderOutliner(EditorState& st) {
         if (outlinerCur_->display == OutlinerDisplayMode::Layers) {
             // LAYERS mode: objects per PAGE in DRAW order (z-order), ignoring the
             // collection tree. Each page is a separate render, so they stay split.
+            // Rows are 2.5× taller here (Lot 11-5) to fit an isolated render preview
+            // (a thumbnail of the object/group) in place of the type icon.
+            UI::ListRowSetBandScale(2.5f);
             for (int ab = 0; ab < (int)doc.artboards.size(); ++ab)
                 OutlinerPageLayersNode(ab);
             // Page-less (loose) objects have no page render; list them after the
             // pages so nothing is hidden in this view (none in IOF — all on-page).
             for (size_t i = doc.looseShapes.size(); i-- > 0; )
                 OutlinerObjectRow(doc.looseShapes[i]);
+            UI::ListRowSetBandScale(1.0f);
         } else {
             // COLLECTIONS mode: the unified collection/page tree. Children in order:
             // nested collections and pages. Objects appear under their page
@@ -1370,6 +1637,9 @@ void Application::RenderOutliner(EditorState& st) {
     }
 
     RenderOutlinerContextMenus();
+    // Apply any deferred Layers-view reorder/regroup now that the row loop is done —
+    // mutating ab.shapes earlier would invalidate the rows still iterating it.
+    ApplyOutlinerReorder();
     // Clear a Frame-Selected request even if the active row wasn't drawn this
     // frame (filtered/collapsed/hidden) — so it doesn't fire spuriously later.
     outlinerCur_->reqScrollToActive = false;

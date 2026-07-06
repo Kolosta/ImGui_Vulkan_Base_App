@@ -120,7 +120,7 @@ constexpr uint32_t TAG_VSET = 0x54455356; // 'VSET' — editor UI settings
 //        (no parent), so they load with a flat object hierarchy — unchanged.
 //   v26: Document.cursorRotation (the 2D cursor's orientation, rotated with R under
 //        the 2D Cursor tool). Older files default 0 (axis-aligned cursor).
-constexpr uint32_t DOC_VERSION = 28;   // v28: per-axis transform locks (pos X/Y, scale X/Y)
+constexpr uint32_t DOC_VERSION = 34;   // v34: erase folded into BlendMode (no separate erase byte)
 
 // ── Document encode ──────────────────────────────────────────────────────────
 void EncodePaint(Writer& w, const Renderer::FillStyle& f) {
@@ -232,6 +232,9 @@ void EncodeShape(Writer& w, const Renderer::Shape& s) {
     w.u32((uint32_t)(int32_t)s.isomCode); // v14
     w.u8(s.allowCapEdit ? 1 : 0);       // v18 cap-editable opt-in
     w.u64(s.parentId);                  // v25 object parenting (0 = none)
+    w.f32(s.opacity);                   // v29 object opacity (Compositor compositing)
+    w.u8((uint8_t)s.blendMode);         // v30 object blend mode (v34: Erase is a blend mode)
+    w.u64(s.groupId);                   // v33 owning layer group (0 = none)
     w.u32((uint32_t)s.parts.size());
     for (const Renderer::Part& part : s.parts) EncodePart(w, part);
 }
@@ -256,6 +259,11 @@ std::vector<uint8_t> EncodeDocument(const Renderer::Document& doc) {
         w.u32((uint32_t)(int32_t)c.colorIndex);
         w.f32(c.customColor.r); w.f32(c.customColor.g);
         w.f32(c.customColor.b); w.f32(c.customColor.a);
+        // v32: layer-group compositing (Affinity-style groups). v34: Erase is a blend
+        // mode (no separate erase byte).
+        w.u8(c.isLayerGroup ? 1 : 0);
+        w.f32(c.opacity);
+        w.u8((uint8_t)c.blendMode);
     }
     // Artboards + shapes.
     w.u32((uint32_t)doc.artboards.size());
@@ -442,6 +450,12 @@ Renderer::Shape DecodeShapeV3(Reader& r, uint32_t ver) {
     if (ver >= 14) s.isomCode = (int)(int32_t)r.u32();   // ISOM symbol code
     if (ver >= 18) s.allowCapEdit = r.u8() != 0;         // cap-editable opt-in
     if (ver >= 25) s.parentId = r.u64();                 // object parenting (0=none)
+    if (ver >= 29) s.opacity = r.f32();                  // object opacity (else 1.0)
+    if (ver >= 30) s.blendMode = (Renderer::BlendMode)r.u8();   // blend mode (else Normal)
+    if (ver >= 31 && ver < 34) {                         // v31..v33 had a separate erase byte;
+        if (r.u8() != 0) s.blendMode = Renderer::BlendMode::Erase;   // v34 folds it into the blend
+    }
+    if (ver >= 33) s.groupId = r.u64();                  // owning layer group (else 0)
     uint32_t npart = r.u32();
     for (uint32_t i = 0; i < npart && r.ok; ++i) {
         Renderer::Part part;
@@ -543,6 +557,13 @@ bool DecodeDocument(const std::vector<uint8_t>& blob, Renderer::Document& doc) {
                 c.colorIndex = (int)(int32_t)r.u32();
                 c.customColor.r = r.f32(); c.customColor.g = r.f32();
                 c.customColor.b = r.f32(); c.customColor.a = r.f32();
+            }
+            if (ver >= 32) {                 // layer-group compositing
+                c.isLayerGroup = r.u8() != 0;
+                c.opacity = r.f32();
+                c.blendMode = (Renderer::BlendMode)r.u8();
+                if (ver < 34 && r.u8() != 0)  // v32/v33 had a separate erase byte
+                    c.blendMode = Renderer::BlendMode::Erase;
             }
             doc.collections.push_back(std::move(c));
         }

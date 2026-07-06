@@ -110,7 +110,13 @@ int  ListRowZebraIndex();
 void ListRowAdvanceZebra();
 
 // Geometry helpers (so callers can size trailing fills / columns consistently).
-float ListRowBandHeight();   // one ui-unit (S_Size_ControlHeight)
+float ListRowBandHeight();   // one ui-unit (S_Size_ControlHeight) × band scale
 float ListRowStripeHeight(); // band + 2px (the zebra/hit/pitch height)
+
+// Per-frame band-height multiplier (default 1). The Outliner's Layers view sets it
+// to ~2.5 so each row is tall enough to show an isolated render preview, then resets
+// it. Affects every ListRow drawn while active — set/reset around a section.
+void  ListRowSetBandScale(float s);
+float ListRowBandScale();
 
 } // namespace UI

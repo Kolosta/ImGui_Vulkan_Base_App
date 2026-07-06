@@ -642,6 +642,10 @@ void SettingsWindow::RenderDevPage(float width, float height) {
     }
     UI::EndPanel();
 
+    // App-injected dev tools (e.g. the render-engine selector) — needs Application
+    // state, so the host provides it via SetDevPageExtra.
+    if (devPageExtra_) devPageExtra_();
+
     EndPageBody();
 }
 

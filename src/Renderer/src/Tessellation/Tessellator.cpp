@@ -2676,7 +2676,16 @@ Tessellator::BuildDocumentSegmented(const Document& doc, Mesh& out, float zoom,
                                     bool includeLoose, Cache* cache,
                                     const CullRect* cull,
                                     Mesh* outCover,
-                                    std::vector<PatternInstance>* outDecor) {
+                                    std::vector<PatternInstance>* outDecor,
+                                    const std::unordered_set<uint64_t>* skipShapeIds) {
+    // A shape whose id is in `skipShapeIds` has its BASE GEOMETRY rendered by the
+    // caller (Compositor stencil-then-cover, Lot 13-4b) — don't tessellate/ear-clip
+    // its base here. The ObjDraw is STILL emitted (baseCount 0) so the shape keeps its
+    // z-order slot, group chain and compositing params; the caller fills the base via
+    // its own fan+cover. Cheap; null/empty → nothing skipped (legacy path unchanged).
+    auto skipped = [&](uint64_t id) {
+        return skipShapeIds && !skipShapeIds->empty() && skipShapeIds->count(id) != 0;
+    };
     // Detail follows the on-screen magnification so curves stay smooth as you zoom,
     // QUANTISED to coarse ~2× buckets so a same-bucket zoom is free. gDetailScale is
     // the flattening parameter (read by the flatteners during THIS build); bucketIdx
@@ -2693,6 +2702,28 @@ Tessellator::BuildDocumentSegmented(const Document& doc, Mesh& out, float zoom,
     uint8_t nextRef = 1;   // monotonic per-surface stencil reference (cleared to 0)
     std::vector<PageSeg> segs;
     segs.reserve(doc.artboards.size());
+
+    // Resolve a shape's LAYER GROUP (Lot 11): Shape::groupId points straight at the
+    // group collection (a layer group is NOT in the collection tree — see Document.h).
+    // const-correct (BuildDocumentSegmented takes a const Document). Fills the
+    // ObjDraw's group id + compositing params (defaults = no group).
+    auto findColl = [&](uint64_t id) -> const Collection* {
+        for (const Collection& c : doc.collections) if (c.id == id) return &c;
+        return nullptr;
+    };
+    auto resolveGroup = [&](const Shape& s, ObjDraw& obj) {
+        // Walk innermost → top, then store outermost → innermost.
+        std::vector<ObjDraw::GroupLevel> chain;
+        uint64_t cur = s.groupId; int guard = 0;
+        while (cur && guard++ < 4096) {
+            const Collection* c = findColl(cur);
+            if (!c || !c->isLayerGroup) break;
+            chain.push_back({ c->id, c->opacity, (uint8_t)c->blendMode });
+            cur = c->parentId;
+        }
+        obj.groups.assign(chain.rbegin(), chain.rend());   // outermost first
+    };
+
     for (size_t i = 0; i < doc.artboards.size(); ++i) {
         const Artboard& ab = doc.artboards[i];
         Vec2 origin = ab.pos;
@@ -2714,10 +2745,18 @@ Tessellator::BuildDocumentSegmented(const Document& doc, Mesh& out, float zoom,
             ObjDraw obj;
             uint32_t first = (uint32_t)out.vertices.size();
             PatternOut po{ outCover, outDecor, &obj, &nextRef, outCover };
-            uint32_t cnt = AppendShapeCachedCulled(s, out, origin, cache, bucketIdx,
-                                                   cull, procedural ? &po : nullptr);
-            obj.baseFirst = first; obj.baseCount = cnt;
-            if (obj.baseCount > 0 || !obj.patterns.empty() || !obj.decor.empty()
+            // Skipped shapes keep their ObjDraw (z-order/group/compositing) but their
+            // base is drawn by the caller (Lot 13-4b) → don't tessellate it here.
+            const bool skip = skipped(s.id);
+            uint32_t cnt = skip ? 0u
+                : AppendShapeCachedCulled(s, out, origin, cache, bucketIdx,
+                                          cull, procedural ? &po : nullptr);
+            obj.baseFirst = first; obj.baseCount = cnt; obj.opacity = s.opacity;
+            obj.blendMode = (uint8_t)s.blendMode;
+            obj.shapeId = s.id; resolveGroup(s, obj);
+            // A skipped object has no geometry HERE but MUST keep its slot so the
+            // caller can draw it in z-order (else it vanishes).
+            if (skip || obj.baseCount > 0 || !obj.patterns.empty() || !obj.decor.empty()
                 || !obj.strokes.empty())
                 seg.objects.push_back(std::move(obj));
         }
@@ -2730,10 +2769,14 @@ Tessellator::BuildDocumentSegmented(const Document& doc, Mesh& out, float zoom,
             ObjDraw obj;
             uint32_t first = (uint32_t)out.vertices.size();
             PatternOut po{ outCover, outDecor, &obj, &nextRef, outCover };
-            uint32_t cnt = AppendShapeCachedCulled(s, out, Vec2{0, 0}, cache, bucketIdx,
-                                                   cull, procedural ? &po : nullptr);
-            obj.baseFirst = first; obj.baseCount = cnt;
-            if (obj.baseCount > 0 || !obj.patterns.empty() || !obj.decor.empty()
+            const bool skip = skipped(s.id);
+            uint32_t cnt = skip ? 0u
+                : AppendShapeCachedCulled(s, out, Vec2{0, 0}, cache, bucketIdx,
+                                          cull, procedural ? &po : nullptr);
+            obj.baseFirst = first; obj.baseCount = cnt; obj.opacity = s.opacity;
+            obj.blendMode = (uint8_t)s.blendMode;
+            obj.shapeId = s.id; resolveGroup(s, obj);
+            if (skip || obj.baseCount > 0 || !obj.patterns.empty() || !obj.decor.empty()
                 || !obj.strokes.empty())
                 seg.objects.push_back(std::move(obj));
         }

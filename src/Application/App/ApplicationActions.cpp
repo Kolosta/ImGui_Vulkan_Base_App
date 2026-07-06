@@ -260,6 +260,35 @@ void Application::Action_ClearParent() {
     if (any) { MarkUndoLabel("Clear Parent"); project_.dirty = true; }
 }
 
+void Application::Action_GroupSelection() {
+    // Ctrl+G: gather the selected objects into a new LAYER GROUP (Lot 11). The group
+    // is a collection that composites its contents as a unit (its own opacity / blend
+    // / erase, edited in the Properties panel). Needs ≥1 selected object.
+    if (editorMode_ != EditorMode::Object) return;
+    auto& doc = project_.document;
+    if (doc.Selection().empty()) return;
+    if (doc.GroupSelection("Group") != 0) {
+        MarkUndoLabel("Group");
+        project_.dirty = true;
+    }
+}
+
+void Application::Action_UngroupSelection() {
+    // Ctrl+Shift+G: dissolve the layer group(s) owning the selected objects, re-homing
+    // their objects to the group's parent (objects stay visually put).
+    if (editorMode_ != EditorMode::Object) return;
+    auto& doc = project_.document;
+    std::vector<uint64_t> groups;   // unique groups owning the selection
+    for (uint64_t id : doc.Selection()) {
+        uint64_t g = doc.GroupOfShape(id);
+        if (g && std::find(groups.begin(), groups.end(), g) == groups.end())
+            groups.push_back(g);
+    }
+    bool any = false;
+    for (uint64_t g : groups) { doc.Ungroup(g); any = true; }
+    if (any) { MarkUndoLabel("Ungroup"); project_.dirty = true; }
+}
+
 // ── Selection families ────────────────────────────────────────────────────────
 namespace {
 // Approximate colour equality (per channel) for "Select Color".
@@ -485,7 +514,16 @@ void Application::Action_JoinSelection() {
 
 Renderer::Vec2 Application::ComputePivot() const {
     auto& doc = const_cast<Renderer::Document&>(project_.document);
-    const auto& sel = doc.Selection();
+    // Effective targets: the object selection, OR a selected layer group's members
+    // (Lot 11: a group pivots/transforms as a unit). Computed once so every pivot
+    // mode below operates on the right set.
+    std::vector<uint64_t> groupSel;
+    const std::vector<uint64_t>* selPtr = &doc.Selection();
+    if (doc.Selection().empty() && doc.ActiveGroup()) {
+        groupSel = doc.GroupMembers(doc.ActiveGroup());
+        selPtr = &groupSel;
+    }
+    const auto& sel = *selPtr;
     if (sel.empty()) return doc.cursor;
 
     // Pivots are in WORLD/display space. Each object's geometry is page-relative,
@@ -852,7 +890,9 @@ void Application::Action_BeginTransform(TransformKind kind) {
         }
         return;
     }
-    if (!project_.document.HasSelection()) return;
+    // Nothing to transform unless there's an object selection OR a selected layer
+    // group (Lot 11: a group transforms as a unit via its members).
+    if (!project_.document.HasSelection() && !project_.document.ActiveGroup()) return;
     transformOp_.kind  = kind;
     // The pivot is computed from the FULL selection (so "Active Element" can pivot
     // about a hidden active object), but only VISIBLE objects are actually
@@ -884,6 +924,15 @@ std::vector<uint64_t> Application::SelectionWithDescendants() const {
     auto pushUnique = [&](uint64_t id) {
         if (id && std::find(out.begin(), out.end(), id) == out.end()) out.push_back(id);
     };
+    // A selected layer GROUP transforms as a unit: its members are the targets (Lot
+    // 11). The object selection is empty in group mode, so this is the only source.
+    if (uint64_t g = doc.ActiveGroup()) {
+        for (uint64_t id : doc.GroupMembers(g)) {
+            pushUnique(id);
+            for (uint64_t d : doc.DescendantsOf(id)) pushUnique(d);
+        }
+        return out;
+    }
     for (uint64_t id : doc.Selection()) {
         pushUnique(id);
         for (uint64_t d : doc.DescendantsOf(id)) pushUnique(d);

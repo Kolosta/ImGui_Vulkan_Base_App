@@ -648,7 +648,7 @@ void Application::Action_ExtrudeActiveVertex() {
 void Application::HandleExtrudeTool(EditorState& st,
                                     const std::function<Vec2(ImVec2)>& s2d,
                                     const std::function<ImVec2(Vec2)>& d2s,
-                                    float effZoom, bool hovered, ImDrawList* dl) {
+                                    float effZoom, bool hovered, App::OverlayDL& dl) {
     (void)effZoom;
     auto& ds  = DesignSystem::DesignSystem::Instance();
     auto& doc = project_.document;
@@ -667,8 +667,8 @@ void Application::HandleExtrudeTool(EditorState& st,
     const ImVec2 c = d2s(w);
     const float ring = 16.0f * ds.GetGlobalScale();
     ImU32 col = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default));
-    dl->AddCircle(c, ring, col, 28, 1.5f);
-    dl->AddCircleFilled(c, 2.5f, col);
+    dl.AddCircle(c, ring, col, 28, 1.5f);
+    dl.AddCircleFilled(c, 2.5f, col);
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         std::hypot(io.MousePos.x - c.x, io.MousePos.y - c.y) <= ring) {

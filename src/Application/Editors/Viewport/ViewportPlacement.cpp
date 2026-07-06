@@ -133,6 +133,30 @@ void Application::RenderViewportContextMenu() {
           cj.submenu.push_back(std::move(e)); }
         entries.push_back(std::move(cj));
     }
+    // Layer groups (Lot 11): Group the selection, Ungroup, or Select Group (select
+    // the whole group of the object under the cursor / active object).
+    {
+        UI::MenuEntry e = fromAction("edit.group", "Group");
+        e.enabled = hasSel; e.onClick = [this]{ Action_GroupSelection(); };
+        entries.push_back(std::move(e));
+    }
+    {
+        bool inGroup = false;
+        for (uint64_t id : doc.Selection()) if (doc.GroupOfShape(id)) { inGroup = true; break; }
+        UI::MenuEntry e = fromAction("edit.ungroup", "Ungroup");
+        e.enabled = inGroup; e.onClick = [this]{ Action_UngroupSelection(); };
+        entries.push_back(std::move(e));
+    }
+    {
+        uint64_t g = doc.GroupOfShape(doc.ActiveId());
+        UI::MenuEntry e; e.label = "Select Group"; e.enabled = (g != 0);
+        e.tooltip = "Select the whole layer group of the active object";
+        e.onClick = [this]{
+            uint64_t gg = project_.document.GroupOfShape(project_.document.ActiveId());
+            if (gg) { project_.document.SelectGroup(gg); MarkUndoLabel("Select Group"); }
+        };
+        entries.push_back(std::move(e));
+    }
     // Convert To ▸ (Mesh / Curve) — Object-mode operation on the selection. This
     // switches the FAMILY (Mesh ⇄ Curve). The spline kind (Bézier/NURBS/Poly) is
     // chosen in Edit Mode via "Set Spline Type". The parent is just a grouping
@@ -302,7 +326,7 @@ void Application::BeginThumbnailCrop(int artboard) {
 void Application::HandleThumbnailCrop(const std::function<ImVec2(Renderer::Vec2)>& d2sDoc,
                                       const std::function<Renderer::Vec2(ImVec2)>& s2dDoc,
                                       float /*pxPer*/, bool hovered,
-                                      ImDrawList* dl) {
+                                      App::OverlayDL& dl) {
     if (cropArtboard_ < 0) return;
     ImGuiIO& io = ImGui::GetIO();
     auto& ds = DesignSystem::DesignSystem::Instance();
@@ -420,18 +444,18 @@ void Application::HandleThumbnailCrop(const std::function<ImVec2(Renderer::Vec2)
     ImU32 dim = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::C_ZoneOverlay_TransformDim));
     ImVec2 q0(std::max(r0.x, cMin.x), std::max(r0.y, cMin.y));
     ImVec2 q1(std::min(r1.x, cMax.x), std::min(r1.y, cMax.y));
-    dl->AddRectFilled(cMin, ImVec2(cMax.x, q0.y), dim);               // top band
-    dl->AddRectFilled(ImVec2(cMin.x, q1.y), cMax, dim);              // bottom band
-    dl->AddRectFilled(ImVec2(cMin.x, q0.y), ImVec2(q0.x, q1.y), dim); // left
-    dl->AddRectFilled(ImVec2(q1.x, q0.y), ImVec2(cMax.x, q1.y), dim); // right
-    dl->AddRect(q0, q1, accent, 0.0f, 0, 1.5f);
+    dl.AddRectFilled(cMin, ImVec2(cMax.x, q0.y), dim);               // top band
+    dl.AddRectFilled(ImVec2(cMin.x, q1.y), cMax, dim);              // bottom band
+    dl.AddRectFilled(ImVec2(cMin.x, q0.y), ImVec2(q0.x, q1.y), dim); // left
+    dl.AddRectFilled(ImVec2(q1.x, q0.y), ImVec2(cMax.x, q1.y), dim); // right
+    dl.AddRect(q0, q1, accent, 0.0f, 0, 1.5f);
     for (int i = 0; i < 8; ++i)
-        dl->AddRectFilled(ImVec2(handles[i].p.x - kHalf, handles[i].p.y - kHalf),
+        dl.AddRectFilled(ImVec2(handles[i].p.x - kHalf, handles[i].p.y - kHalf),
                           ImVec2(handles[i].p.x + kHalf, handles[i].p.y + kHalf),
                           accent, 1.0f);
     const char* hint = "Thumbnail crop — drag to adjust, Enter to confirm, Esc to cancel";
     ImU32 txt = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Text_Default));
-    dl->AddText(ImVec2(cMin.x + 8.0f, cMin.y + 8.0f), txt, hint);
+    dl.AddText(ImVec2(cMin.x + 8.0f, cMin.y + 8.0f), txt, hint);
 }
 
 // ── Modules::ModuleHost::CreateObjectSpec ─────────────────────────────────────
@@ -582,7 +606,7 @@ int Application::ArmedSymbolCode() const {
 bool Application::UpdatePlacement(EditorState& st,
         const std::function<Renderer::Vec2(ImVec2)>& s2d,
         const std::function<ImVec2(Renderer::Vec2)>& d2s,
-        float effZoom, bool hovered, ImDrawList* dl) {
+        float effZoom, bool hovered, App::OverlayDL& dl) {
     (void)st;
     ImGuiIO& io = ImGui::GetIO();
 
@@ -735,7 +759,7 @@ bool Application::UpdatePlacement(EditorState& st,
             imgMax = ImVec2(texCtr.x + wpx*0.5f, texCtr.y + hpx*0.5f);
         }
         if (tex) {
-            dl->AddImage(tex, imgMin, imgMax, ImVec2(0,0), ImVec2(1,1),
+            dl.AddImage(tex, imgMin, imgMax, ImVec2(0,0), ImVec2(1,1),
                          ImGui::GetColorU32(ImVec4(1,1,1, alpha)));
         } else {
             // CPU fallback (AA fill off to avoid seams). Strip fill PATTERNS — the
@@ -746,18 +770,18 @@ bool Application::UpdatePlacement(EditorState& st,
             Renderer::Mesh mesh;
             Renderer::Tessellator::AppendShape(bakedGhost, mesh, effZoom, {0, 0});
             const auto& vtx = mesh.vertices;
-            const ImDrawListFlags savedAA = dl->Flags;
-            dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;
+            const ImDrawListFlags savedAA = dl.imgui()->Flags;
+            dl.imgui()->Flags &= ~ImDrawListFlags_AntiAliasedFill;
             for (size_t i = 0; i + 3 <= vtx.size(); i += 3) {
                 ImVec2 p[3]; const Renderer::Vertex& v0 = vtx[i];
                 for (int k = 0; k < 3; ++k) {
                     const Renderer::Vertex& v = vtx[i + (size_t)k];
                     p[k] = ImVec2(mp.x + v.x * effZoom, mp.y + v.y * effZoom);
                 }
-                dl->AddTriangleFilled(p[0], p[1], p[2],
+                dl.AddTriangleFilled(p[0], p[1], p[2],
                                       ImGui::GetColorU32(ImVec4(v0.r, v0.g, v0.b, v0.a * alpha)));
             }
-            dl->Flags = savedAA;
+            dl.imgui()->Flags = savedAA;
         }
     } else if (placement_.source == PlacementSource::ModuleSpec) {
         const float R = std::max(2.0f, placement_.spec.size) * 0.5f;
@@ -766,21 +790,21 @@ bool Application::UpdatePlacement(EditorState& st,
         const ImU32 col = ImGui::GetColorU32(gc);
         switch (placement_.spec.geom) {
             case Modules::ObjectSpec::Geom::Area:
-                dl->AddRectFilled(ImVec2(mp.x - rpx, mp.y - rpx), ImVec2(mp.x + rpx, mp.y + rpx), col); break;
+                dl.AddRectFilled(ImVec2(mp.x - rpx, mp.y - rpx), ImVec2(mp.x + rpx, mp.y + rpx), col); break;
             case Modules::ObjectSpec::Geom::Line:
-                dl->AddLine(ImVec2(mp.x - rpx, mp.y), ImVec2(mp.x + rpx, mp.y), col,
+                dl.AddLine(ImVec2(mp.x - rpx, mp.y), ImVec2(mp.x + rpx, mp.y), col,
                             std::max(2.0f, placement_.spec.size * 0.18f * effZoom)); break;
             default:
-                dl->AddCircleFilled(mp, rpx, col, 32); break;
+                dl.AddCircleFilled(mp, rpx, col, 32); break;
         }
     } else {
         const float rpx = std::max(3.0f, 100.0f * effZoom);
         ImVec4 gc = ds.GetColor(DesignSystem::Tok::C_Viewport_Crosshair); gc.w = alpha;
         const ImU32 col = ImGui::GetColorU32(gc);
         if (placement_.coreKind == "bezier" || placement_.coreKind == "nurbs")
-            dl->AddLine(ImVec2(mp.x - rpx, mp.y), ImVec2(mp.x + rpx, mp.y), col, 2.0f);
+            dl.AddLine(ImVec2(mp.x - rpx, mp.y), ImVec2(mp.x + rpx, mp.y), col, 2.0f);
         else
-            dl->AddRect(ImVec2(mp.x - rpx, mp.y - rpx), ImVec2(mp.x + rpx, mp.y + rpx), col, 0.0f, 0, 1.5f);
+            dl.AddRect(ImVec2(mp.x - rpx, mp.y - rpx), ImVec2(mp.x + rpx, mp.y + rpx), col, 0.0f, 0, 1.5f);
     }
     ShowCrosshairCursor();
 

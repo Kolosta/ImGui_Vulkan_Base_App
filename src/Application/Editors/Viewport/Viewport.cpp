@@ -174,7 +174,10 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     const float minorTickLen = 5.0f * gs;
     const float majorTickLen = 8.0f * gs;
     ImVec2 p0 = ImGui::GetCursorScreenPos();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // Full-GPU canvas overlays (Lot 12): geometry routes to the engine's overlay pass
+    // when the Compositor is active; text/images stay ImGui. Legacy → all ImGui.
+    const bool overlayGpu = renderer_ && renderer_->PresentsViaSwapchain();
+    App::OverlayDL dl(ImGui::GetWindowDrawList(), &overlay_, overlayGpu);
 
     // C5: translucent ruler bands so the canvas shows through faintly.
     ImVec4 cBgV = ds.GetColor(DesignSystem::Tok::S_Color_Background_Layer1); cBgV.w = 0.6f;
@@ -225,19 +228,36 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         // frame's hover (set below), which is fine for a cadence hint.
         const bool viewFocused = (zoneLayout_.HoveredEditorState() == &st) ||
                                  (zoneLayout_.HoveredEditorState() == nullptr);
-        ImTextureID canvasTex = canvasRenderer_.RenderView(
+        ImTextureID canvasTex = renderer_->RenderView(
             &st, project_.document, cam, twPx, thPx, backdrop, &placements,
             /*includeLoose=*/st.nPanelShowOrphans, /*focused=*/viewFocused);
-        if (canvasTex) {
+        if (renderer_->PresentsViaSwapchain()) {
+            // The engine (Compositor) composites the canvas onto the swapchain via
+            // its OWN Vulkan pass, UNDER ImGui — ImGui never blits the canvas. The
+            // zone background is transparent (SetCanvasZoneTransparent), so the
+            // composite shows; we only repaint the ruler strips with the editor bg
+            // and leave the canvas rect transparent. We report the destination as
+            // an NDC rect (matching ImGui's main-viewport projection).
+            ImU32 cEd = ImGui::GetColorU32(
+                ds.GetColor(DesignSystem::Tok::C_Editor_Background));
+            dl.AddRectFilled(p0, ImVec2(p0.x + size.x, p0.y + rulerW), cEd);
+            dl.AddRectFilled(ImVec2(p0.x, p0.y + rulerW),
+                              ImVec2(p0.x + rulerW, p0.y + size.y), cEd);
+            ImGuiViewport* mv = ImGui::GetMainViewport();
+            auto nx = [&](float x) { return (x - mv->Pos.x) / mv->Size.x * 2.0f - 1.0f; };
+            auto ny = [&](float y) { return (y - mv->Pos.y) / mv->Size.y * 2.0f - 1.0f; };
+            renderer_->PlaceView(&st, ImVec4(nx(cMin.x), ny(cMin.y),
+                                             nx(cMax.x), ny(cMax.y)));
+        } else if (canvasTex) {
             // Round the bottom-right corner to match the editor zone (AddImage is
             // a hard rectangle and would overhang the rounded corner there).
-            dl->AddImageRounded(canvasTex, cMin, cMax, ImVec2(0, 0), ImVec2(1, 1),
+            dl.AddImageRounded(canvasTex, cMin, cMax, ImVec2(0, 0), ImVec2(1, 1),
                                 IM_COL32_WHITE, zoneRnd,
                                 zoneRnd > 0.5f ? ImDrawFlags_RoundCornersBottomRight
                                                : ImDrawFlags_RoundCornersNone);
         } else {
             // Fallback while the renderer warms up / shaders missing.
-            dl->AddRectFilled(cMin, cMax, cCanvas, zoneRnd,
+            dl.AddRectFilled(cMin, cMax, cCanvas, zoneRnd,
                               zoneRnd > 0.5f ? ImDrawFlags_RoundCornersBottomRight
                                              : ImDrawFlags_RoundCornersNone);
         }
@@ -423,7 +443,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
             ImVec2 a = D2S(ImVec2(po.x * u.pxPer, po.y * u.pxPer));
             ImVec2 b = D2S(ImVec2((po.x + ab.size.x) * u.pxPer,
                                   (po.y + ab.size.y) * u.pxPer));
-            dl->AddRect(a, b, ImGui::GetColorU32(ds.GetColor(
+            dl.AddRect(a, b, ImGui::GetColorU32(ds.GetColor(
                 DesignSystem::Tok::C_Viewport_PageBorder)));
             if (activePage) {
                 // Active page: a faint accent border (less prominent than an
@@ -431,7 +451,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                 ImVec4 acc = ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default);
                 ImU32 accBorder = ImGui::ColorConvertFloat4ToU32(
                     ImVec4(acc.x, acc.y, acc.z, 0.55f));
-                dl->AddRect(a, b, accBorder, 0.0f, 0, 1.5f);
+                dl.AddRect(a, b, accBorder, 0.0f, 0, 1.5f);
             }
             if (!ab.name.empty()) {
                 ImVec2 ts = ImGui::CalcTextSize(ab.name.c_str());
@@ -442,7 +462,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                     ImVec4 acc = ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default);
                     ImU32 fill = ImGui::ColorConvertFloat4ToU32(
                         ImVec4(acc.x, acc.y, acc.z, 0.18f));
-                    dl->AddRectFilled(ImVec2(lp.x - 3, lp.y - 1),
+                    dl.AddRectFilled(ImVec2(lp.x - 3, lp.y - 1),
                                       ImVec2(lp.x + ts.x + 3, lp.y + ts.y + 1),
                                       fill, 2.0f);
                 }
@@ -452,7 +472,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                     io.MousePos.x >= lp.x && io.MousePos.x <= lp.x + ts.x &&
                     io.MousePos.y >= lp.y && io.MousePos.y <= lp.y + ts.y;
                 if (overName && cropArtboard_ < 0 && pageDrag_ < 0) {
-                    dl->AddRectFilled(ImVec2(lp.x - 2, lp.y - 1),
+                    dl.AddRectFilled(ImVec2(lp.x - 2, lp.y - 1),
                                       ImVec2(lp.x + ts.x + 2, lp.y + ts.y + 1),
                                       ImGui::GetColorU32(ds.GetColor(
                                           DesignSystem::Tok::C_Viewport_PageNameHover)), 2.0f);
@@ -477,13 +497,13 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                 // Hint the move affordance while hovering the label.
                 if (overName && manualLayout && cropArtboard_ < 0 && pageDrag_ < 0)
                     ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
-                dl->AddText(lp, cText, ab.name.c_str());
+                dl.AddText(lp, cText, ab.name.c_str());
             }
         }
     } else {
         const char* hint = "Empty project — add a page with + or Ctrl+Shift+N";
         ImVec2 ts = ImGui::CalcTextSize(hint);
-        dl->AddText(ImVec2(cMin.x + (cSize.x - ts.x) * 0.5f,
+        dl.AddText(ImVec2(cMin.x + (cSize.x - ts.x) * 0.5f,
                            cMin.y + (cSize.y - ts.y) * 0.5f),
                     cText, hint);
     }
@@ -507,10 +527,10 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     }
 
     // ── Rulers ──────────────────────────────────────────────────────────
-    dl->AddRectFilled(ImVec2(p0.x, p0.y),
+    dl.AddRectFilled(ImVec2(p0.x, p0.y),
                       ImVec2(p0.x + size.x, p0.y + rulerW), cBg);   // top
     // Left ruler reaches the zone's BOTTOM-LEFT corner, so round it to match.
-    dl->AddRectFilled(ImVec2(p0.x, p0.y),
+    dl.AddRectFilled(ImVec2(p0.x, p0.y),
                       ImVec2(p0.x + rulerW, p0.y + size.y), cBg,    // left
                       zoneRnd,
                       zoneRnd > 0.5f ? ImDrawFlags_RoundCornersBottomLeft
@@ -522,7 +542,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     float   baseFs   = ImGui::GetFontSize();
     float   rulerFs  = baseFs * 0.75f;
     auto    smallText = [&](ImVec2 at, ImU32 col, const char* s) {
-        dl->AddText(font, rulerFs, at, col, s);
+        dl.AddText(font, rulerFs, at, col, s);
     };
     auto    smallSize = [&](const char* s) {
         return font->CalcTextSizeA(rulerFs, FLT_MAX, 0.0f, s);
@@ -539,12 +559,12 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         // culled and produce nothing to rotate), then rotate those vertices in
         // place about the pivot.
         ImVec2 origin(cx - sz.x * 0.5f, cy - sz.y * 0.5f);
-        int vtxStart = dl->VtxBuffer.Size;
-        dl->AddText(font, rulerFs, origin, col, s);
-        int vtxEnd = dl->VtxBuffer.Size;
+        int vtxStart = dl.imgui()->VtxBuffer.Size;
+        dl.AddText(font, rulerFs, origin, col, s);
+        int vtxEnd = dl.imgui()->VtxBuffer.Size;
         // Rotate −90° (CCW) about the pivot: (dx,dy) → (dy, -dx).
         for (int vi = vtxStart; vi < vtxEnd; ++vi) {
-            ImDrawVert& v = dl->VtxBuffer[vi];
+            ImDrawVert& v = dl.imgui()->VtxBuffer[vi];
             float dx = v.pos.x - cx;
             float dy = v.pos.y - cy;
             v.pos.x = cx + dy;
@@ -578,7 +598,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
             float sx = D2S(ImVec2(dx, 0)).x;
             if (sx > cMax.x) break;
             if (sx >= cMin.x) {
-                dl->AddLine(ImVec2(sx, topMajorY0),
+                dl.AddLine(ImVec2(sx, topMajorY0),
                             ImVec2(sx, p0.y + rulerW), cTick);
                 char buf[16];
                 std::snprintf(buf, sizeof(buf), "%d",
@@ -590,7 +610,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
             for (int k = 1; k < u.minors; ++k) {
                 float mx = D2S(ImVec2(dx + k * majorDoc / u.minors, 0)).x;
                 if (mx >= cMin.x && mx <= cMax.x)
-                    dl->AddLine(ImVec2(mx, topMinorY0),
+                    dl.AddLine(ImVec2(mx, topMinorY0),
                                 ImVec2(mx, p0.y + rulerW), cTick);
             }
         }
@@ -600,7 +620,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
             float sy = D2S(ImVec2(0, dy)).y;
             if (sy > cMax.y) break;
             if (sy >= cMin.y) {
-                dl->AddLine(ImVec2(lftMajorX0, sy),
+                dl.AddLine(ImVec2(lftMajorX0, sy),
                             ImVec2(p0.x + rulerW, sy), cTick);
                 char buf[16];
                 std::snprintf(buf, sizeof(buf), "%d",
@@ -610,20 +630,20 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
             for (int k = 1; k < u.minors; ++k) {
                 float my = D2S(ImVec2(0, dy + k * majorDoc / u.minors)).y;
                 if (my >= cMin.y && my <= cMax.y)
-                    dl->AddLine(ImVec2(lftMinorX0, my),
+                    dl.AddLine(ImVec2(lftMinorX0, my),
                                 ImVec2(p0.x + rulerW, my), cTick);
             }
         }
     }
 
     // Corner square: opaque (unit name must stay readable). Click to cycle.
-    // dl->AddRectFilled(ImVec2(p0.x, p0.y),
+    // dl.AddRectFilled(ImVec2(p0.x, p0.y),
     //                   ImVec2(p0.x + rulerW, p0.y + rulerW), cBgFull); //Background fully opaque under the text, but the rest of the rulers are translucent so the canvas shows through faintly.
-    dl->AddRectFilled(ImVec2(p0.x, p0.y),
+    dl.AddRectFilled(ImVec2(p0.x, p0.y),
                       ImVec2(p0.x + rulerW, p0.y + rulerW), cBg); //Background translucent, but with the opacity of both of the rulers behind the text is still readable.
     {
         ImVec2 ts = ImGui::CalcTextSize(u.name);
-        dl->AddText(ImVec2(p0.x + (rulerW - ts.x) * 0.5f,
+        dl.AddText(ImVec2(p0.x + (rulerW - ts.x) * 0.5f,
                            p0.y + (rulerW - ts.y) * 0.5f), cText, u.name);
         ImGui::SetCursorScreenPos(p0);
         if (ImGui::InvisibleButton("##unitsq", ImVec2(rulerW, rulerW)))
@@ -638,11 +658,11 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
 
     // Blue cursor guides — only while the mouse is genuinely in the canvas.
     if (scopeHovered) {
-        dl->AddLine(ImVec2(m.x, p0.y), ImVec2(m.x, p0.y + rulerW), cGuide, 1.5f);
-        dl->AddLine(ImVec2(p0.x, m.y), ImVec2(p0.x + rulerW, m.y), cGuide, 1.5f);
-        dl->AddLine(ImVec2(m.x, cMin.y), ImVec2(m.x, cMax.y),
+        dl.AddLine(ImVec2(m.x, p0.y), ImVec2(m.x, p0.y + rulerW), cGuide, 1.5f);
+        dl.AddLine(ImVec2(p0.x, m.y), ImVec2(p0.x + rulerW, m.y), cGuide, 1.5f);
+        dl.AddLine(ImVec2(m.x, cMin.y), ImVec2(m.x, cMax.y),
                     (cGuide & 0x00FFFFFF) | 0x33000000);
-        dl->AddLine(ImVec2(cMin.x, m.y), ImVec2(cMax.x, m.y),
+        dl.AddLine(ImVec2(cMin.x, m.y), ImVec2(cMax.x, m.y),
                     (cGuide & 0x00FFFFFF) | 0x33000000);
     }
 
@@ -704,7 +724,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                             if (poly.size() < 2) continue;
                             size_t segs = closed ? poly.size() : poly.size() - 1;
                             for (size_t i = 0; i < segs; ++i)
-                                dl->AddLine(d2sDoc(poly[i]), d2sDoc(poly[(i + 1) % poly.size()]),
+                                dl.AddLine(d2sDoc(poly[i]), d2sDoc(poly[(i + 1) % poly.size()]),
                                             c, 1.5f);
                         }
                     }
@@ -727,14 +747,14 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                             const float dash = 5.0f, gap = 4.0f;
                             for (float t = 0.0f; t < len; t += dash + gap) {
                                 float t2 = std::min(t + dash, len);
-                                dl->AddLine(ImVec2(a.x + dir.x * t,  a.y + dir.y * t),
+                                dl.AddLine(ImVec2(a.x + dir.x * t,  a.y + dir.y * t),
                                             ImVec2(a.x + dir.x * t2, a.y + dir.y * t2), relCol, 1.0f);
                             }
                         }
                     }
                 }
-                dl->AddCircleFilled(op, 4.0f, stateActive(loose));
-                dl->AddCircle(op, 4.0f, ImGui::GetColorU32(ds.GetColor(
+                dl.AddCircleFilled(op, 4.0f, stateActive(loose));
+                dl.AddCircle(op, 4.0f, ImGui::GetColorU32(ds.GetColor(
                     Tok::C_Viewport_OriginOutline)));
             };
 
@@ -818,8 +838,8 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                     const auto& fab = abs[(size_t)frameAb];
                     ImVec2 a = d2sDoc({ fpo.x, fpo.y });
                     ImVec2 b = d2sDoc({ fpo.x + fab.size.x, fpo.y + fab.size.y });
-                    dl->AddRect(a, b, hl, 0.0f, 0, 2.0f);
-                    dl->AddRectFilled(a, b, (hl & 0x00FFFFFF) | 0x1A000000);
+                    dl.AddRect(a, b, hl, 0.0f, 0, 2.0f);
+                    dl.AddRectFilled(a, b, (hl & 0x00FFFFFF) | 0x1A000000);
 
                     // The object lands at the framed page's display origin PLUS
                     // the owner's rebase (for a move; rebase is 0 for Ctrl which
@@ -831,7 +851,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                         : fpo;
                     ImVec2 clipA(std::min(a.x, b.x), std::min(a.y, b.y));
                     ImVec2 clipB(std::max(a.x, b.x), std::max(a.y, b.y));
-                    dl->PushClipRect(clipA, clipB, true);
+                    dl.imgui()->PushClipRect(clipA, clipB, true);
                     for (const Renderer::Part& part : act->parts) {
                         bool cl = false;
                         std::vector<Renderer::Vec2> poly =
@@ -843,13 +863,13 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
                             const auto& fc = part.fill.color;
                             ImU32 fill = ImGui::GetColorU32(
                                 ImVec4(fc.r, fc.g, fc.b, fc.a * 0.7f));
-                            dl->AddConvexPolyFilled(sp.data(), (int)sp.size(), fill);
+                            dl.AddConvexPolyFilled(sp.data(), (int)sp.size(), fill);
                         }
                         size_t segs = cl ? sp.size() : sp.size() - 1;
                         for (size_t i = 0; i < segs; ++i)
-                            dl->AddLine(sp[i], sp[(i + 1) % sp.size()], hl, 1.5f);
+                            dl.AddLine(sp[i], sp[(i + 1) % sp.size()], hl, 1.5f);
                     }
-                    dl->PopClipRect();
+                    dl.imgui()->PopClipRect();
                 }
             }
         }
@@ -876,8 +896,8 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
             ImU32 cBlack = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::C_Viewport_CursorTick));
             ImU32 axisX  = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::C_Viewport_CursorAxisX)); // +X red
             ImU32 axisY  = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::C_Viewport_CursorAxisY)); // +Y green
-            dl->AddCircle(cp, rr, cw, 24, 3.0f);
-            dl->AddCircle(cp, rr, cr, 24, 1.5f);
+            dl.AddCircle(cp, rr, cw, 24, 3.0f);
+            dl.AddCircle(cp, rr, cr, 24, 1.5f);
             // The crosshair ticks follow the cursor's ORIENTATION so the +X/+Y axes
             // show the "Cursor" transform-orientation frame. Rotate each tick dir by
             // the cursor's screen angle (doc Y is down, so a positive doc rotation is
@@ -886,7 +906,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
             float cc = std::cos(crot), cs = std::sin(crot);
             auto tick = [&](float dirx, float diry, float r0, float r1, ImU32 col) {
                 ImVec2 d{ dirx * cc - diry * cs, dirx * cs + diry * cc };   // rotated unit dir
-                dl->AddLine(ImVec2(cp.x + d.x * r0, cp.y + d.y * r0),
+                dl.AddLine(ImVec2(cp.x + d.x * r0, cp.y + d.y * r0),
                             ImVec2(cp.x + d.x * r1, cp.y + d.y * r1), col, 1.8f);
             };
             tick(-1, 0, ri, ro, cBlack);   // −X
@@ -1115,7 +1135,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         const float rnd   = ds2.GetFloat(DesignSystem::Tok::C_Window_CornerRadius) * gs;
         ImVec4 orange = ds2.GetColor(DesignSystem::Tok::S_Color_Notice_Default);
         orange.w      = ds2.GetFloat(DesignSystem::Tok::S_Opacity_Faint);
-        dl->AddRectFilled(ImVec2(cMin.x + inset, p0.y + inset),
+        dl.AddRectFilled(ImVec2(cMin.x + inset, p0.y + inset),
                           ImVec2(cMax.x - inset, cMax.y - inset),
                           ImGui::ColorConvertFloat4ToU32(orange), rnd);
         // Click (left, since the button press) confirms the sync to THIS viewport
@@ -1253,7 +1273,8 @@ void Application::RenderViewportPagesTab(EditorState& st, ImVec2 conMin, ImVec2 
     auto& ds  = DesignSystem::DesignSystem::Instance();
     auto& doc = project_.document;
     ImGuiIO& io = ImGui::GetIO();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // The Pages-tab list is a PANEL, not a canvas overlay → always ImGui (gpu=false).
+    App::OverlayDL dl(ImGui::GetWindowDrawList(), &overlay_, /*gpu=*/false);
     const float gs = ds.GetGlobalScale();
     const float rowH = ImGui::GetTextLineHeightWithSpacing();
     auto col = [&](DesignSystem::Tok t, float a){ ImVec4 c = ds.GetColor(t);
@@ -1271,19 +1292,19 @@ void Application::RenderViewportPagesTab(EditorState& st, ImVec2 conMin, ImVec2 
         ImGui::SetCursorScreenPos(rmin);
         ImGui::InvisibleButton(label, ImVec2(rmax.x - rmin.x, rowH));
         if (ImGui::IsItemClicked()) flag = !flag;
-        if (ImGui::IsItemHovered()) dl->AddRectFilled(rmin, rmax, col(DesignSystem::Tok::C_Outliner_Row_Hover, 0.4f), 3.0f*gs);
+        if (ImGui::IsItemHovered()) dl.AddRectFilled(rmin, rmax, col(DesignSystem::Tok::C_Outliner_Row_Hover, 0.4f), 3.0f*gs);
         // a small check box
         ImVec2 bx(rmin.x + 2.0f*gs, rmin.y + (rowH - rowH*0.55f)*0.5f);
         ImVec2 bxe(bx.x + rowH*0.55f, bx.y + rowH*0.55f);
-        dl->AddRect(bx, bxe, txtSub, 2.0f*gs);
-        if (flag) dl->AddRectFilled(ImVec2(bx.x+2,bx.y+2), ImVec2(bxe.x-2,bxe.y-2),
+        dl.AddRect(bx, bxe, txtSub, 2.0f*gs);
+        if (flag) dl.AddRectFilled(ImVec2(bx.x+2,bx.y+2), ImVec2(bxe.x-2,bxe.y-2),
                                     ImGui::ColorConvertFloat4ToU32(ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default)), 1.0f);
-        dl->AddText(ImVec2(bxe.x + 6.0f*gs, rmin.y + (rowH-ImGui::GetTextLineHeight())*0.5f), txt, label);
+        dl.AddText(ImVec2(bxe.x + 6.0f*gs, rmin.y + (rowH-ImGui::GetTextLineHeight())*0.5f), txt, label);
         y += rowH + 2.0f * gs;
     };
     if (book) topToggle("First page as cover", st.pageLayout.spreadCover);
     topToggle("Show orphan objects", st.nPanelShowOrphans);
-    dl->AddLine(ImVec2(conMin.x + pad, y), ImVec2(conMax.x - pad, y), txtSub, 1.0f);
+    dl.AddLine(ImVec2(conMin.x + pad, y), ImVec2(conMax.x - pad, y), txtSub, 1.0f);
     y += 4.0f * gs;
 
     // The eligible pages (document-visible + per-view), grouped into spreads.
@@ -1310,8 +1331,8 @@ void Application::RenderViewportPagesTab(EditorState& st, ImVec2 conMin, ImVec2 
                                ImVec2(rmax.x - rmin.x, entryH));
         bool rh = ImGui::IsItemHovered();
         bool isCur = (st.pageLayout.pageIndex == s);
-        if (isCur)    dl->AddRectFilled(rmin, rmax, selC, 4.0f * gs);
-        else if (rh)  dl->AddRectFilled(rmin, rmax, hov, 4.0f * gs);
+        if (isCur)    dl.AddRectFilled(rmin, rmax, selC, 4.0f * gs);
+        else if (rh)  dl.AddRectFilled(rmin, rmax, hov, 4.0f * gs);
         if (ImGui::IsItemClicked()) st.pageLayout.pageIndex = s;
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right) && start < (int)elig.size()) {
             pageCtxRequest_ = true; pageCtxArtboard_ = elig[(size_t)start]; pageCtxPos_ = io.MousePos;
@@ -1322,7 +1343,7 @@ void Application::RenderViewportPagesTab(EditorState& st, ImVec2 conMin, ImVec2 
             if (k) label += "  |  ";
             label += doc.artboards[(size_t)elig[(size_t)(start + k)]].name;
         }
-        dl->AddText(ImVec2(rmin.x + 6.0f * gs, rmin.y + 3.0f * gs), txt, label.c_str());
+        dl.AddText(ImVec2(rmin.x + 6.0f * gs, rmin.y + 3.0f * gs), txt, label.c_str());
         // Preview(s): the page's white rect at aspect ratio, side by side.
         float py = rmin.y + rowH + 2.0f * gs;
         float availW = (rmax.x - rmin.x) - 12.0f * gs;
@@ -1333,9 +1354,9 @@ void Application::RenderViewportPagesTab(EditorState& st, ImVec2 conMin, ImVec2 
             float ar = (ab.size.y > 1.0f) ? ab.size.x / ab.size.y : 1.0f;
             float pw2 = std::min(slotW, prevH * ar), ph2 = std::min(prevH, slotW / std::max(0.01f, ar));
             ImVec2 a(px, py), b(px + pw2, py + ph2);
-            dl->AddRectFilled(a, b, ImGui::GetColorU32(ds.GetColor(
+            dl.AddRectFilled(a, b, ImGui::GetColorU32(ds.GetColor(
                 DesignSystem::Tok::C_Viewport_ThumbnailBackground)), 2.0f * gs);
-            dl->AddRect(a, b, ImGui::GetColorU32(ds.GetColor(
+            dl.AddRect(a, b, ImGui::GetColorU32(ds.GetColor(
                 DesignSystem::Tok::C_Viewport_ThumbnailBorder)), 2.0f * gs);
             px += slotW + 4.0f * gs;
         }

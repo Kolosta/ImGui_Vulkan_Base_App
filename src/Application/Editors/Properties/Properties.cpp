@@ -706,6 +706,35 @@ void Application::RenderProperties() {
     auto& doc = project_.document;
     ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(DST::Tok::S_Color_Text_Default));
 
+    // A layer GROUP is the active selection (clicked in the Layers view / Select
+    // Group): show the GROUP's properties (name + opacity + blend), not an object's.
+    if (uint64_t agid = doc.ActiveGroup()) {
+        if (Renderer::Collection* g = doc.FindCollection(agid)) {
+            bool gdirty = false;
+            ImGui::TextDisabled("Layer Group");
+            {
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "%s", g->name.c_str());
+                ImGui::SetNextItemWidth(-1.0f);
+                if (ImGui::InputText("##gname", buf, sizeof(buf))) { g->name = buf; gdirty = true; }
+            }
+            if (PropDragFloat("Opacity", &g->opacity, 0.005f, 0.0f, 1.0f)) gdirty = true;
+            static const char* kGB =
+                "Normal\0Multiply\0Screen\0Overlay\0Darken\0Lighten\0Color Dodge\0"
+                "Color Burn\0Hard Light\0Soft Light\0Difference\0Exclusion\0Hue\0"
+                "Saturation\0Color\0Luminosity\0Erase\0";
+            PropLabel("Blend");
+            int gbm = (int)g->blendMode;
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::Combo("##gonlyblend", &gbm, kGB)) {
+                g->blendMode = (Renderer::BlendMode)gbm; gdirty = true;
+            }
+            if (gdirty) project_.dirty = true;
+            ImGui::PopStyleColor();
+            return;
+        }
+    }
+
     Renderer::Shape* s = doc.ActiveShape();
     if (!s) {
         ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(DST::Tok::S_Color_Text_Subtle));
@@ -723,6 +752,47 @@ void Application::RenderProperties() {
         std::snprintf(buf, sizeof(buf), "%s", s->name.c_str());
         ImGui::SetNextItemWidth(-1.0f);
         if (ImGui::InputText("##objname", buf, sizeof(buf))) { s->name = buf; dirty = true; }
+    }
+
+    // ── Object opacity + blend mode ──────────────────────────────────────────
+    // Compositing params: the modern (Compositor) engine composites the whole
+    // object with these; the legacy engine ignores them (opaque, Normal).
+    if (PropDragFloat("Opacity", &s->opacity, 0.005f, 0.0f, 1.0f)) dirty = true;
+    {
+        static const char* kBlend =
+            "Normal\0Multiply\0Screen\0Overlay\0Darken\0Lighten\0Color Dodge\0"
+            "Color Burn\0Hard Light\0Soft Light\0Difference\0Exclusion\0Hue\0"
+            "Saturation\0Color\0Luminosity\0Erase\0";   // Erase = knock-out (last)
+        PropLabel("Blend");
+        int bm = (int)s->blendMode;
+        ImGui::SetNextItemWidth(-1.0f);
+        if (ImGui::Combo("##blend", &bm, kBlend)) {
+            s->blendMode = (Renderer::BlendMode)bm;
+            dirty = true;
+        }
+    }
+
+    // ── Layer-group compositing (Lot 11) ─────────────────────────────────────
+    // When the active object belongs to a layer group, expose the GROUP's own
+    // opacity / blend / erase (it composites its members as a unit). Editing these
+    // changes the group, not the object. Compositor-only (legacy ignores groups).
+    if (uint64_t gid = doc.GroupOfShape(s->id)) {
+        if (Renderer::Collection* g = doc.FindCollection(gid)) {
+            ImGui::Spacing();
+            PropLabel("Group");
+            ImGui::SameLine(); ImGui::TextDisabled("%s", g->name.c_str());
+            if (PropDragFloat("Group Opacity", &g->opacity, 0.005f, 0.0f, 1.0f)) dirty = true;
+            static const char* kGBlend =
+                "Normal\0Multiply\0Screen\0Overlay\0Darken\0Lighten\0Color Dodge\0"
+                "Color Burn\0Hard Light\0Soft Light\0Difference\0Exclusion\0Hue\0"
+                "Saturation\0Color\0Luminosity\0Erase\0";
+            PropLabel("Group Blend");
+            int gbm = (int)g->blendMode;
+            ImGui::SetNextItemWidth(-1.0f);
+            if (ImGui::Combo("##gblend", &gbm, kGBlend)) {
+                g->blendMode = (Renderer::BlendMode)gbm; dirty = true;
+            }
+        }
     }
 
     // ── Object type (Mesh / Curve) ───────────────────────────────────────────

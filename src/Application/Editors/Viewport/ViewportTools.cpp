@@ -30,7 +30,7 @@ void Application::HandleViewportTools(
     EditorState& st,
     const std::function<Vec2(ImVec2)>& s2d,
     const std::function<ImVec2(Vec2)>& d2s,
-    float effZoom, bool hovered, ImDrawList* dl) {
+    float effZoom, bool hovered, App::OverlayDL& dl) {
 
     auto& ds   = DesignSystem::DesignSystem::Instance();
     auto& tm   = Shortcuts::Tools::ToolManager::Instance();
@@ -77,12 +77,36 @@ void Application::HandleViewportTools(
     // Edit-mode selection/editing is handled in Lot E; until then the select
     // tool behaves the same (object picking) so the build stays functional.
     if (tool == "tool.select") {
+        // GPU picking primer (Lot 8): when the engine renders an id-pass (the
+        // Compositor), feed it the hovered pixel each frame so the async readback
+        // is ready by the time of a click. viewPx = d2s(m) − d2s(pan) is the
+        // view-local logical pixel (cancels the canvas screen origin). The legacy
+        // engine returns 0 → the CPU hit-test below stays the source of truth.
+        uint64_t gpuHit = 0;
+        if (renderer_ && renderer_->PresentsViaSwapchain() && hovered) {
+            ImVec2 sp = d2s(m);
+            ImVec2 sp0 = d2s(Vec2{ st.pan.x, st.pan.y });
+            gpuHit = renderer_->Pick(&st, (int)std::lround(sp.x - sp0.x),
+                                          (int)std::lround(sp.y - sp0.y));
+        }
         // Start a gesture only if this leaf is hovered and none is active.
         if (lpressed && !toolState_.Active()) {
-            uint64_t hit = PickShape(doc, m, zoom,
+            uint64_t hit = gpuHit ? gpuHit
+                         : PickShape(doc, m, zoom,
                 [this](int ab){ return CurPageOrigin(ab); },
                 [this](int ab){ return CurPageVisible(ab); });
             if (hit) {
+                // G + click → select the whole LAYER GROUP of the clicked object (Lot
+                // 11), if it's in one. (Same as right-click ▸ Select Group.)
+                if (ImGui::IsKeyDown(ImGuiKey_G)) {
+                    uint64_t g = doc.GroupOfShape(hit);
+                    if (g) {
+                        doc.SelectGroup(g);
+                        doc.SyncActivePageToSelection();
+                        MarkUndoLabel("Select Group");
+                        return;   // group selected; don't start a per-object gesture
+                    }
+                }
                 // Did the selection/active actually change? Re-clicking the SAME sole
                 // active object is a no-op → don't log or label a redundant "Select".
                 const std::vector<uint64_t> prevSel = doc.Selection();
@@ -198,8 +222,8 @@ void Application::HandleViewportTools(
         if (toolState_.gesture == ToolGesture::BoxSelect && toolState_.owner == self) {
             toolState_.dragNow = m;
             ImVec2 a = d2s(toolState_.dragStart), b = d2s(toolState_.dragNow);
-            dl->AddRectFilled(a, b, (cAccent & 0x00FFFFFF) | 0x22000000);
-            dl->AddRect(a, b, cAccent, 0.0f, 0, 1.0f);
+            dl.AddRectFilled(a, b, (cAccent & 0x00FFFFFF) | 0x22000000);
+            dl.AddRect(a, b, cAccent, 0.0f, 0, 1.0f);
             if (lreleased) {
                 float x0 = std::min(toolState_.dragStart.x, toolState_.dragNow.x);
                 float y0 = std::min(toolState_.dragStart.y, toolState_.dragNow.y);
@@ -249,7 +273,7 @@ void Application::HandleViewportTools(
                 doc.cursorRotation = newRot;
                 // Guide line cursor→mouse + the cursor's current X axis.
                 ImU32 acc = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default));
-                dl->AddLine(cs, io.MousePos, acc, 1.4f);
+                dl.AddLine(cs, io.MousePos, acc, 1.4f);
                 ShowOrientedCursor("move-up-down-cur", ang);
                 bool confirm = ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
                                ImGui::IsKeyPressed(ImGuiKey_Enter) ||

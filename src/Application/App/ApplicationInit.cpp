@@ -8,6 +8,8 @@
 #include <Shortcuts/ToolManager.h>
 #include <UI/Text/FontManager.h>
 #include <VectorGraphics/IconManager.h>
+#include <Renderer/Render/CanvasRenderer.h>   // legacy IViewRenderer impl
+#include <Compositor/Engine.h>                // modern IViewRenderer impl
 #include <iostream>
 
 #ifdef _DEBUG
@@ -221,6 +223,10 @@ bool Application::Initialize() {
         cfg.title = "Preferences"; cfg.width = 940; cfg.height = 660;
         settingsHost_.Init(sh, mainScale_, cfg,
                            [this](bool* open){ settingsWindow_.Render(open); });
+        // Inject the render-engine selector into Preferences ▸ Dev (it needs
+        // Application state, which the UI lib can't reach). The click only stages
+        // a swap; it's applied between frames — see pendingRendererKind_.
+        settingsWindow_.SetDevPageExtra([this]{ RenderDevRenderEnginePanel(); });
         // Run the shared shortcut pipeline inside the Preferences context too,
         // so shortcuts work there exactly like in the main window (the
         // ShortcutManager/EventNormalizer are singletons reading the current
@@ -320,8 +326,25 @@ void Application::SetupVulkan() {
         extensions.push_back(sdl_extensions[n]);
 
     VkResult err;
+
+    // Request the highest Vulkan version the loader supports, capped at 1.3 (the
+    // Compositor's target: dynamic rendering + synchronization2 are core there).
+    // The loader gates core 1.3 entry points on the instance's apiVersion, so this
+    // must be set even though the legacy renderer only needs 1.0. Falls back
+    // gracefully: a lower version just leaves compositorSupported_ = false.
+    uint32_t instanceVersion = VK_API_VERSION_1_0;
+    if (vkEnumerateInstanceVersion(&instanceVersion) != VK_SUCCESS)
+        instanceVersion = VK_API_VERSION_1_0;
+    const uint32_t requestedApi =
+        (instanceVersion >= VK_API_VERSION_1_3) ? VK_API_VERSION_1_3 : instanceVersion;
+    VkApplicationInfo app_info = {};
+    app_info.sType      = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.pApplicationName = "Carto";
+    app_info.apiVersion = requestedApi;
+
     VkInstanceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    create_info.pApplicationInfo = &app_info;
 
     uint32_t properties_count;
     ImVector<VkExtensionProperties> properties;
@@ -391,8 +414,54 @@ void Application::SetupVulkan() {
         queue_info[0].queueCount = 1;
         queue_info[0].pQueuePriorities = queue_priority;
 
+        // ── Modern features for the Compositor engine (Vulkan 1.3) ────────────
+        // Query what the device supports, then enable only the intersection with
+        // what we want — so vkCreateDevice never fails on an unsupported request.
+        // The legacy renderer ignores these (enabling supported features is
+        // harmless); compositorSupported_ gates the Compositor toggle.
+        VkPhysicalDeviceProperties devProps = {};
+        vkGetPhysicalDeviceProperties(physicalDevice_, &devProps);
+
+        VkPhysicalDeviceVulkan13Features feats13 = {};
+        feats13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        VkPhysicalDeviceVulkan12Features feats12 = {};
+        feats12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        feats12.pNext = &feats13;
+        VkPhysicalDeviceFeatures2 feats2 = {};
+        feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        feats2.pNext = &feats12;
+
+        const bool api13 = (requestedApi >= VK_API_VERSION_1_3) &&
+                           (devProps.apiVersion >= VK_API_VERSION_1_3);
+        if (api13) {
+            vkGetPhysicalDeviceFeatures2(physicalDevice_, &feats2);
+            compositorSupported_ = feats13.dynamicRendering &&
+                                   feats13.synchronization2 &&
+                                   feats12.timelineSemaphore;
+        }
+
+        // Enable chain (only the features we actually use), kept alive until
+        // vkCreateDevice below.
+        VkPhysicalDeviceVulkan13Features en13 = {};
+        en13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        VkPhysicalDeviceVulkan12Features en12 = {};
+        en12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        en12.pNext = &en13;
+        if (compositorSupported_) {
+            en13.dynamicRendering   = VK_TRUE;
+            en13.synchronization2   = VK_TRUE;
+            en12.timelineSemaphore  = VK_TRUE;
+            // Descriptor indexing / bindless: enable when present (used from Lot 6).
+            en12.descriptorIndexing                           = feats12.descriptorIndexing;
+            en12.runtimeDescriptorArray                       = feats12.runtimeDescriptorArray;
+            en12.shaderSampledImageArrayNonUniformIndexing    = feats12.shaderSampledImageArrayNonUniformIndexing;
+            en12.descriptorBindingPartiallyBound              = feats12.descriptorBindingPartiallyBound;
+            en12.descriptorBindingSampledImageUpdateAfterBind = feats12.descriptorBindingSampledImageUpdateAfterBind;
+        }
+
         VkDeviceCreateInfo create_info = {};
         create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        create_info.pNext = compositorSupported_ ? (void*)&en12 : nullptr;
         create_info.queueCreateInfoCount = sizeof(queue_info) / sizeof(queue_info[0]);
         create_info.pQueueCreateInfos = queue_info;
         create_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.Size);
@@ -600,11 +669,43 @@ void Application::InitializeSubsystems() {
     // be the project root, where "shaders" would not resolve. SDL_GetBasePath()
     // returns the exe's folder (with a trailing separator), next to which the
     // build copies the compiled .spv into "shaders/".
-    std::string shaderDir = "shaders";
+    canvasShaderDir_ = "shaders";
     if (const char* base = SDL_GetBasePath())
-        shaderDir = std::string(base) + "shaders";
-    canvasRenderer_.Initialize(device_, physicalDevice_, queue_, queueFamily_,
-                               commandPool_, canvasSampler_, shaderDir);
+        canvasShaderDir_ = std::string(base) + "shaders";
+    // Build the active view-renderer (legacy by default) behind the IViewRenderer
+    // contract and initialize it. SwitchViewRenderer can clean-swap to the other
+    // engine at runtime, reusing canvasShaderDir_.
+    renderer_ = MakeViewRenderer(rendererKind_);
+    renderer_->Initialize(instance_, device_, physicalDevice_, queue_, queueFamily_,
+                          commandPool_, canvasSampler_, canvasShaderDir_);
+}
+
+std::unique_ptr<Renderer::IViewRenderer>
+Application::MakeViewRenderer(Renderer::IViewRenderer::Kind kind) {
+    using Kind = Renderer::IViewRenderer::Kind;
+    // Fall back to Legacy if the Compositor's modern device features are absent.
+    if (kind == Kind::Compositor && !compositorSupported_) {
+        rendererKind_ = Kind::Legacy;
+        kind = Kind::Legacy;
+    }
+    switch (kind) {
+        case Kind::Compositor: return std::make_unique<Comp::Engine>();
+        case Kind::Legacy:
+        default:               return std::make_unique<Renderer::CanvasRenderer>();
+    }
+}
+
+void Application::SwitchViewRenderer(Renderer::IViewRenderer::Kind kind) {
+    if (renderer_ && kind == rendererKind_) return;
+    // Clean swap: drain all GPU work, tear the current engine fully down (so the
+    // inactive engine no longer exists — zero cost, no desync), then build + init
+    // the requested one with the SAME shared handles / shader dir.
+    if (device_) vkDeviceWaitIdle(device_);
+    if (renderer_) { renderer_->Shutdown(); renderer_.reset(); }
+    rendererKind_ = kind;
+    renderer_ = MakeViewRenderer(kind);
+    renderer_->Initialize(instance_, device_, physicalDevice_, queue_, queueFamily_,
+                          commandPool_, canvasSampler_, canvasShaderDir_);
 }
 
 void Application::ApplyFontTokens() {
@@ -663,7 +764,7 @@ void Application::Shutdown() {
 
     // Tear down the vector renderer (its offscreen targets/pipeline) and its
     // sampler while the shared device is still alive.
-    canvasRenderer_.Shutdown();
+    if (renderer_) { renderer_->Shutdown(); renderer_.reset(); }
     if (canvasSampler_) {
         vkDestroySampler(device_, canvasSampler_, g_Allocator);
         canvasSampler_ = VK_NULL_HANDLE;

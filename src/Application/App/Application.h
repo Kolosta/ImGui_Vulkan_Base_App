@@ -6,6 +6,7 @@
 #include <imgui_impl_vulkan.h>
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -21,6 +22,7 @@
 #include <Renderer/Render/CanvasRenderer.h>
 #include "ZoneLayout.h"
 #include "PageLayout.h"
+#include "OverlayList.h"   // editor-side full-GPU overlay builder (Lot 12)
 #include "Project.h"
 #include "SecondaryWindow.h"
 #include "UndoStack.h"
@@ -155,7 +157,7 @@ private:
     // shows nothing (you can snap anywhere on an edge). d2sDoc/effZoom from the leaf.
     void DrawSnapCandidates(const std::function<ImVec2(Renderer::Vec2)>& d2sDoc,
                             float effZoom, ImVec2 canvasMin, ImVec2 canvasMax,
-                            ImDrawList* dl);
+                            App::OverlayDL& dl);
 
     // The hovered viewport's mouse position in RAW document units, refreshed each
     // frame while a Viewport is scope-hovered. Lets globally-dispatched actions
@@ -182,7 +184,7 @@ private:
     void HandleViewportTools(EditorState& st,
                              const std::function<Renderer::Vec2(ImVec2)>& s2d,
                              const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                             float effZoom, bool hovered, ImDrawList* dl);
+                             float effZoom, bool hovered, App::OverlayDL& dl);
 
     // Curve tool (tool.curve, Edit Mode): build a Bézier curve interactively.
     // Click = a straight (Vector) point; click-drag = a Bézier point (pull the
@@ -191,7 +193,7 @@ private:
     void HandleCurveTool(EditorState& st,
                          const std::function<Renderer::Vec2(ImVec2)>& s2d,
                          const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                         float effZoom, bool hovered, ImDrawList* dl);
+                         float effZoom, bool hovered, App::OverlayDL& dl);
     // Finish the in-progress curve gesture into a real Bézier Shape (no-op if
     // fewer than 2 points). `closed` makes it a filled area.
     void FinishCurveGesture(bool closed);
@@ -216,7 +218,7 @@ private:
     // `committed` is set true when a Shift-click froze a traced piece this frame.
     bool UpdateFollowCurve(const std::function<ImVec2(Renderer::Vec2)>& d2s,
                            Renderer::Vec2 mRaw, float effZoom, bool lpressed,
-                           ImDrawList* dl, bool& committed);
+                           App::OverlayDL& dl, bool& committed);
     // Recompute the IN handles (toolState_.tangentsIn) of the in-progress curve
     // from its points + dragged OUT handles, OpenOrienteering-Mapper style: each
     // point's IN handle is ALIGNED (collinear-opposite) to its OUT handle but its
@@ -238,7 +240,7 @@ private:
     void HandleLineMarkTool(EditorState& st,
                             const std::function<Renderer::Vec2(ImVec2)>& s2d,
                             const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                            float effZoom, bool hovered, ImDrawList* dl);
+                            float effZoom, bool hovered, App::OverlayDL& dl);
     // Translucent preview of a line mark at world point `p` (tangent `tan`),
     // mirroring the tessellator render. Drawn while hovering a compatible line.
     // `curve` (optional, world-space flattened subpath) + `closed` let crossing /
@@ -322,18 +324,18 @@ private:
     void HandleEditMode(EditorState& st,
                         const std::function<Renderer::Vec2(ImVec2)>& s2d,
                         const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                        float effZoom, bool hovered, ImDrawList* dl);
+                        float effZoom, bool hovered, App::OverlayDL& dl);
     // Overlay for Edit Mode (points/edges/faces + handles), drawn every frame for
     // each Viewport leaf showing the editable objects.
     void DrawEditOverlay(const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                         float effZoom, ImDrawList* dl);
+                         float effZoom, App::OverlayDL& dl);
     // Extrude tool (tool.extrude, Edit Mode): draws a ring around the active
     // vertex; grabbing inside it extrudes a new connected point that follows the
     // mouse and drops on release. Defined in EditMode.cpp (uses NodeWorld).
     void HandleExtrudeTool(EditorState& st,
                            const std::function<Renderer::Vec2(ImVec2)>& s2d,
                            const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                           float effZoom, bool hovered, ImDrawList* dl);
+                           float effZoom, bool hovered, App::OverlayDL& dl);
     // Insert a new node connected to the active vertex (endpoint extension), make
     // it the sole vertex selection. Returns false if there's no extrudable active
     // vertex. Shared by the E shortcut and the Extrude tool.
@@ -425,6 +427,12 @@ private:
     void RenderOutliner(EditorState& st);                // st = this Outliner leaf's state
     void BuildOutlinerTopBar(EditorState& st, EditorBar& bar);  // Sync | Display | Search | Filter
     void OutlinerObjectRow(Renderer::Shape& s);          // selectable + rename + drag
+    bool OutlinerGroupHeaderRow(uint64_t groupId);       // Layers-view group header (eye/name)
+    // Layers-view isolated render preview (Lot 11-5): a thumbnail of `shapes` on a
+    // white card, in the icon slot. `OutlinerShapeHash` keys the engine's render cache.
+    void OutlinerPreviewSlot(const std::vector<Renderer::Shape>& shapes,
+                             uint64_t key, uint64_t contentHash);
+    static uint64_t OutlinerShapeHash(const Renderer::Shape& s);
     // Object row + its parented child objects nested beneath it (Blender), limited
     // to children in the same scope (scopeColl = collection id, or 0 = bare on page).
     void OutlinerObjectSubtree(uint64_t id, uint64_t scopeColl);
@@ -511,6 +519,19 @@ private:
     uint64_t        outlinerCtxId_   = 0;     // shape id or collection id
     ImVec2          outlinerCtxPos_{0, 0};
     bool            outlinerCtxOpen_ = false; // request to open the popup
+    // Deferred Layers-view reorder/regroup (Lot 11): a drop mutates ab.shapes (a
+    // vector move via MakeGroupContiguous), which would invalidate the row loop still
+    // iterating it → use-after-free crash. The drop records the request here; it is
+    // applied by ApplyOutlinerReorder() AFTER the Outliner is drawn.
+    struct OutlinerReorderReq {
+        bool                  active = false;
+        std::vector<uint64_t> ids;          // dragged object ids (empty → group move)
+        uint64_t              draggedGroup = 0;  // group being dragged (group-header drag)
+        uint64_t              targetObj = 0;     // drop-onto object id (anchor)
+        uint64_t              targetGroup = 0;   // drop-onto group header id (0 = none)
+        uint64_t              newGroup = 0;      // groupId to assign the dragged objects
+    } outlinerReorder_;
+    void ApplyOutlinerReorder();
     // ── Internal copy/paste clipboard (NOT the OS clipboard) ──────────────────
     // Holds deep copies of whole OBJECTS and/or PAGES (with their objects), so a
     // selection — from the Viewport or the Outliner — can be copied/cut/pasted.
@@ -588,7 +609,7 @@ private:
     // RAW-unit converters built in RenderViewport).
     void HandleThumbnailCrop(const std::function<ImVec2(Renderer::Vec2)>& d2sDoc,
                              const std::function<Renderer::Vec2(ImVec2)>& s2dDoc,
-                             float pxPer, bool hovered, ImDrawList* dl);
+                             float pxPer, bool hovered, App::OverlayDL& dl);
 
     // Generate the .acu extension icon from the app logo (SVG → multi-size .ico
     // next to the exe) and register the per-user shell integration (icon +
@@ -699,6 +720,11 @@ private:
     void Action_ParentSelection();
     // Alt+P: clear the parent of every selected object (keeps them visually put).
     void Action_ClearParent();
+    // Ctrl+G: gather the selected objects into a new layer group (Lot 11). The group
+    // composites its contents as a unit (own opacity / blend / erase).
+    void Action_GroupSelection();
+    // Ctrl+Shift+G: dissolve the layer group(s) owning the selection.
+    void Action_UngroupSelection();
 
     // ── Selection families (Blender Shift+G / Shift+L / Shift+Numpad±) ──────────
     // Select Grouped: extend the selection from the ACTIVE object by a relationship.
@@ -820,7 +846,7 @@ private:
     void UpdateTransformOp(EditorState& st,
                            const std::function<Renderer::Vec2(ImVec2)>& s2d,
                            const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                           float effZoom, bool hovered, ImDrawList* dl);
+                           float effZoom, bool hovered, App::OverlayDL& dl);
     // The Shift+S radial pie menu (cursor/selection snapping). ViewportTools.cpp.
     void RenderViewportPieMenu();
 
@@ -982,7 +1008,7 @@ private:
     bool UpdatePlacement(EditorState& st,
                          const std::function<Renderer::Vec2(ImVec2)>& s2d,
                          const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                         float effZoom, bool hovered, ImDrawList* dl);
+                         float effZoom, bool hovered, App::OverlayDL& dl);
     void ShowCrosshairCursor();          // thin crosshair w/ 1px centre hole
 
     // One entry in the action feed. `text` is the headline (e.g. "Move"); `detail`
@@ -1061,8 +1087,42 @@ private:
     // into an offscreen texture by this, then blitted with ImGui::Image. ImGui
     // never draws the vector document itself. Shares the main Vulkan device /
     // queue / pools; initialized in InitializeSubsystems after VectorGraphics.
-    Renderer::CanvasRenderer canvasRenderer_;
-    VkSampler                canvasSampler_ = VK_NULL_HANDLE;  // for offscreen textures
+    //
+    // Exactly ONE engine is alive at a time behind the IViewRenderer contract:
+    // the legacy `Renderer::CanvasRenderer` or the new `Comp::Engine`. The
+    // inactive kind is not instantiated (zero cost, no desync). `MakeViewRenderer`
+    // builds the active kind; `SwitchViewRenderer` does a clean swap.
+    std::unique_ptr<Renderer::IViewRenderer> renderer_;
+    // Editor overlays drawn full-GPU by the active engine (Lot 12). Filled during the
+    // viewport render each frame, submitted before EndFrame; the engine draws it over
+    // the canvas, under ImGui. On the legacy engine it stays empty (ImGui path used).
+    App::OverlayList overlay_;
+    std::vector<Renderer::IViewRenderer::OverlayVertex> overlayVerts_;
+    std::vector<uint32_t>                               overlayIdx_;
+    Renderer::IViewRenderer::Kind            rendererKind_ =
+                                                 Renderer::IViewRenderer::Kind::Legacy;
+    // A renderer switch requested this frame (from the Preferences ▸ Dev page).
+    // Applied at the TOP of the NEXT Update, BEFORE BeginFrame — never mid-frame:
+    // the in-flight ImGui draw data still references the active engine's offscreen
+    // textures, so tearing them down mid-frame makes the main pass sample freed
+    // images (GPU hang → TDR → VK_ERROR_DEVICE_LOST).
+    std::optional<Renderer::IViewRenderer::Kind> pendingRendererKind_;
+    // True when the device was created with the modern features the Compositor
+    // needs (Vulkan 1.3: dynamic rendering + synchronization2 + timeline). When
+    // false, only the Legacy engine is available (the toggle disables Compositor).
+    bool                                     compositorSupported_ = false;
+    std::string                              canvasShaderDir_;   // resolved at init, reused on swap
+    VkSampler                                canvasSampler_ = VK_NULL_HANDLE;  // for offscreen textures
+
+    // Build a fresh renderer of `kind` (not yet Initialize()d).
+    std::unique_ptr<Renderer::IViewRenderer> MakeViewRenderer(Renderer::IViewRenderer::Kind kind);
+    // Global clean swap: wait idle, shut down the current engine, build + init the
+    // requested one. No-op if already that kind. MUST be called between frames
+    // (top of Update) — see pendingRendererKind_. (Test tool — Preferences ▸ Dev.)
+    void SwitchViewRenderer(Renderer::IViewRenderer::Kind kind);
+    // Preferences ▸ Dev page content (renderer selector). Injected into the
+    // SettingsWindow via SetDevPageExtra; runs in the Preferences ImGui context.
+    void RenderDevRenderEnginePanel();
 
     // Transient state of the in-progress drawing gesture (one at a time, app-
     // global). The active tool id itself lives in ToolManager.
@@ -1165,7 +1225,7 @@ private:
     void UpdateHandleTransform(EditorState& st,
                                const std::function<Renderer::Vec2(ImVec2)>& s2d,
                                const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                               float effZoom, bool hovered, ImDrawList* dl);
+                               float effZoom, bool hovered, App::OverlayDL& dl);
     // Enforce a node's HandleMode after one of its handles moved (`movedOut` =
     // the OUT handle moved): the opposite handle follows (Aligned=collinear,
     // Mirrored=equal length, AlignedMirrored=both, Free/Vector=none). Shared by the
@@ -1246,7 +1306,7 @@ private:
     // position, if a mark is published. Shared by the transform path and the curve
     // tool. `accentColor` overrides the orange cue (e.g. blue for follow-curve).
     void DrawSnapIndicatorGlyph(const std::function<ImVec2(Renderer::Vec2)>& d2s,
-                                ImDrawList* dl, float gs, ImU32 accentColor = 0);
+                                App::OverlayDL& dl, float gs, ImU32 accentColor = 0);
     // A Shift+S pie menu open request (deferred to RenderViewport, like the
     // context menu, so the popup lives in the hovered zone's window).
     bool        pieMenuRequest_ = false;

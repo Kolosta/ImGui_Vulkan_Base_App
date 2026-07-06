@@ -11,11 +11,12 @@ namespace DS = DesignSystem;
 using Tok = DesignSystem::Tok;
 
 int s_zebra = 0;   // per-frame stripe parity (reset by ListRowResetZebra)
+float s_bandScale = 1.0f;   // extra multiplier on the band height (Layers previews ×2.5)
 
 // One ui-unit (the coloured band height); the stripe is this + 2px (1px margins).
 float BandH() {
     auto& ds = DS::DesignSystem::Instance();
-    return ds.GetFloat(Tok::S_Size_ControlHeight) * ds.GetGlobalScale();
+    return ds.GetFloat(Tok::S_Size_ControlHeight) * ds.GetGlobalScale() * s_bandScale;
 }
 float StripeMargin() { return 1.0f; }   // px above + below the band (per side)
 } // namespace
@@ -26,6 +27,8 @@ float ListRowStripeHeight() { return BandH() + 2.0f * StripeMargin(); }
 void ListRowResetZebra()     { s_zebra = 0; }
 int  ListRowZebraIndex()     { return s_zebra; }
 void ListRowAdvanceZebra()   { ++s_zebra; }
+void  ListRowSetBandScale(float s) { s_bandScale = (s > 0.0f) ? s : 1.0f; }
+float ListRowBandScale()           { return s_bandScale; }
 
 ListRow::ListRow(const ListRowConfig& cfg) {
     ImGuiWindow* w = ImGui::GetCurrentWindow();

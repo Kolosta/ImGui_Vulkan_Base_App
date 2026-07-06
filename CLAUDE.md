@@ -208,7 +208,8 @@ Use the subsystem name, lowercase, hyphenated:
 | `design-system` | `src/DesignSystem/` |
 | `shortcuts` | `src/Shortcuts/` |
 | `vector-graphics` | `src/VectorGraphics/` |
-| `renderer` | `src/Renderer/` |
+| `renderer` | `src/Renderer/` (legacy CanvasRenderer + shared Document model) |
+| `compositor` | `src/Compositor/` (the second, modern-Vulkan render engine) |
 | `shell` | `src/Shell/` (Windows shell integration) |
 | `ui` | `src/UI/` |
 | `icon-compiler` | `src/tools/resvg-bindings/` |

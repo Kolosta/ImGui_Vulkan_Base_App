@@ -66,6 +66,18 @@ struct Collection {
     int                   colorIndex = 0;
     Color                 customColor{0.6f, 0.6f, 0.65f, 1.0f};
 
+    // ── Layer/Group compositing (Lot 11/11b, Affinity-style) ───────────────────
+    // When `isLayerGroup` is set this collection is a GROUP that composites as a
+    // unit: its whole subtree is rendered in isolation, then merged with the rest
+    // using these params (exactly the per-object compositing of Lot 4/7, lifted to
+    // the group level). An ordinary organisational collection has isLayerGroup =
+    // false and these are ignored (it's just an Outliner folder). A render-time
+    // param, Compositor-only — the legacy renderer ignores it. See
+    // docs/Vulkan/COMPOSITOR_PIPELINE.md (Lot 11).
+    bool                  isLayerGroup = false;
+    float                 opacity   = 1.0f;            // group opacity [0,1]
+    BlendMode             blendMode = BlendMode::Normal; // group blend (Erase = knock-out)
+
     bool IsRoot() const { return id == kProjectRootId; }
 };
 
@@ -384,22 +396,50 @@ public:
 
     // Full reset: no selection AND no active object (used by New/Open/Undo/Delete
     // where the active object may no longer exist or context fully changed).
-    void ClearSelection() { selection_.clear(); active_ = 0; }
+    void ClearSelection() { selection_.clear(); active_ = 0; activeGroup_ = 0; }
     // Blender-style "deselect all": empties the selection but KEEPS the last
     // active object as active (its origin stays visible, "Active Element" pivot
     // still works) — only it isn't part of the selection anymore. Used when the
     // user clicks empty canvas.
-    void DeselectAll() { selection_.clear(); }   // active_ kept on purpose
+    void DeselectAll() { selection_.clear(); activeGroup_ = 0; }   // active_ kept on purpose
 
     void SelectOnly(uint64_t id) {
         selection_.clear();
         if (id) { selection_.push_back(id); active_ = id; }
         else    { active_ = 0; }
+        activeGroup_ = 0;               // a direct object selection isn't a group
     }
     void SelectAdd(uint64_t id) {       // add + make active
         if (!id) return;
         if (!IsSelected(id)) selection_.push_back(id);
         active_ = id;
+        activeGroup_ = 0;               // selecting an object leaves group mode
+    }
+
+    // ── Active layer group (Lot 11) ─────────────────────────────────────────────
+    // A group can be the active selection on its own (clicked in the Outliner Layers
+    // view, or via "Select Group"): then the Properties panel shows the GROUP. Any
+    // object selection clears it (an object and a group aren't co-active).
+    uint64_t ActiveGroup() const { return activeGroup_; }
+    // Select a group AS AN ENTITY (Properties shows the group). The member objects are
+    // NOT added to the object selection — a group is its own thing, like an object
+    // with sub-objects. Transforms on a group act through its groupId, not the object
+    // selection. `active_` is cleared so the Properties panel routes to the group.
+    void SelectGroup(uint64_t gid) {
+        activeGroup_ = gid;
+        selection_.clear();
+        active_ = 0;
+    }
+    void ClearActiveGroup() { activeGroup_ = 0; }
+    // Member object ids of a layer group at ANY depth (document order). Empty if
+    // `gid` isn't a group. Used to transform / operate on a whole group as a unit.
+    std::vector<uint64_t> GroupMembers(uint64_t gid) {
+        std::vector<uint64_t> out;
+        if (!IsGroup(gid)) return out;
+        for (Artboard& ab : artboards)
+            for (Shape& s : ab.shapes) if (ShapeInGroup(s.id, gid)) out.push_back(s.id);
+        for (Shape& s : looseShapes) if (ShapeInGroup(s.id, gid)) out.push_back(s.id);
+        return out;
     }
     void Deselect(uint64_t id) {
         selection_.erase(std::remove(selection_.begin(), selection_.end(), id),
@@ -416,6 +456,7 @@ public:
         if (!id) return;
         if (!IsSelected(id)) selection_.push_back(id);
         active_ = id;
+        activeGroup_ = 0;               // selecting an object leaves group mode
     }
 
     // ── Active page (Blender-like "active object's page") ────────────────────
@@ -448,6 +489,199 @@ public:
     Collection* FindCollection(uint64_t id) {
         for (Collection& c : collections) if (c.id == id) return &c;
         return nullptr;
+    }
+
+    // ── Layer groups (Lot 11/11b) ──────────────────────────────────────────────
+    // A layer group is a LAYER concept, NOT an organisation node: a Collection with
+    // isLayerGroup = true that ONLY carries the group's compositing params + a name.
+    // It is NOT in the collection/page tree for objects (objects link via
+    // Shape::groupId, a separate link from collectionId), so it never disturbs the
+    // Outliner Collection hierarchy or the page reflow. Groups NEST: a group's
+    // `parentId` is its PARENT GROUP (0 = top-level on its page). An object's
+    // Shape::groupId points at its INNERMOST group; the hierarchy is the chain
+    // groupId → parentId → … → 0. Groups are page-local (all members one page).
+    bool IsGroup(uint64_t id) {
+        Collection* c = FindCollection(id);
+        return c && c->isLayerGroup;
+    }
+    // The innermost layer group a shape belongs to (Shape::groupId), or 0 if none.
+    uint64_t GroupOfShape(uint64_t shapeId) {
+        Shape* s = FindShape(shapeId);
+        return s ? s->groupId : 0;
+    }
+    // The parent group of a group (Collection::parentId for an isLayerGroup), or 0.
+    uint64_t GroupParent(uint64_t gid) {
+        Collection* c = FindCollection(gid);
+        return (c && c->isLayerGroup) ? c->parentId : 0;
+    }
+    // The chain of groups from the INNERMOST (`gid`) up to the top-level group, in
+    // ascending order (innermost first). Cycle-safe.
+    std::vector<uint64_t> GroupChainFrom(uint64_t gid) {
+        std::vector<uint64_t> out;
+        uint64_t cur = gid; int guard = 0;
+        while (cur && IsGroup(cur) && guard++ < 4096) {
+            out.push_back(cur);
+            cur = GroupParent(cur);
+        }
+        return out;
+    }
+    // True if shape `shapeId` is inside group `gid` at ANY depth (gid is in its
+    // group chain). Used so a group's "members" include nested sub-group members.
+    bool ShapeInGroup(uint64_t shapeId, uint64_t gid) {
+        if (!gid) return false;
+        uint64_t cur = GroupOfShape(shapeId); int guard = 0;
+        while (cur && guard++ < 4096) {
+            if (cur == gid) return true;
+            cur = GroupParent(cur);
+        }
+        return false;
+    }
+    // True if group `inner` is `gid` or nested anywhere under it (descend the parent
+    // links upward from `inner`).
+    bool GroupInGroup(uint64_t inner, uint64_t gid) {
+        uint64_t cur = inner; int guard = 0;
+        while (cur && guard++ < 4096) {
+            if (cur == gid) return true;
+            cur = GroupParent(cur);
+        }
+        return false;
+    }
+
+    // True if every shape id in `ids` lives on the SAME page (or all are loose).
+    // Used to forbid grouping objects across pages — a layer is page-local.
+    bool AllOnSamePage(const std::vector<uint64_t>& ids) {
+        int page = -2;   // -2 = unset, -1 = loose
+        for (uint64_t id : ids) {
+            int ab = ArtboardOfShape(id);   // -1 = loose
+            if (page == -2) page = ab;
+            else if (page != ab) return false;
+        }
+        return true;
+    }
+
+    // The deepest group common to every shape in `ids` (0 = none / page-level). Used
+    // to nest a new group under the right parent when grouping a sub-selection.
+    uint64_t CommonGroup(const std::vector<uint64_t>& ids) {
+        if (ids.empty()) return 0;
+        std::vector<uint64_t> chain = GroupChainFrom(GroupOfShape(ids.front())); // innermost→top
+        for (size_t i = 1; i < ids.size(); ++i) {
+            uint64_t g = GroupOfShape(ids[i]);
+            // Keep only chain entries that also contain ids[i].
+            std::vector<uint64_t> kept;
+            for (uint64_t c : chain) if (ShapeInGroup(ids[i], c)) kept.push_back(c);
+            chain.swap(kept);
+            (void)g;
+            if (chain.empty()) break;
+        }
+        return chain.empty() ? 0 : chain.front();   // deepest common
+    }
+
+    // Group the current selection into a NEW layer group. Refuses if the selection
+    // spans multiple pages (a layer is page-local). NESTS the new group under the
+    // selection's deepest common group (so grouping inside a group makes a sub-group).
+    // Each selected object's sub-tree directly below the common parent is re-homed
+    // into the new group. Returns the group id, or 0 if nothing selected / cross-page.
+    uint64_t GroupSelection(const std::string& name = "Group") {
+        if (selection_.empty()) return 0;
+        if (!AllOnSamePage(selection_)) return 0;   // cross-page → refuse
+        uint64_t parent = CommonGroup(selection_);  // 0 = top-level on the page
+        Collection g;
+        g.id = AllocId(); g.name = name; g.parentId = parent;
+        g.isLayerGroup = true;
+        collections.push_back(std::move(g));
+        uint64_t gid = collections.back().id;
+        // For each selected object, find the node DIRECTLY under `parent` in its
+        // chain (the object itself if its innermost group IS the parent, else the
+        // sub-group whose parent is `parent`) and re-home that node into `gid`.
+        for (uint64_t sid : selection_) {
+            Shape* s = FindShape(sid);
+            if (!s) continue;
+            uint64_t inner = s->groupId;
+            if (inner == parent || inner == 0) {
+                s->groupId = gid;               // object sat directly in `parent`
+            } else {
+                // Walk up to the child-of-parent group and re-parent it to gid.
+                uint64_t cur = inner, prev = inner;
+                while (cur && GroupParent(cur) != parent && cur != parent) { prev = cur; cur = GroupParent(cur); }
+                uint64_t childOfParent = (cur && GroupParent(cur) == parent) ? cur : prev;
+                if (Collection* cc = FindCollection(childOfParent)) cc->parentId = gid;
+                else s->groupId = gid;
+            }
+        }
+        MakeGroupContiguous(gid);
+        return gid;
+    }
+
+    // Reorder a group's members (at ANY nesting depth) so they sit CONSECUTIVELY in
+    // their page's draw order — the renderer isolates a group as one contiguous run.
+    // Members keep their relative order; the run is anchored at the FIRST member.
+    // Idempotent. (Nested sub-groups stay contiguous within the parent run because
+    // their members are a sub-range of the parent's members.)
+    void MakeGroupContiguous(uint64_t gid) {
+        if (!IsGroup(gid)) return;
+        auto pack = [&](std::vector<Shape>& v){
+            // EARLY-OUT BEFORE moving anything (don't leave moved-from shells).
+            bool hasMember = false;
+            for (const Shape& s : v) if (ShapeInGroup(s.id, gid)) { hasMember = true; break; }
+            if (!hasMember) return;
+            std::vector<Shape> members, others;
+            size_t firstMember = v.size();
+            for (size_t i = 0; i < v.size(); ++i) {
+                if (ShapeInGroup(v[i].id, gid)) {
+                    if (firstMember == v.size()) firstMember = others.size();
+                    members.push_back(std::move(v[i]));
+                } else {
+                    others.push_back(std::move(v[i]));
+                }
+            }
+            if (firstMember > others.size()) firstMember = others.size();
+            std::vector<Shape> out;
+            out.reserve(v.size());
+            for (size_t i = 0; i < firstMember; ++i) out.push_back(std::move(others[i]));
+            for (auto& m : members)                 out.push_back(std::move(m));
+            for (size_t i = firstMember; i < others.size(); ++i) out.push_back(std::move(others[i]));
+            v = std::move(out);
+        };
+        for (Artboard& ab : artboards) pack(ab.shapes);
+        pack(looseShapes);
+    }
+
+    // Dissolve a layer group: its DIRECT object members fall back to the group's
+    // parent group (or page-level), its DIRECT sub-groups are re-parented to the
+    // parent, then the group collection is dropped.
+    void Ungroup(uint64_t id) {
+        if (!IsGroup(id)) return;
+        uint64_t parent = GroupParent(id);
+        auto clear = [&](std::vector<Shape>& v){
+            for (Shape& s : v) if (s.groupId == id) s.groupId = parent;
+        };
+        for (Artboard& ab : artboards) clear(ab.shapes);
+        clear(looseShapes);
+        for (Collection& c : collections) if (c.isLayerGroup && c.parentId == id) c.parentId = parent;
+        collections.erase(std::remove_if(collections.begin(), collections.end(),
+            [&](const Collection& c){ return c.id == id; }), collections.end());
+        if (parent) MakeGroupContiguous(parent);
+    }
+
+    // Show/hide a whole layer group (Layers eye): toggles `visible` on every member
+    // object at any depth. Hidden members drop out of the render but stay selectable.
+    void SetGroupVisible(uint64_t id, bool visible) {
+        if (!IsGroup(id)) return;
+        auto apply = [&](std::vector<Shape>& v){
+            for (Shape& s : v) if (ShapeInGroup(s.id, id)) s.visible = visible;
+        };
+        for (Artboard& ab : artboards) apply(ab.shapes);
+        apply(looseShapes);
+    }
+    bool GroupHidden(uint64_t id) {
+        if (!IsGroup(id)) return false;
+        bool any = false, allHidden = true;
+        auto scan = [&](std::vector<Shape>& v){
+            for (Shape& s : v) if (ShapeInGroup(s.id, id)) { any = true; if (s.visible) allHidden = false; }
+        };
+        for (Artboard& ab : artboards) scan(ab.shapes);
+        scan(looseShapes);
+        return any && allHidden;
     }
     bool IsCollectionId(uint64_t id) {
         for (const Collection& c : collections) if (c.id == id) return true;
@@ -815,6 +1049,7 @@ private:
     uint64_t              nextId_ = kProjectRootId + 1;  // ids above the reserved root
     std::vector<uint64_t> selection_;   // selected shape ids (order = pick order)
     uint64_t              active_ = 0;  // active = last selected
+    uint64_t              activeGroup_ = 0;  // active layer group (Properties shows it); 0 = none
     uint64_t              activePage_ = 0;  // active page (Shift+A target); 0 = none
     std::vector<VertRef>  vertSel_;     // edit-mode selected vertices
     VertRef               activeVert_;  // active = last selected vertex

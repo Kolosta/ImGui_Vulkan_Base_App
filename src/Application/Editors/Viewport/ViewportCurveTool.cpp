@@ -256,7 +256,7 @@ static std::vector<WNode> FollowExtract(const FollowCurve& fc, float arcFrom, fl
 
 bool Application::UpdateFollowCurve(const std::function<ImVec2(Renderer::Vec2)>& d2s,
                                     Renderer::Vec2 mRaw, float effZoom, bool lpressed,
-                                    ImDrawList* dl, bool& committed) {
+                                    App::OverlayDL& dl, bool& committed) {
     committed = false;
     toolState_.followAvail = false;
     toolState_.ClearProvFollow();                 // rebuilt below when following
@@ -267,7 +267,7 @@ bool Application::UpdateFollowCurve(const std::function<ImVec2(Renderer::Vec2)>&
     const float gs = ds.GetGlobalScale();
     const ImU32 blue = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default));
     auto blueDiamond = [&](Vec2 w){ ImVec2 c = d2s(w); const float r = 8.0f*gs, th = 2.0f*gs;
-        dl->AddQuad(ImVec2(c.x,c.y-r), ImVec2(c.x+r,c.y), ImVec2(c.x,c.y+r), ImVec2(c.x-r,c.y), blue, th); };
+        dl.AddQuad(ImVec2(c.x,c.y-r), ImVec2(c.x+r,c.y), ImVec2(c.x,c.y+r), ImVec2(c.x-r,c.y), blue, th); };
     auto outOff = [](const WNode& w){ return w.hasOut ? Vec2{ w.hOut.x-w.pos.x, w.hOut.y-w.pos.y } : Vec2{0,0}; };
     auto inOff  = [](const WNode& w){ return w.hasIn  ? Vec2{ w.hIn.x -w.pos.x, w.hIn.y -w.pos.y } : Vec2{0,0}; };
 
@@ -426,7 +426,7 @@ void Application::HandleCurveTool(
     EditorState& st,
     const std::function<Vec2(ImVec2)>& s2d,
     const std::function<ImVec2(Vec2)>& d2s,
-    float effZoom, bool hovered, ImDrawList* dl) {
+    float effZoom, bool hovered, App::OverlayDL& dl) {
 
     auto& ds = DesignSystem::DesignSystem::Instance();
     ImGuiIO& io = ImGui::GetIO();
@@ -488,7 +488,7 @@ void Application::HandleCurveTool(
                         // reads clearly under the Curve tool.
                         ImU32 hint = ImGui::GetColorU32(
                             ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default));
-                        dl->AddCircle(sp, vr + 2.0f, hint, 20, 2.0f);
+                        dl.AddCircle(sp, vr + 2.0f, hint, 20, 2.0f);
                     }
                     if (dpx < nearestD) { nearestD = dpx; nearestV = { sid, pi, ni }; haveV = true; }
                 }
@@ -700,7 +700,7 @@ void Application::HandleCurveTool(
             Vec2 pt{ b0*p0.x + b1*c0.x + b2*c1.x + b3*p1.x,
                      b0*p0.y + b1*c0.y + b2*c1.y + b3*p1.y };
             ImVec2 cur = d2s(pt);
-            dl->AddLine(prev, cur, cAccent, 2.0f);
+            dl.AddLine(prev, cur, cAccent, 2.0f);
             prev = cur;
         }
     };
@@ -740,27 +740,27 @@ void Application::HandleCurveTool(
     // the asymmetric lengths are visible).
     for (size_t i = 0; i < np; ++i) {
         ImVec2 a = d2s(toolState_.points[i]);
-        dl->AddCircleFilled(a, 3.5f, cAccent);
+        dl.AddCircleFilled(a, 3.5f, cAccent);
         Vec2 tOut = toolState_.tangents[i];
         Vec2 tIn  = inH(i);
         if (std::hypot(tOut.x, tOut.y) > 1e-3f) {
             ImVec2 hOut = d2s({ toolState_.points[i].x + tOut.x,
                                 toolState_.points[i].y + tOut.y });
-            dl->AddLine(a, hOut, cHandle, 1.0f);
-            dl->AddCircleFilled(hOut, 2.5f, cHandle);
+            dl.AddLine(a, hOut, cHandle, 1.0f);
+            dl.AddCircleFilled(hOut, 2.5f, cHandle);
         }
         if (std::hypot(tIn.x, tIn.y) > 1e-3f) {
             ImVec2 hIn = d2s({ toolState_.points[i].x + tIn.x,
                                toolState_.points[i].y + tIn.y });
-            dl->AddLine(a, hIn, cHandle, 1.0f);
-            dl->AddCircleFilled(hIn, 2.5f, cHandle);
+            dl.AddLine(a, hIn, cHandle, 1.0f);
+            dl.AddCircleFilled(hIn, 2.5f, cHandle);
         }
     }
     // Highlight the closeable first anchor — emphasised when the cursor is in the
     // close zone (snapClose), so the user sees the curve will connect.
     if (np >= 3) {
         ImVec2 a = d2s(toolState_.points.front());
-        dl->AddCircle(a, snapClose ? 8.0f : 6.0f, cAccent, 16, snapClose ? 2.5f : 1.5f);
+        dl.AddCircle(a, snapClose ? 8.0f : 6.0f, cAccent, 16, snapClose ? 2.5f : 1.5f);
     }
     // The snap glyph (orange, mode-shaped) at the snapped cursor while authoring.
     DrawSnapIndicatorGlyph(d2s, dl, ds.GetGlobalScale());
@@ -1055,7 +1055,8 @@ void Application::FinishCurveGesture(bool closed) {
 void Application::DrawStyledCurvePreview(const std::function<ImVec2(Vec2)>& d2s,
                                          float effZoom, Vec2 mouse, bool snapClose) {
     if (toolState_.points.empty()) return;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
+    App::OverlayDL dl(ImGui::GetWindowDrawList(), &overlay_,
+                      renderer_ && renderer_->PresentsViaSwapchain());
     const float alpha = DesignSystem::DesignSystem::Instance()
                             .GetFloat(DesignSystem::Tok::S_Config_PlacementPreviewAlpha);
     const bool styled = toolState_.styleActive;
@@ -1123,7 +1124,7 @@ void Application::DrawStyledCurvePreview(const std::function<ImVec2(Vec2)>& d2s,
                                              /*exactFit=*/true, &fmin, &fmax);
         if (!tex) return;
         ImVec2 p0 = d2s({ bmn.x, bmn.y }), p1 = d2s({ bmx.x, bmx.y });
-        dl->AddImage(tex, ImVec2(std::min(p0.x,p1.x), std::min(p0.y,p1.y)),
+        dl.AddImage(tex, ImVec2(std::min(p0.x,p1.x), std::min(p0.y,p1.y)),
                           ImVec2(std::max(p0.x,p1.x), std::max(p0.y,p1.y)),
                      ImVec2(0,0), ImVec2(1,1), ImGui::GetColorU32(ImVec4(1,1,1, a)));
     };

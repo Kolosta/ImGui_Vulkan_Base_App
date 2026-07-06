@@ -31,7 +31,7 @@ void Application::HandleLineMarkTool(
     EditorState& st,
     const std::function<Vec2(ImVec2)>& s2d,
     const std::function<ImVec2(Vec2)>& d2s,
-    float effZoom, bool hovered, ImDrawList* dl) {
+    float effZoom, bool hovered, App::OverlayDL& dl) {
     auto& ds  = DesignSystem::DesignSystem::Instance();
     auto& doc = project_.document;
     ImGuiIO& io = ImGui::GetIO();
@@ -403,7 +403,7 @@ void Application::HandleLineMarkTool(
     if (markBox_.active && markBox_.owner == self) {
         ImVec2 a = d2s(markBox_.start), b = io.MousePos;
         ImU32 boxC = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default));
-        dl->AddRect(ImVec2(std::min(a.x,b.x), std::min(a.y,b.y)),
+        dl.AddRect(ImVec2(std::min(a.x,b.x), std::min(a.y,b.y)),
                     ImVec2(std::max(a.x,b.x), std::max(a.y,b.y)), boxC, 0, 0, 1.5f);
         markBox_.now = mdoc;
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -589,7 +589,8 @@ void Application::DrawLineMarkGhost(
     const std::vector<Vec2>* curve, bool curveClosed) {
     auto& ds = DesignSystem::DesignSystem::Instance();
     // Foreground list so the ghost shows in every context (incl. mid-drag).
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    App::OverlayDL dl(ImGui::GetForegroundDrawList(), &overlay_,
+                      renderer_ && renderer_->PresentsViaSwapchain());
     const float alpha = ds.GetFloat(DesignSystem::Tok::S_Config_PlacementPreviewAlpha);
     const Renderer::Color& oc = part.stroke.color;
     ImU32 col = ImGui::GetColorU32(ImVec4(oc.r, oc.g, oc.b, std::max(0.35f, alpha)));
@@ -598,7 +599,7 @@ void Application::DrawLineMarkGhost(
     Vec2 nrm{ -tan.y, tan.x };
     float thPx = std::max(1.5f, (m.thickness > 1e-5f ? m.thickness : part.stroke.width)
                                     * avgScale * zoom);
-    auto seg = [&](Vec2 A, Vec2 B) { dl->AddLine(d2s(A), d2s(B), col, thPx); };
+    auto seg = [&](Vec2 A, Vec2 B) { dl.AddLine(d2s(A), d2s(B), col, thPx); };
     auto add = [](Vec2 v, Vec2 d, float k) { return Vec2{ v.x + d.x * k, v.y + d.y * k }; };
 
     // Sample the curve at arc-length offset `off` from p (signed). Returns the
@@ -645,7 +646,7 @@ void Application::DrawLineMarkGhost(
             sampleOff(-half, prev, pt);
             for (int i = 1; i <= N; ++i) {
                 Vec2 cur, ct; sampleOff(-half + (2*half)*(float)i/N, cur, ct);
-                dl->AddLine(d2s(prev), d2s(cur), cut, std::max(1.0f, baseW * zoom));
+                dl.AddLine(d2s(prev), d2s(cur), cut, std::max(1.0f, baseW * zoom));
                 prev = cur;
             }
             break; }
@@ -680,7 +681,8 @@ void Application::DrawLineMarkGhost(
 void Application::DrawMarkHandle(ImVec2 sp, Vec2 tanScreen,
                                 const Renderer::LineMark& m, MarkHandleState state) {
     auto& ds = DesignSystem::DesignSystem::Instance();
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    App::OverlayDL dl(ImGui::GetForegroundDrawList(), &overlay_,
+                      renderer_ && renderer_->PresentsViaSwapchain());
     using Tok = DesignSystem::Tok;
     const bool isAnchor = (m.kind == Renderer::LineMarkKind::DashAnchor);
     const bool dashMode = (m.side >= 0);
@@ -694,8 +696,8 @@ void Application::DrawMarkHandle(ImVec2 sp, Vec2 tanScreen,
     ImU32 ring = ImGui::GetColorU32(ds.GetColor(Tok::C_EditHandle_VertexRing));
     const float vr = 3.5f;
     // The geometry-style dot.
-    dl->AddCircleFilled(sp, vr, centre);
-    dl->AddCircle(sp, vr, ring, 0, 1.0f);
+    dl.AddCircleFilled(sp, vr, centre);
+    dl.AddCircle(sp, vr, ring, 0, 1.0f);
 
     // Select / hover overlay. Normal marks → a ring; dash anchors → a DIAMOND (dash
     // mode) or a SQUARE (gap mode). The overlay keeps the TYPE colour (violet / green
@@ -707,7 +709,7 @@ void Application::DrawMarkHandle(ImVec2 sp, Vec2 tanScreen,
         : ImGui::GetColorU32(ds.GetColor(Tok::S_Color_Accent_Default));
     float r = (state == MarkHandleState::Selected) ? 8.0f : 7.0f;
     float th = (state == MarkHandleState::Selected) ? 2.0f : 1.5f;
-    if (!isAnchor) { dl->AddCircle(sp, r, ov, 16, th); return; }
+    if (!isAnchor) { dl.AddCircle(sp, r, ov, 16, th); return; }
     // Diamond oriented ALONG the curve for "dash"; square (axis of the curve) for
     // "gap" — a rotated square is just the diamond turned 45°, so use the tangent.
     Vec2 t = tanScreen; float tl = std::hypot(t.x, t.y);
@@ -717,11 +719,11 @@ void Application::DrawMarkHandle(ImVec2 sp, Vec2 tanScreen,
                                                   sp.y + t.y*a + nrm.y*b); };
     if (dashMode) {
         // Diamond: vertices along ±tangent and ±normal.
-        dl->AddQuad(P(r,0), P(0,r), P(-r,0), P(0,-r), ov, th);
+        dl.AddQuad(P(r,0), P(0,r), P(-r,0), P(0,-r), ov, th);
     } else {
         // Square aligned to the curve (corners on the diagonals).
         float h = r * 0.72f;
-        dl->AddQuad(P(h,h), P(-h,h), P(-h,-h), P(h,-h), ov, th);
+        dl.AddQuad(P(h,h), P(-h,h), P(-h,-h), P(h,-h), ov, th);
     }
 }
 

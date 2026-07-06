@@ -301,6 +301,22 @@ void Application::RegisterDefaultShortcuts() {
         a.callback = [this]{ Action_ClearParent(); };
         sm.RegisterAction(a, { sigKey(ImGuiKey_P, /*ctrl=*/false, /*shift=*/false, /*alt=*/true) });
     }
+    {
+        Action a; a.id = "edit.group"; a.name = "Group";
+        a.description = "Group the selected objects into a layer group (Ctrl+G)";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_GroupSelection(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_G, /*ctrl=*/true) });
+    }
+    {
+        Action a; a.id = "edit.ungroup"; a.name = "Ungroup";
+        a.description = "Dissolve the layer group of the selected objects (Ctrl+Shift+G)";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_UngroupSelection(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_G, /*ctrl=*/true, /*shift=*/true) });
+    }
     // ── Selection families (Blender Shift+G / Shift+L / Shift+Numpad±) ─────────
     {
         Action a; a.id = "select.grouped"; a.name = "Select Grouped";

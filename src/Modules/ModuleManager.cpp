@@ -105,9 +105,9 @@ ImTextureID Application::RenderGlyphTexture(uint64_t key, uint64_t contentHash,
     // White "map paper" card behind a thumbnail; transparent for the placement
     // ghost (so it overlays the canvas). SSAA-smoothed via the Vulkan pipeline.
     ImVec4 clear = transparent ? ImVec4(0, 0, 0, 0) : ImVec4(1, 1, 1, 1);
-    return canvasRenderer_.RenderGlyphCached(key, contentHash, shapes,
-                                             widthPx, heightPx, padFrac, clear, exactFit,
-                                             frameMin, frameMax);
+    return renderer_->RenderGlyphCached(key, contentHash, shapes,
+                                        widthPx, heightPx, padFrac, clear, exactFit,
+                                        frameMin, frameMax);
 }
 
 }  // namespace App

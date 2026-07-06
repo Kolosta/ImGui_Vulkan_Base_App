@@ -197,6 +197,12 @@ public:
     // hovered, non-occluded one (strict IsWindowHovered). Last writer wins.
     void SetHoveredEditorState(EditorState* st) { hoveredState_ = st; }
 
+    // When true, the Viewport zone paints NO opaque ImGui background — its canvas
+    // is composited onto the swapchain by the (Compositor) engine's own Vulkan
+    // pass, UNDER ImGui, so the zone background must be transparent for it to show.
+    // Set each frame by the Application from renderer_->PresentsViaSwapchain().
+    void SetCanvasZoneTransparent(bool b) { canvasZoneTransparent_ = b; }
+
     // True while a layout-level gesture owns the mouse: dragging a separator,
     // an armed corner add/join, a context-menu split guide, or a live tab drag.
     // Viewport tools query this to avoid arming the canvas box-select when the
@@ -390,6 +396,7 @@ private:
     AddArm       addArm_;
     SplitArm     splitArm_;
     EditorState* hoveredState_ = nullptr;  // recomputed every Render()
+    bool         canvasZoneTransparent_ = false;  // viewport zone bg off (Compositor)
     std::vector<std::string> editorFilter_; // ids selectable in the picker (empty=all)
     Node*        hoveredLeaf_   = nullptr;  // leaf under the mouse (any editor),
                                            // recomputed every Render() — drives

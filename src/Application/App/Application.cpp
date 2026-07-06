@@ -214,11 +214,26 @@ void Application::Update() {
     // the persistent transform/mode state (a frame's lag at most).
     PublishStatusHints();
 
+    // Apply a pending renderer swap BEFORE anything builds this frame's draw data
+    // or BeginFrame runs. Doing it here (between frames) means no in-flight ImGui
+    // draw list still references the outgoing engine's offscreen textures when we
+    // tear them down — see pendingRendererKind_.
+    if (pendingRendererKind_) {
+        SwitchViewRenderer(*pendingRendererKind_);
+        pendingRendererKind_.reset();
+    }
+
     // Begin the vector-renderer frame BEFORE the UI is built: each Viewport's
     // RenderViewport() renders its canvas into an offscreen texture (its own
     // Vulkan render pass) during the UI-build phase — all of which completes
     // before ImGui::Render() and the main swapchain pass in Render().
-    canvasRenderer_.BeginFrame();
+    renderer_->BeginFrame();
+
+    // Tell the zone layout whether the Viewport zone must stay transparent (the
+    // active engine composites its canvas onto the swapchain itself — see
+    // CompositeMainPass). Legacy engines blit a texture into ImGui, so the zone
+    // keeps its opaque editor background.
+    zoneLayout_.SetCanvasZoneTransparent(renderer_->PresentsViaSwapchain());
 
     // Clear the shared drop-preview when no move gesture is in flight, so it
     // doesn't linger after a drop. While a move IS active it persists (the owner
@@ -244,8 +259,17 @@ void Application::Update() {
     // not the native title bar.
     PublishOverlayTitleBarBlockers();
 
+    // Hand this frame's editor overlays to the active engine for full-GPU drawing
+    // (Lot 12). The OverlayList was filled during the viewport render; convert to NDC
+    // and submit. Empty on the legacy engine (it keeps the ImGui overlay path).
+    if (renderer_ && renderer_->PresentsViaSwapchain()) {
+        overlay_.ToNDC(overlayVerts_, overlayIdx_);
+        renderer_->SubmitOverlay(overlayVerts_, overlayIdx_);
+    }
+    overlay_.Clear();
+
     // Evict offscreen targets whose Viewport zone no longer exists this frame.
-    canvasRenderer_.EndFrame();
+    renderer_->EndFrame();
 
     // Dispatch happens after panels have set the context for this frame so
     // editor/region/tool match the user's current hover. Gate global actions on
@@ -320,6 +344,14 @@ void Application::Render() {
         vkCmdBeginRenderPass(fd->CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
     }
 
+    // Canvas composite (pure Vulkan): an engine that presents via the swapchain
+    // (the Compositor) draws its rendered views here, UNDER the ImGui chrome —
+    // ImGui never blits the canvas. No-op for the legacy engine (it returns a
+    // texture the Viewport already blitted into ImGui's draw list).
+    renderer_->CompositeMainPass(fd->CommandBuffer,
+                                 mainWindowData_.Width, mainWindowData_.Height,
+                                 mainWindowData_.RenderPass);
+
     ImGui_ImplVulkan_RenderDrawData(draw_data, fd->CommandBuffer);
 
     vkCmdEndRenderPass(fd->CommandBuffer);
@@ -332,7 +364,7 @@ void Application::Render() {
         std::vector<VkPipelineStageFlags> waitStages;
         waits.push_back(image_acquired_semaphore);
         waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-        for (VkSemaphore s : canvasRenderer_.FrameWaitSemaphores()) {
+        for (VkSemaphore s : renderer_->FrameWaitSemaphores()) {
             waits.push_back(s);
             waitStages.push_back(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         }

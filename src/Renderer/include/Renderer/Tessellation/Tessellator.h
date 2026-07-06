@@ -3,6 +3,7 @@
 #include "Renderer/Document/Document.h"
 #include <cstdint>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Renderer {
@@ -220,6 +221,26 @@ public:
         std::vector<SurfaceDraw> patterns;
         std::vector<StrokeDraw>  strokes;   // transparent strokes (stencil coverage)
         std::vector<DecorDraw>   decor;
+        // Object opacity [0,1] (Shape::opacity), copied here so a renderer can
+        // composite the object with it. 1 = opaque. The legacy renderer ignores it.
+        float    opacity = 1.0f;
+        // Object blend mode (Shape::blendMode as a uint8_t). 0 = Normal; the highest
+        // value (BlendMode::Erase) = knock-out. The legacy renderer ignores it; the
+        // Compositor composites the object with it.
+        uint8_t  blendMode = 0;
+        // Owning object identity (Shape::id), so a renderer's GPU picking id-pass
+        // can map a rendered pixel back to the document object. 0 = unknown.
+        uint64_t shapeId = 0;
+        // Owning LAYER GROUP chain (Lot 11/11-4e): the object's group hierarchy from
+        // OUTERMOST (top-level on the page) to INNERMOST. Empty = the object is not in
+        // any group (composited directly on its page/level). Each entry carries the
+        // group id + its compositing params, so the Compositor can isolate each level
+        // and composite it onto its parent with the group's blend/opacity — recursive,
+        // Affinity/PS-style. The legacy renderer ignores grouping.
+        struct GroupLevel { uint64_t id = 0; float opacity = 1.0f; uint8_t blend = 0; };
+        std::vector<GroupLevel> groups;   // [0] = outermost … [n-1] = innermost
+        // Convenience: innermost group id (0 = none). Kept for picking / quick checks.
+        uint64_t groupId() const { return groups.empty() ? 0 : groups.back().id; }
     };
 
     // One page's slice of the segmented document: the page rect (for scissor), the
@@ -353,7 +374,13 @@ public:
         Cache* cache = nullptr,      // reuse unchanged shapes' meshes (perf)
         const CullRect* cull = nullptr,   // skip shapes outside this world rect
         Mesh* outCover = nullptr,
-        std::vector<PatternInstance>* outDecor = nullptr);
+        std::vector<PatternInstance>* outDecor = nullptr,
+        // Shapes the CALLER renders itself (Compositor stencil-then-cover fills, Lot
+        // 13-4b): skip them ENTIRELY here — no tessellation, no ObjDraw, no cache
+        // build — so the ear-clip never runs for them. The caller must render every
+        // skipped id (else it vanishes). null/empty = tessellate all (legacy path,
+        // unchanged). The set holds Shape::id.
+        const std::unordered_set<uint64_t>* skipShapeIds = nullptr);
 
     // Map an OBJECT-LOCAL point to WORLD doc-units through a shape's origin +
     // transform, then translate by the owning PAGE's origin:

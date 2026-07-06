@@ -86,7 +86,7 @@ void Application::UpdateHandleTransform(
         EditorState& st,
         const std::function<Vec2(ImVec2)>& s2d,
         const std::function<ImVec2(Vec2)>& d2s,
-        float effZoom, bool hovered, ImDrawList* dl) {
+        float effZoom, bool hovered, App::OverlayDL& dl) {
     if (!handleOp_.Active()) return;
     const void* self = &st;
     if (handleOp_.owner == nullptr) { if (!hovered) return; handleOp_.owner = self;
@@ -141,7 +141,7 @@ void Application::UpdateHandleTransform(
     // Guide line anchor→handle (orange).
     ImU32 acc = ImGui::GetColorU32(DesignSystem::DesignSystem::Instance()
         .GetColor(DesignSystem::Tok::S_State_Active_OnPage));
-    dl->AddLine(d2s(anchorD), d2s(newHandle), acc, 1.4f);
+    dl.AddLine(d2s(anchorD), d2s(newHandle), acc, 1.4f);
     if (hovered) ShowMoveCursor();
 
     bool confirm = ImGui::IsMouseClicked(ImGuiMouseButton_Left) ||
@@ -160,7 +160,7 @@ void Application::UpdateHandleTransform(
 
 // ── Edit-mode overlay: faces (closed fills hint), edges, vertices + handles ───
 void Application::DrawEditOverlay(const std::function<ImVec2(Vec2)>& d2s,
-                                  float effZoom, ImDrawList* dl) {
+                                  float effZoom, App::OverlayDL& dl) {
     auto& ds  = DesignSystem::DesignSystem::Instance();
     auto& doc = project_.document;
     if (editorMode_ != EditorMode::Edit) return;
@@ -245,7 +245,7 @@ void Application::DrawEditOverlay(const std::function<ImVec2(Vec2)>& d2s,
                     if (poly.size() >= 3) {
                         std::vector<ImVec2> sp; sp.reserve(poly.size());
                         for (auto& p : poly) sp.push_back(d2s(p));
-                        dl->AddConvexPolyFilled(sp.data(), (int)sp.size(), cFaceSel);
+                        dl.AddConvexPolyFilled(sp.data(), (int)sp.size(), cFaceSel);
                     }
                 }
             }
@@ -277,7 +277,7 @@ void Application::DrawEditOverlay(const std::function<ImVec2(Vec2)>& d2s,
                 if (nurbs) {
                     // Control polygon (hull): straight, dimmer — it's a guide, not
                     // the curve (the smooth curve itself is Vulkan-rendered).
-                    dl->AddLine(d2s(NodeWorld(*s, a, po)), d2s(NodeWorld(*s, b, po)),
+                    dl.AddLine(d2s(NodeWorld(*s, a, po)), d2s(NodeWorld(*s, b, po)),
                                 edgeSel ? cEdgeSel : col(Tok::C_EditHandle_NurbsHull), ew);
                 } else if (bezier && (a.hasOut || b.hasIn)) {
                     // The construction line between nodes must stay as smooth as the
@@ -303,10 +303,10 @@ void Application::DrawEditOverlay(const std::function<ImVec2(Vec2)>& d2s,
                     ImVec2 prev = d2s(NodeWorld(*s, a, po));
                     for (Vec2 p : pts) {
                         ImVec2 cur = d2s(Renderer::Tessellator::WorldTransform(*s, p, po));
-                        dl->AddLine(prev, cur, ec, ew); prev = cur;
+                        dl.AddLine(prev, cur, ec, ew); prev = cur;
                     }
                 } else {
-                    dl->AddLine(d2s(NodeWorld(*s, a, po)), d2s(NodeWorld(*s, b, po)), ec, ew);
+                    dl.AddLine(d2s(NodeWorld(*s, a, po)), d2s(NodeWorld(*s, b, po)), ec, ew);
                 }
             }
 
@@ -333,8 +333,8 @@ void Application::DrawEditOverlay(const std::function<ImVec2(Vec2)>& d2s,
                     ImU32 typeC  = handleColor(n.mode);
                     ImU32 lineC  = lineSel ? shade(typeC, 1.35f) : shade(typeC, 0.75f);
                     ImU32 dotC   = thisSel ? shade(typeC, 1.35f) : shade(typeC, 0.8f);
-                    dl->AddLine(ap, hp, lineC, lineSel ? 1.5f : 1.0f);
-                    dl->AddCircleFilled(hp, thisSel ? hr + 1.0f : hr, dotC);
+                    dl.AddLine(ap, hp, lineC, lineSel ? 1.5f : 1.0f);
+                    dl.AddCircleFilled(hp, thisSel ? hr + 1.0f : hr, dotC);
                 };
                 // Bézier handles only — NURBS uses control points (no handles)
                 // and Poly is straight, so neither shows handles.
@@ -345,8 +345,8 @@ void Application::DrawEditOverlay(const std::function<ImVec2(Vec2)>& d2s,
                 if (showVerts) {
                     // Point: active = bright orange, selected = darker orange, else dim.
                     ImU32 c = active ? cActive : (sel ? cVertSel : cVert);
-                    dl->AddCircleFilled(ap, vr, c);
-                    dl->AddCircle(ap, vr, col(Tok::C_EditHandle_VertexRing), 0, 1.0f);
+                    dl.AddCircleFilled(ap, vr, c);
+                    dl.AddCircle(ap, vr, col(Tok::C_EditHandle_VertexRing), 0, 1.0f);
                 }
             }
         }
@@ -358,7 +358,7 @@ void Application::DrawEditOverlay(const std::function<ImVec2(Vec2)>& d2s,
 void Application::HandleEditMode(EditorState& st,
                                  const std::function<Vec2(ImVec2)>& s2d,
                                  const std::function<ImVec2(Vec2)>& d2s,
-                                 float effZoom, bool hovered, ImDrawList* dl) {
+                                 float effZoom, bool hovered, App::OverlayDL& dl) {
     auto& ds  = DesignSystem::DesignSystem::Instance();
     auto& doc = project_.document;
     ImGuiIO& io = ImGui::GetIO();
@@ -419,8 +419,8 @@ void Application::HandleEditMode(EditorState& st,
             }
             ImVec2 a = d2s(editDrag_.dragStart), b = io.MousePos;
             ImU32 cAccent = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default));
-            dl->AddRectFilled(a, b, (cAccent & 0x00FFFFFF) | 0x22000000);
-            dl->AddRect(a, b, cAccent, 0.0f, 0, 1.0f);
+            dl.AddRectFilled(a, b, (cAccent & 0x00FFFFFF) | 0x22000000);
+            dl.AddRect(a, b, cAccent, 0.0f, 0, 1.0f);
             if (lreleased) {
                 if (!editDrag_.movedPastThreshold) {
                     // Plain click on empty space → clear (Shift keeps the selection).

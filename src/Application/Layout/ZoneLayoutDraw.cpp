@@ -79,8 +79,16 @@ void ZoneLayout::DrawLeaf(Node* n, float gap) {
     // rounded clip. The 1px border stays on the overlay (DrawZoneFrames), above
     // all content, so it is the crisp visual limit of the zone.
     ImGui::SetCursorScreenPos(n->pos);
+    // The Viewport zone goes FULLY transparent when the active engine composites
+    // its canvas onto the swapchain itself (the Compositor): the zone + content
+    // children must not paint an opaque bg, or it would hide the canvas drawn
+    // under ImGui. The Viewport then repaints only its ruler strips (it leaves the
+    // canvas rect transparent). The legacy engine keeps the opaque editor bg.
+    const bool transpCanvas =
+        canvasZoneTransparent_ && editorId == CoreEditor::Viewport;
     ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                          ds.GetColor(DesignSystem::Tok::C_Editor_Background));
+                          transpCanvas ? ImVec4(0, 0, 0, 0)
+                                       : ds.GetColor(DesignSystem::Tok::C_Editor_Background));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,   zoneRnd);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,   wpad);
     ImGui::BeginChild(zid, n->size, ImGuiChildFlags_None,

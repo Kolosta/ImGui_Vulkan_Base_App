@@ -23,35 +23,43 @@ namespace App {
 
 void Application::DrawMetricsOverlay(ImVec2 canvasMin, ImVec2 canvasMax) {
     auto& ds = DesignSystem::DesignSystem::Instance();
-    const Renderer::CanvasRenderer::Metrics& m = canvasRenderer_.GetMetrics();
+    if (!renderer_) return;
+    const Renderer::IViewRenderer::Metrics& m = renderer_->GetMetrics();
     ImGuiIO& io = ImGui::GetIO();
     const float fps    = io.Framerate;                       // ImGui's smoothed FPS
     const float frameMs = (fps > 0.0f) ? 1000.0f / fps : 0.0f;
 
-    char l0[64], l1[80], l2[80], l3[80];
+    char l0[64], l1[80], l2[96], l3[96], l4[96];
     std::snprintf(l0, sizeof l0, "%.0f FPS   %.2f ms", fps, frameMs);
     std::snprintf(l1, sizeof l1, "tris %d   draws %d", m.triangles, m.drawCalls);
-    std::snprintf(l2, sizeof l2, "obj %d  cache %d  built %d  cull %d",
-                  m.shapesDrawn, m.shapesCached, m.shapesBuilt, m.shapesCulled);
-    std::snprintf(l3, sizeof l3, "tess %.2f ms   gpu %.2f ms", m.tessMs, m.gpuWaitMs);
+    // `dirty` (Lot 13-1a): shapes that actually changed since last build — 0 on a
+    // static scene even when a full rebuild fires (exposes over-rebuild).
+    std::snprintf(l2, sizeof l2, "obj %d  cache %d  built %d  cull %d  dirty %d",
+                  m.shapesDrawn, m.shapesCached, m.shapesBuilt, m.shapesCulled, m.shapesDirty);
+    // Lot 13-0 breakdown: where the frame time goes (CPU stages + GPU render).
+    std::snprintf(l3, sizeof l3, "sig %.2f  tess %.2f  up %.2f  rec %.2f ms",
+                  m.sigMs, m.tessMs, m.uploadMs, m.recordMs);
+    std::snprintf(l4, sizeof l4, "gpu %.2f ms   gpu-wait %.2f ms", m.gpuMs, m.gpuWaitMs);
 
-    const char* lines[4] = { l0, l1, l2, l3 };
-    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const char* lines[5] = { l0, l1, l2, l3, l4 };
+    // Metrics HUD is text-heavy → keep it on ImGui for now (migrated with text in 12-4).
+    App::OverlayDL dl(ImGui::GetWindowDrawList(), &overlay_, /*gpu=*/false);
     const float pad = 6.0f, lh = ImGui::GetTextLineHeight();
     float wmax = 0.0f;
     for (const char* s : lines) wmax = std::max(wmax, ImGui::CalcTextSize(s).x);
     // Anchor BOTTOM-LEFT of the canvas.
-    const float boxH = lh * 4.0f + pad * 2.0f;
+    const int kLines = 5;
+    const float boxH = lh * (float)kLines + pad * 2.0f;
     ImVec2 p0(canvasMin.x + 8.0f, canvasMax.y - 8.0f - boxH);
     ImVec2 p1(p0.x + wmax + pad * 2.0f, p0.y + boxH);
-    dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 150), 4.0f);
+    dl.AddRectFilled(p0, p1, IM_COL32(0, 0, 0, 150), 4.0f);
     // FPS line tinted by health (green ≥55, amber ≥30, red below); rest neutral.
     ImU32 fpsCol = fps >= 55.0f ? IM_COL32(120, 230, 120, 255)
                  : fps >= 30.0f ? IM_COL32(235, 200, 110, 255)
                                 : IM_COL32(235, 120, 120, 255);
     ImU32 txtCol = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Text_Default));
-    for (int i = 0; i < 4; ++i)
-        dl->AddText(ImVec2(p0.x + pad, p0.y + pad + lh * (float)i),
+    for (int i = 0; i < kLines; ++i)
+        dl.AddText(ImVec2(p0.x + pad, p0.y + pad + lh * (float)i),
                     i == 0 ? fpsCol : txtCol, lines[i]);
 }
 
@@ -61,7 +69,7 @@ void Application::DrawMetricsOverlay(ImVec2 canvasMin, ImVec2 canvasMax) {
 // orange glyph remains). Excludes the moving selection. Edge mode shows nothing.
 void Application::DrawSnapCandidates(
         const std::function<ImVec2(Renderer::Vec2)>& d2sDoc,
-        float effZoom, ImVec2 canvasMin, ImVec2 canvasMax, ImDrawList* dl) {
+        float effZoom, ImVec2 canvasMin, ImVec2 canvasMax, App::OverlayDL& dl) {
     using DesignSystem::Tok;
     // Only during a transform whose kind snapping affects, and only while snap is on.
     if (!transformOp_.Active() || !SnapActiveFor(transformOp_.kind)) return;
@@ -105,7 +113,7 @@ void Application::DrawSnapCandidates(
         for (float x = x0; x <= dx1 && guard < 20000; x += g)
             for (float y = y0; y <= dy1 && guard < 20000; y += g, ++guard) {
                 ImVec2 s = d2sDoc({ x, y });
-                if (onScreen(s)) dl->AddCircleFilled(s, dotR, vio);
+                if (onScreen(s)) dl.AddCircleFilled(s, dotR, vio);
             }
         return;
     }
@@ -166,8 +174,8 @@ void Application::DrawSnapCandidates(
                     Renderer::Vec2 w = Renderer::Tessellator::WorldTransform(s, nd.pos, po);
                     if (rejected(w)) continue;
                     ImVec2 sp = d2sDoc(w);
-                    if (onScreen(sp)) { dl->AddCircleFilled(sp, r * 0.45f, vio);
-                                        dl->AddCircle(sp, r * 0.7f, vio, 12, 1.2f); }
+                    if (onScreen(sp)) { dl.AddCircleFilled(sp, r * 0.45f, vio);
+                                        dl.AddCircle(sp, r * 0.7f, vio, 12, 1.2f); }
                 }
             } else if (snap_.mode == SnapSettings::Mode::EdgeCenter) {
                 Renderer::Part baked = preMovePart(s.id, pi, part);
@@ -201,7 +209,7 @@ void Application::DrawSnapCandidates(
                         ImVec2 cc = d2sDoc(w);
                         if (!onScreen(cc)) continue;
                         const float tr = r * 0.55f;     // smaller than the snap triangle
-                        dl->AddTriangle(ImVec2(cc.x, cc.y - tr), ImVec2(cc.x - tr, cc.y + tr),
+                        dl.AddTriangle(ImVec2(cc.x, cc.y - tr), ImVec2(cc.x - tr, cc.y + tr),
                                         ImVec2(cc.x + tr, cc.y + tr), vio, 1.4f);
                     }
                 }
@@ -218,7 +226,7 @@ void Application::DrawSnapCandidates(
                     ImVec2 cc = d2sDoc(cn);
                     if (onScreen(cc)) {
                         const float sr = r * 0.5f;     // small violet square
-                        dl->AddRect(ImVec2(cc.x-sr, cc.y-sr), ImVec2(cc.x+sr, cc.y+sr), vio, 0, 0, 1.4f);
+                        dl.AddRect(ImVec2(cc.x-sr, cc.y-sr), ImVec2(cc.x+sr, cc.y+sr), vio, 0, 0, 1.4f);
                     }
                 }
             }
@@ -234,7 +242,7 @@ void Application::DrawSnapCandidates(
 // face, small dot=other). `accentColor` overrides the default orange cue — the
 // curve tool passes blue while following a curve under Shift. No-op if no mark.
 void Application::DrawSnapIndicatorGlyph(
-        const std::function<ImVec2(Renderer::Vec2)>& d2s, ImDrawList* dl,
+        const std::function<ImVec2(Renderer::Vec2)>& d2s, App::OverlayDL& dl,
         float gs, ImU32 accentColor) {
     if (!snapIndicator_.snapped || !snapIndicator_.showMark) return;
     auto& ds = DesignSystem::DesignSystem::Instance();
@@ -244,22 +252,22 @@ void Application::DrawSnapIndicatorGlyph(
              : ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_State_Active_OnPage));
     switch (snap_.mode) {
         case SnapSettings::Mode::Vertex:
-            dl->AddCircle(c, r, sc, 16, th); break;
+            dl.AddCircle(c, r, sc, 16, th); break;
         case SnapSettings::Mode::EdgeCenter: {
             ImVec2 p0(c.x, c.y - r), p1(c.x - r, c.y + r), p2(c.x + r, c.y + r);
-            dl->AddTriangle(p0, p1, p2, sc, th); break;
+            dl.AddTriangle(p0, p1, p2, sc, th); break;
         }
         case SnapSettings::Mode::Edge: {   // diamond
             ImVec2 p0(c.x, c.y - r), p1(c.x + r, c.y),
                    p2(c.x, c.y + r), p3(c.x - r, c.y);
-            dl->AddQuad(p0, p1, p2, p3, sc, th); break;
+            dl.AddQuad(p0, p1, p2, p3, sc, th); break;
         }
         case SnapSettings::Mode::Grid:
         case SnapSettings::Mode::Face:   // square, like Grid
-            dl->AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), sc, 0, 0, th);
+            dl.AddRect(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), sc, 0, 0, th);
             break;
         default:
-            dl->AddCircleFilled(c, r * 0.6f, sc); break;
+            dl.AddCircleFilled(c, r * 0.6f, sc); break;
     }
 }
 

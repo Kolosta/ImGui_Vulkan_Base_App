@@ -25,7 +25,7 @@ void Application::UpdateTransformOp(
     EditorState& st,
     const std::function<Renderer::Vec2(ImVec2)>& s2d,
     const std::function<ImVec2(Renderer::Vec2)>& d2s,
-    float effZoom, bool hovered, ImDrawList* dl) {
+    float effZoom, bool hovered, App::OverlayDL& dl) {
     if (!transformOp_.Active()) return;
     const void* self = &st;
     ImGuiIO& io = ImGui::GetIO();
@@ -397,7 +397,7 @@ void Application::UpdateTransformOp(
         const float dash = 6.0f, gap = 4.0f; float t = 0.0f;
         while (t < len) {
             float t2 = std::min(t + dash, len);
-            dl->AddLine(ImVec2(a.x + dir.x * t,  a.y + dir.y * t),
+            dl.AddLine(ImVec2(a.x + dir.x * t,  a.y + dir.y * t),
                         ImVec2(a.x + dir.x * t2, a.y + dir.y * t2), col, 1.4f);
             t = t2 + gap;
         }
@@ -421,7 +421,7 @@ void Application::UpdateTransformOp(
                 .GetColor(transformOp_.axis == TransformAxis::X
                           ? DesignSystem::Tok::S_Color_Negative_Default
                           : DesignSystem::Tok::S_Color_Positive_Default));
-            dl->AddLine(ImVec2(c0.x - sd.x * far, c0.y - sd.y * far),
+            dl.AddLine(ImVec2(c0.x - sd.x * far, c0.y - sd.y * far),
                         ImVec2(c0.x + sd.x * far, c0.y + sd.y * far), axCol, 1.2f);
         }
     }
@@ -437,7 +437,7 @@ void Application::UpdateTransformOp(
         // REAL speed (Shift refines the transform, not the line) AND keeps its
         // direction across an edge wrap (it does NOT teleport to the warped cursor).
         ImVec2 vm = d2s(transformOp_.virtDisplay);
-        dl->AddCircle(pp, 5.0f, cAccent, 0, 1.5f);
+        dl.AddCircle(pp, 5.0f, cAccent, 0, 1.5f);
         dashedLine(pp, vm, cAccent);
         // Angle of the pivot→display-mouse line (in screen space).
         float ang = std::atan2(vm.y - pp.y, vm.x - pp.x);

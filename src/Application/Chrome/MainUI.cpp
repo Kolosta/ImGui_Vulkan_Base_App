@@ -48,10 +48,19 @@ void Application::RenderMainLayout() {
         ImGuiWindowFlags_NoScrollWithMouse     |
         ImGuiWindowFlags_NoDocking;
 
+    // When the active engine composites its canvas onto the swapchain itself (the
+    // Compositor), the WHOLE ImGui host stack above the canvas must be transparent
+    // or it hides the composite (which is drawn first, under all of ImGui). The
+    // host's opaque WindowBg is that top layer — drop it. The swapchain is cleared
+    // to the app base colour, so the inter-zone gaps look the same.
+    ImGuiWindowFlags layoutFlags = kFlags;
+    if (renderer_ && renderer_->PresentsViaSwapchain())
+        layoutFlags |= ImGuiWindowFlags_NoBackground;
+
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,   0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(0.0f, 0.0f));
-    ImGui::Begin("##MainLayout", nullptr, kFlags);
+    ImGui::Begin("##MainLayout", nullptr, layoutFlags);
     ImGui::PopStyleVar(3);
 
     // Reserve space for the bottom status bar. ImGui inserts ItemSpacing.y
@@ -392,7 +401,7 @@ void Application::Action_UpdateThumbnail(int ab,
 
     std::vector<unsigned char> rgba;
     ImVec4 backdrop(1, 1, 1, 1);     // white page backdrop for the thumbnail
-    if (!canvasRenderer_.RenderToRGBA(doc, cam, W, H, backdrop, rgba)) return;
+    if (!renderer_ || !renderer_->RenderToRGBA(doc, cam, W, H, backdrop, rgba)) return;
 
     std::vector<uint8_t> pngBytes;
     if (App::png::EncodeRGBA(rgba.data(), W, H, pngBytes)) {

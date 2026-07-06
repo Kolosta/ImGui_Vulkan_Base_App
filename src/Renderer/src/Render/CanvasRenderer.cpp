@@ -13,7 +13,8 @@
 
 namespace Renderer {
 
-void CanvasRenderer::Initialize(VkDevice device, VkPhysicalDevice physicalDevice,
+void CanvasRenderer::Initialize(VkInstance /*instance*/,
+                                VkDevice device, VkPhysicalDevice physicalDevice,
                                 VkQueue queue, uint32_t queueFamily,
                                 VkCommandPool commandPool, VkSampler sampler,
                                 const std::string& shaderDir) {

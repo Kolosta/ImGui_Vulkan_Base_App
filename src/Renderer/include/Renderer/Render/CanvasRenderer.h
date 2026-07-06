@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Renderer/IViewRenderer.h"
 #include "Renderer/Document/Document.h"
 #include "Renderer/Render/RenderTarget.h"
 #include "Renderer/Tessellation/Tessellator.h"
@@ -30,34 +31,26 @@ namespace Renderer {
 //  Application::Update/Render integration.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Per-view camera, mirrors the Viewport's D2S mapping:
-//   screen_px = (doc * unitScale - pan) * zoom
-// `unitScale` is the document-unit→ruler-pixel factor (the active ruler unit's
-// pxPer). `pan` is therefore in the SAME pre-scaled space as zoom operates on,
-// exactly matching the ImGui-side camera so rulers/guides line up with Vulkan.
-struct Camera {
-    float panX = 0.0f, panY = 0.0f;
-    float zoom = 1.0f;
-    float unitScale = 1.0f;
-};
+// `Camera` and `Metrics` are defined in IViewRenderer.h (shared contract).
 
-class CanvasRenderer {
+class CanvasRenderer : public IViewRenderer {
 public:
-    void Initialize(VkDevice device, VkPhysicalDevice physicalDevice,
+    void Initialize(VkInstance instance,
+                    VkDevice device, VkPhysicalDevice physicalDevice,
                     VkQueue queue, uint32_t queueFamily,
                     VkCommandPool commandPool, VkSampler sampler,
-                    const std::string& shaderDir);
-    void Shutdown();
-    bool IsInitialized() const { return initialized_; }
+                    const std::string& shaderDir) override;
+    void Shutdown() override;
+    bool IsInitialized() const override { return initialized_; }
 
     // Begin a render frame: advances the frame counter (drives target eviction).
-    void BeginFrame();
+    void BeginFrame() override;
 
     // The offscreen-done semaphores the main swapchain pass must WAIT on this frame
     // (one per view re-submitted this frame), so ImGui samples a finished texture
     // without a CPU stall. The Application appends these to its main submit's
     // pWaitSemaphores (stage FRAGMENT_SHADER). Cleared at the next BeginFrame.
-    const std::vector<VkSemaphore>& FrameWaitSemaphores() const { return framePendingWaits_; }
+    const std::vector<VkSemaphore>& FrameWaitSemaphores() const override { return framePendingWaits_; }
 
     // SSAA (supersampling) factor: the offscreen target is rendered this many
     // times larger on each axis, then downscaled by the linear sampler at blit
@@ -84,24 +77,14 @@ public:
                            ImVec4 clearColor,
                            const std::vector<Tessellator::PagePlacement>* placements = nullptr,
                            bool includeLoose = true,   // draw page-less objects?
-                           bool focused = true);
+                           bool focused = true) override;
 
     // End the frame: destroy targets not used this frame (closed/joined zones).
-    void EndFrame();
+    void EndFrame() override;
 
     // ── Real-time metrics (for the viewport overlay) ──────────────────────────
-    struct Metrics {
-        int   views        = 0;    // viewports rendered this frame
-        int   triangles    = 0;    // triangles submitted this frame (all views)
-        int   drawCalls    = 0;    // vkCmdDraw calls this frame
-        int   shapesDrawn  = 0;    // shapes that produced geometry
-        int   shapesCached = 0;    // shapes served from the tessellation cache
-        int   shapesBuilt  = 0;    // shapes (re)tessellated this frame
-        int   shapesCulled = 0;    // shapes skipped by frustum culling
-        float tessMs       = 0.0f; // CPU time spent tessellating this frame
-        float gpuWaitMs    = 0.0f; // CPU time blocked on the GPU this frame
-    };
-    const Metrics& GetMetrics() const { return metrics_; }
+    // `Metrics` is the shared IViewRenderer::Metrics (comparable across engines).
+    const Metrics& GetMetrics() const override { return metrics_; }
     // NOTE: per-view CPU frustum culling was removed from RenderView (it churned
     // the persistent per-view buffer on every pan/zoom). Off-screen geometry is
     // built once and discarded by the GPU scissor/clip (un-rasterised ≈ free), so
@@ -113,7 +96,7 @@ public:
     // RGBA8 (row-major, top-left origin). Synchronous; used for .acu thumbnails.
     // Returns false on failure. Independent of the per-view targets / frame loop.
     bool RenderToRGBA(const Document& doc, const Camera& cam, int w, int h,
-                      ImVec4 clearColor, std::vector<unsigned char>& outRGBA);
+                      ImVec4 clearColor, std::vector<unsigned char>& outRGBA) override;
 
     // Render a set of `shapes` (a symbol + optional companions, geometry in local
     // doc-units) into a cached offscreen texture of `widthPx`×`heightPx` LOGICAL
@@ -137,7 +120,7 @@ public:
                                   int widthPx, int heightPx, float padFrac,
                                   ImVec4 clearColor, bool exactFit = false,
                                   const Vec2* frameMin = nullptr,
-                                  const Vec2* frameMax = nullptr);
+                                  const Vec2* frameMax = nullptr) override;
     // Drop glyph textures not requested since `keepFrames` frames ago (call once
     // per frame from the owner so closed panels release VRAM).
     void EvictGlyphTextures();

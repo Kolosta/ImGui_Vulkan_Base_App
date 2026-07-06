@@ -94,11 +94,22 @@ void Application::ClipboardPaste() {
         if (ab >= 0) {
             const Renderer::Vec2 dstOrigin = doc.artboards[(size_t)ab].pos;
             doc.ClearSelection();
+            std::vector<uint64_t> pastedGroups;
             for (const ClipObject& o : clipboard_.objects) {
                 Renderer::Shape copy = o.shape;
                 copy.name = o.shape.name.empty() ? "Object copy" : o.shape.name + " copy";
                 copy.collectionId = 0;
                 copy.parentId = 0;
+                // Keep the object's LAYER GROUP (Lot 11): a copy of a grouped object
+                // joins the SAME group (only valid if the group still exists on this
+                // page). The group is recompacted below so the copy sits in its run
+                // (otherwise it re-opens a duplicate group header → ImGui id clash).
+                if (copy.groupId && doc.IsGroup(copy.groupId)) {
+                    if (std::find(pastedGroups.begin(), pastedGroups.end(), copy.groupId) == pastedGroups.end())
+                        pastedGroups.push_back(copy.groupId);
+                } else {
+                    copy.groupId = 0;
+                }
                 // Keep the WORLD position: page-relative coords += (srcOrigin −
                 // dstOrigin), then a small nudge so the paste is visible.
                 copy.transform.translate.x += (o.pageOrigin.x - dstOrigin.x) + 12.0f;
@@ -106,6 +117,7 @@ void Application::ClipboardPaste() {
                 uint64_t id = doc.AddShape(ab, std::move(copy));  // assigns id + SelectOnly
                 if (id) { doc.SelectAdd(id); lastSel = id; selectedAnything = true; }
             }
+            for (uint64_t g : pastedGroups) doc.MakeGroupContiguous(g);
             if (lastSel) doc.SetActive(lastSel);
         }
     }
