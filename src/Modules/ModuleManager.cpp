@@ -41,14 +41,9 @@ void Application::CommitPendingNew() {
 void Application::DoOpenModule(const std::string& moduleId) {
     Modules::IModule* mod = Modules::ModuleRegistry::Instance().Get(moduleId);
     // Fresh blank project, no preset layout yet — the module supplies its own
-    // arrangement via ActivateModule. Use the module's default page size if it
-    // declares one (e.g. IOF → A4 landscape), else the core default.
+    // arrangement via ActivateModule. (The module's DefaultPageSize() applies
+    // again once the Ink document model lands — docs/Ink/ROADMAP.md Lot 2.)
     project_.Reset();
-    auto [pw, ph] = mod ? mod->DefaultPageSize() : std::pair<float, float>{0.0f, 0.0f};
-    if (pw > 0.0f && ph > 0.0f) project_.AddArtboard("Page 1", ImVec2(0, 0), ImVec2(pw, ph));
-    else                        project_.AddArtboard("Page 1", ImVec2(0, 0), ImVec2(1920, 1080));
-    project_.dirty = false;
-    ResetUndoHistory();
     ActivateModule(mod);
 }
 
@@ -85,29 +80,8 @@ void Application::ActivateModule(Modules::IModule* mod, bool rebuildLayout) {
 }
 
 // ── Modules::ModuleHost — app services exposed to the active module ───────────
-Renderer::Document& Application::Document() { return project_.document; }
-
-void Application::CreateObject(const std::string& presetKind, const std::string& name) {
-    Action_AddShape(presetKind.empty() ? "rectangle" : presetKind);
-    if (Renderer::Shape* s = project_.document.ActiveShape(); s && !name.empty())
-        s->name = name;
-    project_.dirty = true;
-}
-
+// The document services (object creation, baked-shape placement, cached glyph
+// rendering) return re-designed on the Ink document — docs/Ink/ROADMAP.md Lot 11.
 void Application::MarkDirty() { project_.dirty = true; }
-
-ImTextureID Application::RenderGlyphTexture(uint64_t key, uint64_t contentHash,
-                                           const std::vector<Renderer::Shape>& shapes,
-                                           int widthPx, int heightPx, float padFrac,
-                                           bool transparent, bool exactFit,
-                                           const Renderer::Vec2* frameMin,
-                                           const Renderer::Vec2* frameMax) {
-    // White "map paper" card behind a thumbnail; transparent for the placement
-    // ghost (so it overlays the canvas). SSAA-smoothed via the Vulkan pipeline.
-    ImVec4 clear = transparent ? ImVec4(0, 0, 0, 0) : ImVec4(1, 1, 1, 1);
-    return renderer_->RenderGlyphCached(key, contentHash, shapes,
-                                        widthPx, heightPx, padFrac, clear, exactFit,
-                                        frameMin, frameMax);
-}
 
 }  // namespace App

@@ -1,7 +1,6 @@
 #include "ModuleRegistry.h"
 
 #include "Typography/TypographyModule.h"
-#include "IofMapping/IofMappingModule.h"
 
 namespace App::Modules {
 
@@ -22,8 +21,9 @@ void ModuleRegistry::RegisterInternal(ModuleContext& ctx) {
     registered_ = true;
     // The set of built-in modules. Adding a new internal module is one line here
     // plus its own folder under src/Modules/.
+    // IofMapping is quarantined (src/_legacy/Modules/IofMapping — built on the
+    // old document); it returns rebuilt on Ink in docs/Ink/ROADMAP.md Lot 11.
     Add(std::make_unique<Typography::TypographyModule>(), ctx);
-    Add(std::make_unique<IofMapping::IofMappingModule>(), ctx);
 
     // External (plugin) modules dropped into <exe>/modules/ — future.
     LoadExternalModules(ctx);

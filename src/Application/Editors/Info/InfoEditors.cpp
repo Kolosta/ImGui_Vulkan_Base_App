@@ -89,17 +89,26 @@ void Application::RenderDevDataEditor() {
     ImU32 subtle = ImGui::GetColorU32(ds.GetColor(Tok::S_Color_Text_Subtle));
     ImU32 accent = ImGui::GetColorU32(ds.GetColor(Tok::S_Color_Accent_Default));
 
-    // ── Viewport undo/redo history ────────────────────────────────────────────
-    ImGui::SeparatorText("Undo / Redo — Viewport");
+    // ── Document undo/redo history ────────────────────────────────────────────
+    // Returns with the Ink engine's command-based undo (docs/Ink/ROADMAP.md
+    // Lot 8); until then only the Preferences history exists.
+    ImGui::SeparatorText("Undo / Redo — Document");
+    ImGui::PushStyleColor(ImGuiCol_Text, subtle);
+    ImGui::TextUnformatted("(offline during the Ink engine rework — Lot 8)");
+    ImGui::PopStyleColor();
+
+    // ── Preferences history ───────────────────────────────────────────────────
+    ImGui::SeparatorText("Undo / Redo — Preferences");
     ImGui::PushStyleColor(ImGuiCol_Text, subtle);
     ImGui::Text("steps=%d  current=%d  undo=%s  redo=%s  buffer=%d",
-                undo_.Size(), undo_.CurrentIndex(),
-                undo_.CanUndo() ? "yes" : "no", undo_.CanRedo() ? "yes" : "no",
+                prefsUndo_.Size(), prefsUndo_.CurrentIndex(),
+                prefsUndo_.CanUndo() ? "yes" : "no",
+                prefsUndo_.CanRedo() ? "yes" : "no",
                 undoBufferSteps_);
     ImGui::PopStyleColor();
     {
-        const auto& labels = undo_.Labels();
-        const int cur = undo_.CurrentIndex();
+        const auto& labels = prefsUndo_.Labels();
+        const int cur = prefsUndo_.CurrentIndex();
         for (int i = 0; i < (int)labels.size(); ++i) {
             const char* tag = (i == cur) ? " <= current"
                             : (i <  cur) ? " (undo)" : " (redo)";
@@ -110,32 +119,15 @@ void Application::RenderDevDataEditor() {
         }
     }
 
-    // ── Preferences history ───────────────────────────────────────────────────
-    ImGui::SeparatorText("Undo / Redo — Preferences");
+    // ── App / project snapshot ────────────────────────────────────────────────
+    ImGui::SeparatorText("Project");
     ImGui::PushStyleColor(ImGuiCol_Text, subtle);
-    ImGui::Text("steps=%d  current=%d  undo=%s  redo=%s",
-                prefsUndo_.Size(), prefsUndo_.CurrentIndex(),
-                prefsUndo_.CanUndo() ? "yes" : "no",
-                prefsUndo_.CanRedo() ? "yes" : "no");
-    ImGui::PopStyleColor();
-
-    // ── Document / selection snapshot ─────────────────────────────────────────
-    ImGui::SeparatorText("Document");
-    auto& doc = project_.document;
-    ImGui::PushStyleColor(ImGuiCol_Text, subtle);
-    ImGui::Text("pages=%d  collections=%d  selection=%d  active=%llu",
-                (int)doc.artboards.size(), (int)doc.collections.size(),
-                (int)doc.Selection().size(),
-                (unsigned long long)doc.ActiveId());
-    int shapeCount = 0;
-    for (const auto& ab : doc.artboards) shapeCount += (int)ab.shapes.size();
-    ImGui::Text("shapes=%d  cursor=(%.1f, %.1f)  mode=%s", shapeCount,
-                doc.cursor.x, doc.cursor.y,
-                editorMode_ == EditorMode::Edit ? "Edit" : "Object");
+    ImGui::Text("name=%s  dirty=%s  module=%s",
+                project_.name.empty() ? "(unsaved)" : project_.name.c_str(),
+                project_.dirty ? "yes" : "no",
+                project_.moduleId.empty() ? "(classic)" : project_.moduleId.c_str());
     ImGui::Text("active tool=%s",
                 Shortcuts::Tools::ToolManager::Instance().GetActiveTool().c_str());
-    ImGui::Text("orientation=%s  pivot=%d",
-                TransformOrientationName(transformOrientation_), (int)pivotMode_);
     ImGui::PopStyleColor();
 
     // ── Recent actions (last 12, newest first) with their parameter dump ──────

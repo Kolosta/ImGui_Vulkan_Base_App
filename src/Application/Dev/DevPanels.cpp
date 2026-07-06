@@ -267,54 +267,8 @@ void Application::RenderSectionTestZone2() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-
-// Render-engine selector, injected into Preferences ▸ Dev (SetDevPageExtra).
-// Runs in the Preferences ImGui context. A click only STAGES the swap
-// (pendingRendererKind_); Update applies it between frames so we never tear down
-// the live engine's offscreen textures while this frame's draw data references
-// them (that caused a TDR / VK_ERROR_DEVICE_LOST).
-void Application::RenderDevRenderEnginePanel() {
-    using Kind = Renderer::IViewRenderer::Kind;
-
-    UI::PanelConfig pc; pc.id = "##devRenderEngine"; pc.label = "Render Engine";
-    pc.defaultOpen = true;
-    UI::PanelResult pr = UI::BeginPanel(pc);
-    if (pr.open) {
-        // Reflect a staged swap immediately (so the radio doesn't flicker back for
-        // a frame), falling back to the live kind.
-        const Kind shown = pendingRendererKind_.value_or(rendererKind_);
-
-        ImGui::TextDisabled("Exactly one engine is alive; switching does a clean\n"
-                            "swap, applied between frames.");
-        ImGui::Spacing();
-
-        if (ImGui::RadioButton("Legacy — CanvasRenderer (VkRenderPass)",
-                               shown == Kind::Legacy) && shown != Kind::Legacy)
-            pendingRendererKind_ = Kind::Legacy;
-
-        // The Compositor needs a Vulkan 1.3 device (dynamic rendering, sync2,
-        // timeline). When the device lacks them, disable the option.
-        ImGui::BeginDisabled(!compositorSupported_);
-        if (ImGui::RadioButton("Compositor — Comp::Engine (modern Vulkan)",
-                               shown == Kind::Compositor) && shown != Kind::Compositor)
-            pendingRendererKind_ = Kind::Compositor;
-        ImGui::EndDisabled();
-
-        ImGui::Spacing();
-        if (!compositorSupported_)
-            ImGui::TextDisabled("Compositor unavailable: this device/driver does not\n"
-                                "expose the required Vulkan 1.3 features.");
-        else if (shown == Kind::Compositor)
-            ImGui::TextDisabled("Compositor renders an empty canvas for now\n"
-                                "(GPU output lands in Lot 1b).");
-    }
-    UI::EndPanel();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 //  Floating windows
 // ─────────────────────────────────────────────────────────────────────────────
-
 
 void Application::RenderDevTestWindow() {
     if (!showDevWindow_) return;

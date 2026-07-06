@@ -51,10 +51,10 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
-# VMA (Vulkan Memory Allocator) — used ONLY by the Compositor render engine (the
-# legacy Renderer keeps manual allocation). Header-only INTERFACE target
-# `GPUOpen::VulkanMemoryAllocator`; the implementation is compiled in one TU
-# (src/Compositor/src/GPU/VmaImpl.cpp with VMA_IMPLEMENTATION).
+# VMA (Vulkan Memory Allocator) — used by the Ink render engine (see
+# docs/Ink/ARCHITECTURE.md). Header-only INTERFACE target
+# `GPUOpen::VulkanMemoryAllocator`; the implementation will be compiled in one
+# Ink TU (VMA_IMPLEMENTATION).
 FetchContent_Declare(
     VulkanMemoryAllocator
     GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -75,13 +75,16 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
 )
 
-# Subdirectories
+# Subdirectories.
+# NOTE: src/_legacy/** (old Renderer + Compositor engines and the application
+# code coupled to them) is intentionally NOT built — it is a quarantined
+# reference tree during the Ink engine rewrite (see docs/Ink/ and
+# src/_legacy/README.md). The Ink engine gets its own subdirectory (src/Ink)
+# starting at ROADMAP Lot 1.
 add_subdirectory(src/DesignSystem)
 add_subdirectory(src/UI)
 add_subdirectory(src/Shortcuts)
 add_subdirectory(src/VectorGraphics)
-add_subdirectory(src/Renderer)
-add_subdirectory(src/Compositor)   # second render engine (modern Vulkan), parallel to Renderer
 add_subdirectory(src/Shell)
 add_subdirectory(src/Application)
 
@@ -111,8 +114,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     UI
     Shortcuts
     VectorGraphics
-    Renderer
-    Compositor
     Shell
     Application
 )
@@ -146,15 +147,9 @@ endif()
 # Copy resources
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/resources DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
-# Mirror the compiled SPIR-V shaders next to the executable so CanvasRenderer can
-# load them from "<exe-dir>/shaders" at runtime (the working dir at launch). The
-# renderer_shaders target produces them in ${RENDERER_SHADER_OUT_DIR}.
-add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${RENDERER_SHADER_OUT_DIR}
-        $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
-    COMMENT "Copying compiled shaders to executable directory")
-
+# (The legacy renderer_shaders SPIR-V copy step was removed with the old
+# engines; the Ink engine will install its own ink_shaders target under
+# "<exe-dir>/shaders/ink" — see docs/Ink/ARCHITECTURE.md.)
 
 if(WIN32 AND MINGW)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

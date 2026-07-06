@@ -28,79 +28,24 @@
 
 namespace Shortcuts { class ShortcutManager; }
 namespace UI { struct MenuEntry; struct SidePanelTab; }
-namespace Renderer { class Document; struct Shape; struct Vec2; }
 
 namespace App::Modules {
 
-// A simple object a module can place into the document (an ISOM symbol, a course
-// control…). The app turns this into a real Shape at the 2D cursor, so it is then
-// selectable / movable / deletable like any object. RGBA in [0,1].
-struct ObjectSpec {
-    enum class Geom { Point, Line, Area } geom = Geom::Point;
-    std::string name;                 // object name (e.g. "101 Contour", "Control 31")
-    float r = 0.0f, g = 0.0f, b = 0.0f, a = 1.0f;   // primary colour
-    float size  = 30.0f;              // doc-units extent
-    bool  loose = false;              // place page-less (overprint layer) vs on the page
-    bool  lockScale    = false;       // fixed-size symbol → Scale (S) disabled
-    bool  lockRotation = false;       // north-oriented symbol → Rotate (R) disabled
-    uint64_t collectionId = 0;        // target collection (0 = default); IOF print layer
-};
-
 // The slice of app services a module is allowed to drive (implemented by the
 // Application). Kept deliberately small and dependency-light so the contract
-// stays plugin-friendly: a module reaches the document and a few high-level
-// operations through here rather than touching Application internals.
+// stays plugin-friendly.
+//
+// NOTE (Ink rework, Lot 0): the document services this host used to expose
+// (Document access, object creation, baked-shape placement, cached glyph
+// rendering) were built on the old document model and are removed. They come
+// back — re-designed against the Ink document (typed operations, instancing-
+// aware placement) — in docs/Ink/ROADMAP.md Lot 11, together with a bump of
+// kModuleAbiVersion.
 class ModuleHost {
 public:
     virtual ~ModuleHost() = default;
-    virtual Renderer::Document& Document() = 0;
-    // Create a default object of `presetKind` ("rectangle"/"ellipse"/…) and name
-    // it `name` — reuses the core object-creation path (Action_AddShape).
-    virtual void CreateObject(const std::string& presetKind,
-                              const std::string& name) = 0;
-    // Create an object from a spec (geometry + colour) at the 2D cursor; returns
-    // the new shape's id (0 on failure). Used for simple module objects.
-    virtual uint64_t CreateObjectSpec(const ObjectSpec& spec) = 0;
-    // How a baked symbol is placed:
-    //   Stamp     → the glyph follows the cursor and drops a copy on click (points,
-    //               and any fixed-size symbol).
-    //   DrawLine  → the symbol's line STYLE is applied to a curve the user draws
-    //               point-by-point (open path); used for line symbols.
-    //   DrawArea  → same, but the drawn curve is closed + filled (area symbols).
-    enum class PlaceMode { Stamp = 0, DrawLine = 1, DrawArea = 2 };
-    // Add a fully-baked shape (geometry already authored in doc units, centred at
-    // the local origin). For Stamp it lands at the 2D cursor honouring preview
-    // placement (follows the cursor, drops on click). For DrawLine/DrawArea the
-    // shape is used as a STYLE TEMPLATE and the user draws the geometry. `loose` =
-    // page-less; `collectionId` = target Outliner collection (0 = none).
-    virtual uint64_t AddBakedShape(const Renderer::Shape& shape,
-                                   bool loose, uint64_t collectionId,
-                                   PlaceMode mode = PlaceMode::Stamp) = 0;
-    // Optional compact preview of the symbol (short line sample / small swatch) for
-    // the placement mini-ghost; if not set the full shape is used. Called right
-    // after AddBakedShape when arming a DrawLine/DrawArea placement.
-    virtual void SetPlacementPreview(const Renderer::Shape& /*preview*/) {}
-    // The isomCode of the symbol currently ARMED for placement (the baked ghost
-    // following the cursor / being drawn), or 0 if none. Lets the catalogue UI
-    // highlight the active symbol and clear it when the user cancels. Default 0.
-    virtual int ArmedSymbolCode() const { return 0; }
+    // Mark the project as having unsaved changes.
     virtual void MarkDirty() = 0;
-
-    // Render a set of shapes (a symbol + optional companions) into a CACHED,
-    // SSAA-smoothed offscreen texture (the same Vulkan pipeline the viewport uses),
-    // auto-framed with `padFrac` margin. `key` is caller-stable (e.g. a hash of
-    // symbol code+scale+size); `contentHash` triggers a rebuild only when the
-    // geometry changes. Returns an ImTextureID to blit with ImGui::Image (0 on
-    // failure). Lets the Symbol Viewer / placement ghost look as smooth as the
-    // viewport instead of hard CPU-blitted triangles. Default = unsupported (0).
-    virtual ImTextureID RenderGlyphTexture(uint64_t /*key*/, uint64_t /*contentHash*/,
-                                           const std::vector<Renderer::Shape>& /*shapes*/,
-                                           int /*widthPx*/, int /*heightPx*/,
-                                           float /*padFrac*/,
-                                           bool /*transparent*/ = false,
-                                           bool /*exactFit*/ = false,
-                                           const Renderer::Vec2* /*frameMin*/ = nullptr,
-                                           const Renderer::Vec2* /*frameMax*/ = nullptr) { return ImTextureID(0); }
 };
 
 // ABI version of this contract. Bumped on any breaking change to IModule /

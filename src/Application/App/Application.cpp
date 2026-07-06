@@ -1,14 +1,10 @@
 #include "Application.h"
-#include "ProjectFile.h"
-#include "ModuleRegistry.h"   // restore a file's module on Load
 #include <iostream>
 #include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <filesystem>
-#include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_filesystem.h>
-#include <Renderer/Tessellation/Tessellator.h>
 #include <VectorGraphics/IconManager.h>
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ShortcutManager.h>
@@ -200,52 +196,16 @@ void Application::Update() {
             Shortcuts::EventNormalizer::Instance().SetDragThreshold(t);
         } catch (...) { /* token missing — keep current value */ }
         // Undo history depth (Preferences ▸ General). Applied live so a change
-        // takes effect without restarting.
+        // takes effect without restarting. (Only the Preferences history exists
+        // during the Ink rework — see PrefsUndo.cpp.)
         try {
             int n = DesignSystem::DesignSystem::Instance()
                         .GetInt(DesignSystem::Tok::S_Config_UndoSteps);
-            if (n != undoBufferSteps_) { undoBufferSteps_ = n; undo_.SetCapacity(n); }
+            if (n != undoBufferSteps_) { undoBufferSteps_ = n; prefsUndo_.SetCapacity(n); }
         } catch (...) { /* token missing — keep current value */ }
     }
     Shortcuts::EventNormalizer::Instance().Frame();
     Shortcuts::ShortcutManager::Instance().BeginFrame();
-    // Publish this frame's contextual status-bar hints right after BeginFrame
-    // cleared them and before the status bar is built in RenderMainLayout. Uses
-    // the persistent transform/mode state (a frame's lag at most).
-    PublishStatusHints();
-
-    // Apply a pending renderer swap BEFORE anything builds this frame's draw data
-    // or BeginFrame runs. Doing it here (between frames) means no in-flight ImGui
-    // draw list still references the outgoing engine's offscreen textures when we
-    // tear them down — see pendingRendererKind_.
-    if (pendingRendererKind_) {
-        SwitchViewRenderer(*pendingRendererKind_);
-        pendingRendererKind_.reset();
-    }
-
-    // Begin the vector-renderer frame BEFORE the UI is built: each Viewport's
-    // RenderViewport() renders its canvas into an offscreen texture (its own
-    // Vulkan render pass) during the UI-build phase — all of which completes
-    // before ImGui::Render() and the main swapchain pass in Render().
-    renderer_->BeginFrame();
-
-    // Tell the zone layout whether the Viewport zone must stay transparent (the
-    // active engine composites its canvas onto the swapchain itself — see
-    // CompositeMainPass). Legacy engines blit a texture into ImGui, so the zone
-    // keeps its opaque editor background.
-    zoneLayout_.SetCanvasZoneTransparent(renderer_->PresentsViaSwapchain());
-
-    // Clear the shared drop-preview when no move gesture is in flight, so it
-    // doesn't linger after a drop. While a move IS active it persists (the owner
-    // viewport refreshes it during RenderMainLayout); all viewports read the
-    // same value this frame.
-    {
-        const bool moveActive =
-            (toolState_.gesture == ToolGesture::MoveObjects) ||
-            (transformOp_.Active() && !transformOp_.element &&
-             transformOp_.kind == TransformKind::Move);
-        if (!moveActive) dropPreview_.active = false;
-    }
 
     RenderTitleBar();      // publishes titleBarHeightPx_ + blockers first
     RenderMainLayout();    // viewports render their offscreen canvas here
@@ -259,18 +219,6 @@ void Application::Update() {
     // not the native title bar.
     PublishOverlayTitleBarBlockers();
 
-    // Hand this frame's editor overlays to the active engine for full-GPU drawing
-    // (Lot 12). The OverlayList was filled during the viewport render; convert to NDC
-    // and submit. Empty on the legacy engine (it keeps the ImGui overlay path).
-    if (renderer_ && renderer_->PresentsViaSwapchain()) {
-        overlay_.ToNDC(overlayVerts_, overlayIdx_);
-        renderer_->SubmitOverlay(overlayVerts_, overlayIdx_);
-    }
-    overlay_.Clear();
-
-    // Evict offscreen targets whose Viewport zone no longer exists this frame.
-    renderer_->EndFrame();
-
     // Dispatch happens after panels have set the context for this frame so
     // editor/region/tool match the user's current hover. Gate global actions on
     // the MAIN window's keyboard focus (Blender-style): when another window/app
@@ -283,10 +231,6 @@ void Application::Update() {
         sm.SetWindowFocused(mainFocused);
         sm.ProcessInput();
     }
-
-    // Push an undo step for any document change that finished this frame (once
-    // no gesture is mid-flight, so each completed operation is one step).
-    CommitUndoIfPending();
 }
 
 void Application::Render() {
@@ -344,35 +288,20 @@ void Application::Render() {
         vkCmdBeginRenderPass(fd->CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
     }
 
-    // Canvas composite (pure Vulkan): an engine that presents via the swapchain
-    // (the Compositor) draws its rendered views here, UNDER the ImGui chrome —
-    // ImGui never blits the canvas. No-op for the legacy engine (it returns a
-    // texture the Viewport already blitted into ImGui's draw list).
-    renderer_->CompositeMainPass(fd->CommandBuffer,
-                                 mainWindowData_.Width, mainWindowData_.Height,
-                                 mainWindowData_.RenderPass);
-
     ImGui_ImplVulkan_RenderDrawData(draw_data, fd->CommandBuffer);
 
     vkCmdEndRenderPass(fd->CommandBuffer);
     {
-        // Wait on the swapchain image acquire (colour output) AND on every offscreen
-        // canvas view rendered this frame (fragment shader, where ImGui samples those
-        // textures). The latter replaces the per-view CPU fence stall in RenderView
-        // with a pure GPU dependency, so the CPU never blocks on the offscreen work.
-        std::vector<VkSemaphore> waits;
-        std::vector<VkPipelineStageFlags> waitStages;
-        waits.push_back(image_acquired_semaphore);
-        waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-        for (VkSemaphore s : renderer_->FrameWaitSemaphores()) {
-            waits.push_back(s);
-            waitStages.push_back(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-        }
+        // Wait on the swapchain image acquire (colour output). When the Ink
+        // engine lands (docs/Ink/ROADMAP.md Lot 1), its per-view offscreen
+        // renders add their semaphores here (fragment stage) so ImGui samples
+        // finished canvas textures without a CPU stall.
+        VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo info = {};
         info.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        info.waitSemaphoreCount   = (uint32_t)waits.size();
-        info.pWaitSemaphores      = waits.data();
-        info.pWaitDstStageMask    = waitStages.data();
+        info.waitSemaphoreCount   = 1;
+        info.pWaitSemaphores      = &image_acquired_semaphore;
+        info.pWaitDstStageMask    = &wait_stage;
         info.commandBufferCount   = 1;
         info.pCommandBuffers      = &fd->CommandBuffer;
         info.signalSemaphoreCount = 1;
@@ -445,15 +374,15 @@ void Application::Present() {
 }
 
 // ── File actions: the .acu project lifecycle ──────────────────────────────────
-// The SDL file dialogs are ASYNCHRONOUS and their callback may run on another
-// thread, so the callback only stashes the chosen path in pendingFile_ (guarded
-// by a mutex). ProcessPendingFileOp(), called from ProcessEvents outside the
-// ImGui frame, performs the actual load/save on the main thread.
+// DISABLED during the Ink rework (Lot 0): the .acu v1 codec is quarantined
+// under src/_legacy/ and the v2 format arrives with the new document model
+// (docs/Ink/ROADMAP.md Lot 10). The actions stay registered so menus, splash
+// and shortcuts keep working; they log an Info entry instead of touching disk.
 
-static const SDL_DialogFileFilter kAcuFilter[] = {
-    { "Carto project (*.acu)", "acu" },
-    { "All files",             "*"   },
-};
+namespace {
+constexpr const char* kFileOpsDisabledMsg =
+    "File save/open is disabled during the engine rework (see docs/Ink/ROADMAP.md)";
+} // namespace
 
 void Application::Action_NewFile() {
     // Menu "New" = a fresh Classic project with no module. If a module is active,
@@ -462,23 +391,18 @@ void Application::Action_NewFile() {
     DoNewFile(LayoutPreset::General, /*applyLayout=*/activeModule_ != nullptr);
 }
 
-// Create a brand-new project (one default page) and, optionally, switch the zone
-// layout to `preset`. Shared by the menu New, the splash presets, and (with
+// Create a brand-new project and, optionally, switch the zone layout to
+// `preset`. Shared by the menu New, the splash presets, and (with
 // applyLayout=false) the module-open flow which supplies its own layout next.
-// A splash preset (applyLayout=true) returns to the Classic workspace, leaving
-// any active module; the menu New (applyLayout=false) keeps the current module.
 void Application::DoNewFile(LayoutPreset preset, bool applyLayout) {
     project_.Reset();
-    objectModeTool_ = "tool.select"; editToolByObject_.clear();  // fresh tool memory
-    project_.AddArtboard("Page 1", ImVec2(0, 0), ImVec2(1920, 1080));
-    project_.dirty = false;
-    ResetUndoHistory();   // baseline = the new empty project
     if (applyLayout) {
         if (activeModule_) { activeModule_->OnDeactivate(); activeModule_ = nullptr; }
         activeCapabilities_ = Modules::Capabilities{};   // Classic = full defaults
         zoneLayout_.SetEditorFilter(CoreEditor::Ids());  // Classic picker = core only
         zoneLayout_.ApplyPreset(preset);
     }
+    LogInfoAction("New Project");
 }
 
 // Splash "New File <preset>": guard unsaved changes first. If the project is
@@ -494,97 +418,14 @@ void Application::RequestNewFile(LayoutPreset preset) {
     }
 }
 
-void Application::Action_OpenFile() {
-    SDL_ShowOpenFileDialog(
-        [](void* ud, const char* const* files, int /*filter*/) {
-            auto* self = static_cast<Application*>(ud);
-            if (files && files[0]) {
-                std::lock_guard<std::mutex> lk(self->pendingFile_.mtx);
-                self->pendingFile_.kind = 1;          // open
-                self->pendingFile_.path = files[0];
-            }
-        },
-        this, window_, kAcuFilter, 2, nullptr, /*allow_many=*/false);
-}
-
-void Application::Action_SaveFile() {
-    if (project_.path.empty()) { Action_SaveFileAs(); return; }
-    if (project_.thumbnailPng.empty()) Action_UpdateThumbnail();  // default Page-1 aperçu
-    SyncSettingsToProject();                 // persist the live menu-bar settings
-    if (App::ProjectFile::Save(project_.path, project_, zoneLayout_))
-        project_.dirty = false;
-}
-
-void Application::Action_SaveFileAs() {
-    SDL_ShowSaveFileDialog(
-        [](void* ud, const char* const* files, int /*filter*/) {
-            auto* self = static_cast<Application*>(ud);
-            if (files && files[0]) {
-                std::lock_guard<std::mutex> lk(self->pendingFile_.mtx);
-                self->pendingFile_.kind = 2;          // save-to-path
-                self->pendingFile_.path = files[0];
-            }
-        },
-        this, window_, kAcuFilter, 2, nullptr);
-}
-
-void Application::SyncSettingsToProject() {
-    EditorSettings& e = project_.editorSettings;
-    e.pivotMode        = (int)pivotMode_;
-    e.transformOrient  = (int)transformOrientation_;
-    e.show2DCursor     = show2DCursor_;
-    e.showMetrics      = showMetrics_;
-    e.snapEnabled      = snap_.enabled;
-    e.snapMode         = (int)snap_.mode;
-    e.snapBase         = (int)snap_.base;
-    e.snapAffectMove   = snap_.affectMove;
-    e.snapAffectRotate = snap_.affectRotate;
-    e.snapAffectScale  = snap_.affectScale;
-    e.snapRotIncrement = snap_.rotIncrement;
-    e.snapRotPrecision = snap_.rotPrecisionIncrement;
-    // Per-mode tool memory. Persist the CURRENT mode's live tool too so a save
-    // mid-session keeps the right tool for the active mode/object.
-    const std::string curTool = Shortcuts::Tools::ToolManager::Instance().GetActiveTool();
-    if (editorMode_ == EditorMode::Object) objectModeTool_ = curTool;
-    else if (uint64_t id = EditToolObject())  editToolByObject_[id] = curTool;
-    e.objectModeTool   = objectModeTool_;
-    e.editToolByObject = editToolByObject_;
-    e.defaultFill[0]=defaultFill_.r; e.defaultFill[1]=defaultFill_.g;
-    e.defaultFill[2]=defaultFill_.b; e.defaultFill[3]=defaultFill_.a;
-    e.defaultStroke[0]=defaultStroke_.r; e.defaultStroke[1]=defaultStroke_.g;
-    e.defaultStroke[2]=defaultStroke_.b; e.defaultStroke[3]=defaultStroke_.a;
-}
-
-void Application::ApplySettingsFromProject() {
-    const EditorSettings& e = project_.editorSettings;
-    auto clampEnum = [](int v, int lo, int hi){ return v < lo ? lo : (v > hi ? hi : v); };
-    pivotMode_           = (PivotMode)clampEnum(e.pivotMode, 0, 4);
-    transformOrientation_= (TransformOrientation)clampEnum(e.transformOrient, 0, 4);
-    show2DCursor_        = e.show2DCursor;
-    showMetrics_         = e.showMetrics;
-    snap_.enabled        = e.snapEnabled;
-    snap_.mode           = (SnapSettings::Mode)clampEnum(e.snapMode, 0, 5);
-    snap_.base           = (SnapSettings::Base)clampEnum(e.snapBase, 0, 3);
-    snap_.affectMove     = e.snapAffectMove;
-    snap_.affectRotate   = e.snapAffectRotate;
-    snap_.affectScale    = e.snapAffectScale;
-    snap_.rotIncrement   = e.snapRotIncrement;
-    snap_.rotPrecisionIncrement = e.snapRotPrecision;
-    // Per-mode tool memory. Apply the tool the loaded mode/object should show.
-    objectModeTool_   = e.objectModeTool.empty() ? "tool.select" : e.objectModeTool;
-    editToolByObject_ = e.editToolByObject;
-    std::string want = objectModeTool_;
-    if (editorMode_ == EditorMode::Edit) {
-        uint64_t id = EditToolObject();
-        auto it = id ? editToolByObject_.find(id) : editToolByObject_.end();
-        want = (it != editToolByObject_.end()) ? it->second : "tool.select";
-    }
-    if (!want.empty()) Shortcuts::Tools::ToolManager::Instance().SetActiveTool(want);
-    defaultFill_   = { e.defaultFill[0],   e.defaultFill[1],   e.defaultFill[2],   e.defaultFill[3]   };
-    defaultStroke_ = { e.defaultStroke[0], e.defaultStroke[1], e.defaultStroke[2], e.defaultStroke[3] };
-}
+void Application::Action_OpenFile()   { LogInfoAction("Open File", kFileOpsDisabledMsg); }
+void Application::Action_SaveFile()   { LogInfoAction("Save File", kFileOpsDisabledMsg); }
+void Application::Action_SaveFileAs() { LogInfoAction("Save File As", kFileOpsDisabledMsg); }
 
 void Application::ProcessPendingFileOp() {
+    // Drain any path stashed by an async dialog / a splash recent-file click and
+    // report that file I/O is offline. The plumbing (pendingFile_) is kept so the
+    // .acu v2 load/save (Lot 10) reconnects here without touching the callers.
     int kind = 0; std::string path;
     {
         std::lock_guard<std::mutex> lk(pendingFile_.mtx);
@@ -592,55 +433,14 @@ void Application::ProcessPendingFileOp() {
         pendingFile_.kind = 0; pendingFile_.path.clear();
     }
     if (kind == 0) return;
-
-    if (kind == 1) {                                   // open
-        if (App::ProjectFile::Load(path, project_, zoneLayout_)) {
-            // Derive a display name from the file stem if META had none.
-            if (project_.name.empty()) {
-                size_t slash = path.find_last_of("/\\");
-                size_t dot   = path.find_last_of('.');
-                std::string stem = path.substr(
-                    slash == std::string::npos ? 0 : slash + 1,
-                    (dot == std::string::npos ? path.size() : dot) -
-                    (slash == std::string::npos ? 0 : slash + 1));
-                project_.name = stem;
-            }
-            ApplySettingsFromProject();  // restore the file's menu-bar settings
-            ResetUndoHistory();    // baseline = the just-loaded document
-            AddRecentFile(path);   // remember in the splash recent list
-            // Restore the file's module (Classic if it has none). A file can't
-            // switch modules afterwards — its workspace follows the document.
-            // Keep the loaded layout (rebuildLayout=false): it's authoritative.
-            ActivateModule(Modules::ModuleRegistry::Instance().Get(project_.moduleId),
-                           /*rebuildLayout=*/false);
-        }
-    } else if (kind == 2) {                            // save-to-path
-        // Ensure the .acu extension if the user didn't type one.
-        if (path.find_last_of('.') == std::string::npos ||
-            path.size() < 4 || path.substr(path.size() - 4) != ".acu")
-            path += ".acu";
-        // Give every saved .acu a default thumbnail (Page 1) if none exists yet.
-        if (project_.thumbnailPng.empty()) Action_UpdateThumbnail();
-        SyncSettingsToProject();             // persist the live menu-bar settings
-        if (App::ProjectFile::Save(path, project_, zoneLayout_)) {
-            project_.path  = path;
-            project_.dirty = false;
-            size_t slash = path.find_last_of("/\\");
-            size_t dot   = path.find_last_of('.');
-            project_.name = path.substr(
-                slash == std::string::npos ? 0 : slash + 1,
-                (dot == std::string::npos ? path.size() : dot) -
-                (slash == std::string::npos ? 0 : slash + 1));
-            AddRecentFile(path);   // remember in the splash recent list
-            // If this Save-As was the "Save" branch of the unsaved-changes dialog
-            // for a new-file request, create the new project now that the save
-            // committed (the dialog was async, so it could only resolve here).
-            if (newFileAfterSave_) {
-                newFileAfterSave_ = false;
-                CommitPendingNew();   // preset OR module, per the pending intent
-            }
-        }
+    LogInfoAction(kind == 1 ? "Open File" : "Save File", kFileOpsDisabledMsg);
+    // A "Save" armed from the unsaved-changes dialog can never commit while file
+    // I/O is offline — resolve the pending intent anyway so the flow completes.
+    if (kind == 2 && newFileAfterSave_) {
+        newFileAfterSave_ = false;
+        CommitPendingNew();
     }
+    (void)path;
 }
 
 // ── Recent files (splash start screen) ────────────────────────────────────────

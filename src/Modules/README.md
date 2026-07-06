@@ -34,9 +34,11 @@ against. Key pieces:
   - `ViewportSidePanelTabs(std::vector<UI::SidePanelTab>&)` — add "N" panel tabs.
   - `DrawViewportOverlay(min, max)` — paint on the canvas.
   - `OnActivate()` / `OnDeactivate()`.
-- `ModuleHost` — the slice of app services a module may drive (`Document()`,
-  `CreateObject(kind, name)`, `MarkDirty()`). Bound by the app before
-  `OnActivate()`; reach it from a module via `Host()`.
+- `ModuleHost` — the slice of app services a module may drive. Bound by the app
+  before `OnActivate()`; reach it from a module via `Host()`. During the Ink
+  engine rework only `MarkDirty()` remains; the document services (object
+  creation, baked-shape placement, cached glyph rendering) return re-designed
+  on the Ink document in `docs/Ink/ROADMAP.md` Lot 11.
 
 ## Editors — `EditorRegistry`
 
@@ -57,8 +59,9 @@ their enum index to the matching `core.*` id.
 3. Add the `.cpp` to `src/Application/CMakeLists.txt` (the Application target).
 4. Construct it in `ModuleRegistry::RegisterInternal()`.
 
-`Typography/` (a minimal template) and `IofMapping/` (a fuller first pass) are the
-two reference modules.
+`Typography/` (a minimal template) is the reference module. `IofMapping/` (a
+fuller first pass, built on the old document model) is quarantined under
+`src/_legacy/Modules/` until it is rebuilt on Ink (`docs/Ink/ROADMAP.md` Lot 11).
 
 ## Adding an EXTERNAL module (plugin) — planned
 
