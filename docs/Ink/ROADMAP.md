@@ -75,18 +75,19 @@ Scene will use).
      test: declared 3-pass chain produces expected barriers.
 4. **Render**
    - `GpuScene` v0: vertex/index pool, item + instance + paint tables (SSBO),
-     per-view UBO. `Batcher` v0: single batch, CPU-written indirect args.
-   - `ContentPass` (MSAA ×4 RGBA16F, premultiplied linear), `OverlayPass`,
-     `ResolvePass`, `PresentPass` (sampled texture + semaphore for the app's
-     swapchain wait).
+     prebuilt per-batch indirect commands.
+   - `ContentPass` (MSAA ×4 RGBA16F, premultiplied linear) with the MSAA
+     resolve as its attachment, `OverlayPass` (same MSAA target),
+     `PresentPass` (sRGB encode into the sampled display texture; ordering
+     vs the app's UI pass via same-queue barriers — RENDER_GRAPH.md §5).
 5. **View** (`Ink::View`)
    - `SetViewport(w, h)` (target lifecycle on resize), `SetCamera(pan, zoom,
      unitScale)`, `SubmitOverlay(prims)`, `Render()` → `ImTextureID`,
      `Stats()`.
 6. **App integration** (`src/Application`)
    - `InitializeSubsystems()` creates `Ink::Renderer` (after VectorGraphics);
-     `Shutdown()` tears it down before device destroy; main submit waits on
-     Ink's per-view semaphores (hook kept from Lot 0).
+     `Shutdown()` tears it down before device destroy; the app's UI pass needs
+     no semaphore (same-queue barrier ordering — RENDER_GRAPH.md §5).
    - New `Editors/Viewport/Viewport.cpp` (fresh file, minimal): owns an
      `Ink::View` per zone leaf (keyed on `EditorState*`, evicted when the
      zone dies), computes the same `D2S` camera mapping as before from

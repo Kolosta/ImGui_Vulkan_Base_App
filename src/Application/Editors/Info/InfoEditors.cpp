@@ -130,6 +130,21 @@ void Application::RenderDevDataEditor() {
                 Shortcuts::Tools::ToolManager::Instance().GetActiveTool().c_str());
     ImGui::PopStyleColor();
 
+    // ── Ink engine (docs/Ink/) — the same counters ink_bench reports ─────────
+    ImGui::SeparatorText("Ink Engine");
+    ImGui::PushStyleColor(ImGuiCol_Text, subtle);
+    if (ink_) {
+        const Ink::Stats& s = ink_->GetStats();
+        ImGui::Text("record=%.3f ms  gpu=%.3f ms", s.recordMs, s.gpuMs);
+        ImGui::Text("draws=%u  triangles=%u  instances=%u",
+                    s.drawCalls, s.triangles, s.instances);
+        ImGui::Text("views=%u  re-rendered=%u  (0 re-rendered = steady-state)",
+                    s.views, s.viewsRendered);
+    } else {
+        ImGui::TextUnformatted("(engine unavailable — Vulkan 1.3 required)");
+    }
+    ImGui::PopStyleColor();
+
     // ── Recent actions (last 12, newest first) with their parameter dump ──────
     ImGui::SeparatorText("Recent Actions");
     {

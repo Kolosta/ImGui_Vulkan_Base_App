@@ -74,6 +74,7 @@ target_link_libraries(Application PUBLIC
     UI
     Shortcuts
     VectorGraphics
+    Ink
     Shell
     Vulkan::Vulkan
     SDL3::SDL3-shared

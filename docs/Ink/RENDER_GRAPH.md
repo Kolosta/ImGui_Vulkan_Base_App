@@ -151,11 +151,15 @@ the content pipeline.
 ## 5. Synchronisation
 
 - `sync2` barriers derived by the graph from declared usages.
-- Per-view render completion signals a semaphore; the app's main swapchain
-  submit waits on it at fragment stage (pattern already in place in
-  `Application::Render`, kept).
+- **No semaphores on the single graphics queue**: the graph's final
+  export-to-sampled barriers have submission-order scopes, so the canvas
+  writes are ordered before ImGui's later fragment sampling on the same
+  queue. (Per-view semaphores only become necessary if a later lot moves
+  canvas work to a second queue.)
 - Frame pacing: 2 frames in flight; per-frame upload ring + garbage list
-  (resources retired with frame index, freed when the fence passes).
+  (resources retired with frame index, freed when the fence passes — which,
+  by fence-signal submission ordering, also covers the previous frame's UI
+  submit that last sampled them).
 - Timestamps: per-pass GPU ms via query pool, read after fence (no stall),
   exposed in `Ink::Stats` for the perf HUD and `ink_bench`.
 

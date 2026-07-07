@@ -636,8 +636,42 @@ void Application::InitializeSubsystems() {
         device_, physicalDevice_, queue_, commandPool_, descriptorPool_
     );
 
-    // The Ink render engine initialises HERE (after VectorGraphics), adopting
-    // the shared instance/device/queue/pools — docs/Ink/ROADMAP.md Lot 1.
+    // The Ink render engine (docs/Ink/), adopting the shared device. Needs
+    // the Vulkan 1.3 features detected in SetupVulkan; without them the app
+    // shell still runs and the Viewport shows its placeholder.
+    if (modernVulkanSupported_) {
+        Ink::Renderer::InitInfo ii;
+        ii.instance       = instance_;
+        ii.physicalDevice = physicalDevice_;
+        ii.device         = device_;
+        ii.queue          = queue_;
+        ii.queueFamily    = queueFamily_;
+        // Absolute shader dir from the exe location (the IDE's CWD may be the
+        // project root, where a relative "shaders/ink" would not resolve).
+        ii.shaderDir = "shaders/ink";
+        if (const char* base = SDL_GetBasePath())
+            ii.shaderDir = std::string(base) + "shaders/ink";
+        // Canvas textures register through ImGui's Vulkan backend; Ink itself
+        // never touches ImGui (the hooks keep it headless-capable).
+        ii.textures.user = nullptr;
+        ii.textures.create = [](void*, VkSampler sampler, VkImageView view,
+                                VkImageLayout layout) -> std::uint64_t {
+            return (std::uint64_t)(intptr_t)
+                ImGui_ImplVulkan_AddTexture(sampler, view, layout);
+        };
+        ii.textures.destroy = [](void*, std::uint64_t texture) {
+            ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)(intptr_t)texture);
+        };
+        ink_ = std::make_unique<Ink::Renderer>();
+        if (!ink_->Initialize(ii)) {
+            fprintf(stderr, "[ink] engine initialisation failed — "
+                            "the Viewport stays on its placeholder\n");
+            ink_.reset();
+        }
+    } else {
+        fprintf(stderr, "[ink] Vulkan 1.3 features unavailable on this device "
+                        "— the Viewport stays on its placeholder\n");
+    }
 }
 
 void Application::ApplyFontTokens() {
@@ -694,8 +728,10 @@ void Application::Shutdown() {
     settingsHost_.Shutdown();
     tokenGraphHost_.Shutdown();
 
-    // (The Ink engine shuts down here — before the shared device is destroyed —
-    // once it lands: docs/Ink/ROADMAP.md Lot 1.)
+    // Ink teardown: before ImGui's Vulkan backend dies (the texture-destroy
+    // hooks call ImGui_ImplVulkan_RemoveTexture) and before the shared device
+    // is destroyed.
+    if (ink_) { ink_->Shutdown(); ink_.reset(); }
 
     DesignSystem::DesignSystem::Instance().Shutdown();
     Shortcuts::ShortcutManager::Instance().Shutdown();

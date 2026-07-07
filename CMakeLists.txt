@@ -79,12 +79,12 @@ set(IMGUI_SOURCES
 # NOTE: src/_legacy/** (old Renderer + Compositor engines and the application
 # code coupled to them) is intentionally NOT built — it is a quarantined
 # reference tree during the Ink engine rewrite (see docs/Ink/ and
-# src/_legacy/README.md). The Ink engine gets its own subdirectory (src/Ink)
-# starting at ROADMAP Lot 1.
+# src/_legacy/README.md).
 add_subdirectory(src/DesignSystem)
 add_subdirectory(src/UI)
 add_subdirectory(src/Shortcuts)
 add_subdirectory(src/VectorGraphics)
+add_subdirectory(src/Ink)          # the 2D vector engine (docs/Ink/)
 add_subdirectory(src/Shell)
 add_subdirectory(src/Application)
 
@@ -114,6 +114,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     UI
     Shortcuts
     VectorGraphics
+    Ink
     Shell
     Application
 )
@@ -147,9 +148,14 @@ endif()
 # Copy resources
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/resources DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
-# (The legacy renderer_shaders SPIR-V copy step was removed with the old
-# engines; the Ink engine will install its own ink_shaders target under
-# "<exe-dir>/shaders/ink" — see docs/Ink/ARCHITECTURE.md.)
+# Mirror the compiled Ink SPIR-V next to the executable so the engine loads
+# them from "<exe-dir>/shaders/ink" at runtime (ink_shaders target, see
+# src/Ink/CMakeLists.txt).
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${INK_SHADER_OUT_DIR}
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders/ink
+    COMMENT "Copying Ink shaders to executable directory")
 
 if(WIN32 AND MINGW)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

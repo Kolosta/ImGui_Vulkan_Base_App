@@ -207,6 +207,11 @@ void Application::Update() {
     Shortcuts::EventNormalizer::Instance().Frame();
     Shortcuts::ShortcutManager::Instance().BeginFrame();
 
+    // Open the Ink frame BEFORE the UI is built: each Viewport zone acquires
+    // and configures its Ink::View during the build; EndFrame below records
+    // and submits the canvas work (docs/Ink/RENDER_GRAPH.md).
+    if (ink_) ink_->BeginFrame();
+
     RenderTitleBar();      // publishes titleBarHeightPx_ + blockers first
     RenderMainLayout();    // viewports render their offscreen canvas here
     RenderFloatingWindows();
@@ -218,6 +223,11 @@ void Application::Update() {
     // title bar as hit-test blockers so clicking them grabs the floating window,
     // not the native title bar.
     PublishOverlayTitleBarBlockers();
+
+    // Close the Ink frame: record every dirty view through the render graph
+    // and submit. Same queue as the main pass — the graph's final barriers
+    // order the canvas writes before ImGui's sampling, no semaphore needed.
+    if (ink_) ink_->EndFrame();
 
     // Dispatch happens after panels have set the context for this frame so
     // editor/region/tool match the user's current hover. Gate global actions on
@@ -292,10 +302,10 @@ void Application::Render() {
 
     vkCmdEndRenderPass(fd->CommandBuffer);
     {
-        // Wait on the swapchain image acquire (colour output). When the Ink
-        // engine lands (docs/Ink/ROADMAP.md Lot 1), its per-view offscreen
-        // renders add their semaphores here (fragment stage) so ImGui samples
-        // finished canvas textures without a CPU stall.
+        // Wait on the swapchain image acquire (colour output) only. The Ink
+        // canvas work submitted earlier this frame needs no semaphore: its
+        // final barriers order the writes before ImGui's fragment sampling on
+        // this same queue (docs/Ink/RENDER_GRAPH.md §5).
         VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo info = {};
         info.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;

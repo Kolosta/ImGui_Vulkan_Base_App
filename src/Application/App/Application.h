@@ -4,6 +4,7 @@
 #include <SDL3/SDL.h>
 #include <vulkan/vulkan.h>
 #include <imgui_impl_vulkan.h>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@
 #include <UI/Settings/SettingsWindow.h>
 #include <UI/Tokens/TokenGraphWindow.h>
 #include <VectorGraphics/editors/IconEditorWindow.h>
+#include <Ink/Render/Renderer.h>   // the 2D vector engine (docs/Ink/)
 #include "ZoneLayout.h"
 #include "Project.h"
 #include "SecondaryWindow.h"
@@ -32,10 +34,11 @@ namespace App {
 //  design-system / shortcut / icon subsystems, the module catalogue, and
 //  placeholder Viewport / Outliner / Properties editors.
 //
-//  The Ink engine plugs back in here from docs/Ink/ROADMAP.md Lot 1:
-//  InitializeSubsystems() will create Ink::Renderer, the Viewport editor will
-//  own per-zone Ink::Views, and Render() will wait on Ink's per-view
-//  semaphores before the swapchain submit.
+//  The Ink engine (docs/Ink/) is wired in since ROADMAP Lot 1:
+//  InitializeSubsystems() creates Ink::Renderer on the shared device, the
+//  Viewport editor drives one Ink::View per zone leaf, and Update() brackets
+//  the UI build with ink_->BeginFrame()/EndFrame() (canvas work is ordered
+//  before ImGui's sampling by same-queue barriers — no semaphores).
 // ─────────────────────────────────────────────────────────────────────────────
 class Application : public Modules::ModuleHost {
 public:
@@ -311,6 +314,14 @@ private:
 
     // The shared project (transitional: bookkeeping only — see Project.h).
     Project project_;
+
+    // The Ink render engine (docs/Ink/). Shares the app's Vulkan device;
+    // frame protocol: BeginFrame() before the UI build, per-zone views during
+    // it (Viewport.cpp), EndFrame() after — the recorded canvas work is
+    // ordered before ImGui's sampling by same-queue barriers, no semaphores.
+    // nullptr when the device lacks the Vulkan 1.3 features (the Viewport
+    // shows a placeholder and the rest of the app keeps working).
+    std::unique_ptr<Ink::Renderer> ink_;
 
     // Blender-style dynamic zone tree (no native docking UX).
     ZoneLayout zoneLayout_;

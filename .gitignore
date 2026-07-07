@@ -57,5 +57,8 @@ resvg_c.h
 *.log
 build_err.log
 
+# ── ink_bench results (baselines under bench/baselines/ ARE tracked) ──────────
+bench/results/
+
 # ── Machine-local editor/agent settings (tracked settings.json stays) ──
 .claude/settings.local.json
