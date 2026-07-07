@@ -69,6 +69,14 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
 
     ImGuiIO& io = ImGui::GetIO();
 
+    // Demo-scene zoom envelope. The engine spec forbids zoom limits (docs/Ink
+    // README req. 9); this clamp only papers over the Lot 1 bootstrap, whose
+    // GPU tables hold f32 document-space transforms (and EditorState's pan is
+    // still float). It dies with the camera-relative rebasing + double camera
+    // state of Lots 2–3 (docs/Ink/GEOMETRY.md §6).
+    constexpr float kDemoZoomMin = 1.0e-4f;
+    constexpr float kDemoZoomMax = 2048.0f;
+
     // Camera mapping (EditorState contract): screen = cMin + (doc − pan)·zoom.
     auto screenToDoc = [&](ImVec2 p) {
         return ImVec2((p.x - cMin.x) / st.zoom + st.pan.x,
@@ -83,7 +91,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     if (hovered && io.MouseWheel != 0.0f) {
         // Zoom at the cursor: the document point under the mouse stays put.
         const float factor  = std::pow(1.15f, io.MouseWheel);
-        const float newZoom = std::clamp(st.zoom * factor, 0.002f, 512.0f);
+        const float newZoom = std::clamp(st.zoom * factor, kDemoZoomMin, kDemoZoomMax);
         const ImVec2 docAt  = screenToDoc(io.MousePos);
         st.pan.x = docAt.x - (io.MousePos.x - cMin.x) / newZoom;
         st.pan.y = docAt.y - (io.MousePos.y - cMin.y) / newZoom;
@@ -101,7 +109,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         if (b.Width() > 0.0f && b.Height() > 0.0f) {
             const float z = std::clamp(std::min(size.x / b.Width(),
                                                 size.y / b.Height()) * 0.94f,
-                                       0.002f, 512.0f);
+                                       kDemoZoomMin, kDemoZoomMax);
             st.zoom  = z;
             st.pan.x = b.min.x + b.Width()  * 0.5f - size.x * 0.5f / z;
             st.pan.y = b.min.y + b.Height() * 0.5f - size.y * 0.5f / z;
