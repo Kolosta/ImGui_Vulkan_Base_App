@@ -34,12 +34,13 @@ struct ContentVertex {
 };
 
 struct InstanceRecord {
-    float m[6];                 // row-major 2×3: node-local → document (f32*)
+    float m[6];                 // row-major 2×3: node-local → ANCHOR-relative
     std::uint32_t itemIndex = 0;
     std::uint32_t pad_      = 0;
 };
-// (*) narrowed from double per scene sync; the camera-relative rebasing that
-// removes the deep-zoom limit replaces this narrowing in Lot 3.
+// Translations are rebased against the view's double anchor before narrowing
+// (docs/Ink/GEOMETRY.md §6) — the instance table is PER VIEW so precision
+// holds at any zoom; items/paints/geometry stay global.
 
 struct ItemRecord {
     std::uint32_t paintIndex = 0;
@@ -75,12 +76,20 @@ public:
                              const geom::Mesh& mesh, const GeometryCache& cache,
                              const DeferFn& defer);
 
-    // Rebuild the instance/item/paint arrays from the drawables (painter
-    // order; instance index == drawable index) and queue their upload.
-    // Returns true when a table BUFFER was recreated (the scene descriptor
-    // set must be re-pointed).
-    bool SyncTables(rhi::Device& dev, const std::vector<Drawable>& drawables,
-                    const DeferFn& defer);
+    // Rebuild the GLOBAL item/paint tables from the drawables (painter order)
+    // and queue their upload. Also refreshes the drawable → item index map
+    // used by the per-view instance builds. Returns true when a table BUFFER
+    // was recreated (view descriptor sets must be re-pointed).
+    bool SyncStyleTables(rhi::Device& dev, const std::vector<Drawable>& drawables,
+                         const DeferFn& defer);
+
+    // Build ONE VIEW's instance table: world transforms rebased against the
+    // view anchor (double subtract, then narrow) in drawable order. `buf` is
+    // the view-owned device buffer (grown here; old one deferred). Returns
+    // true when the buffer was recreated.
+    bool SyncViewInstances(rhi::Device& dev,
+                           const std::vector<Drawable>& drawables,
+                           DVec2 anchor, rhi::Buffer& buf, const DeferFn& defer);
 
     // Record every queued upload into `cmd` — call ONCE per frame, BEFORE any
     // render pass. `slot` picks the staging ring entry (fenced by the frame
@@ -88,12 +97,11 @@ public:
     std::size_t FlushUploads(rhi::Device& dev, VkCommandBuffer cmd,
                              std::uint32_t slot, const DeferFn& defer);
 
-    const rhi::Buffer& VertexPool()    const { return vertexPool_; }
-    const rhi::Buffer& IndexPool()     const { return indexPool_; }
-    const rhi::Buffer& InstanceTable() const { return instanceTable_; }
-    const rhi::Buffer& ItemTable()     const { return itemTable_; }
-    const rhi::Buffer& PaintTable()    const { return paintTable_; }
-    bool TablesReady() const { return (bool)instanceTable_; }
+    const rhi::Buffer& VertexPool() const { return vertexPool_; }
+    const rhi::Buffer& IndexPool()  const { return indexPool_; }
+    const rhi::Buffer& ItemTable()  const { return itemTable_; }
+    const rhi::Buffer& PaintTable() const { return paintTable_; }
+    bool StyleTablesReady() const { return (bool)itemTable_ && (bool)paintTable_; }
 
 private:
     struct PendingCopy {
@@ -117,8 +125,9 @@ private:
     std::uint32_t idxUsed_ = 0, idxCap_ = 0;
     std::unordered_map<std::uint64_t, MeshRange> resident_;
 
-    // Tables (device-local).
-    rhi::Buffer instanceTable_, itemTable_, paintTable_;
+    // Global style tables (device-local) + drawable → item index map.
+    rhi::Buffer itemTable_, paintTable_;
+    std::vector<std::uint32_t> itemOfDrawable_;
 
     // Per-frame staged uploads.
     std::vector<std::uint8_t> pendingData_;

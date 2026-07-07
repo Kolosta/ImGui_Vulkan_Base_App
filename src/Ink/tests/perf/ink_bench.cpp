@@ -110,50 +110,63 @@ void DestroyBenchDevice(BenchDevice& d) {
     d = {};
 }
 
+constexpr double kTau = 6.28318530717958647692;
+
+struct Lcg {
+    std::uint64_t s = 0x1234ABCDu;
+    double operator()() {   // [0,1)
+        s = s * 6364136223846793005ull + 1442695040888963407ull;
+        return (double)(s >> 11) / 9007199254740992.0;
+    }
+};
+
+// A smooth 6-anchor blob: points on a noisy circle, tangent handles.
+Ink::PathData MakeBlob(Lcg& rnd, double r) {
+    Ink::PathData path;
+    Ink::Subpath sp;
+    sp.closed = true;
+    for (int i = 0; i < 6; ++i) {
+        const double a  = kTau * (double)i / 6.0;
+        const double rr = r * (0.65 + rnd() * 0.7);
+        Ink::Anchor an;
+        an.pos = { std::cos(a) * rr, std::sin(a) * rr };
+        const double hl = rr * 0.55;
+        an.out = { -std::sin(a) * hl,  std::cos(a) * hl };
+        an.in  = {  std::sin(a) * hl, -std::cos(a) * hl };
+        an.hasIn = an.hasOut = true;
+        an.kind = Ink::AnchorKind::Smooth;
+        sp.anchors.push_back(an);
+    }
+    path.subpaths.push_back(std::move(sp));
+    return path;
+}
+
 // 10 000 random filled+stroked Bézier blobs over an 8000×4500 page —
 // deterministic (LCG seed), built through the public Document API
 // (docs/Ink/PERF_TESTING.md §3: scenes double as API integration tests).
-void BuildPaths10k(Ink::Document& doc) {
+// Returns one node id for the edit_heavy mutation loop.
+Ink::NodeId BuildPaths10k(Ink::Document& doc) {
     const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 8000, 4500 });
-    std::uint64_t lcg = 0x1234ABCDu;
-    auto rnd = [&]() {   // [0,1)
-        lcg = lcg * 6364136223846793005ull + 1442695040888963407ull;
-        return (double)(lcg >> 11) / 9007199254740992.0;
-    };
-    constexpr double kTau = 6.28318530717958647692;
+    Lcg rnd;
+    Ink::NodeId first = Ink::kNullNode;
     for (int n = 0; n < 10000; ++n) {
         const double cx = 100.0 + rnd() * 7800.0;
         const double cy = 100.0 + rnd() * 4300.0;
         const double r  = 20.0 + rnd() * 40.0;
-        // A smooth 6-anchor blob: points on a noisy circle, tangent handles.
-        Ink::PathData path;
-        Ink::Subpath sp;
-        sp.closed = true;
-        for (int i = 0; i < 6; ++i) {
-            const double a  = kTau * (double)i / 6.0;
-            const double rr = r * (0.65 + rnd() * 0.7);
-            Ink::Anchor an;
-            an.pos = { std::cos(a) * rr, std::sin(a) * rr };
-            const double hl = rr * 0.55;
-            an.out = { -std::sin(a) * hl,  std::cos(a) * hl };
-            an.in  = {  std::sin(a) * hl, -std::cos(a) * hl };
-            an.hasIn = an.hasOut = true;
-            an.kind = Ink::AnchorKind::Smooth;
-            sp.anchors.push_back(an);
-        }
-        path.subpaths.push_back(std::move(sp));
-
         Ink::Style style = Ink::Style::Filled(
             { (float)rnd(), (float)rnd(), (float)rnd(),
               0.35f + (float)rnd() * 0.6f });
         if (n % 2 == 0)
             style.WithStroke({ 0.05f, 0.05f, 0.08f, 1.0f }, 2.0 + rnd() * 4.0);
-        const Ink::NodeId id = doc.AddPath(page, std::move(path), style, "blob");
+        const Ink::NodeId id =
+            doc.AddPath(page, MakeBlob(rnd, r), style, "blob");
+        if (first == Ink::kNullNode) first = id;
         Ink::Transform2D t;
         t.tx = cx; t.ty = cy;
         t.rotation = rnd() * kTau;
         doc.SetTransform(id, t);
     }
+    return first;
 }
 
 struct Series {
@@ -188,7 +201,7 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--out"))     outPath = argv[++i];
     }
     if (scene != "bootstrap" && scene != "steady" && scene != "empty" &&
-        scene != "paths_10k") {
+        scene != "paths_10k" && scene != "edit_heavy" && scene != "zoom_sweep") {
         std::fprintf(stderr, "ink_bench: unknown scene '%s'\n", scene.c_str());
         return 2;
     }
@@ -214,8 +227,11 @@ int main(int argc, char** argv) {
 
     // The document under test (the engine renders the app-owned model).
     Ink::Document doc;
-    if (scene == "paths_10k") BuildPaths10k(doc);
-    else                      Ink::SeedDemoDocument(doc);
+    Ink::NodeId editNode = Ink::kNullNode;
+    const bool bigDoc = (scene == "paths_10k" || scene == "edit_heavy" ||
+                         scene == "zoom_sweep");
+    if (bigDoc) editNode = BuildPaths10k(doc);
+    else        Ink::SeedDemoDocument(doc);
     renderer.SetDocument(&doc);
 
     constexpr std::uint32_t kW = 1920, kH = 1080;
@@ -240,21 +256,38 @@ int main(int argc, char** argv) {
     double panY = b.min.y + b.Height() * 0.5 - kH * 0.5 / fitZoom;
     if (scene == "empty") { panX += 100000.0; panY += 100000.0; }
     const bool dirtyEachFrame = (scene != "steady");
+    const double centreX = b.min.x + b.Width() * 0.5;
+    const double centreY = b.min.y + b.Height() * 0.5;
+    Lcg editRnd;
 
-    Series frameMs, recordMs, gpuMs, geomMs, syncMs;
+    Series frameMs, recordMs, gpuMs, geomMs, syncMs, compileMs;
     Ink::Stats last{};
     std::uint64_t steadySkips = 0;
 
     const int total = warmup + frames;
     for (int f = 0; f < total; ++f) {
+        // edit_heavy: mutate one path's GEOMETRY every frame — the full
+        // compile + re-tessellate + upload path, measured continuously.
+        if (scene == "edit_heavy" && editNode != Ink::kNullNode)
+            doc.SetPath(editNode, MakeBlob(editRnd, 40.0));
+
         const auto t0 = std::chrono::steady_clock::now();
         renderer.BeginFrame();
         Ink::View* v = renderer.AcquireView(&viewKey);
         v->SetViewport(kW, kH);
-        // Simulated navigation: a sub-pixel pan step defeats the signature so
-        // the full record path is measured every frame.
-        const double wobble = dirtyEachFrame ? 0.01 * (double)f : 0.0;
-        v->SetCamera(panX + wobble, panY, fitZoom);
+        double zoomF = fitZoom, px = panX, py = panY;
+        if (scene == "zoom_sweep") {
+            // ×64 in and out around the fit zoom (tier churn + culling).
+            zoomF = fitZoom * std::exp2(6.0 * std::sin(kTau * (double)f /
+                                                       (double)total));
+            px = centreX - (double)kW * 0.5 / zoomF;
+            py = centreY - (double)kH * 0.5 / zoomF;
+        } else if (dirtyEachFrame) {
+            // Simulated navigation: a sub-pixel pan step defeats the
+            // signature so the full record path is measured every frame.
+            px += 0.01 * (double)f;
+        }
+        v->SetCamera(px, py, zoomF);
         v->SetBackground(Ink::SrgbToLinearPremultiplied(0.16f, 0.16f, 0.18f, 1.0f));
         renderer.EndFrame();
         const double ms = std::chrono::duration<double, std::milli>(
@@ -266,6 +299,7 @@ int main(int argc, char** argv) {
             recordMs.Add(last.recordMs);
             geomMs.Add(last.geomMs);
             syncMs.Add(last.syncMs);
+            compileMs.Add(last.compileMs);
             if (last.gpuMs > 0.0f) gpuMs.Add(last.gpuMs);
             if (last.viewsRendered == 0) ++steadySkips;
         }
@@ -283,6 +317,7 @@ int main(int argc, char** argv) {
         "                    \"syncMs\": %.4f, \"recordMs\": %.4f },\n"
         "  \"metrics\": {\n"
         "    \"frameMs\":  { \"avg\": %.4f, \"p50\": %.4f, \"p99\": %.4f },\n"
+        "    \"compileMs\":{ \"avg\": %.4f, \"p99\": %.4f },\n"
         "    \"recordMs\": { \"avg\": %.4f, \"p99\": %.4f },\n"
         "    \"geomMs\":   { \"avg\": %.4f, \"p99\": %.4f },\n"
         "    \"syncMs\":   { \"avg\": %.4f, \"p99\": %.4f },\n"
@@ -295,6 +330,7 @@ int main(int argc, char** argv) {
         firstBuild.compileMs, firstBuild.geomMs, firstBuild.syncMs,
         firstBuild.recordMs,
         frameMs.Avg(), frameMs.Percentile(0.5), frameMs.Percentile(0.99),
+        compileMs.Avg(), compileMs.Percentile(0.99),
         recordMs.Avg(), recordMs.Percentile(0.99),
         geomMs.Avg(), geomMs.Percentile(0.99),
         syncMs.Avg(), syncMs.Percentile(0.99),

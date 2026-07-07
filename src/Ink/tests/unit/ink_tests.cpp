@@ -158,27 +158,94 @@ void TestTriangulate() {
 }
 
 void TestStroker() {
+    const double kTol = 0.05;
     Stroke s;
     s.width = 2.0;
     // Open segment (0,0)→(10,0): one quad of area length × width = 20.
     {
         geom::Polyline pl;
         pl.points = { { 0, 0 }, { 10, 0 } };
-        const geom::Mesh m = geom::TessellateStroke({ pl }, s);
+        const geom::Mesh m = geom::TessellateStroke({ pl }, s, kTol);
         CHECK(m.indices.size() == 6);
         CHECK_NEAR(MeshArea(m), 20.0, 1e-9);
     }
-    // Closed square 10×10: band area ≈ perimeter × width (bevel corners add
-    // overlap counted by the unsigned sum — accept the [1.0, 1.15]× window).
+    // Closed square 10×10, MITER joins. COVERAGE = ring 12² − 8² = 80; the
+    // unsigned triangle sum adds the 4 corner overlaps of adjacent segment
+    // quads (w/2)² each → expected sum ∈ [80, 84].
     {
         geom::Polyline pl;
         pl.points = { { 0, 0 }, { 10, 0 }, { 10, 10 }, { 0, 10 } };
         pl.closed = true;
-        const geom::Mesh m = geom::TessellateStroke({ pl }, s);
-        const double area = MeshArea(m);
-        CHECK(area >= 40.0 * 2.0 * 0.99);
-        CHECK(area <= 40.0 * 2.0 * 1.15);
+        const double area = MeshArea(geom::TessellateStroke({ pl }, s, kTol));
+        CHECK(area >= 79.9 && area <= 84.1);
     }
+    // INSIDE alignment on the closed square: the FULL band [0..w] hugs the
+    // interior — ring 10² − (10−2w)² = 64. OUTSIDE: (10+2w)² − 10² = 96.
+    // (+ ≤4 of corner-overlap in the unsigned sum.)
+    {
+        geom::Polyline pl;
+        pl.points = { { 0, 0 }, { 10, 0 }, { 10, 10 }, { 0, 10 } };
+        pl.closed = true;
+        Stroke in = s;  in.align  = StrokeAlign::Inside;
+        Stroke out = s; out.align = StrokeAlign::Outside;
+        const double ai = MeshArea(geom::TessellateStroke({ pl }, in,  kTol));
+        const double ao = MeshArea(geom::TessellateStroke({ pl }, out, kTol));
+        CHECK(ai >= 63.9 && ai <= 68.1);
+        CHECK(ao >= 95.9 && ao <= 100.1);
+    }
+    // INSIDE on an OPEN horizontal segment (walking +x): the band lies on the
+    // +y side (the documented right-hand rule on the y-down canvas).
+    {
+        geom::Polyline pl;
+        pl.points = { { 0, 0 }, { 10, 0 } };
+        Stroke in = s; in.align = StrokeAlign::Inside;
+        const geom::Mesh m = geom::TessellateStroke({ pl }, in, kTol);
+        CHECK_NEAR(MeshArea(m), 20.0, 1e-6);
+        for (std::size_t i = 1; i < m.positions.size(); i += 2)
+            CHECK(m.positions[i] >= -1e-6 && m.positions[i] <= 2.0 + 1e-6);
+    }
+    // Caps on a unit-direction segment: Square adds w/2 × w per end; Round
+    // adds ~half-discs (π(w/2)²/2 per end, within flattening tolerance).
+    {
+        geom::Polyline pl;
+        pl.points = { { 0, 0 }, { 10, 0 } };
+        Stroke sq = s; sq.cap = CapStyle::Square;
+        CHECK_NEAR(MeshArea(geom::TessellateStroke({ pl }, sq, kTol)),
+                   20.0 + 2.0 * (1.0 * 2.0), 1e-6);
+        Stroke rd = s; rd.cap = CapStyle::Round;
+        // Inscribed fans under-estimate the two half-discs slightly (bounded
+        // by the flattening tolerance).
+        CHECK_NEAR(MeshArea(geom::TessellateStroke({ pl }, rd, kTol)),
+                   20.0 + 3.14159265, 0.5);
+    }
+    // Dashes {2,2} on a length-10 segment: on-pieces 2+2+2 → area 12.
+    {
+        geom::Polyline pl;
+        pl.points = { { 0, 0 }, { 10, 0 } };
+        Stroke d = s;
+        d.dashPattern = { 2.0, 2.0 };
+        CHECK_NEAR(MeshArea(geom::TessellateStroke({ pl }, d, kTol)), 12.0, 1e-6);
+        // Phase offset shifts the pattern: offset 2 starts OFF → 2+2 on → 8.
+        d.dashOffset = 2.0;
+        CHECK_NEAR(MeshArea(geom::TessellateStroke({ pl }, d, kTol)), 8.0, 1e-6);
+    }
+    // Miter limit: a sharp V (10°) exceeds limit 4 → bevel fallback keeps the
+    // outline bounded (no spike ≫ w/2·limit from the corner).
+    {
+        geom::Polyline pl;
+        pl.points = { { -10, 0 }, { 0, 0 }, { -10, 1.76 } };   // ~10° turn
+        Stroke mt = s; mt.join = JoinStyle::Miter; mt.miterLimit = 4.0;
+        const geom::Mesh m = geom::TessellateStroke({ pl }, mt, kTol);
+        double maxX = -1e300;
+        for (std::size_t i = 0; i < m.positions.size(); i += 2)
+            maxX = std::max(maxX, (double)m.positions[i]);
+        CHECK(maxX <= 0.0 + s.width * 0.5 * mt.miterLimit + 1e-6);
+    }
+    // WidthSpace: viewport widths convert at the tier's nominal zoom.
+    CHECK_NEAR(GeometryCache::EffectiveWidth(
+                   []{ Stroke v; v.width = 8.0;
+                       v.widthSpace = WidthSpace::Viewport; return v; }(), 2),
+               2.0, 1e-12);
 }
 
 void TestGeometryCache() {
@@ -204,6 +271,11 @@ void TestGeometryCache() {
     cache.GetStroke(path, h, 0, s1, ks1);
     cache.GetStroke(path, h, 0, s2, ks2);
     CHECK(ks1 == ks2);   // same geometry product
+
+    // Tier hysteresis: the current tier holds until zoom strays ±0.75 past it.
+    CHECK(GeometryCache::StableTier(0, 1.5) == 0);   // log2 ≈ 0.58 → hold
+    CHECK(GeometryCache::StableTier(0, 1.9) == 1);   // log2 ≈ 0.93 → switch
+    CHECK(GeometryCache::StableTier(1, 1.5) == 1);   // held from above too
 }
 
 void TestSceneCompile() {

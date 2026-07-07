@@ -23,6 +23,20 @@ double GeometryCache::ToleranceForTier(int tier) {
     return kTolerancePx / std::exp2((double)tier);
 }
 
+int GeometryCache::StableTier(int current, double zoom) {
+    if (zoom <= 0.0) return current;
+    const double t = std::log2(zoom);
+    if (t > (double)current + 0.75 || t < (double)current - 0.75)
+        return TierFromZoom(zoom);
+    return current;
+}
+
+double GeometryCache::EffectiveWidth(const Stroke& stroke, int tier) {
+    if (stroke.widthSpace == WidthSpace::Viewport)
+        return stroke.width / std::exp2((double)tier);   // px → doc at tier
+    return stroke.width;
+}
+
 const std::vector<geom::Polyline>&
 GeometryCache::GetFlattened(const PathData& path, std::uint64_t pathHash,
                             int tier) {
@@ -60,11 +74,27 @@ const geom::Mesh* GeometryCache::GetStroke(const PathData& path,
     key = HashBytes(&geo, sizeof geo, key);
     keyOut = key;
     auto it = meshes_.find(key);
-    if (it == meshes_.end())
+    if (it == meshes_.end()) {
+        // WidthSpace resolution + arc tolerance follow the tier (both are in
+        // the key via `tier` itself).
+        Stroke eff = stroke;
+        eff.width = EffectiveWidth(stroke, tier);
         it = meshes_.emplace(key,
                  geom::TessellateStroke(GetFlattened(path, pathHash, tier),
-                                        stroke)).first;
+                                        eff, ToleranceForTier(tier))).first;
+    }
     return it->second.Empty() ? nullptr : &it->second;
+}
+
+const geom::LocalBounds&
+GeometryCache::GetLocalBounds(const PathData& path, std::uint64_t pathHash,
+                              int tier) {
+    const std::uint64_t key = FlattenKey(pathHash, tier);
+    auto it = bounds_.find(key);
+    if (it == bounds_.end())
+        it = bounds_.emplace(key,
+                 geom::PolylineBounds(GetFlattened(path, pathHash, tier))).first;
+    return it->second;
 }
 
 const geom::Mesh* GeometryCache::Find(std::uint64_t key) const {

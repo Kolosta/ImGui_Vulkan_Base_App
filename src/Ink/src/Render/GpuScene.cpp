@@ -21,11 +21,11 @@ bool GpuScene::Initialize(rhi::Device&) {
 void GpuScene::Shutdown(rhi::Device& dev) {
     rhi::DestroyBuffer(dev, vertexPool_);
     rhi::DestroyBuffer(dev, indexPool_);
-    rhi::DestroyBuffer(dev, instanceTable_);
     rhi::DestroyBuffer(dev, itemTable_);
     rhi::DestroyBuffer(dev, paintTable_);
     for (rhi::Buffer& s : staging_) rhi::DestroyBuffer(dev, s);
     resident_.clear();
+    itemOfDrawable_.clear();
     vtxUsed_ = vtxCap_ = idxUsed_ = idxCap_ = 0;
     pendingData_.clear();
     pendingCopies_.clear();
@@ -134,17 +134,17 @@ bool GpuScene::EnsureTable(rhi::Device& dev, rhi::Buffer& buf,
     return (bool)buf;
 }
 
-bool GpuScene::SyncTables(rhi::Device& dev,
-                          const std::vector<Drawable>& drawables,
-                          const DeferFn& defer) {
-    // Build the arrays in painter order; instance index == drawable index
-    // (the per-view indirect commands rely on it). Paints and items dedup.
-    std::vector<InstanceRecord> instances;
-    std::vector<ItemRecord>     items;
-    std::vector<PaintRecord>    paints;
-    instances.reserve(drawables.size());
+bool GpuScene::SyncStyleTables(rhi::Device& dev,
+                               const std::vector<Drawable>& drawables,
+                               const DeferFn& defer) {
+    // Painter order; paints and items dedup. The drawable → item map feeds
+    // the per-view instance builds (instance index == drawable index).
+    std::vector<ItemRecord>  items;
+    std::vector<PaintRecord> paints;
     std::unordered_map<std::uint64_t, std::uint32_t> paintIndex;
     std::unordered_map<std::uint32_t, std::uint32_t> itemIndex;
+    itemOfDrawable_.clear();
+    itemOfDrawable_.reserve(drawables.size());
 
     for (const Drawable& d : drawables) {
         PaintRecord p;
@@ -162,28 +162,52 @@ bool GpuScene::SyncTables(rhi::Device& dev,
                                     (std::uint32_t)items.size()).first;
             items.push_back({ pit->second, 0, { 0, 0 } });
         }
-
-        InstanceRecord rec{};
-        for (int i = 0; i < 6; ++i) rec.m[i] = (float)d.world.m[i];
-        rec.itemIndex = iit->second;
-        instances.push_back(rec);
+        itemOfDrawable_.push_back(iit->second);
     }
-    if (instances.empty()) return false;
+    if (items.empty()) return false;
 
     bool recreated = false;
-    if (!EnsureTable(dev, instanceTable_,
-                     instances.size() * sizeof(InstanceRecord), defer, recreated) ||
-        !EnsureTable(dev, itemTable_,
+    if (!EnsureTable(dev, itemTable_,
                      items.size() * sizeof(ItemRecord), defer, recreated) ||
         !EnsureTable(dev, paintTable_,
                      paints.size() * sizeof(PaintRecord), defer, recreated))
         return recreated;
 
-    Queue(instanceTable_.buffer, 0, instances.data(),
-          instances.size() * sizeof(InstanceRecord));
     Queue(itemTable_.buffer, 0, items.data(), items.size() * sizeof(ItemRecord));
     Queue(paintTable_.buffer, 0, paints.data(),
           paints.size() * sizeof(PaintRecord));
+    return recreated;
+}
+
+bool GpuScene::SyncViewInstances(rhi::Device& dev,
+                                 const std::vector<Drawable>& drawables,
+                                 DVec2 anchor, rhi::Buffer& buf,
+                                 const DeferFn& defer) {
+    if (drawables.empty() || itemOfDrawable_.size() != drawables.size())
+        return false;
+    std::vector<InstanceRecord> instances;
+    instances.reserve(drawables.size());
+    for (std::size_t i = 0; i < drawables.size(); ++i) {
+        const Drawable& d = drawables[i];
+        InstanceRecord rec{};
+        // Rotation/scale narrow directly; translations subtract the view
+        // anchor IN DOUBLE first — this is what holds precision at any zoom
+        // (docs/Ink/GEOMETRY.md §6).
+        rec.m[0] = (float)d.world.m[0];
+        rec.m[1] = (float)d.world.m[1];
+        rec.m[2] = (float)(d.world.m[2] - anchor.x);
+        rec.m[3] = (float)d.world.m[3];
+        rec.m[4] = (float)d.world.m[4];
+        rec.m[5] = (float)(d.world.m[5] - anchor.y);
+        rec.itemIndex = itemOfDrawable_[i];
+        instances.push_back(rec);
+    }
+    bool recreated = false;
+    if (!EnsureTable(dev, buf, instances.size() * sizeof(InstanceRecord),
+                     defer, recreated))
+        return recreated;
+    Queue(buf.buffer, 0, instances.data(),
+          instances.size() * sizeof(InstanceRecord));
     return recreated;
 }
 

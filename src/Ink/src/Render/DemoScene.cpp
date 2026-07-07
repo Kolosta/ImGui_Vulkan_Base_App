@@ -121,14 +121,51 @@ void SeedDemoDocument(Document& doc) {
         doc.SetTransform(s2, TRS(1780, 150, 70.0, 0.3));
     }
 
-    // An open stroked polyline (open-path stroking, butt caps).
+    // An open stroked polyline with ROUND joins + ROUND caps.
     {
         const PathData zig = PathData::Polygon(
             { { -180, 40 }, { -90, -40 }, { 0, 40 }, { 90, -40 }, { 180, 40 } },
             /*closed=*/false);
-        const NodeId z = doc.AddPath(page, zig,
-            Style::Stroked(Srgb(0.20f, 0.35f, 0.60f, 1), 14.0), "zigzag");
+        Style s = Style::Stroked(Srgb(0.20f, 0.35f, 0.60f, 1), 14.0);
+        s.strokes[0].join = JoinStyle::Round;
+        s.strokes[0].cap  = CapStyle::Round;
+        const NodeId z = doc.AddPath(page, zig, s, "zigzag");
         doc.SetTransform(z, TRS(960, 120));
+    }
+
+    // Lot 3 stroking showcase: dashes, Inside/Outside alignment (open path),
+    // and a non-scaling viewport-width hairline.
+    {
+        // Dashed ellipse (round caps make the dashes read as beads).
+        Style dashed = Style::Stroked(Srgb(0.85f, 0.30f, 0.25f, 1), 8.0);
+        dashed.strokes[0].dashPattern = { 26.0, 18.0 };
+        dashed.strokes[0].cap = CapStyle::Round;
+        const NodeId d = doc.AddPath(page, PathData::Ellipse(0, 0, 110, 70),
+                                     dashed, "dashed ring");
+        doc.SetTransform(d, TRS(240, 520));
+
+        // The SAME open arc stroked Inside vs Outside (walk-direction rule):
+        // two half-moons hugging opposite sides of one invisible spine.
+        PathData arc = PathData::Ellipse(0, 0, 90, 90);
+        arc.subpaths[0].closed = false;
+        arc.subpaths[0].anchors.resize(3);   // first-to-third quadrant arc
+        Style inside = Style::Stroked(Srgb(0.36f, 0.55f, 0.85f, 1), 16.0);
+        inside.strokes[0].align = StrokeAlign::Inside;
+        const NodeId ai = doc.AddPath(page, arc, inside, "arc inside");
+        doc.SetTransform(ai, TRS(640, 520));
+        Style outside = Style::Stroked(Srgb(0.90f, 0.62f, 0.20f, 1), 16.0);
+        outside.strokes[0].align = StrokeAlign::Outside;
+        const NodeId ao = doc.AddPath(page, arc, outside, "arc outside");
+        doc.SetTransform(ao, TRS(640, 520));
+
+        // Viewport-space hairline (constant on-screen width at any zoom).
+        Style hair = Style::Stroked(Srgb(0.10f, 0.10f, 0.12f, 1), 1.5);
+        hair.strokes[0].widthSpace = WidthSpace::Viewport;
+        const NodeId h = doc.AddPath(
+            page,
+            PathData::Polygon({ { -260, 0 }, { 260, 0 } }, /*closed=*/false),
+            hair, "hairline");
+        doc.SetTransform(h, TRS(960, 980));
     }
 }
 

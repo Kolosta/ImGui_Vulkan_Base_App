@@ -13,17 +13,24 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   hard-coded demo scene; camera pan/zoom live; `bootstrap`/`steady`/`empty`
   benches. *(F7-verified 2026-07-07; bootstrap ≈ 0.25 ms/frame @1015
   instances, steady-state skips 200/200 frames.)*
-- [ ] **Lot 2 — Document & scene core**: Document (nodes, pages, layer tree,
+- [x] **Lot 2 — Document & scene core**: Document (nodes, pages, layer tree,
   ChangeLog), Scene compile + dirty diffing, GeometryCache v1, solid fills +
   center strokes; the demo scene becomes a real in-memory Document;
   **double coordinates end-to-end** (document, camera state, scene compile —
   README req. 9); `paths_10k` bench; unit tests for model + fill tess.
-- [ ] **Lot 3 — Full stroking & tiers**: align inside/center/outside (open
+  *(Delivered 2026-07-08; paths_10k: 15 001 drawables / 800 k tris →
+  1.45 ms/frame, first full build 425 ms.)*
+- [x] **Lot 3 — Full stroking & tiers**: align inside/center/outside (open
   paths incl.), caps/joins/miter, dashes, viewport-space widths; zoom tiers +
-  hysteresis; **camera-relative rebasing of GPU transforms → the demo zoom
-  clamp dies (unbounded zoom, GEOMETRY.md §6)**; **view culling with the
-  correctness gate (GEOMETRY.md §7: culled vs unculled renders identical)**;
-  `edit_heavy` + `zoom_sweep` benches; stroker golden tests.
+  hysteresis; camera-relative rebasing of GPU transforms (per-view instance
+  tables + snapped double anchors) → **the viewport zoom clamp is gone**
+  (unbounded zoom, GEOMETRY.md §6); view culling (conservative bounds; drops
+  draws, never inputs — GEOMETRY.md §7; the pixel-exact culled-vs-unculled
+  image gate needs the readback path and lands with it); `edit_heavy` +
+  `zoom_sweep` benches; stroker golden tests. *(Delivered 2026-07-08;
+  edit_heavy: 12.3 ms/frame dominated by the v1 full-walk compile — the
+  dirty-range target for the perf lots; zoom_sweep p50 3.4 ms, tier-change
+  spikes ~120 ms re-tessellation to absorb asynchronously later.)*
 - [ ] **Lot 4 — Layers compositing**: groups as layers, opacity, W3C blend
   modes + Erase, isolation stack, clip groups (stencil), page substrate rule;
   `blend_groups` bench.

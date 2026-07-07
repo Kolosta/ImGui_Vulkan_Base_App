@@ -22,10 +22,13 @@ namespace Ink {
 // ─────────────────────────────────────────────────────────────────────────────
 class GeometryCache {
 public:
-    // Zoom → tier (×2 buckets; hysteresis in Lot 3). Flattening tolerance is
-    // ~kTolerancePx at the tier's nominal zoom, converted to doc units.
+    // Zoom → tier (×2 buckets). Flattening tolerance is ~kTolerancePx at the
+    // tier's nominal zoom, converted to doc units.
     static int    TierFromZoom(double zoom);
     static double ToleranceForTier(int tier);
+    // Hysteresis: keep `current` until the zoom strays ±0.75 tier past it, so
+    // hovering a tier boundary never thrashes re-tessellation.
+    static int    StableTier(int current, double zoom);
     static constexpr double kTolerancePx = 0.25;
 
     // Get-or-build. `keyOut` is the stable product key (GPU residency key).
@@ -40,12 +43,22 @@ public:
     const std::vector<geom::Polyline>&
     GetFlattened(const PathData& path, std::uint64_t pathHash, int tier);
 
+    // Style-independent AABB of the flattened path (culling input; the caller
+    // inflates by its stroke band).
+    const geom::LocalBounds&
+    GetLocalBounds(const PathData& path, std::uint64_t pathHash, int tier);
+
+    // The tessellation width of `stroke` at `tier` (WidthSpace resolution:
+    // Viewport widths convert at the tier's nominal zoom).
+    static double EffectiveWidth(const Stroke& stroke, int tier);
+
     std::size_t MeshCount() const { return meshes_.size(); }
-    void Clear() { flattened_.clear(); meshes_.clear(); }
+    void Clear() { flattened_.clear(); meshes_.clear(); bounds_.clear(); }
 
 private:
     std::unordered_map<std::uint64_t, std::vector<geom::Polyline>> flattened_;
     std::unordered_map<std::uint64_t, geom::Mesh>                  meshes_;
+    std::unordered_map<std::uint64_t, geom::LocalBounds>           bounds_;
 };
 
 } // namespace Ink

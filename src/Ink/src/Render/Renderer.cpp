@@ -177,13 +177,14 @@ bool CreateFrameSlots(RendererImpl& r) {
     return true;
 }
 
-// (Re)allocate the scene descriptor set pointing at the CURRENT table
-// buffers. The old set may be referenced by an in-flight frame — retire it
-// through the garbage ring instead of updating it in place.
-void RepointSceneSet(RendererImpl& r) {
-    if (!r.gpu.TablesReady()) return;
-    if (r.sceneSet) {
-        VkDescriptorSet old = r.sceneSet;
+// (Re)allocate a VIEW's scene descriptor set: binding 0 = the view's
+// anchor-rebased instance table, 1/2 = the global item/paint tables. The old
+// set may be referenced by an in-flight frame — retire it through the garbage
+// ring instead of updating it in place.
+void RepointViewSet(RendererImpl& r, ViewImpl& v) {
+    if (!r.gpu.StyleTablesReady() || !v.instanceBuf) return;
+    if (v.sceneSet) {
+        VkDescriptorSet old = v.sceneSet;
         RendererImpl* self = &r;
         r.Defer([self, old]() mutable {
             vkFreeDescriptorSets(self->device.vk(), self->descriptorPool, 1, &old);
@@ -194,40 +195,41 @@ void RepointSceneSet(RendererImpl& r) {
     ai.descriptorPool     = r.descriptorPool;
     ai.descriptorSetCount = 1;
     ai.pSetLayouts        = &r.sceneSetLayout;
-    if (vkAllocateDescriptorSets(r.device.vk(), &ai, &r.sceneSet) != VK_SUCCESS) {
-        r.sceneSet = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(r.device.vk(), &ai, &v.sceneSet) != VK_SUCCESS) {
+        v.sceneSet = VK_NULL_HANDLE;
         return;
     }
-    const rhi::Buffer* buffers[3] = { &r.gpu.InstanceTable(), &r.gpu.ItemTable(),
+    const rhi::Buffer* buffers[3] = { &v.instanceBuf, &r.gpu.ItemTable(),
                                       &r.gpu.PaintTable() };
     VkDescriptorBufferInfo infos[3]{};
     VkWriteDescriptorSet   writes[3]{};
     for (std::uint32_t i = 0; i < 3; ++i) {
         infos[i] = { buffers[i]->buffer, 0, VK_WHOLE_SIZE };
         writes[i].sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet          = r.sceneSet;
+        writes[i].dstSet          = v.sceneSet;
         writes[i].dstBinding      = i;
         writes[i].descriptorCount = 1;
         writes[i].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
         writes[i].pBufferInfo     = &infos[i];
     }
     vkUpdateDescriptorSets(r.device.vk(), 3, writes, 0, nullptr);
+    v.styleGen = r.styleGen;
 }
 
 // Steady-state signature of a view (docs/Ink/RENDER_GRAPH.md §2): camera +
-// tier + size + background + overlay bytes + scene version. Equal signature =
-// the cached display image is still exact, skip every pass.
+// tier + anchor + size + background + overlay bytes + scene version. Equal
+// signature = the cached display image is still exact, skip every pass.
 std::uint64_t ViewSignature(const ViewImpl& v, std::uint64_t sceneVersion,
                             int tier) {
     struct {
         std::uint32_t w, h;
-        double panX, panY, zoom;
+        double panX, panY, zoom, anchorX, anchorY;
         Color bg;
         std::uint64_t scene;
         int tier;
         int pad_;
-    } key{ v.width, v.height, v.panX, v.panY, v.zoom, v.background,
-           sceneVersion, tier, 0 };
+    } key{ v.width, v.height, v.panX, v.panY, v.zoom, v.anchorX, v.anchorY,
+           v.background, sceneVersion, tier, 0 };
     std::uint64_t h = HashBytes(&key, sizeof key);
     const auto& ov = v.overlay.Vertices();
     if (!ov.empty())
@@ -365,6 +367,10 @@ void Renderer::Shutdown() {
                     rhi::DestroyBuffer(r.device, vb);
                 for (auto& ib : view->impl_->indirect)
                     rhi::DestroyBuffer(r.device, ib);
+                rhi::DestroyBuffer(r.device, view->impl_->instanceBuf);
+                if (view->impl_->sceneSet)
+                    vkFreeDescriptorSets(dev, r.descriptorPool, 1,
+                                         &view->impl_->sceneSet);
                 delete view->impl_;
                 view->impl_ = nullptr;
             }
@@ -476,14 +482,14 @@ void Renderer::EndFrame() {
     const auto& drawables = r.scene.Drawables();
     r.stats.instances = (std::uint32_t)drawables.size();
 
-    // ── Phase 2: GPU tables (painter-order instance/item/paint arrays) ──────
+    // ── Phase 2: global style tables (painter-order items/paints) ───────────
     if (sceneChanged) {
-        const bool recreated = r.gpu.SyncTables(r.device, drawables, defer);
-        if (recreated || r.sceneSet == VK_NULL_HANDLE)
-            RepointSceneSet(r);
+        if (r.gpu.SyncStyleTables(r.device, drawables, defer))
+            ++r.styleGen;
+        ++r.sceneGen;
     }
 
-    // ── Phase 3: per-view prepare (geometry residency + indirect commands) ──
+    // ── Phase 3: per-view prepare (anchor, instances, geometry, commands) ───
     struct ViewJob {
         ViewImpl*  v;
         PushCamera world, px;
@@ -495,11 +501,60 @@ void Renderer::EndFrame() {
         if (!v.usedThisFrame || !v.HasTargets()) { v.overlay.Clear(); continue; }
         ++r.stats.views;
 
-        const int tier = GeometryCache::TierFromZoom(v.zoom);
+        // Zoom tier with hysteresis (no re-tessellation thrash at boundaries).
+        v.tier = v.tierInit ? GeometryCache::StableTier(v.tier, v.zoom)
+                            : GeometryCache::TierFromZoom(v.zoom);
+        v.tierInit = true;
+        const int tier = v.tier;
+
+        // Anchor snap (docs/Ink/GEOMETRY.md §6): the camera-relative origin
+        // follows the view centre on a grid of ~4 viewport extents, so it
+        // moves rarely; when it does, this view's instances rebase.
+        {
+            const double extent =
+                (double)std::max(v.width, v.height) / (v.zoom > 0 ? v.zoom : 1.0);
+            const double grid = extent * 4.0;
+            const double cx = v.panX + 0.5 * (double)v.width / v.zoom;
+            const double cy = v.panY + 0.5 * (double)v.height / v.zoom;
+            const double ax = std::floor(cx / grid + 0.5) * grid;
+            const double ay = std::floor(cy / grid + 0.5) * grid;
+            if (ax != v.anchorX || ay != v.anchorY) {
+                v.anchorX = ax;
+                v.anchorY = ay;
+                v.instancesDirty = true;
+            }
+        }
+        if (v.sceneGen != r.sceneGen) {
+            v.sceneGen = r.sceneGen;
+            v.instancesDirty = true;
+        }
+
         const std::uint64_t sig = ViewSignature(v, r.scene.Version(), tier);
-        if (!v.forceDirty && sig == v.lastSignature) { v.overlay.Clear(); continue; }
+        if (!v.forceDirty && sig == v.lastSignature && !v.instancesDirty) {
+            v.overlay.Clear();
+            continue;
+        }
         v.lastSignature = sig;
         v.forceDirty    = false;
+
+        // Rebase this view's instance table when needed (anchor/scene).
+        if (v.instancesDirty) {
+            const bool recreated = r.gpu.SyncViewInstances(
+                r.device, drawables, { v.anchorX, v.anchorY }, v.instanceBuf,
+                defer);
+            v.instancesDirty = false;
+            if (recreated || v.sceneSet == VK_NULL_HANDLE ||
+                v.styleGen != r.styleGen)
+                RepointViewSet(r, v);
+        } else if (v.styleGen != r.styleGen || v.sceneSet == VK_NULL_HANDLE) {
+            RepointViewSet(r, v);
+        }
+
+        // The view rect in doc space — culling drops DRAWS, never inputs
+        // (docs/Ink/GEOMETRY.md §7).
+        const double vx0 = v.panX, vy0 = v.panY;
+        const double vx1 = v.panX + (double)v.width / v.zoom;
+        const double vy1 = v.panY + (double)v.height / v.zoom;
 
         // Build the view's indirect command list: one command per run of
         // consecutive drawables sharing a mesh range (instance index ==
@@ -509,6 +564,34 @@ void Renderer::EndFrame() {
         MeshRange lastRange{};
         for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
             const Drawable& d = drawables[i];
+
+            // Bounds cull (conservative: flatten AABB + stroke band + miter,
+            // transformed corners in double).
+            {
+                const geom::LocalBounds& lb =
+                    r.cache.GetLocalBounds(*d.path, d.pathHash, tier);
+                if (!lb.valid) continue;
+                double inflate = 0.0;
+                if (d.isStroke) {
+                    const double w =
+                        GeometryCache::EffectiveWidth(d.stroke, tier);
+                    inflate = w * (0.5 * std::max(2.0, d.stroke.miterLimit) + 1.0);
+                }
+                double bx0 = 1e300, by0 = 1e300, bx1 = -1e300, by1 = -1e300;
+                const DVec2 corners[4] = {
+                    { lb.min.x - inflate, lb.min.y - inflate },
+                    { lb.max.x + inflate, lb.min.y - inflate },
+                    { lb.max.x + inflate, lb.max.y + inflate },
+                    { lb.min.x - inflate, lb.max.y + inflate } };
+                for (const DVec2& c : corners) {
+                    const DVec2 p = d.world.Apply(c);
+                    bx0 = std::min(bx0, p.x); by0 = std::min(by0, p.y);
+                    bx1 = std::max(bx1, p.x); by1 = std::max(by1, p.y);
+                }
+                if (bx1 < vx0 || bx0 > vx1 || by1 < vy0 || by0 > vy1)
+                    continue;   // fully outside this view
+            }
+
             std::uint64_t productKey = 0;
             const geom::Mesh* mesh =
                 d.isStroke ? r.cache.GetStroke(*d.path, d.pathHash, tier,
@@ -550,14 +633,17 @@ void Renderer::EndFrame() {
                            v.overlay.ByteSize(),
                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
-        // Camera blocks, computed in double, narrowed per view
-        // (world → NDC for content; view px → NDC for the overlay).
+        // Camera blocks, computed in double, narrowed per view. Content
+        // coordinates arrive ANCHOR-relative from the instance table, so the
+        // offset uses (anchor − pan) — small at any zoom (GEOMETRY.md §6).
         ViewJob job;
         job.v = &v;
         job.world.sx = (float)(2.0 * v.zoom / (double)v.width);
         job.world.sy = (float)(2.0 * v.zoom / (double)v.height);
-        job.world.ox = (float)(-v.panX * 2.0 * v.zoom / (double)v.width - 1.0);
-        job.world.oy = (float)(-v.panY * 2.0 * v.zoom / (double)v.height - 1.0);
+        job.world.ox = (float)((v.anchorX - v.panX) * 2.0 * v.zoom /
+                                   (double)v.width - 1.0);
+        job.world.oy = (float)((v.anchorY - v.panY) * 2.0 * v.zoom /
+                                   (double)v.height - 1.0);
         job.px = PushCamera{ 2.0f / (float)v.width, 2.0f / (float)v.height,
                              -1.0f, -1.0f };
         jobs.push_back(job);
@@ -589,11 +675,13 @@ void Renderer::EndFrame() {
         const std::uint32_t nCmds = v.indirectCount;
         VkBuffer overlayBuffer    = v.overlayVb[r.slot].buffer;
         const std::uint32_t nOverlay = v.overlayVertexCount;
+        VkDescriptorSet sceneSet  = v.sceneSet;
         const PushCamera world = job.world, px = job.px;
         g.AddRenderPass("content", content, {},
                         [&r, world, px, indirectBuffer, nCmds, overlayBuffer,
-                         nOverlay](VkCommandBuffer cmd) {
-            detail::RecordContentPass(r, cmd, world, indirectBuffer, nCmds);
+                         nOverlay, sceneSet](VkCommandBuffer cmd) {
+            detail::RecordContentPass(r, cmd, world, indirectBuffer, nCmds,
+                                      sceneSet);
             detail::RecordOverlayPass(r, cmd, px, overlayBuffer, nOverlay);
         });
 
@@ -634,19 +722,24 @@ void Renderer::EndFrame() {
         ViewImpl& v = *it->second->impl_;
         if (!v.usedThisFrame && r.frameIndex - v.lastUsedFrame >= 2) {
             r.RetireViewTargets(v);
-            for (auto& vb : v.overlayVb) {
-                rhi::Buffer old = vb;
+            auto deferBuffer = [&r](rhi::Buffer& b) {
+                if (!b) return;
+                rhi::Buffer old = b;
                 r.Defer([dev = &r.device, old]() mutable {
                     rhi::DestroyBuffer(*dev, old);
                 });
-                vb = {};
-            }
-            for (auto& ib : v.indirect) {
-                rhi::Buffer old = ib;
-                r.Defer([dev = &r.device, old]() mutable {
-                    rhi::DestroyBuffer(*dev, old);
+                b = {};
+            };
+            for (auto& vb : v.overlayVb) deferBuffer(vb);
+            for (auto& ib : v.indirect)  deferBuffer(ib);
+            deferBuffer(v.instanceBuf);
+            if (v.sceneSet) {
+                VkDescriptorSet old = v.sceneSet;
+                r.Defer([self = &r, old]() mutable {
+                    vkFreeDescriptorSets(self->device.vk(),
+                                         self->descriptorPool, 1, &old);
                 });
-                ib = {};
+                v.sceneSet = VK_NULL_HANDLE;
             }
             delete it->second->impl_;
             it->second->impl_ = nullptr;

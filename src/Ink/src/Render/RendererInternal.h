@@ -59,10 +59,25 @@ struct ViewImpl {
 
     // Per-slot indirect command buffers (host-visible ring): the view's draw
     // list — mesh ranges depend on the view's zoom tier, so commands are
-    // per-view while the instance/item/paint tables stay global.
+    // per-view while item/paint tables and geometry stay global.
     rhi::Buffer   indirect[kFramesInFlight];
     std::uint32_t indirectCount = 0;
     std::vector<VkDrawIndexedIndirectCommand> indirectScratch;
+
+    // Camera-relative precision (docs/Ink/GEOMETRY.md §6): this view's double
+    // anchor (snapped so it moves rarely) and its anchor-rebased instance
+    // table + the descriptor set pointing at it (binding 0) and the global
+    // item/paint tables (1, 2).
+    double          anchorX = 0.0, anchorY = 0.0;
+    rhi::Buffer     instanceBuf;
+    VkDescriptorSet sceneSet = VK_NULL_HANDLE;
+    bool            instancesDirty = true;
+    std::uint64_t   sceneGen = 0;   // last RendererImpl::sceneGen consumed
+    std::uint64_t   styleGen = 0;   // last RendererImpl::styleGen pointed at
+
+    // Zoom tier with hysteresis (GeometryCache::StableTier).
+    int  tier     = 0;
+    bool tierInit = false;
 
     // Frame bookkeeping.
     std::uint64_t lastSignature = 0;
@@ -107,7 +122,10 @@ struct RendererImpl {
     VkPipeline overlayPipeline = VK_NULL_HANDLE;
     VkPipeline presentPipeline = VK_NULL_HANDLE;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-    VkDescriptorSet  sceneSet       = VK_NULL_HANDLE;
+    // Generations: bumped when the drawable list changes / when a global
+    // style table buffer is recreated — views resync lazily against them.
+    std::uint64_t sceneGen = 1;
+    std::uint64_t styleGen = 1;
 
     // Frame ring.
     FrameSlot     slots[kFramesInFlight];
@@ -132,7 +150,7 @@ struct RendererImpl {
 // rendering scope set up by the graph.
 void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& worldToNdc, VkBuffer indirect,
-                       std::uint32_t commandCount);
+                       std::uint32_t commandCount, VkDescriptorSet sceneSet);
 void RecordOverlayPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& pxToNdc, VkBuffer vertexBuffer,
                        std::uint32_t vertexCount);

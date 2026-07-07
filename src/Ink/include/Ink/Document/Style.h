@@ -35,25 +35,38 @@ struct Fill {
 enum class StrokeAlign : std::uint8_t { Center = 0, Inside = 1, Outside = 2 };
 enum class CapStyle    : std::uint8_t { Butt = 0, Round = 1, Square = 2 };
 enum class JoinStyle   : std::uint8_t { Miter = 0, Round = 1, Bevel = 2 };
+// Document: width in node-local units (scales with the object — the Blender
+// semantics). Viewport: width in view pixels (non-scaling hairlines /
+// annotations; resolved per zoom tier by the GeometryCache).
+enum class WidthSpace  : std::uint8_t { Document = 0, Viewport = 1 };
 
 struct Stroke {
     Paint       paint;
-    double      width      = 1.0;               // node-local units
+    double      width      = 1.0;
     StrokeAlign align      = StrokeAlign::Center;
     CapStyle    cap        = CapStyle::Butt;
-    JoinStyle   join       = JoinStyle::Bevel;
+    JoinStyle   join       = JoinStyle::Miter;
     double      miterLimit = 4.0;
-    bool        enabled    = true;
+    WidthSpace  widthSpace = WidthSpace::Document;
+    // SVG-style dash pattern (on/off run lengths along the spine, node-local
+    // units; empty = solid) + phase offset. Applied before outlining so every
+    // dash gets real caps (docs/Ink/GEOMETRY.md §2).
+    std::vector<double> dashPattern;
+    double              dashOffset = 0.0;
+    bool                enabled    = true;
 
     // Geometry-affecting parameters only (paints excluded — a color edit must
     // NOT re-tessellate; docs/Ink/GEOMETRY.md §3).
     std::uint64_t GeometryHash() const {
         std::uint64_t h = 0x57120CEULL;
         h = HashDouble(width, h);
-        const std::uint8_t packed[3] = { (std::uint8_t)align, (std::uint8_t)cap,
-                                         (std::uint8_t)join };
+        const std::uint8_t packed[4] = { (std::uint8_t)align, (std::uint8_t)cap,
+                                         (std::uint8_t)join,
+                                         (std::uint8_t)widthSpace };
         h = HashBytes(packed, sizeof packed, h);
         h = HashDouble(miterLimit, h);
+        for (double d : dashPattern) h = HashDouble(d, h);
+        if (!dashPattern.empty()) h = HashDouble(dashOffset, h);
         return h;
     }
 };

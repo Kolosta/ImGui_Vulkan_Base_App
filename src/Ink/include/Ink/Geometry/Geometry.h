@@ -38,10 +38,18 @@ struct Mesh {
 // resolved exactly.
 Mesh TriangulateFill(const std::vector<Polyline>& polylines, FillRule rule);
 
-// Stroke tessellation, Lot 2 scope: Center alignment, Butt caps, Bevel
-// joins (round/miter/square + Inside/Outside + dashes land in Lot 3).
-// `width` in node-local units. Open and closed subpaths both supported.
-Mesh TessellateStroke(const std::vector<Polyline>& polylines, const Stroke& stroke);
+// Full stroke tessellation (docs/Ink/GEOMETRY.md §2): Center/Inside/Outside
+// alignment (open paths per the walk-direction rule), Butt/Round/Square caps,
+// Miter(limit)/Round/Bevel joins, dash patterns. `tolerance` (node-local
+// units) bounds the arc-flattening error of round caps/joins. Stroke width is
+// taken as-is (WidthSpace resolution happens in the GeometryCache).
+Mesh TessellateStroke(const std::vector<Polyline>& polylines,
+                      const Stroke& stroke, double tolerance);
+
+// AABB of the flattened points alone (style-independent; the caller inflates
+// by stroke bands — used by view culling).
+struct LocalBounds;
+LocalBounds PolylineBounds(const std::vector<Polyline>& polylines);
 
 // Conservative node-local bounds of the flattened path, inflated by the
 // widest enabled stroke band.

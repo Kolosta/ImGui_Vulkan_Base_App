@@ -9,15 +9,15 @@ namespace Ink::detail {
 // Records inside the MSAA rendering scope opened by the graph.
 void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& worldToNdc, VkBuffer indirect,
-                       std::uint32_t commandCount) {
+                       std::uint32_t commandCount, VkDescriptorSet sceneSet) {
     const GpuScene& s = r.gpu;
     if (commandCount == 0 || indirect == VK_NULL_HANDLE ||
-        r.sceneSet == VK_NULL_HANDLE || !s.TablesReady())
+        sceneSet == VK_NULL_HANDLE || !s.StyleTablesReady())
         return;
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.contentPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            r.contentLayout, 0, 1, &r.sceneSet, 0, nullptr);
+                            r.contentLayout, 0, 1, &sceneSet, 0, nullptr);
     vkCmdPushConstants(cmd, r.contentLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
                        sizeof(PushCamera), &worldToNdc);
 
