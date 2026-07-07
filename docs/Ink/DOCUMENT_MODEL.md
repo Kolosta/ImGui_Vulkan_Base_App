@@ -109,6 +109,14 @@ Style
   painting that area uses the same machinery as a fill. This is what unifies
   the model.
 - `widthSpace: Viewport` gives non-scaling strokes (hairlines/annotations).
+- **Strokes under object transforms (Blender semantics, user-locked):** the
+  stroke area is generated in object-local space, then the object transform
+  applies — so a non-uniform Object-Mode scale stretches strokes with the
+  object (a stretched square outline is thicker on two sides, by design).
+  Edit-Mode vertex edits reshape the path without touching the transform, so
+  strokes stay uniform. An **Apply Scale** operation (Lot 8, with the editing
+  loop) bakes the transform into PathData — restoring uniform 1:1 stroking
+  while keeping the object's current shape.
 
 ### Paints
 

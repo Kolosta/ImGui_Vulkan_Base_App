@@ -8,16 +8,22 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   shell (chrome, zones, design system, shortcuts, icons, module catalogue,
   splash, secondary windows) runs with placeholder Viewport/Outliner/
   Properties; Project stripped of the old document; save/open disabled.
-- [ ] **Lot 1 — Viewport bootstrap** (detailed below): Ink renders inside the
+- [x] **Lot 1 — Viewport bootstrap** (detailed below): Ink renders inside the
   Viewport zone. RHI + graph skeleton + content & overlay passes on a
-  hard-coded demo scene; camera pan/zoom live; `empty` bench.
+  hard-coded demo scene; camera pan/zoom live; `bootstrap`/`steady`/`empty`
+  benches. *(F7-verified 2026-07-07; bootstrap ≈ 0.25 ms/frame @1015
+  instances, steady-state skips 200/200 frames.)*
 - [ ] **Lot 2 — Document & scene core**: Document (nodes, pages, layer tree,
   ChangeLog), Scene compile + dirty diffing, GeometryCache v1, solid fills +
   center strokes; the demo scene becomes a real in-memory Document;
-  `paths_10k` bench; unit tests for model + fill tess.
+  **double coordinates end-to-end** (document, camera state, scene compile —
+  README req. 9); `paths_10k` bench; unit tests for model + fill tess.
 - [ ] **Lot 3 — Full stroking & tiers**: align inside/center/outside (open
   paths incl.), caps/joins/miter, dashes, viewport-space widths; zoom tiers +
-  hysteresis; `edit_heavy` + `zoom_sweep` benches; stroker golden tests.
+  hysteresis; **camera-relative rebasing of GPU transforms → the demo zoom
+  clamp dies (unbounded zoom, GEOMETRY.md §6)**; **view culling with the
+  correctness gate (GEOMETRY.md §7: culled vs unculled renders identical)**;
+  `edit_heavy` + `zoom_sweep` benches; stroker golden tests.
 - [ ] **Lot 4 — Layers compositing**: groups as layers, opacity, W3C blend
   modes + Erase, isolation stack, clip groups (stencil), page substrate rule;
   `blend_groups` bench.
@@ -30,7 +36,10 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   modifier dependency graph + exact re-evaluation, boolean modifier v1.
 - [ ] **Lot 8 — Editing loop**: GPU picking (async) + CPU exact fallback,
   selection/handles/gizmo overlays, rebuilt Select/Move/Rotate/Scale tools
-  and draw tools on the new model, command-based undo; `pick_storm` bench.
+  and draw tools on the new model, Object/Edit mode split (Blender semantics:
+  Object-Mode scale stretches strokes, Edit-Mode vertex edits don't) with
+  **Apply Scale** (DOCUMENT_MODEL.md §4), command-based undo; `pick_storm`
+  bench.
 - [ ] **Lot 9 — Organisation UI**: Outliner rebuilt on Layers + Collections
   views; Properties rebuilt (style editor incl. multi-fill/multi-stroke).
 - [ ] **Lot 10 — Persistence**: `.acu` v2 (clean break), save/open/recent

@@ -93,11 +93,35 @@ on-screen items degrade to coarser tiers (bounded triangle budget).
   via distance-to-spine ≤ band; both reuse cached polylines. GPU id-picking
   covers the hover case (RENDER_GRAPH.md §PickingPass).
 
-## 6. Units & precision
+## 6. Units & precision — the unbounded canvas
 
+- **No engine zoom/extent limits** (README req. 9): a document may work in
+  micrometres or kilometres and the camera zooms fluidly through the whole
+  range. Unit scales are a document/display setting; the engine computes in
+  abstract doc units, in `double`, with no magic ranges anywhere.
 - Document space is `double`; geometry emits **f32 relative to a per-view
-  anchor** (the camera origin, subtracted in double before narrowing) so deep
-  zoom never wobbles.
+  anchor** (the camera origin, subtracted in double before narrowing; GPU
+  instance translations are rebased against the anchor, which re-snaps when
+  the camera strays or crosses zoom tiers) so deep zoom never wobbles. This
+  applies to the whole chain — including the viewport's camera state itself
+  (pan/zoom in double, not float).
 - All tolerances (flatten error, snap radius, hit radius) are defined in
   screen px and converted through the view's effective zoom — behaviour is
-  resolution-independent by construction.
+  resolution- and zoom-independent by construction. Zoom tiers (§4) keep
+  re-tessellation bounded across the range.
+
+## 7. Culling — performance never at the cost of exactness
+
+View culling (and every later optimisation) drops **work**, never **inputs**:
+
+- An item outside the view is not rasterised, but it still participates in
+  everything that affects visible pixels: modifier evaluation (a visible
+  instance whose source path/collection is off-screen), clip sources,
+  blend-mode backdrops, bounds and relations.
+- Partially visible items render exactly (the scissor clips pixels; geometry
+  is never truncated or approximated at the view edge).
+- When zoomed far in, off-view objects and off-view parts of visible objects
+  cost as little as possible (bounds culling, later finer-grained ranges) —
+  but an "optimisation" that could change one visible pixel is a bug.
+- The perf suite pins this: a culled render and a force-unculled render of
+  the same view must produce identical images (PERF_TESTING.md).

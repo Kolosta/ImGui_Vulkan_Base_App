@@ -64,3 +64,9 @@ this stage if a better name is ever preferred.
    residency, no per-frame full re-tessellation, async picking.
 8. Every performance-relevant lot ships with an automated benchmark
    (`ink_bench`) so regressions are measured, not felt.
+9. **Unbounded canvas**: no engine-imposed zoom or extent limits — documents
+   may work at micrometre or kilometre unit scales and the camera must zoom
+   fluidly through the whole range. Precision comes from double document
+   space + camera-relative GPU data (GEOMETRY.md §6), never from clamping;
+   and view culling must NEVER change the rendered result (GEOMETRY.md §7 —
+   correctness first, optimisation behind it).

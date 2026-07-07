@@ -100,6 +100,11 @@ vs image vs special paint), isolation-scope boundary (blend/opacity group),
 clip-scope change. Solid fills, solid strokes and pattern instances all share
 the content pipeline.
 
+**Culling correctness**: the Batcher culls *draws*, never *inputs* — the
+binding rules live in GEOMETRY.md §7 (off-screen modifier sources, blend
+backdrops and partially visible items must render exactly as if nothing were
+culled).
+
 ## 4. Pass details
 
 ### ContentPass (P1)
