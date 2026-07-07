@@ -69,12 +69,10 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
 
     ImGuiIO& io = ImGui::GetIO();
 
-    // Demo zoom envelope. The engine spec forbids zoom limits (docs/Ink README
-    // req. 9); the camera is double end-to-end now, but the GPU tables still
-    // hold f32 document-space transforms — this clamp papers over that until
-    // the camera-relative rebasing of Lot 3 (docs/Ink/GEOMETRY.md §6).
-    constexpr double kDemoZoomMin = 1.0e-4;
-    constexpr double kDemoZoomMax = 2048.0;
+    // NO zoom limits (docs/Ink README req. 9): the camera is double
+    // end-to-end and the engine rebases GPU transforms against a per-view
+    // anchor (GEOMETRY.md §6), so precision holds at any zoom. Only guard
+    // against a degenerate non-positive value.
 
     // Camera mapping (EditorState contract): screen = cMin + (doc − pan)·zoom.
     // Composed in double; narrowed only at the ImGui/overlay boundary.
@@ -89,12 +87,14 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     if (hovered && io.MouseWheel != 0.0f) {
         // Zoom at the cursor: the document point under the mouse stays put.
         const double factor  = std::pow(1.15, (double)io.MouseWheel);
-        const double newZoom = std::clamp(st.zoom * factor, kDemoZoomMin, kDemoZoomMax);
-        const double docX = screenToDocX(io.MousePos.x);
-        const double docY = screenToDocY(io.MousePos.y);
-        st.panX = docX - (io.MousePos.x - (double)cMin.x) / newZoom;
-        st.panY = docY - (io.MousePos.y - (double)cMin.y) / newZoom;
-        st.zoom = newZoom;
+        const double newZoom = st.zoom * factor;
+        if (newZoom > 0.0 && std::isfinite(newZoom)) {
+            const double docX = screenToDocX(io.MousePos.x);
+            const double docY = screenToDocY(io.MousePos.y);
+            st.panX = docX - (io.MousePos.x - (double)cMin.x) / newZoom;
+            st.panY = docY - (io.MousePos.y - (double)cMin.y) / newZoom;
+            st.zoom = newZoom;
+        }
     }
     if (hovered && ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
         st.panX -= (double)io.MouseDelta.x / st.zoom;
@@ -106,10 +106,8 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         st.reqFitDoc = st.reqFitSelection = false;
         const Ink::Rect b = ink_->SceneBounds();
         if (b.Width() > 0.0f && b.Height() > 0.0f) {
-            const double z = std::clamp(
-                std::min((double)size.x / b.Width(),
-                         (double)size.y / b.Height()) * 0.94,
-                kDemoZoomMin, kDemoZoomMax);
+            const double z = std::min((double)size.x / b.Width(),
+                                      (double)size.y / b.Height()) * 0.94;
             st.zoom = z;
             st.panX = (double)b.min.x + b.Width()  * 0.5 - (double)size.x * 0.5 / z;
             st.panY = (double)b.min.y + b.Height() * 0.5 - (double)size.y * 0.5 / z;
