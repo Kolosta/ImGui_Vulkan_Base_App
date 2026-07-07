@@ -144,6 +144,7 @@ struct BW {
     void u32(uint32_t v){ for (int i=0;i<4;++i) b.push_back((uint8_t)(v>>(i*8))); }
     void u64(uint64_t v){ for (int i=0;i<8;++i) b.push_back((uint8_t)(v>>(i*8))); }
     void f32(float v)   { uint32_t u; std::memcpy(&u,&v,4); u32(u); }
+    void f64(double v)  { uint64_t u; std::memcpy(&u,&v,8); u64(u); }
     void str(const std::string& s) { u32((uint32_t)s.size());
                                      for (char c : s) b.push_back((uint8_t)c); }
 };
@@ -156,6 +157,7 @@ struct BR {
     uint64_t u64(){ if (p+8>end){ok=false;return 0;} uint64_t v=0;
                     for (int i=0;i<8;++i) v|=(uint64_t)(*p++)<<(i*8); return v; }
     float f32()   { uint32_t u=u32(); float f; std::memcpy(&f,&u,4); return f; }
+    double f64()  { uint64_t u=u64(); double d; std::memcpy(&d,&u,8); return d; }
     std::string str() { uint32_t n=u32(); if(!ok||p+n>end){ok=false;return {};}
                         std::string s((const char*)p, n); p+=n; return s; }
 };
@@ -167,7 +169,9 @@ struct BR {
 // v5: per-tab Outliner filter state (show* toggles, objState, invertFilter) +
 //     nPanelShowOrphans appended after rulerSpace, so the Outliner remembers its
 //     filter on reopen. (The live viewport-sync link is runtime-only, not saved.)
-constexpr uint32_t kLayoutBlobVersion = 5;
+// v6: per-tab camera (pan/zoom) is DOUBLE (was f32) — the Ink unbounded-canvas
+//     requirement reaches the persisted camera too. Older blobs read as f32.
+constexpr uint32_t kLayoutBlobVersion = 6;
 } // namespace
 
 // Node encoding: [isLeaf:u8]; split → [vertical][firstPx][initRatio][lastUsable]
@@ -185,9 +189,9 @@ std::vector<uint8_t> ZoneLayout::Serialize() const {
             w.u32((uint32_t)n->tabs.size());
             for (const Tab& t : n->tabs) {
                 w.str(t.editorId);                   // v4: editor string id
-                w.f32(t.state.pan.x);
-                w.f32(t.state.pan.y);
-                w.f32(t.state.zoom);
+                w.f64(t.state.panX);                 // v6: double camera
+                w.f64(t.state.panY);
+                w.f64(t.state.zoom);
                 w.u32((uint32_t)t.state.docUnit);
                 // v2: per-viewport page layout.
                 const PageLayout& pl = t.state.pageLayout;
@@ -243,9 +247,15 @@ bool ZoneLayout::Deserialize(const std::vector<uint8_t>& blob) {
                 if (ver >= 4) t.editorId = r.str();        // v4: string id
                 else          t.editorId = LegacyKindToId(r.u32());  // migrate
                 if (t.editorId.empty()) t.editorId = CoreEditor::Viewport;
-                t.state.pan.x   = r.f32();
-                t.state.pan.y   = r.f32();
-                t.state.zoom    = r.f32();
+                if (ver >= 6) {                      // v6: double camera
+                    t.state.panX = r.f64();
+                    t.state.panY = r.f64();
+                    t.state.zoom = r.f64();
+                } else {
+                    t.state.panX = (double)r.f32();
+                    t.state.panY = (double)r.f32();
+                    t.state.zoom = (double)r.f32();
+                }
                 t.state.docUnit = (int)r.u32();
                 if (ver >= 2) {   // per-viewport page layout
                     PageLayout& pl = t.state.pageLayout;

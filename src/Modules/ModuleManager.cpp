@@ -41,9 +41,9 @@ void Application::CommitPendingNew() {
 void Application::DoOpenModule(const std::string& moduleId) {
     Modules::IModule* mod = Modules::ModuleRegistry::Instance().Get(moduleId);
     // Fresh blank project, no preset layout yet — the module supplies its own
-    // arrangement via ActivateModule. (The module's DefaultPageSize() applies
-    // again once the Ink document model lands — docs/Ink/ROADMAP.md Lot 2.)
-    project_.Reset();
+    // arrangement via ActivateModule. (Honouring the module's DefaultPageSize()
+    // returns with the module document services — docs/Ink/ROADMAP.md Lot 11.)
+    ResetDocument();
     ActivateModule(mod);
 }
 

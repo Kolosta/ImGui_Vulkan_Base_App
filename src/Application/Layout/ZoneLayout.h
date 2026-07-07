@@ -72,9 +72,11 @@ struct PageLayout {
 };
 
 struct EditorState {
-    // Camera: screen = canvasMin + (doc - pan) * zoom.
-    ImVec2 pan{0, 0};
-    float  zoom = 1.0f;
+    // Camera: screen = canvasMin + (doc - pan) * zoom. DOUBLE end-to-end —
+    // the Ink engine's unbounded-canvas requirement (docs/Ink README req. 9)
+    // includes the viewport camera state itself.
+    double panX = 0.0, panY = 0.0;
+    double zoom = 1.0;
     int    docUnit = 0;             // index into the viewport unit table
     // Pending view requests, consumed by this leaf's RenderViewport only.
     bool   reqFitDoc       = false;  // frame the project's artboards

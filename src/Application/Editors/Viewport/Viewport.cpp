@@ -69,37 +69,36 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
 
     ImGuiIO& io = ImGui::GetIO();
 
-    // Demo-scene zoom envelope. The engine spec forbids zoom limits (docs/Ink
-    // README req. 9); this clamp only papers over the Lot 1 bootstrap, whose
-    // GPU tables hold f32 document-space transforms (and EditorState's pan is
-    // still float). It dies with the camera-relative rebasing + double camera
-    // state of Lots 2–3 (docs/Ink/GEOMETRY.md §6).
-    constexpr float kDemoZoomMin = 1.0e-4f;
-    constexpr float kDemoZoomMax = 2048.0f;
+    // Demo zoom envelope. The engine spec forbids zoom limits (docs/Ink README
+    // req. 9); the camera is double end-to-end now, but the GPU tables still
+    // hold f32 document-space transforms — this clamp papers over that until
+    // the camera-relative rebasing of Lot 3 (docs/Ink/GEOMETRY.md §6).
+    constexpr double kDemoZoomMin = 1.0e-4;
+    constexpr double kDemoZoomMax = 2048.0;
 
     // Camera mapping (EditorState contract): screen = cMin + (doc − pan)·zoom.
-    auto screenToDoc = [&](ImVec2 p) {
-        return ImVec2((p.x - cMin.x) / st.zoom + st.pan.x,
-                      (p.y - cMin.y) / st.zoom + st.pan.y);
-    };
-    auto docToView = [&](float dx, float dy) {   // view px (canvas-relative)
-        return Ink::Vec2{ (dx - st.pan.x) * st.zoom,
-                          (dy - st.pan.y) * st.zoom };
+    // Composed in double; narrowed only at the ImGui/overlay boundary.
+    auto screenToDocX = [&](double px) { return (px - (double)cMin.x) / st.zoom + st.panX; };
+    auto screenToDocY = [&](double py) { return (py - (double)cMin.y) / st.zoom + st.panY; };
+    auto docToView = [&](double dx, double dy) {   // view px (canvas-relative)
+        return Ink::Vec2{ (float)((dx - st.panX) * st.zoom),
+                          (float)((dy - st.panY) * st.zoom) };
     };
 
     // ── Camera interactions ──────────────────────────────────────────────────
     if (hovered && io.MouseWheel != 0.0f) {
         // Zoom at the cursor: the document point under the mouse stays put.
-        const float factor  = std::pow(1.15f, io.MouseWheel);
-        const float newZoom = std::clamp(st.zoom * factor, kDemoZoomMin, kDemoZoomMax);
-        const ImVec2 docAt  = screenToDoc(io.MousePos);
-        st.pan.x = docAt.x - (io.MousePos.x - cMin.x) / newZoom;
-        st.pan.y = docAt.y - (io.MousePos.y - cMin.y) / newZoom;
-        st.zoom  = newZoom;
+        const double factor  = std::pow(1.15, (double)io.MouseWheel);
+        const double newZoom = std::clamp(st.zoom * factor, kDemoZoomMin, kDemoZoomMax);
+        const double docX = screenToDocX(io.MousePos.x);
+        const double docY = screenToDocY(io.MousePos.y);
+        st.panX = docX - (io.MousePos.x - (double)cMin.x) / newZoom;
+        st.panY = docY - (io.MousePos.y - (double)cMin.y) / newZoom;
+        st.zoom = newZoom;
     }
     if (hovered && ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
-        st.pan.x -= io.MouseDelta.x / st.zoom;
-        st.pan.y -= io.MouseDelta.y / st.zoom;
+        st.panX -= (double)io.MouseDelta.x / st.zoom;
+        st.panY -= (double)io.MouseDelta.y / st.zoom;
     }
 
     // Pending view requests (fit / reset), consumed by this leaf only.
@@ -107,24 +106,25 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         st.reqFitDoc = st.reqFitSelection = false;
         const Ink::Rect b = ink_->SceneBounds();
         if (b.Width() > 0.0f && b.Height() > 0.0f) {
-            const float z = std::clamp(std::min(size.x / b.Width(),
-                                                size.y / b.Height()) * 0.94f,
-                                       kDemoZoomMin, kDemoZoomMax);
-            st.zoom  = z;
-            st.pan.x = b.min.x + b.Width()  * 0.5f - size.x * 0.5f / z;
-            st.pan.y = b.min.y + b.Height() * 0.5f - size.y * 0.5f / z;
+            const double z = std::clamp(
+                std::min((double)size.x / b.Width(),
+                         (double)size.y / b.Height()) * 0.94,
+                kDemoZoomMin, kDemoZoomMax);
+            st.zoom = z;
+            st.panX = (double)b.min.x + b.Width()  * 0.5 - (double)size.x * 0.5 / z;
+            st.panY = (double)b.min.y + b.Height() * 0.5 - (double)size.y * 0.5 / z;
         }
     }
     if (st.reqResetOrigin) {
         st.reqResetOrigin = false;
-        st.zoom = 1.0f;
-        st.pan  = ImVec2(-40.0f, -40.0f);   // origin near the top-left corner
+        st.zoom = 1.0;
+        st.panX = st.panY = -40.0;   // origin near the top-left corner
     }
 
     // ── Drive the Ink view ───────────────────────────────────────────────────
     Ink::View* view = ink_->AcquireView(&st);
     view->SetViewport((std::uint32_t)size.x, (std::uint32_t)size.y);
-    view->SetCamera((double)st.pan.x, (double)st.pan.y, (double)st.zoom);
+    view->SetCamera(st.panX, st.panY, st.zoom);
     view->SetBackground(TokenColor(ds, Tok::S_Color_Background_Layer2, 1.0f));
 
     // Editor overlays — Vulkan, through the engine's OverlayPass. Colors come

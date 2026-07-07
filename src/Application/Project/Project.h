@@ -1,19 +1,22 @@
 #pragma once
 
+#include <Ink/Document/Document.h>
+#include <memory>
 #include <string>
 
 namespace App {
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Shared project model — Ink-rework transitional version (Lot 0).
+//  Shared project model.
 //
-//  The old Project wrapped a Renderer::Document (quarantined under
-//  src/_legacy/). During the Ink engine rewrite the project keeps only the
-//  app-level bookkeeping (display name, file path, dirty flag, module id);
-//  the new document model arrives with Ink Lot 2 (docs/Ink/DOCUMENT_MODEL.md)
-//  and the .acu v2 persistence with Lot 10.
+//  The project owns THE document — an Ink::Document (docs/Ink/
+//  DOCUMENT_MODEL.md) — plus the app-level bookkeeping (display name, file
+//  path, dirty flag, module id). ONE Project instance is owned by
+//  Application; every Viewport zone renders this same document through the
+//  Ink engine, and editors mutate it through its typed operations (which feed
+//  the engine's change-driven recompiles).
 //
-//  ONE Project instance is owned by Application.
+//  Persistence (.acu v2) returns in docs/Ink/ROADMAP.md Lot 10.
 // ─────────────────────────────────────────────────────────────────────────────
 struct Project {
     std::string name;           // empty until saved (display name)
@@ -23,12 +26,19 @@ struct Project {
     // the .acu v2 META so reopening a file restores its module.
     std::string moduleId;
 
-    // Reset to a brand-new empty project.
+    // The document. Always valid after Reset(); recreated (never reused) for
+    // a new project so engine-side pointers are refreshed explicitly.
+    std::unique_ptr<Ink::Document> document;
+
+    // Reset to a brand-new empty project: fresh document with one default
+    // page. (The caller re-hands the new document to the engine.)
     void Reset() {
         name.clear();
         path.clear();
         moduleId.clear();
         dirty = false;
+        document = std::make_unique<Ink::Document>();
+        document->AddPage("Page 1", { 0, 0 }, { 1920, 1080 });
     }
 
     // Title shown in the title bar.

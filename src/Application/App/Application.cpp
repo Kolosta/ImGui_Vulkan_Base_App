@@ -401,11 +401,22 @@ void Application::Action_NewFile() {
     DoNewFile(LayoutPreset::General, /*applyLayout=*/activeModule_ != nullptr);
 }
 
+// Fresh document into the project + hand it to the Ink engine. Transitional:
+// seeds the demo content so the Viewport shows something until the drawing
+// tools land (docs/Ink/ROADMAP.md Lot 8).
+void Application::ResetDocument() {
+    project_.Reset();
+    if (ink_) {
+        Ink::SeedDemoDocument(*project_.document);
+        ink_->SetDocument(project_.document.get());
+    }
+}
+
 // Create a brand-new project and, optionally, switch the zone layout to
 // `preset`. Shared by the menu New, the splash presets, and (with
 // applyLayout=false) the module-open flow which supplies its own layout next.
 void Application::DoNewFile(LayoutPreset preset, bool applyLayout) {
-    project_.Reset();
+    ResetDocument();
     if (applyLayout) {
         if (activeModule_) { activeModule_->OnDeactivate(); activeModule_ = nullptr; }
         activeCapabilities_ = Modules::Capabilities{};   // Classic = full defaults

@@ -171,6 +171,9 @@ private:
     void RequestNewFile(LayoutPreset preset);
     void DoNewFile(LayoutPreset preset, bool applyLayout);
     void RenderUnsavedDialog();   // the modal; called each frame from Update()
+    // Fresh document into project_ + hand it to the Ink engine. Transitional:
+    // also seeds the demo content (until the drawing tools land, Lot 8).
+    void ResetDocument();
 
     // ── Modules ──────────────────────────────────────────────────────────────
     void RegisterModules();

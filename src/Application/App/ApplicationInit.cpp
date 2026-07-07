@@ -291,9 +291,9 @@ bool Application::Initialize() {
         secondaryWindows_.push_back(&tokenGraphHost_);
     }
 
-    // A fresh launch opens an empty default project. (The document model and
-    // its default page return with the Ink engine — docs/Ink/ROADMAP.md Lot 2.)
-    project_.Reset();
+    // A fresh launch opens a new project: fresh Ink document with one default
+    // page (+ transitional demo content), handed to the engine.
+    ResetDocument();
 
     // Load the recent-files list (shown on the splash start screen).
     LoadRecentFiles();
