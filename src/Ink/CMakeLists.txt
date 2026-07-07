@@ -4,6 +4,18 @@ cmake_minimum_required(VERSION 3.22)
 # synchronization2). Pure Vulkan + VMA + std: no ImGui, no SDL — the app hands
 # in the shared device handles and texture-registration hooks (Renderer.h).
 add_library(Ink STATIC
+    # Document — the persistent model (pure data + invariants, GPU-less)
+    src/Document/Document.cpp
+
+    # Geometry — flatten / triangulate / stroke + the product cache (CPU)
+    src/Geometry/Flatten.cpp
+    src/Geometry/Triangulate.cpp
+    src/Geometry/Stroker.cpp
+    src/Geometry/GeometryCache.cpp
+
+    # Scene — document → drawables (painter order, double transforms)
+    src/Scene/Scene.cpp
+
     # RHI — the only layer that touches raw Vulkan object creation
     src/RHI/Device.cpp
     src/RHI/Resources.cpp
@@ -13,7 +25,7 @@ add_library(Ink STATIC
     # Graph — minimal frame graph (pass list + sync2 barrier derivation)
     src/Graph/RenderGraph.cpp
 
-    # Render — engine root, GPU scene data, the passes
+    # Render — engine root, GPU residency/tables, the passes
     src/Render/Renderer.cpp
     src/Render/GpuScene.cpp
     src/Render/DemoScene.cpp
@@ -66,6 +78,14 @@ endforeach()
 
 add_custom_target(ink_shaders DEPENDS ${INK_SPV_FILES})
 add_dependencies(Ink ink_shaders)
+
+# ── ink_tests: unit tests of the GPU-less layers (ctest) ────────────────────
+option(INK_BUILD_TESTS "Build the Ink unit tests" ON)
+if(INK_BUILD_TESTS)
+    add_executable(ink_tests tests/unit/ink_tests.cpp)
+    target_link_libraries(ink_tests PRIVATE Ink)
+    add_test(NAME ink_unit COMMAND ink_tests)
+endif()
 
 # ── ink_bench: the headless performance harness (docs/Ink/PERF_TESTING.md) ──
 option(INK_BUILD_BENCH "Build the ink_bench performance harness" ON)

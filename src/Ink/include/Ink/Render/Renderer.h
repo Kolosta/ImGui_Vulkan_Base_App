@@ -10,11 +10,13 @@
 
 namespace Ink {
 
+class Document;
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Renderer — the engine root (docs/Ink/ARCHITECTURE.md §7). Adopts the
 //  application's shared Vulkan 1.3 device, owns the RHI device wrapper, the
-//  GpuScene, the pipelines and the per-frame loop; hands out one View per
-//  Viewport zone.
+//  Scene/GeometryCache/GpuScene content chain, the pipelines and the
+//  per-frame loop; hands out one View per Viewport zone.
 //
 //  Frame protocol (single graphics queue):
 //    BeginFrame()                  — before the UI build (fence/slot rotation)
@@ -54,11 +56,16 @@ public:
     ~Renderer();
 
     // Requires a device created with the Vulkan 1.3 features (dynamic
-    // rendering + synchronization2). Loads shaders, builds the pipelines and
-    // uploads the Lot 1 demo scene. False = engine unavailable (the app keeps
-    // running; the Viewport shows its placeholder).
+    // rendering + synchronization2). Loads shaders and builds the pipelines.
+    // False = engine unavailable (the app keeps running; the Viewport shows
+    // its placeholder).
     bool Initialize(const InitInfo& info);
     void Shutdown();   // call with the device idle, before it is destroyed
+
+    // The document to render (owned by the application — App::Project). The
+    // engine compiles it into its Scene when its ChangeLog is non-empty;
+    // nullptr renders background + overlays only.
+    void SetDocument(Document* document);
 
     void BeginFrame();
     void EndFrame();
@@ -68,8 +75,7 @@ public:
     View* AcquireView(const void* key);
 
     const Stats& GetStats() const;
-    // Demo-scene bounds (doc units) — drives the Viewport's fit-view until the
-    // real document lands (Lot 2).
+    // Compiled-scene bounds (doc units) — drives the Viewport's fit-view.
     Rect SceneBounds() const;
 
 private:

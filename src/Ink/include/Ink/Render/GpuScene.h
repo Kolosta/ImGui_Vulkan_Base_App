@@ -1,38 +1,45 @@
 #pragma once
 
 #include "Ink/Core/Math.h"
+#include "Ink/Geometry/GeometryCache.h"
 #include "Ink/RHI/Resources.h"
+#include "Ink/Scene/Scene.h"
 #include <cstdint>
+#include <functional>
+#include <unordered_map>
 #include <vector>
 
 namespace Ink {
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  GpuScene — the persistent GPU residency of the scene
-//  (docs/Ink/RENDER_GRAPH.md §3): vertex/index pools, the instance/item/paint
-//  tables (SSBOs) and the prebuilt indirect draw commands.
+//  GpuScene — the persistent GPU residency of the compiled scene
+//  (docs/Ink/RENDER_GRAPH.md §3): growable vertex/index pools holding the
+//  GeometryCache products, and the instance/item/paint tables (SSBOs) built
+//  from the Scene's drawables in painter order.
 //
-//  A DRAW is one VkDrawIndexedIndirectCommand per batch: a mesh range drawn
-//  for a contiguous run of instance records. The vertex shader chases
-//  instance → item → paint, so one object or 10 000 instances is the same
-//  code path — the instancing claim of the spec, live from Lot 1.
+//  Everything updates through STAGED uploads recorded once per frame into the
+//  frame's command buffer (FlushUploads), fenced by the frame ring — the CPU
+//  never stalls on the GPU for content changes. Buffer growth retires the old
+//  buffer through the caller's defer hook (the frame garbage ring).
 //
-//  Lot 1 feeds it a static demo scene (UploadStatic, built by DemoScene.cpp).
-//  The Scene compiler (Lot 2) replaces that with incremental dirty-range
-//  updates behind this same data model.
+//  A draw is one VkDrawIndexedIndirectCommand per run of consecutive
+//  drawables sharing a mesh range; the per-view command lists are built by
+//  the Renderer at record time (mesh ranges depend on the view's zoom tier).
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GPU-facing records. Layouts match the std430 structs in vector.vert —
 // 4-byte scalars only, no implicit padding.
 struct ContentVertex {
-    float x = 0.0f, y = 0.0f;   // definition-local units
+    float x = 0.0f, y = 0.0f;   // node-local units
 };
 
 struct InstanceRecord {
-    float m[6];                 // row-major 2×3: local → document
+    float m[6];                 // row-major 2×3: node-local → document (f32*)
     std::uint32_t itemIndex = 0;
     std::uint32_t pad_      = 0;
 };
+// (*) narrowed from double per scene sync; the camera-relative rebasing that
+// removes the deep-zoom limit replaces this narrowing in Lot 3.
 
 struct ItemRecord {
     std::uint32_t paintIndex = 0;
@@ -44,64 +51,79 @@ struct PaintRecord {
     float rgba[4] = { 0, 0, 0, 1 };   // linear, premultiplied
 };
 
-// A contiguous mesh range in the pools.
+// A contiguous mesh range in the pools (vertex offset in vertices).
 struct MeshRange {
-    std::uint32_t firstIndex  = 0;
-    std::uint32_t indexCount  = 0;
+    std::uint32_t firstIndex   = 0;
+    std::uint32_t indexCount   = 0;
     std::int32_t  vertexOffset = 0;
-};
-
-// One indirect draw: a mesh range × a run of instances.
-struct Batch {
-    MeshRange     mesh;
-    std::uint32_t firstInstance = 0;
-    std::uint32_t instanceCount = 0;
 };
 
 class GpuScene {
 public:
+    // Deferred-destruction hook: the Renderer's frame garbage ring.
+    using DeferFn = std::function<void(std::function<void()>)>;
+
+    static constexpr std::uint32_t kStagingRing = 2;   // == frames in flight
+
     bool Initialize(rhi::Device& dev);
     void Shutdown(rhi::Device& dev);
 
-    // Upload a full static scene (Lot 1 demo path). Builds the pools, tables
-    // and the indirect command buffer in one shot.
-    bool UploadStatic(rhi::Device& dev,
-                      const std::vector<ContentVertex>&  vertices,
-                      const std::vector<std::uint32_t>&  indices,
-                      const std::vector<InstanceRecord>& instances,
-                      const std::vector<ItemRecord>&     items,
-                      const std::vector<PaintRecord>&    paints,
-                      const std::vector<Batch>&          batches,
-                      Rect bounds);
+    // Ensure the cache product `key` is resident in the pools (queues the
+    // upload on first sight; pool growth re-queues every resident mesh from
+    // `cache`). Empty range (indexCount 0) on failure.
+    MeshRange EnsureResident(rhi::Device& dev, std::uint64_t key,
+                             const geom::Mesh& mesh, const GeometryCache& cache,
+                             const DeferFn& defer);
 
-    const rhi::Buffer& VertexPool()     const { return vertexPool_; }
-    const rhi::Buffer& IndexPool()      const { return indexPool_; }
-    const rhi::Buffer& InstanceTable()  const { return instanceTable_; }
-    const rhi::Buffer& ItemTable()      const { return itemTable_; }
-    const rhi::Buffer& PaintTable()     const { return paintTable_; }
-    const rhi::Buffer& IndirectBuffer() const { return indirect_; }
+    // Rebuild the instance/item/paint arrays from the drawables (painter
+    // order; instance index == drawable index) and queue their upload.
+    // Returns true when a table BUFFER was recreated (the scene descriptor
+    // set must be re-pointed).
+    bool SyncTables(rhi::Device& dev, const std::vector<Drawable>& drawables,
+                    const DeferFn& defer);
 
-    std::uint32_t BatchCount()    const { return batchCount_; }
-    std::uint32_t InstanceCount() const { return instanceCount_; }
-    std::uint32_t TriangleCount() const { return triangleCount_; }
-    // Content version: mixed into view signatures so a scene change re-renders
-    // every view (bumped by each upload).
-    std::uint64_t Version()       const { return version_; }
-    Rect          Bounds()        const { return bounds_; }
+    // Record every queued upload into `cmd` — call ONCE per frame, BEFORE any
+    // render pass. `slot` picks the staging ring entry (fenced by the frame
+    // ring). Returns the number of bytes uploaded.
+    std::size_t FlushUploads(rhi::Device& dev, VkCommandBuffer cmd,
+                             std::uint32_t slot, const DeferFn& defer);
+
+    const rhi::Buffer& VertexPool()    const { return vertexPool_; }
+    const rhi::Buffer& IndexPool()     const { return indexPool_; }
+    const rhi::Buffer& InstanceTable() const { return instanceTable_; }
+    const rhi::Buffer& ItemTable()     const { return itemTable_; }
+    const rhi::Buffer& PaintTable()    const { return paintTable_; }
+    bool TablesReady() const { return (bool)instanceTable_; }
 
 private:
-    rhi::Buffer vertexPool_, indexPool_;
-    rhi::Buffer instanceTable_, itemTable_, paintTable_;
-    rhi::Buffer indirect_;
-    std::uint32_t batchCount_    = 0;
-    std::uint32_t instanceCount_ = 0;
-    std::uint32_t triangleCount_ = 0;
-    std::uint64_t version_       = 0;
-    Rect          bounds_{};
-};
+    struct PendingCopy {
+        VkBuffer     dst = VK_NULL_HANDLE;
+        VkDeviceSize dstOffset = 0;
+        std::size_t  srcOffset = 0;   // into pendingData_
+        std::size_t  size = 0;
+    };
+    void Queue(VkBuffer dst, VkDeviceSize dstOffset, const void* data,
+               std::size_t size);
+    bool GrowPools(rhi::Device& dev, std::uint32_t vtxNeeded,
+                   std::uint32_t idxNeeded, const GeometryCache& cache,
+                   const DeferFn& defer);
+    // Ensure `buf` holds ≥ `bytes` (recreate + defer old). Sets `recreated`.
+    bool EnsureTable(rhi::Device& dev, rhi::Buffer& buf, VkDeviceSize bytes,
+                     const DeferFn& defer, bool& recreated);
 
-// Lot 1 demo content (DemoScene.cpp): a page substrate, a dozen filled +
-// "stroked" shapes and a 1 000-instance grid, all through the real pools.
-bool UploadDemoScene(rhi::Device& dev, GpuScene& scene);
+    // Pools (device-local) + bump allocation state.
+    rhi::Buffer   vertexPool_, indexPool_;
+    std::uint32_t vtxUsed_ = 0, vtxCap_ = 0;
+    std::uint32_t idxUsed_ = 0, idxCap_ = 0;
+    std::unordered_map<std::uint64_t, MeshRange> resident_;
+
+    // Tables (device-local).
+    rhi::Buffer instanceTable_, itemTable_, paintTable_;
+
+    // Per-frame staged uploads.
+    std::vector<std::uint8_t> pendingData_;
+    std::vector<PendingCopy>  pendingCopies_;
+    rhi::Buffer               staging_[kStagingRing];
+};
 
 } // namespace Ink

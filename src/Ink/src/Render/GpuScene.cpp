@@ -1,10 +1,20 @@
 #include "Ink/Render/GpuScene.h"
 
+#include <cstring>
+
 namespace Ink {
 
+namespace {
+constexpr std::uint32_t kInitialVertices = 1u << 16;   // 64k verts (512 KB)
+constexpr std::uint32_t kInitialIndices  = 1u << 17;   // 128k indices (512 KB)
+
+std::uint64_t ColorKey(const PaintRecord& p) {
+    return HashBytes(p.rgba, sizeof p.rgba);
+}
+} // namespace
+
 bool GpuScene::Initialize(rhi::Device&) {
-    // Buffers are created lazily by UploadStatic (their sizes depend on the
-    // content). Incremental pool growth arrives with the Scene lots.
+    // Buffers are created lazily (first residency / first sync).
     return true;
 }
 
@@ -14,65 +24,229 @@ void GpuScene::Shutdown(rhi::Device& dev) {
     rhi::DestroyBuffer(dev, instanceTable_);
     rhi::DestroyBuffer(dev, itemTable_);
     rhi::DestroyBuffer(dev, paintTable_);
-    rhi::DestroyBuffer(dev, indirect_);
+    for (rhi::Buffer& s : staging_) rhi::DestroyBuffer(dev, s);
+    resident_.clear();
+    vtxUsed_ = vtxCap_ = idxUsed_ = idxCap_ = 0;
+    pendingData_.clear();
+    pendingCopies_.clear();
 }
 
-bool GpuScene::UploadStatic(rhi::Device& dev,
-                            const std::vector<ContentVertex>&  vertices,
-                            const std::vector<std::uint32_t>&  indices,
-                            const std::vector<InstanceRecord>& instances,
-                            const std::vector<ItemRecord>&     items,
-                            const std::vector<PaintRecord>&    paints,
-                            const std::vector<Batch>&          batches,
-                            Rect bounds) {
-    if (vertices.empty() || indices.empty() || instances.empty() ||
-        items.empty() || paints.empty() || batches.empty())
-        return false;
+void GpuScene::Queue(VkBuffer dst, VkDeviceSize dstOffset, const void* data,
+                     std::size_t size) {
+    if (!dst || size == 0) return;
+    PendingCopy c;
+    c.dst       = dst;
+    c.dstOffset = dstOffset;
+    c.srcOffset = pendingData_.size();
+    c.size      = size;
+    pendingData_.insert(pendingData_.end(),
+                        static_cast<const std::uint8_t*>(data),
+                        static_cast<const std::uint8_t*>(data) + size);
+    pendingCopies_.push_back(c);
+}
 
-    // (Re)create device-local buffers sized to the content.
-    Shutdown(dev);
-    auto make = [&](rhi::Buffer& b, VkDeviceSize size, VkBufferUsageFlags usage,
-                    const void* data) {
-        b = rhi::CreateDeviceBuffer(dev, size, usage);
-        return b && rhi::UploadToBuffer(dev, b, data, size);
+bool GpuScene::GrowPools(rhi::Device& dev, std::uint32_t vtxNeeded,
+                         std::uint32_t idxNeeded, const GeometryCache& cache,
+                         const DeferFn& defer) {
+    std::uint32_t newVtxCap = vtxCap_ ? vtxCap_ : kInitialVertices;
+    std::uint32_t newIdxCap = idxCap_ ? idxCap_ : kInitialIndices;
+    while (newVtxCap < vtxNeeded) newVtxCap *= 2;
+    while (newIdxCap < idxNeeded) newIdxCap *= 2;
+    if (newVtxCap == vtxCap_ && newIdxCap == idxCap_ && vertexPool_ && indexPool_)
+        return true;
+
+    if (vertexPool_) { rhi::Buffer old = vertexPool_;
+        defer([&dev, old]() mutable { rhi::DestroyBuffer(dev, old); }); }
+    if (indexPool_)  { rhi::Buffer old = indexPool_;
+        defer([&dev, old]() mutable { rhi::DestroyBuffer(dev, old); }); }
+
+    vertexPool_ = rhi::CreateDeviceBuffer(
+        dev, (VkDeviceSize)newVtxCap * sizeof(ContentVertex),
+        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    indexPool_ = rhi::CreateDeviceBuffer(
+        dev, (VkDeviceSize)newIdxCap * sizeof(std::uint32_t),
+        VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    if (!vertexPool_ || !indexPool_) return false;
+    vtxCap_ = newVtxCap;
+    idxCap_ = newIdxCap;
+
+    // Fresh buffers: every already-resident mesh re-uploads to its (kept)
+    // range — the CPU products live in the cache, ranges stay stable.
+    for (const auto& [key, range] : resident_) {
+        const geom::Mesh* mesh = cache.Find(key);
+        if (!mesh) continue;
+        Queue(vertexPool_.buffer,
+              (VkDeviceSize)range.vertexOffset * sizeof(ContentVertex),
+              mesh->positions.data(),
+              mesh->positions.size() * sizeof(float));
+        Queue(indexPool_.buffer,
+              (VkDeviceSize)range.firstIndex * sizeof(std::uint32_t),
+              mesh->indices.data(),
+              mesh->indices.size() * sizeof(std::uint32_t));
+    }
+    return true;
+}
+
+MeshRange GpuScene::EnsureResident(rhi::Device& dev, std::uint64_t key,
+                                   const geom::Mesh& mesh,
+                                   const GeometryCache& cache,
+                                   const DeferFn& defer) {
+    if (auto it = resident_.find(key); it != resident_.end())
+        return it->second;
+    if (mesh.Empty()) return {};
+
+    const std::uint32_t vtxCount = mesh.VertexCount();
+    const std::uint32_t idxCount = (std::uint32_t)mesh.indices.size();
+    if (vtxUsed_ + vtxCount > vtxCap_ || idxUsed_ + idxCount > idxCap_)
+        if (!GrowPools(dev, vtxUsed_ + vtxCount, idxUsed_ + idxCount, cache, defer))
+            return {};
+
+    MeshRange range;
+    range.vertexOffset = (std::int32_t)vtxUsed_;
+    range.firstIndex   = idxUsed_;
+    range.indexCount   = idxCount;
+    vtxUsed_ += vtxCount;
+    idxUsed_ += idxCount;
+
+    Queue(vertexPool_.buffer,
+          (VkDeviceSize)range.vertexOffset * sizeof(ContentVertex),
+          mesh.positions.data(), mesh.positions.size() * sizeof(float));
+    Queue(indexPool_.buffer,
+          (VkDeviceSize)range.firstIndex * sizeof(std::uint32_t),
+          mesh.indices.data(), mesh.indices.size() * sizeof(std::uint32_t));
+
+    resident_.emplace(key, range);
+    return range;
+}
+
+bool GpuScene::EnsureTable(rhi::Device& dev, rhi::Buffer& buf,
+                           VkDeviceSize bytes, const DeferFn& defer,
+                           bool& recreated) {
+    if (buf && buf.size >= bytes) return true;
+    VkDeviceSize cap = buf ? buf.size : 4096;
+    while (cap < bytes) cap *= 2;
+    if (buf) {
+        rhi::Buffer old = buf;
+        defer([&dev, old]() mutable { rhi::DestroyBuffer(dev, old); });
+    }
+    buf = rhi::CreateDeviceBuffer(dev, cap, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+    recreated = true;
+    return (bool)buf;
+}
+
+bool GpuScene::SyncTables(rhi::Device& dev,
+                          const std::vector<Drawable>& drawables,
+                          const DeferFn& defer) {
+    // Build the arrays in painter order; instance index == drawable index
+    // (the per-view indirect commands rely on it). Paints and items dedup.
+    std::vector<InstanceRecord> instances;
+    std::vector<ItemRecord>     items;
+    std::vector<PaintRecord>    paints;
+    instances.reserve(drawables.size());
+    std::unordered_map<std::uint64_t, std::uint32_t> paintIndex;
+    std::unordered_map<std::uint32_t, std::uint32_t> itemIndex;
+
+    for (const Drawable& d : drawables) {
+        PaintRecord p;
+        const Color c = d.color.Premultiplied();
+        p.rgba[0] = c.r; p.rgba[1] = c.g; p.rgba[2] = c.b; p.rgba[3] = c.a;
+        const std::uint64_t ck = ColorKey(p);
+        auto pit = paintIndex.find(ck);
+        if (pit == paintIndex.end()) {
+            pit = paintIndex.emplace(ck, (std::uint32_t)paints.size()).first;
+            paints.push_back(p);
+        }
+        auto iit = itemIndex.find(pit->second);
+        if (iit == itemIndex.end()) {
+            iit = itemIndex.emplace(pit->second,
+                                    (std::uint32_t)items.size()).first;
+            items.push_back({ pit->second, 0, { 0, 0 } });
+        }
+
+        InstanceRecord rec{};
+        for (int i = 0; i < 6; ++i) rec.m[i] = (float)d.world.m[i];
+        rec.itemIndex = iit->second;
+        instances.push_back(rec);
+    }
+    if (instances.empty()) return false;
+
+    bool recreated = false;
+    if (!EnsureTable(dev, instanceTable_,
+                     instances.size() * sizeof(InstanceRecord), defer, recreated) ||
+        !EnsureTable(dev, itemTable_,
+                     items.size() * sizeof(ItemRecord), defer, recreated) ||
+        !EnsureTable(dev, paintTable_,
+                     paints.size() * sizeof(PaintRecord), defer, recreated))
+        return recreated;
+
+    Queue(instanceTable_.buffer, 0, instances.data(),
+          instances.size() * sizeof(InstanceRecord));
+    Queue(itemTable_.buffer, 0, items.data(), items.size() * sizeof(ItemRecord));
+    Queue(paintTable_.buffer, 0, paints.data(),
+          paints.size() * sizeof(PaintRecord));
+    return recreated;
+}
+
+std::size_t GpuScene::FlushUploads(rhi::Device& dev, VkCommandBuffer cmd,
+                                   std::uint32_t slot, const DeferFn& defer) {
+    if (pendingCopies_.empty()) return 0;
+    const std::size_t bytes = pendingData_.size();
+
+    rhi::Buffer& staging = staging_[slot % kStagingRing];
+    if (!staging || staging.size < bytes) {
+        if (staging) {
+            rhi::Buffer old = staging;
+            defer([&dev, old]() mutable { rhi::DestroyBuffer(dev, old); });
+        }
+        VkDeviceSize cap = staging ? staging.size : 1u << 16;
+        while (cap < bytes) cap *= 2;
+        staging = rhi::CreateHostBuffer(dev, cap, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        if (!staging) { pendingData_.clear(); pendingCopies_.clear(); return 0; }
+    }
+    std::memcpy(staging.mapped, pendingData_.data(), bytes);
+
+    // Order the copies against BOTH sides on this single queue: the previous
+    // frame may still read the destinations; this frame's passes read the
+    // fresh data (docs/Ink/RENDER_GRAPH.md §5).
+    auto memoryBarrier = [&](VkPipelineStageFlags2 srcStage,
+                             VkAccessFlags2 srcAccess,
+                             VkPipelineStageFlags2 dstStage,
+                             VkAccessFlags2 dstAccess) {
+        VkMemoryBarrier2 mb{};
+        mb.sType         = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+        mb.srcStageMask  = srcStage;
+        mb.srcAccessMask = srcAccess;
+        mb.dstStageMask  = dstStage;
+        mb.dstAccessMask = dstAccess;
+        VkDependencyInfo dep{};
+        dep.sType              = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+        dep.memoryBarrierCount = 1;
+        dep.pMemoryBarriers    = &mb;
+        vkCmdPipelineBarrier2(cmd, &dep);
     };
+    const VkPipelineStageFlags2 kConsumers =
+        VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT |
+        VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT |
+        VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+    memoryBarrier(kConsumers, VK_ACCESS_2_MEMORY_READ_BIT,
+                  VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
-    // The indirect commands: one per batch, prebuilt (static demo scene).
-    std::vector<VkDrawIndexedIndirectCommand> cmds;
-    cmds.reserve(batches.size());
-    triangleCount_ = 0;
-    instanceCount_ = 0;
-    for (const Batch& b : batches) {
-        VkDrawIndexedIndirectCommand c{};
-        c.indexCount    = b.mesh.indexCount;
-        c.instanceCount = b.instanceCount;
-        c.firstIndex    = b.mesh.firstIndex;
-        c.vertexOffset  = b.mesh.vertexOffset;
-        c.firstInstance = b.firstInstance;   // gl_InstanceIndex base (Vulkan)
-        cmds.push_back(c);
-        triangleCount_ += (b.mesh.indexCount / 3) * b.instanceCount;
-        instanceCount_ += b.instanceCount;
+    for (const PendingCopy& c : pendingCopies_) {
+        VkBufferCopy region{ (VkDeviceSize)c.srcOffset, c.dstOffset,
+                             (VkDeviceSize)c.size };
+        vkCmdCopyBuffer(cmd, staging.buffer, c.dst, 1, &region);
     }
 
-    const bool ok =
-        make(vertexPool_, vertices.size() * sizeof(ContentVertex),
-             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertices.data()) &&
-        make(indexPool_, indices.size() * sizeof(std::uint32_t),
-             VK_BUFFER_USAGE_INDEX_BUFFER_BIT, indices.data()) &&
-        make(instanceTable_, instances.size() * sizeof(InstanceRecord),
-             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, instances.data()) &&
-        make(itemTable_, items.size() * sizeof(ItemRecord),
-             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, items.data()) &&
-        make(paintTable_, paints.size() * sizeof(PaintRecord),
-             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, paints.data()) &&
-        make(indirect_, cmds.size() * sizeof(VkDrawIndexedIndirectCommand),
-             VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, cmds.data());
-    if (!ok) { Shutdown(dev); return false; }
+    memoryBarrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                  kConsumers,
+                  VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT |
+                  VK_ACCESS_2_INDEX_READ_BIT |
+                  VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
+                  VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT);
 
-    batchCount_ = (std::uint32_t)batches.size();
-    bounds_     = bounds;
-    ++version_;
-    return true;
+    pendingData_.clear();
+    pendingCopies_.clear();
+    return bytes;
 }
 
 } // namespace Ink

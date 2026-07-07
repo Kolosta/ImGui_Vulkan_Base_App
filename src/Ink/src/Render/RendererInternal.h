@@ -5,12 +5,15 @@
 // Passes/). Included by Renderer.cpp, View.cpp and the pass files only.
 
 #include "Ink/Core/Math.h"
+#include "Ink/Document/Document.h"
+#include "Ink/Geometry/GeometryCache.h"
 #include "Ink/Graph/RenderGraph.h"
 #include "Ink/RHI/Device.h"
 #include "Ink/RHI/Resources.h"
 #include "Ink/Render/GpuScene.h"
 #include "Ink/Render/Renderer.h"
 #include "Ink/Render/Stats.h"
+#include "Ink/Scene/Scene.h"
 #include "Ink/View/OverlayList.h"
 
 #include <cstdint>
@@ -54,6 +57,13 @@ struct ViewImpl {
     rhi::Buffer   overlayVb[kFramesInFlight];
     std::uint32_t overlayVertexCount = 0;
 
+    // Per-slot indirect command buffers (host-visible ring): the view's draw
+    // list — mesh ranges depend on the view's zoom tier, so commands are
+    // per-view while the instance/item/paint tables stay global.
+    rhi::Buffer   indirect[kFramesInFlight];
+    std::uint32_t indirectCount = 0;
+    std::vector<VkDrawIndexedIndirectCommand> indirectScratch;
+
     // Frame bookkeeping.
     std::uint64_t lastSignature = 0;
     bool          forceDirty    = true;    // set on create/resize
@@ -78,7 +88,14 @@ struct RendererImpl {
     rhi::Device  device;
     TextureHooks hooks;
     std::string  shaderDir;
-    GpuScene     scene;
+
+    // The content chain: app-owned Document → compiled Scene → CPU geometry
+    // cache → GPU residency/tables.
+    Document*     document = nullptr;
+    Scene         scene;
+    GeometryCache cache;
+    GpuScene      gpu;
+    bool          forceCompile = true;   // set by SetDocument
 
     // Pipelines (created once — target formats are fixed).
     VkDescriptorSetLayout sceneSetLayout   = VK_NULL_HANDLE;
@@ -114,7 +131,8 @@ struct RendererImpl {
 // Pass entry points (Passes/*.cpp). All record inside an open dynamic
 // rendering scope set up by the graph.
 void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
-                       const PushCamera& worldToNdc);
+                       const PushCamera& worldToNdc, VkBuffer indirect,
+                       std::uint32_t commandCount);
 void RecordOverlayPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& pxToNdc, VkBuffer vertexBuffer,
                        std::uint32_t vertexCount);

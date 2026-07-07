@@ -5,21 +5,25 @@
 // null — the display image simply is never sampled by a UI), and reports the
 // Stats counters as JSON.
 //
-//   ink_bench [--scene bootstrap|steady|empty] [--frames N] [--warmup N]
-//             [--shaders DIR] [--out FILE]
+//   ink_bench [--scene bootstrap|steady|empty|paths_10k] [--frames N]
+//             [--warmup N] [--shaders DIR] [--out FILE]
 //
 // Scenes (grow with the lots — docs/Ink/PERF_TESTING.md §3):
-//   bootstrap — the Lot 1 demo scene, camera fit, dirtied every frame
+//   bootstrap — the demo document, camera fit, dirtied every frame
 //               (simulated navigation → full re-record each frame)
 //   steady    — same content, camera frozen → the steady-state short-circuit
 //               must keep viewsRendered at 0 (record cost ≈ 0)
 //   empty     — camera far off-content (hardware-clipped): frame-loop floor
+//   paths_10k — 10 000 random filled+stroked Bézier blobs (deterministic
+//               seed), camera fit, dirtied every frame
 
+#include <Ink/Document/Document.h>
 #include <Ink/Render/Renderer.h>
 
 #include <vulkan/vulkan.h>
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -106,6 +110,52 @@ void DestroyBenchDevice(BenchDevice& d) {
     d = {};
 }
 
+// 10 000 random filled+stroked Bézier blobs over an 8000×4500 page —
+// deterministic (LCG seed), built through the public Document API
+// (docs/Ink/PERF_TESTING.md §3: scenes double as API integration tests).
+void BuildPaths10k(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 8000, 4500 });
+    std::uint64_t lcg = 0x1234ABCDu;
+    auto rnd = [&]() {   // [0,1)
+        lcg = lcg * 6364136223846793005ull + 1442695040888963407ull;
+        return (double)(lcg >> 11) / 9007199254740992.0;
+    };
+    constexpr double kTau = 6.28318530717958647692;
+    for (int n = 0; n < 10000; ++n) {
+        const double cx = 100.0 + rnd() * 7800.0;
+        const double cy = 100.0 + rnd() * 4300.0;
+        const double r  = 20.0 + rnd() * 40.0;
+        // A smooth 6-anchor blob: points on a noisy circle, tangent handles.
+        Ink::PathData path;
+        Ink::Subpath sp;
+        sp.closed = true;
+        for (int i = 0; i < 6; ++i) {
+            const double a  = kTau * (double)i / 6.0;
+            const double rr = r * (0.65 + rnd() * 0.7);
+            Ink::Anchor an;
+            an.pos = { std::cos(a) * rr, std::sin(a) * rr };
+            const double hl = rr * 0.55;
+            an.out = { -std::sin(a) * hl,  std::cos(a) * hl };
+            an.in  = {  std::sin(a) * hl, -std::cos(a) * hl };
+            an.hasIn = an.hasOut = true;
+            an.kind = Ink::AnchorKind::Smooth;
+            sp.anchors.push_back(an);
+        }
+        path.subpaths.push_back(std::move(sp));
+
+        Ink::Style style = Ink::Style::Filled(
+            { (float)rnd(), (float)rnd(), (float)rnd(),
+              0.35f + (float)rnd() * 0.6f });
+        if (n % 2 == 0)
+            style.WithStroke({ 0.05f, 0.05f, 0.08f, 1.0f }, 2.0 + rnd() * 4.0);
+        const Ink::NodeId id = doc.AddPath(page, std::move(path), style, "blob");
+        Ink::Transform2D t;
+        t.tx = cx; t.ty = cy;
+        t.rotation = rnd() * kTau;
+        doc.SetTransform(id, t);
+    }
+}
+
 struct Series {
     std::vector<double> values;
     void   Add(double v) { values.push_back(v); }
@@ -137,7 +187,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--shaders")) shaders = argv[++i];
         else if (!std::strcmp(argv[i], "--out"))     outPath = argv[++i];
     }
-    if (scene != "bootstrap" && scene != "steady" && scene != "empty") {
+    if (scene != "bootstrap" && scene != "steady" && scene != "empty" &&
+        scene != "paths_10k") {
         std::fprintf(stderr, "ink_bench: unknown scene '%s'\n", scene.c_str());
         return 2;
     }
@@ -161,16 +212,36 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    // The document under test (the engine renders the app-owned model).
+    Ink::Document doc;
+    if (scene == "paths_10k") BuildPaths10k(doc);
+    else                      Ink::SeedDemoDocument(doc);
+    renderer.SetDocument(&doc);
+
     constexpr std::uint32_t kW = 1920, kH = 1080;
+    const int viewKey = 0;
+
+    // Prime frame: compiles the scene (bounds become known) and pays the full
+    // first build (compile + geometry + uploads) — reported as firstBuild.
+    Ink::Stats firstBuild{};
+    {
+        renderer.BeginFrame();
+        Ink::View* v = renderer.AcquireView(&viewKey);
+        v->SetViewport(kW, kH);
+        v->SetCamera(0.0, 0.0, 1.0);
+        v->SetBackground(Ink::SrgbToLinearPremultiplied(0.16f, 0.16f, 0.18f, 1.0f));
+        renderer.EndFrame();
+        firstBuild = renderer.GetStats();
+    }
+
     const Ink::Rect b = renderer.SceneBounds();
     const double fitZoom = std::min((double)kW / b.Width(), (double)kH / b.Height()) * 0.94;
     double panX = b.min.x + b.Width() * 0.5 - kW * 0.5 / fitZoom;
     double panY = b.min.y + b.Height() * 0.5 - kH * 0.5 / fitZoom;
     if (scene == "empty") { panX += 100000.0; panY += 100000.0; }
-    const bool dirtyEachFrame = (scene == "bootstrap");
-    const int viewKey = 0;
+    const bool dirtyEachFrame = (scene != "steady");
 
-    Series frameMs, recordMs, gpuMs;
+    Series frameMs, recordMs, gpuMs, geomMs, syncMs;
     Ink::Stats last{};
     std::uint64_t steadySkips = 0;
 
@@ -193,30 +264,40 @@ int main(int argc, char** argv) {
             last = renderer.GetStats();
             frameMs.Add(ms);
             recordMs.Add(last.recordMs);
+            geomMs.Add(last.geomMs);
+            syncMs.Add(last.syncMs);
             if (last.gpuMs > 0.0f) gpuMs.Add(last.gpuMs);
             if (last.viewsRendered == 0) ++steadySkips;
         }
     }
     vkDeviceWaitIdle(bd.device);
 
-    char json[2048];
+    char json[2560];
     std::snprintf(json, sizeof json,
         "{\n"
         "  \"schema\": 1,\n"
         "  \"scene\": \"%s\",\n"
         "  \"frames\": %d,\n"
         "  \"viewport\": [%u, %u],\n"
+        "  \"firstBuild\": { \"compileMs\": %.4f, \"geomMs\": %.4f,\n"
+        "                    \"syncMs\": %.4f, \"recordMs\": %.4f },\n"
         "  \"metrics\": {\n"
         "    \"frameMs\":  { \"avg\": %.4f, \"p50\": %.4f, \"p99\": %.4f },\n"
         "    \"recordMs\": { \"avg\": %.4f, \"p99\": %.4f },\n"
+        "    \"geomMs\":   { \"avg\": %.4f, \"p99\": %.4f },\n"
+        "    \"syncMs\":   { \"avg\": %.4f, \"p99\": %.4f },\n"
         "    \"gpuMs\":    { \"avg\": %.4f, \"p99\": %.4f },\n"
         "    \"counters\": { \"drawCalls\": %u, \"triangles\": %u,\n"
         "                    \"instances\": %u, \"steadySkippedFrames\": %llu }\n"
         "  }\n"
         "}\n",
         scene.c_str(), frames, kW, kH,
+        firstBuild.compileMs, firstBuild.geomMs, firstBuild.syncMs,
+        firstBuild.recordMs,
         frameMs.Avg(), frameMs.Percentile(0.5), frameMs.Percentile(0.99),
         recordMs.Avg(), recordMs.Percentile(0.99),
+        geomMs.Avg(), geomMs.Percentile(0.99),
+        syncMs.Avg(), syncMs.Percentile(0.99),
         gpuMs.Avg(), gpuMs.Percentile(0.99),
         last.drawCalls, last.triangles, last.instances,
         (unsigned long long)steadySkips);
