@@ -163,7 +163,10 @@ std::vector<DMat23> ExpandModifiers(const Document& doc,
 void Scene::EmitNode(const Document& doc, const Node& n,
                      const DMat23& parentWorld, ScopeId scope, int instDepth,
                      NodeId owner) {
-    if (!n.visible) return;
+    // Hidden by ANY route — layer visibility or an invisible collection it
+    // belongs to (docs/Ink/DOCUMENT_MODEL.md §7). Culling a hidden node never
+    // affects the correctness of what IS drawn.
+    if (!n.visible || doc.HiddenByCollection(n.id)) return;
 
     // Object PARENTING overrides the layer-tree origin (docs/Ink/
     // DOCUMENT_MODEL.md §2): a parented node's world comes from its parentId

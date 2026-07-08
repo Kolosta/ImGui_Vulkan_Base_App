@@ -72,6 +72,20 @@ struct Page {
     std::vector<NodeId> children;           // painter order (bottom → top)
 };
 
+// Collection — an ORGANISATIONAL set (docs/Ink/DOCUMENT_MODEL.md §7), distinct
+// from the layer tree: no z-order, no compositing. Membership is many-to-many
+// (a node may belong to several). A collection's visibility is a Scene-compile
+// FILTER: a node hidden by ANY route (layer, collection, page) is culled —
+// culling never changes correctness of what IS drawn (GEOMETRY.md §7).
+struct Collection {
+    NodeId              id = kNullNode;
+    std::string         name;
+    Color               colorTag{ 0.55f, 0.60f, 0.70f, 1.0f };
+    bool                visible = true;      // filter: hide members at compile
+    std::vector<NodeId> members;             // node ids (many-to-many)
+    std::vector<NodeId> childCollections;    // nested collections (tree in UI)
+};
+
 // What changed, at the granularity the Scene needs for exact dirtying.
 enum class ChangeKind : std::uint8_t {
     Added,        // node/page created
@@ -116,6 +130,37 @@ public:
     void   SetClip(NodeId group, bool clip);
     void   Remove(NodeId node);      // node or page (subtree included)
     void   Clear();                  // everything (fresh document)
+
+    // ── Organisation ops the editors drive (Lot 9) ───────────────────────────
+    void   SetName(NodeId node, std::string name);
+    void   SetLocked(NodeId node, bool locked);
+    // Reorder a node among its siblings (page or group children): move it to
+    // absolute index `to` (clamped). No-op if it has no sibling list.
+    void   ReorderChild(NodeId node, int to);
+    // Move a node under a new layer-tree parent (a group or a page id) at
+    // `index` (−1 = append). Preserves world position. Refuses to parent a
+    // node under itself/its descendant. This is the LAYER-TREE parent (not the
+    // object parentId of Lot 7). Returns false on refusal.
+    bool   MoveTo(NodeId node, NodeId newParent, int index = -1);
+    // Wrap `nodes` in a new group (in their common parent, at the topmost
+    // member's position). Returns the new group id (kNullNode on failure).
+    NodeId GroupNodes(const std::vector<NodeId>& nodes, std::string name);
+    // Dissolve a group: its children take its place among its siblings,
+    // inheriting its transform. Returns the freed child ids.
+    std::vector<NodeId> UngroupNode(NodeId group);
+
+    // ── Collections (docs/Ink/DOCUMENT_MODEL.md §7) ──────────────────────────
+    NodeId AddCollection(std::string name);
+    void   RemoveCollection(NodeId coll);          // frees the set, not members
+    void   SetCollectionName(NodeId coll, std::string name);
+    void   SetCollectionVisible(NodeId coll, bool visible);
+    void   AddToCollection(NodeId coll, NodeId node);
+    void   RemoveFromCollection(NodeId coll, NodeId node);
+    const std::vector<Collection>& Collections() const { return collections_; }
+    const Collection* FindCollection(NodeId id) const;
+    // True when the node is hidden by collection membership (any collection it
+    // belongs to is invisible) — the Scene's collection filter.
+    bool   HiddenByCollection(NodeId node) const;
 
     // ── Editing / undo support (Lot 8) ───────────────────────────────────────
     // A detached copy of a node subtree with its placement — the currency of
@@ -173,8 +218,14 @@ private:
     void   DetachFromParent(const Node& n);
     void   RemoveSubtree(NodeId id);
 
+    // Siblings list a node lives in (its group's children or its page's), or
+    // nullptr. Non-const + const overloads share the lookup.
+    std::vector<NodeId>*       SiblingsOf(const Node& n);
+    const std::vector<NodeId>* SiblingsOf(const Node& n) const;
+
     std::unordered_map<NodeId, Node> nodes_;
     std::vector<Page>                pages_;
+    std::vector<Collection>          collections_;
     NodeId                           nextId_  = 1;
     std::uint64_t                    version_ = 0;
     std::vector<Change>              changes_;

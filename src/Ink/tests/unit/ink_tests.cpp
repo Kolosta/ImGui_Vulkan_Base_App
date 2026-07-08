@@ -560,6 +560,92 @@ void TestSubtreeRoundtrip() {
     CHECK(da->parent == dup);   // intra-subtree parent remapped
 }
 
+void TestOrganisation() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 400, 300 });
+    const NodeId a = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                 Style::Filled({ 1, 0, 0, 1 }), "a");
+    const NodeId b = doc.AddPath(page, PathData::Rect(20, 0, 10, 10),
+                                 Style::Filled({ 0, 1, 0, 1 }), "b");
+    const NodeId c = doc.AddPath(page, PathData::Rect(40, 0, 10, 10),
+                                 Style::Filled({ 0, 0, 1, 1 }), "c");
+    // Order: a,b,c. Reorder c to the front.
+    CHECK(doc.IndexInParent(c) == 2);
+    doc.ReorderChild(c, 0);
+    CHECK(doc.IndexInParent(c) == 0);
+    CHECK(doc.IndexInParent(a) == 1);
+
+    // Rename.
+    doc.SetName(a, "renamed");
+    CHECK(doc.Find(a)->name == "renamed");
+
+    // Group a+b: a new group takes the topmost member's slot; both reparent.
+    const NodeId g = doc.GroupNodes({ a, b }, "G");
+    CHECK(g != kNullNode);
+    CHECK(doc.Find(a)->parent == g);
+    CHECK(doc.Find(b)->parent == g);
+    CHECK(doc.Find(g)->children.size() == 2);
+    // World position preserved through grouping (identity group, so local ==
+    // original position).
+    const DVec2 aw = doc.WorldTransform(a).Apply({ 0, 0 });
+    CHECK_NEAR(aw.x, 0.0, 1e-9);
+
+    // MoveTo keeps world position: put a translated group, reparent a child.
+    { Transform2D t; t.tx = 100; t.ty = 50; doc.SetTransform(g, t); }
+    const DVec2 before = doc.WorldTransform(a).Apply({ 0, 0 });
+    CHECK(doc.MoveTo(a, page, -1));   // pull `a` back out to the page
+    const DVec2 after = doc.WorldTransform(a).Apply({ 0, 0 });
+    CHECK_NEAR(before.x, after.x, 1e-6);
+    CHECK_NEAR(before.y, after.y, 1e-6);
+    CHECK(doc.Find(a)->parent == kNullNode);
+
+    // Refuse parenting a node under its own descendant.
+    CHECK(!doc.MoveTo(g, g, -1));
+
+    // Ungroup: b returns to the page.
+    doc.UngroupNode(g);
+    CHECK(!doc.Find(g));
+    CHECK(doc.Find(b)->parent == kNullNode);
+}
+
+void TestCollections() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 400, 300 });
+    const NodeId a = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                 Style::Filled({ 1, 0, 0, 1 }), "a");
+    const NodeId b = doc.AddPath(page, PathData::Rect(20, 0, 10, 10),
+                                 Style::Filled({ 0, 1, 0, 1 }), "b");
+    const NodeId col = doc.AddCollection("Set");
+    CHECK(col != kNullNode);
+    doc.AddToCollection(col, a);
+    CHECK(doc.FindCollection(col)->members.size() == 1);
+    // Membership is many-to-many; adding twice is idempotent.
+    doc.AddToCollection(col, a);
+    CHECK(doc.FindCollection(col)->members.size() == 1);
+
+    // Visible collection → member draws; hidden collection → member culled,
+    // exactly like layer visibility, without touching the node's own flag.
+    Scene s; s.Compile(doc);
+    auto drawnCount = [&](NodeId id) {
+        int n = 0;
+        for (const Drawable& d : s.Drawables())
+            if (d.owner == id && !d.isClipSource) ++n;
+        return n;
+    };
+    CHECK(drawnCount(a) > 0);
+    doc.SetCollectionVisible(col, false);
+    s.Compile(doc);
+    CHECK(drawnCount(a) == 0);          // hidden by the collection
+    CHECK(drawnCount(b) > 0);           // b is not a member
+    CHECK(doc.Find(a)->visible);        // its own flag is untouched
+    doc.SetCollectionVisible(col, true);
+    s.Compile(doc);
+    CHECK(drawnCount(a) > 0);
+
+    doc.RemoveFromCollection(col, a);
+    CHECK(doc.FindCollection(col)->members.empty());
+}
+
 void TestParenting() {
     Document doc;
     const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
@@ -695,6 +781,8 @@ int main() {
     TestGeometryCache();
     TestCompositeScopes();
     TestInstancing();
+    TestOrganisation();
+    TestCollections();
     TestParenting();
     TestBoolean();
     TestPicking();

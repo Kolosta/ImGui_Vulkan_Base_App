@@ -202,6 +202,7 @@ void Document::Remove(NodeId id) {
 void Document::Clear() {
     nodes_.clear();
     pages_.clear();
+    collections_.clear();
     changes_.clear();
     Log(kNullNode, ChangeKind::Removed);   // one "everything changed" marker
 }
@@ -312,6 +313,233 @@ bool Document::SetParent(NodeId child, NodeId parent, bool keepWorld) {
 
 void Document::ClearParent(NodeId child, bool keepWorld) {
     SetParent(child, kNullNode, keepWorld);
+}
+
+// ── Organisation ops (Lot 9) ──────────────────────────────────────────────────
+
+std::vector<NodeId>* Document::SiblingsOf(const Node& n) {
+    if (n.parent != kNullNode) {
+        if (Node* pg = FindMutable(n.parent)) return &pg->children;
+        return nullptr;
+    }
+    if (Page* pp = const_cast<Page*>(FindPage(n.page))) return &pp->children;
+    return nullptr;
+}
+const std::vector<NodeId>* Document::SiblingsOf(const Node& n) const {
+    if (n.parent != kNullNode) {
+        if (const Node* pg = Find(n.parent)) return &pg->children;
+        return nullptr;
+    }
+    if (const Page* pp = FindPage(n.page)) return &pp->children;
+    return nullptr;
+}
+
+void Document::SetName(NodeId node, std::string name) {
+    if (Node* n = FindMutable(node)) {
+        n->name = std::move(name);
+        Log(node, ChangeKind::StyleChanged);   // metadata only (no re-tess)
+    }
+}
+
+void Document::SetLocked(NodeId node, bool locked) {
+    if (Node* n = FindMutable(node)) { n->locked = locked; Log(node, ChangeKind::StyleChanged); }
+}
+
+void Document::ReorderChild(NodeId node, int to) {
+    Node* n = FindMutable(node);
+    if (!n) return;
+    std::vector<NodeId>* sib = SiblingsOf(*n);
+    if (!sib) return;
+    auto it = std::find(sib->begin(), sib->end(), node);
+    if (it == sib->end()) return;
+    sib->erase(it);
+    to = std::clamp(to, 0, (int)sib->size());
+    sib->insert(sib->begin() + to, node);
+    Log(node, ChangeKind::Hierarchy);
+}
+
+namespace {
+// True if `maybeDescendant` is `root` or inside its layer-tree subtree.
+bool InSubtree(const Document& doc, NodeId root, NodeId maybeDescendant) {
+    if (root == maybeDescendant) return true;
+    const Node* r = doc.Find(root);
+    if (!r) return false;
+    for (NodeId c : r->children)
+        if (InSubtree(doc, c, maybeDescendant)) return true;
+    return false;
+}
+} // namespace
+
+bool Document::MoveTo(NodeId node, NodeId newParent, int index) {
+    Node* n = FindMutable(node);
+    if (!n || node == newParent) return false;
+
+    // Resolve the destination sibling list + page.
+    std::vector<NodeId>* dst = nullptr;
+    NodeId dstParent = kNullNode, dstPage = kNullNode;
+    if (Node* pg = FindMutable(newParent)) {
+        if (pg->kind != NodeKind::Group) return false;      // only groups nest
+        if (InSubtree(*this, node, newParent)) return false; // no self/descendant
+        dst = &pg->children; dstParent = newParent; dstPage = pg->page;
+    } else if (Page* pp = const_cast<Page*>(FindPage(newParent))) {
+        dst = &pp->children; dstParent = kNullNode; dstPage = newParent;
+    } else {
+        return false;
+    }
+
+    // Preserve world position across the reparent.
+    const DMat23 world = WorldTransform(node);
+
+    // Detach from the old siblings.
+    if (std::vector<NodeId>* src = SiblingsOf(*n))
+        src->erase(std::remove(src->begin(), src->end(), node), src->end());
+
+    n->parent = dstParent;
+    // Re-page the moved subtree (page id propagates to descendants).
+    std::vector<NodeId> stack{ node };
+    while (!stack.empty()) {
+        NodeId id = stack.back(); stack.pop_back();
+        if (Node* m = FindMutable(id)) {
+            m->page = dstPage;
+            for (NodeId c : m->children) stack.push_back(c);
+        }
+    }
+
+    const int at = index < 0 ? (int)dst->size()
+                             : std::clamp(index, 0, (int)dst->size());
+    dst->insert(dst->begin() + at, node);
+
+    // New local = newParentWorld⁻¹ ∘ world (keeps the on-screen placement).
+    const DMat23 pw = dstParent != kNullNode
+        ? WorldTransform(dstParent)
+        : (FindPage(dstPage) ? DMat23::Translation(FindPage(dstPage)->pos.x,
+                                                   FindPage(dstPage)->pos.y)
+                             : DMat23{});
+    n->transform = Transform2D::FromMatrix(Invert(pw).Compose(world));
+    Log(node, ChangeKind::Hierarchy);
+    return true;
+}
+
+NodeId Document::GroupNodes(const std::vector<NodeId>& nodes, std::string name) {
+    if (nodes.empty()) return kNullNode;
+    // All members must share one parent (page or group) — group in place.
+    const Node* first = Find(nodes.front());
+    if (!first) return kNullNode;
+    const NodeId parent = first->parent;
+    const NodeId page   = first->page;
+    for (NodeId id : nodes) {
+        const Node* n = Find(id);
+        if (!n || n->parent != parent || n->page != page) return kNullNode;
+    }
+    // Topmost member's index becomes the group's slot.
+    const NodeId parentId = parent != kNullNode ? parent : page;
+    int topIndex = 0;
+    { const Node* n = Find(nodes.front());
+      std::vector<NodeId>* sib = SiblingsOf(*const_cast<Node*>(n));
+      if (sib) {
+          topIndex = (int)sib->size();
+          for (NodeId id : nodes) {
+              auto it = std::find(sib->begin(), sib->end(), id);
+              if (it != sib->end()) topIndex = std::min(topIndex, (int)(it - sib->begin()));
+          }
+      }
+    }
+    const NodeId group = AddGroup(parentId, std::move(name));
+    if (group == kNullNode) return kNullNode;
+    // AddGroup appended it; move it to the top member's slot, then reparent.
+    ReorderChild(group, topIndex);
+    for (NodeId id : nodes) MoveTo(id, group, -1);
+    Log(group, ChangeKind::Hierarchy);
+    return group;
+}
+
+std::vector<NodeId> Document::UngroupNode(NodeId group) {
+    Node* g = FindMutable(group);
+    if (!g || g->kind != NodeKind::Group) return {};
+    const std::vector<NodeId> children = g->children;   // copy (moves mutate it)
+    // Insert the children where the group sits, in order.
+    const int at = IndexInParent(group);
+    const NodeId dstParent = g->parent != kNullNode ? g->parent : g->page;
+    int insertAt = at < 0 ? -1 : at;
+    for (NodeId c : children) {
+        MoveTo(c, dstParent, insertAt);
+        if (insertAt >= 0) ++insertAt;
+    }
+    Remove(group);
+    return children;
+}
+
+// ── Collections (Lot 9) ────────────────────────────────────────────────────────
+
+const Collection* Document::FindCollection(NodeId id) const {
+    for (const Collection& c : collections_)
+        if (c.id == id) return &c;
+    return nullptr;
+}
+
+NodeId Document::AddCollection(std::string name) {
+    Collection c;
+    c.id = NextId();
+    c.name = std::move(name);
+    collections_.push_back(std::move(c));
+    Log(collections_.back().id, ChangeKind::Added);
+    return collections_.back().id;
+}
+
+void Document::RemoveCollection(NodeId coll) {
+    for (auto it = collections_.begin(); it != collections_.end(); ++it)
+        if (it->id == coll) {
+            const bool wasHiding = !it->visible && !it->members.empty();
+            collections_.erase(it);
+            // Removing a hiding collection may reveal members → recompile.
+            Log(coll, wasHiding ? ChangeKind::Hierarchy : ChangeKind::Removed);
+            return;
+        }
+}
+
+void Document::SetCollectionName(NodeId coll, std::string name) {
+    for (Collection& c : collections_)
+        if (c.id == coll) { c.name = std::move(name); Log(coll, ChangeKind::StyleChanged); return; }
+}
+
+void Document::SetCollectionVisible(NodeId coll, bool visible) {
+    for (Collection& c : collections_)
+        if (c.id == coll && c.visible != visible) {
+            c.visible = visible;
+            Log(coll, ChangeKind::Hierarchy);   // filter changed → recompile
+            return;
+        }
+}
+
+void Document::AddToCollection(NodeId coll, NodeId node) {
+    for (Collection& c : collections_)
+        if (c.id == coll) {
+            if (std::find(c.members.begin(), c.members.end(), node) == c.members.end()) {
+                c.members.push_back(node);
+                Log(coll, c.visible ? ChangeKind::StyleChanged : ChangeKind::Hierarchy);
+            }
+            return;
+        }
+}
+
+void Document::RemoveFromCollection(NodeId coll, NodeId node) {
+    for (Collection& c : collections_)
+        if (c.id == coll) {
+            auto it = std::find(c.members.begin(), c.members.end(), node);
+            if (it != c.members.end()) {
+                c.members.erase(it);
+                Log(coll, c.visible ? ChangeKind::StyleChanged : ChangeKind::Hierarchy);
+            }
+            return;
+        }
+}
+
+bool Document::HiddenByCollection(NodeId node) const {
+    for (const Collection& c : collections_)
+        if (!c.visible &&
+            std::find(c.members.begin(), c.members.end(), node) != c.members.end())
+            return true;
+    return false;
 }
 
 // ── Editing / undo support (Lot 8) ───────────────────────────────────────────
