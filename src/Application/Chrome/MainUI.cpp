@@ -117,20 +117,22 @@ void Application::RegisterCoreEditors() {
         reg.Register(std::move(d));
     }
 
-    // Outliner — object organisation trees (placeholder until Ink Lot 9).
+    // Outliner — object organisation trees on the Ink model (Lot 9): a Layers
+    // view (pages → layer trees, z-order/visibility) and a Collections view.
     {
         EditorDescriptor d;
         d.id = CoreEditor::Outliner; d.name = "Outliner"; d.icon = "checklist";
         d.column = 2; d.themeScope = "editors/outliner";
         d.switchAction = "editor.outliner";
-        // No content inset: the zebra stripes / selection bands run flush to the
-        // editor's left edge (Blender-style).
+        // No content inset: the selection bands run flush to the editor's left
+        // edge (Blender-style).
         d.contentInset = false;
-        d.draw = [this](ImVec2, EditorState& st) { RenderOutliner(st); };
+        d.draw   = [this](ImVec2, EditorState& st) { RenderOutliner(st); };
+        d.topBar = [this](EditorState& st, EditorBar& bar) { BuildOutlinerTopBar(st, bar); };
         reg.Register(std::move(d));
     }
 
-    // Properties — selected object's properties.
+    // Properties — the active object's transform + unified style (Lot 9).
     {
         EditorDescriptor d;
         d.id = CoreEditor::Properties; d.name = "Properties"; d.icon = "settings";

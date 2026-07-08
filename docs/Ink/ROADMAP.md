@@ -93,8 +93,27 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   cursor and its cursor-pivot/orientation return with a later pass;
   Edit-Mode edits move anchors only — handle/segment editing and the curve
   tool are a follow-up.)*
-- [ ] **Lot 9 — Organisation UI**: Outliner rebuilt on Layers + Collections
-  views; Properties rebuilt (style editor incl. multi-fill/multi-stroke).
+- [x] **Lot 9 — Organisation UI**: **Collections** land in the Document
+  (DOCUMENT_MODEL.md §7 — organisational sets, many-to-many membership, a
+  per-set visibility that filters at Scene compile: a node hidden by ANY route
+  is culled, never changing what IS drawn) alongside the organisation ops the
+  editors drive (rename, lock, reorder, reparent-preserving-world `MoveTo`,
+  `GroupNodes`/`UngroupNode`). The **Outliner** is rebuilt on the Ink model
+  with a **Layers** view (pages → layer trees, top-of-stack first, z-order +
+  per-node visibility + inline rename + expand/collapse) and a **Collections**
+  view (sets, per-set visibility, members), a top bar (display toggle, search,
+  kind filter) and a context menu (group/ungroup, delete, duplicate, new
+  collection / add-to-collection). The **Properties** editor is rebuilt on the
+  unified style: transform (with Apply Scale), multi-fill and multi-stroke
+  lists (add/remove pieces, paint pickers, width/align/cap/join), group
+  opacity/clip — every edit through the typed ops, continuous drags folding
+  into one undo command. Selection is the shared EditContext, so Outliner,
+  Viewport and Properties always agree. Layout blob → v7 (Outliner state
+  migrates from v5/v6). *(Delivered 2026-07-09. Known v1 limits: Outliner
+  Shift-range select adds the clicked node rather than the full run;
+  drag-and-drop reordering in the tree is a follow-up — reorder/reparent are
+  exposed as ops and used by grouping; collection delete is not yet on the
+  undo stack.)*
 - [ ] **Lot 10 — Persistence**: `.acu` v2 (clean break), save/open/recent
   re-enabled, thumbnails re-enabled through headless Ink render.
 - [ ] **Lot 11 — Modules re-entry**: ModuleAPI regains document hooks (typed,

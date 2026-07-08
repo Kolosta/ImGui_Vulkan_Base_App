@@ -171,7 +171,10 @@ struct BR {
 //     filter on reopen. (The live viewport-sync link is runtime-only, not saved.)
 // v6: per-tab camera (pan/zoom) is DOUBLE (was f32) — the Ink unbounded-canvas
 //     requirement reaches the persisted camera too. Older blobs read as f32.
-constexpr uint32_t kLayoutBlobVersion = 6;
+// v7: Outliner state rebuilt on the Ink model (Lot 9): display mode + two show
+//     toggles replace the old filter block. v5/v6 blobs migrate (their 8 filter
+//     bytes are read and discarded; display defaults to Layers).
+constexpr uint32_t kLayoutBlobVersion = 7;
 } // namespace
 
 // Node encoding: [isLeaf:u8]; split → [vertical][firstPx][initRatio][lastUsable]
@@ -203,15 +206,11 @@ std::vector<uint8_t> ZoneLayout::Serialize() const {
                 w.u32((uint32_t)pl.hiddenPages.size());
                 for (uint64_t id : pl.hiddenPages) w.u64(id);
                 w.u8((uint8_t)t.state.rulerSpace);   // v3
-                // v5: Outliner filter state + orphan toggle.
+                // v7: Outliner state (Ink model) — display mode + show toggles.
                 const OutlinerState& o = t.state.outliner;
+                w.u8((uint8_t)o.display);
                 w.u8(o.showObjects ? 1 : 0);
-                w.u8(o.showPages ? 1 : 0);
-                w.u8(o.showCollections ? 1 : 0);
-                w.u8(o.showMeshes ? 1 : 0);
-                w.u8(o.showCurves ? 1 : 0);
-                w.u8((uint8_t)o.objState);
-                w.u8(o.invertFilter ? 1 : 0);
+                w.u8(o.showGroups ? 1 : 0);
                 w.u8(t.state.nPanelShowOrphans ? 1 : 0);
             }
         } else {
@@ -270,15 +269,14 @@ bool ZoneLayout::Deserialize(const std::vector<uint8_t>& blob) {
                         pl.hiddenPages.push_back(r.u64());
                     if (ver >= 3)
                         t.state.rulerSpace = (EditorState::RulerSpace)r.u8();
-                    if (ver >= 5) {   // Outliner filter state + orphan toggle
+                    if (ver >= 7) {   // Outliner state (Ink model)
                         OutlinerState& o = t.state.outliner;
-                        o.showObjects     = r.u8() != 0;
-                        o.showPages       = r.u8() != 0;
-                        o.showCollections = r.u8() != 0;
-                        o.showMeshes      = r.u8() != 0;
-                        o.showCurves      = r.u8() != 0;
-                        o.objState        = (ObjStateFilter)r.u8();
-                        o.invertFilter    = r.u8() != 0;
+                        o.display     = (OutlinerDisplayMode)r.u8();
+                        o.showObjects = r.u8() != 0;
+                        o.showGroups  = r.u8() != 0;
+                        t.state.nPanelShowOrphans = r.u8() != 0;
+                    } else if (ver >= 5) {   // migrate: discard old filter block
+                        for (int k = 0; k < 7; ++k) r.u8();   // old show*/objState/invert
                         t.state.nPanelShowOrphans = r.u8() != 0;
                     }
                 }

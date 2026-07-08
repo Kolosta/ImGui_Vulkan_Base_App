@@ -230,6 +230,25 @@ void Application::RegisterDefaultShortcuts() {
                 [this]{ Action_OpenAddMenu(); }, { sigKey(ImGuiKey_A, false, true) },
                 false, false, idle);
 
+    // Group / ungroup — global (fire from the Viewport OR the Outliner), gated
+    // to the idle state so they never fire mid modal transform.
+    {
+        Action a; a.id = "edit.group"; a.name = "Group";
+        a.description = "Wrap the selected objects in a new group";
+        a.category = ActionCategory::Edit;
+        a.callback = [this]{ Action_GroupSelection(); };
+        a.pollFn = idle;
+        sm.RegisterAction(a, { sigKey(ImGuiKey_G, /*ctrl=*/true) });
+    }
+    {
+        Action a; a.id = "edit.ungroup"; a.name = "Ungroup";
+        a.description = "Dissolve the selected group(s)";
+        a.category = ActionCategory::Edit;
+        a.callback = [this]{ Action_UngroupSelection(); };
+        a.pollFn = idle;
+        sm.RegisterAction(a, { sigKey(ImGuiKey_G, /*ctrl=*/true, /*shift=*/false, /*alt=*/true) });
+    }
+
     // ── Editor switch shortcuts (Blender-style) ──────────────────────────────
     // Switch the editor kind of the zone under the mouse. No requiredContext:
     // they fire over any zone, targeting the hovered leaf.

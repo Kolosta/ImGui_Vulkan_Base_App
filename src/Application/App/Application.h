@@ -186,10 +186,45 @@ private:
     // Draw selection outlines / handles / modal feedback into the view overlay.
     void DrawEditOverlays(EditorState& st, const ViewCam& cam,
                           Ink::OverlayList& ov, bool hovered);
-    // Object organisation trees (Layers + Collections views on the new model).
+    // Object organisation trees (Layers + Collections views on the Ink model —
+    // Lot 9). Outliner.cpp draws the tree; OutlinerMenus.cpp the top bar,
+    // context menu and the organisation commands (group/ungroup/collections).
     void RenderOutliner(EditorState& st);
-    // Active object's style/transform editor (multi-fill / multi-stroke).
+    void BuildOutlinerTopBar(EditorState& st, EditorBar& bar);
+    // One Layers-view row (recursive): a node + its subtree. Returns the row
+    // rect height consumed (for range logic). `depth` drives indentation.
+    void OutlinerLayersRow(EditorState& st, Ink::NodeId id, int depth);
+    void OutlinerCollectionsView(EditorState& st);
+    // Right-click context menu for the Outliner (opened over a row or empty).
+    void RenderOutlinerContextMenu(EditorState& st);
+    // Organisation commands (undoable), shared by the Outliner + shortcuts.
+    void Action_GroupSelection();
+    void Action_UngroupSelection();
+    void Action_ToggleNodeVisible(Ink::NodeId id);
+    void Action_RenameNode(Ink::NodeId id, const std::string& name);
+    void Action_NewCollectionFromSelection();
+
+    // Active object's style/transform editor (multi-fill / multi-stroke) — Lot 9.
     void RenderProperties();
+    // Property sub-sections (Properties.cpp).
+    void PropTransformSection(Ink::NodeId id);
+    void PropFillsSection(Ink::NodeId id);
+    void PropStrokesSection(Ink::NodeId id);
+    // Commit a whole-style edit as one undoable command (captures before/after).
+    void CommitStyleEdit(Ink::NodeId id, const Ink::Style& before,
+                         const std::string& label);
+    // The Outliner context-menu request (opened next frame at this position).
+    bool   outlinerCtxOpen_ = false;
+    ImVec2 outlinerCtxPos_{};
+    Ink::NodeId outlinerCtxNode_ = Ink::kNullNode;
+    // Selection anchor for Shift-range clicks in the Outliner (last plain click).
+    Ink::NodeId outlinerRangeAnchor_ = Ink::kNullNode;
+    // Live property editing: the style captured when a drag-edit began, so the
+    // whole drag folds into ONE undo command committed on release.
+    Ink::Style      propEditBefore_;
+    Ink::Transform2D transformBeforeScratch_;   // transform drag before-state
+    Ink::NodeId     propEditNode_ = Ink::kNullNode;
+    bool            propEditActive_ = false;
 
     // ── Info log (Blender-style action feed) + Dev data editor ───────────────
     struct InfoEntry { uint64_t frame; std::string text; std::string detail; };
