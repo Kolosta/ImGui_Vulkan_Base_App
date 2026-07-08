@@ -34,6 +34,11 @@ struct Node {
     std::string name;
     NodeId      parent = kNullNode;   // owning group (kNullNode = page root)
     NodeId      page   = kNullNode;   // owning page
+    // Object PARENTING (docs/Ink/DOCUMENT_MODEL.md §2), a relation DISTINCT
+    // from the layer-tree position above: the resolved transform inherits the
+    // parentId chain, not the group nesting. kNullNode = unparented. Editing
+    // the parent moves the child; z-order/compositing are unaffected.
+    NodeId      parentId = kNullNode;
     Transform2D transform;
     bool        visible = true;
     bool        locked  = false;
@@ -97,6 +102,12 @@ public:
     void   SetModifiers(NodeId node, std::vector<Modifier> modifiers);
     void   SetTransform(NodeId node, const Transform2D& t);
     void   SetVisible(NodeId node, bool visible);
+    // Object parenting (docs/Ink/DOCUMENT_MODEL.md §2). `keepWorld` preserves
+    // the child's on-screen position by folding the inherited transform into
+    // its local one. Refused (no-op) if it would create a cycle. ClearParent
+    // detaches, optionally keeping the world position.
+    bool   SetParent(NodeId child, NodeId parent, bool keepWorld = true);
+    void   ClearParent(NodeId child, bool keepWorld = true);
     // Group compositing (docs/Ink/DOCUMENT_MODEL.md §2). Setting any of these
     // to a non-default value makes the group composite its subtree as a unit.
     void   SetOpacity(NodeId group, float opacity);
@@ -118,7 +129,8 @@ public:
     const Page* FindPage(NodeId id) const;
     std::size_t NodeCount() const { return nodes_.size(); }
 
-    // Resolved node → document transform: pageOrigin ∘ parentChain ∘ local.
+    // Resolved node → document transform. Object parenting (parentId) takes
+    // precedence over the layer-tree position (docs/Ink/DOCUMENT_MODEL.md §2).
     DMat23 WorldTransform(NodeId id) const;
 
     // ── Change tracking ──────────────────────────────────────────────────────
@@ -130,6 +142,7 @@ public:
     bool HasPendingChanges() const { return !changes_.empty(); }
 
 private:
+    DMat23 WorldTransformDepth(NodeId id, int depth) const;   // parent recursion
     void   Log(NodeId id, ChangeKind kind);
     NodeId NextId() { return nextId_++; }
     // Remove `id` from its parent's children list (page or group).

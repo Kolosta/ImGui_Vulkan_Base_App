@@ -266,6 +266,49 @@ void SeedDemoDocument(Document& doc) {
         const NodeId inst = doc.AddInstance(page, star, "star instance");
         doc.SetTransform(inst, TRS(760, 260, 1.0, 0.6));
     }
+
+    // Lot 7 relations showcase.
+    {
+        // Object parenting: three small satellites parented to a hub. Moving
+        // the hub moves them; z-order is independent.
+        const NodeId hub = doc.AddPath(page, PathData::Ellipse(0, 0, 26, 26),
+            Style::Filled(Srgb(0.30f, 0.35f, 0.45f, 1)), "hub");
+        doc.SetTransform(hub, TRS(1780, 900));
+        for (int i = 0; i < 3; ++i) {
+            const NodeId sat = doc.AddPath(page, PathData::Ellipse(0, 0, 9, 9),
+                Style::Filled(Srgb(0.85f, 0.55f, 0.25f, 1)), "satellite");
+            const double a = 2.0 * kPi * i / 3.0;
+            doc.SetTransform(sat, TRS(1780 + std::cos(a) * 55.0,
+                                      900 + std::sin(a) * 55.0));
+            doc.SetParent(sat, hub, /*keepWorld=*/true);
+        }
+
+        // Boolean modifier: a rounded plaque = big rect UNION two discs, then
+        // SUBTRACT a smaller rect window (a non-destructive derived shape).
+        const NodeId opDisc1 = doc.AddPath(page, PathData::Ellipse(0, 0, 40, 40),
+            Style::Filled(Srgb(0, 0, 0, 1)), "op disc 1");
+        doc.SetTransform(opDisc1, TRS(-70, 0));
+        doc.SetVisible(opDisc1, false);
+        const NodeId opDisc2 = doc.AddPath(page, PathData::Ellipse(0, 0, 40, 40),
+            Style::Filled(Srgb(0, 0, 0, 1)), "op disc 2");
+        doc.SetTransform(opDisc2, TRS(70, 0));
+        doc.SetVisible(opDisc2, false);
+        const NodeId opWindow = doc.AddPath(page, PathData::Rect(-30, -18, 60, 36),
+            Style::Filled(Srgb(0, 0, 0, 1)), "op window");
+        doc.SetVisible(opWindow, false);
+
+        const NodeId plaque = doc.AddPath(page, PathData::Rect(-70, -40, 140, 80),
+            Style::Filled(Srgb(0.36f, 0.62f, 0.55f, 1)).WithStroke(
+                Srgb(0.10f, 0.12f, 0.14f, 1), 3.0), "boolean plaque");
+        doc.SetTransform(plaque, TRS(1500, 900));
+        Modifier u1; u1.kind = ModifierKind::Boolean; u1.op = BooleanOp::Union;
+        u1.operandRef = opDisc1;
+        Modifier u2; u2.kind = ModifierKind::Boolean; u2.op = BooleanOp::Union;
+        u2.operandRef = opDisc2;
+        Modifier sub; sub.kind = ModifierKind::Boolean; sub.op = BooleanOp::Subtract;
+        sub.operandRef = opWindow;
+        doc.SetModifiers(plaque, { u1, u2, sub });
+    }
 }
 
 } // namespace Ink

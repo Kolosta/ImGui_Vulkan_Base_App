@@ -12,6 +12,18 @@ PathData ──flatten──► Polyline(s) ──┬─fill──► FillTess �
         (per zoom tier, adaptive)   └─stroke─► Stroker ──► StrokeTess ──► mesh range
 ```
 
+## Boolean (relations lot)
+
+`BooleanPolygons(subject, clip, op)` combines two closed-ring sets
+(Union / Subtract / Intersect / Xor). v1 algorithm: split every edge of each
+polygon at all pairwise intersections, keep each resulting directed edge by
+its midpoint's inside/outside test against the other polygon (per operation),
+then re-chain kept edges head-to-tail into rings. Exact on non-degenerate
+input; edge-on-edge (collinear) coincidences are a documented approximation.
+The Scene evaluates the Boolean modifier stack of a node into a derived
+`PathData` (flatten → boolean → polygonal outline), stored stably and hashed
+like any other path so the GeometryCache and GPU pools treat it identically.
+
 - **Flatten**: adaptive subdivision of Bézier segments to a screen-space
   error tolerance derived from the item's **zoom tier** (see §4). Output
   polylines are shared by fill, stroke, hit-testing and snapping.

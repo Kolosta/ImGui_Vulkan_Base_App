@@ -56,6 +56,21 @@ namespace {
 
 constexpr int kMaxInstanceDepth = 8;   // InstanceNode recursion clamp (§5)
 
+// Invert an affine 2×3 (non-degenerate; identity fallback).
+DMat23 InvertAffine(const DMat23& m) {
+    const double det = m.m[0] * m.m[4] - m.m[1] * m.m[3];
+    DMat23 r;
+    if (std::abs(det) < 1e-18) return r;
+    const double inv = 1.0 / det;
+    r.m[0] =  m.m[4] * inv;
+    r.m[1] = -m.m[1] * inv;
+    r.m[3] = -m.m[3] * inv;
+    r.m[4] =  m.m[0] * inv;
+    r.m[2] = -(r.m[0] * m.m[2] + r.m[1] * m.m[5]);
+    r.m[5] = -(r.m[3] * m.m[2] + r.m[4] * m.m[5]);
+    return r;
+}
+
 // The instancing transforms a modifier stack produces (docs/Ink/
 // DOCUMENT_MODEL.md §6): starting from the identity ("one copy"), each
 // enabled modifier expands the current transform set. Local-space transforms
@@ -148,7 +163,15 @@ std::vector<DMat23> ExpandModifiers(const Document& doc,
 void Scene::EmitNode(const Document& doc, const Node& n,
                      const DMat23& parentWorld, ScopeId scope, int instDepth) {
     if (!n.visible) return;
-    const DMat23 world = parentWorld.Compose(n.transform.Matrix());
+
+    // Object PARENTING overrides the layer-tree origin (docs/Ink/
+    // DOCUMENT_MODEL.md §2): a parented node's world comes from its parentId
+    // chain, not from the group it was walked under. Unparented nodes use the
+    // group's `parentWorld` as before.
+    const DMat23 world =
+        (n.parentId != kNullNode && doc.Find(n.parentId))
+            ? doc.WorldTransform(n.parentId).Compose(n.transform.Matrix())
+            : parentWorld.Compose(n.transform.Matrix());
 
     // Instancing modifiers expand the node into many copies at generated
     // transforms; with no modifiers this is a single identity copy. The
@@ -211,12 +234,78 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
     EmitPath(doc, n, world, scope);
 }
 
+const PathData* Scene::ResolveGeometry(const Document& doc, const Node& n,
+                                       std::uint64_t& hashOut) {
+    // Cached derived path for this node this compile?
+    if (auto it = derivedByNode_.find(n.id); it != derivedByNode_.end()) {
+        hashOut = it->second->Hash();
+        return it->second;
+    }
+    // Any enabled Boolean modifiers?
+    bool hasBool = false;
+    for (const Modifier& m : n.modifiers)
+        if (m.enabled && m.kind == ModifierKind::Boolean) { hasBool = true; break; }
+    if (!hasBool) { hashOut = n.path.Hash(); return &n.path; }
+
+    // Flatten the host outline (node-local) into closed rings.
+    auto toRings = [](const std::vector<geom::Polyline>& polys) {
+        std::vector<std::vector<DVec2>> rings;
+        for (const geom::Polyline& pl : polys)
+            if (pl.closed && pl.points.size() >= 3) rings.push_back(pl.points);
+        return rings;
+    };
+    std::vector<std::vector<DVec2>> acc =
+        toRings(geom::Flatten(n.path, 0.5));
+
+    for (const Modifier& m : n.modifiers) {
+        if (!m.enabled || m.kind != ModifierKind::Boolean) continue;
+        const Node* operand = doc.Find(m.operandRef);
+        if (!operand || operand->kind != NodeKind::Path || operand->path.Empty())
+            continue;
+        // Operand geometry expressed in the HOST's local space:
+        //   hostLocal = hostWorld⁻¹ ∘ operandWorld ∘ operandLocalPoint.
+        // Both share the page; compose operand's transform relative to host's.
+        const DMat23 rel = InvertAffine(n.transform.Matrix())
+                               .Compose(operand->transform.Matrix());
+        auto opPolys = geom::Flatten(operand->path, 0.5);
+        std::vector<std::vector<DVec2>> clip;
+        for (geom::Polyline& pl : opPolys) {
+            if (!pl.closed || pl.points.size() < 3) continue;
+            for (DVec2& p : pl.points) p = rel.Apply(p);
+            clip.push_back(pl.points);
+        }
+        geom::BoolOp op = geom::BoolOp::Union;
+        switch (m.op) {
+            case BooleanOp::Union:     op = geom::BoolOp::Union; break;
+            case BooleanOp::Subtract:  op = geom::BoolOp::Subtract; break;
+            case BooleanOp::Intersect: op = geom::BoolOp::Intersect; break;
+            case BooleanOp::Xor:       op = geom::BoolOp::Xor; break;
+        }
+        acc = geom::BooleanPolygons(acc, clip, op);
+        if (acc.empty()) break;
+    }
+
+    // Build a polygonal PathData from the result rings.
+    derivedPaths_.emplace_back();
+    PathData& out = derivedPaths_.back();
+    for (const auto& ring : acc) {
+        Subpath sp; sp.closed = true;
+        for (const DVec2& p : ring) { Anchor a; a.pos = p; sp.anchors.push_back(a); }
+        if (sp.anchors.size() >= 3) out.subpaths.push_back(std::move(sp));
+    }
+    derivedByNode_[n.id] = &out;
+    hashOut = out.Hash();
+    return &out;
+}
+
 void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
                      ScopeId scope) {
-    const std::uint64_t pathHash = n.path.Hash();
+    std::uint64_t pathHash = 0;
+    const PathData* geo = ResolveGeometry(doc, n, pathHash);
+    if (!geo || geo->Empty()) return;
 
     // Anchor-box bounds (cheap conservative fit-view input).
-    for (const Subpath& sp : n.path.subpaths)
+    for (const Subpath& sp : geo->subpaths)
         for (const Anchor& a : sp.anchors)
             GrowBounds(world.Apply(a.pos));
 
@@ -231,7 +320,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         }
         Drawable d;
         d.node = n.id;  d.world = world;
-        d.pathHash = pathHash;  d.path = &n.path;
+        d.pathHash = pathHash;  d.path = geo;
         d.isStroke = false;  d.pieceIndex = (std::uint8_t)i;
         d.rule = f.rule;  d.color = f.paint.color;
         d.scope = scope;
@@ -242,7 +331,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         if (!s.enabled || s.width <= 0.0) continue;
         Drawable d;
         d.node = n.id;  d.world = world;
-        d.pathHash = pathHash;  d.path = &n.path;
+        d.pathHash = pathHash;  d.path = geo;
         d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
         d.stroke = s;  d.color = s.paint.color;
         d.scope = scope;
@@ -305,6 +394,8 @@ bool Scene::Compile(Document& doc, bool force) {
 
     drawables_.clear();
     pageRects_.clear();
+    derivedPaths_.clear();
+    derivedByNode_.clear();
     scopes_.clear();
     maxDepth_ = 0;
     boundsValid_ = false;

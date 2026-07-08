@@ -64,4 +64,14 @@ LocalBounds ComputeBounds(const std::vector<Polyline>& polylines,
 // the winding classification.
 double SignedArea(const std::vector<DVec2>& ring);
 
+// Boolean operation on two polygon sets (docs/Ink/GEOMETRY.md §Boolean).
+// `subject` and `clip` are each a set of closed rings (outer + holes by
+// winding). Returns the result rings. v1 uses Greiner–Hormann with a tiny
+// perturbation on degenerate (vertex-on-edge) intersections; exact on
+// non-degenerate input, robust (never hangs) otherwise.
+enum class BoolOp { Union, Subtract, Intersect, Xor };
+std::vector<std::vector<DVec2>>
+BooleanPolygons(const std::vector<std::vector<DVec2>>& subject,
+                const std::vector<std::vector<DVec2>>& clip, BoolOp op);
+
 } // namespace Ink::geom

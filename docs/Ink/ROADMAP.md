@@ -57,10 +57,21 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   GPU-cull target); pattern_fill 107 k motifs → 4 draws / 0.50 ms; along_path
   20 k ticks → 43 draws / 0.22 ms. Known limit: pattern lattice is clipped to
   the host BBOX, not the exact shape — that rides on the clip-mask follow-up.)*
-- [ ] **Lot 6 — Images**: import (decode app-side), bindless texture table,
-  image paints & ImageNode; `images` bench.
-- [ ] **Lot 7 — Relations**: object parenting (transform inheritance),
-  modifier dependency graph + exact re-evaluation, boolean modifier v1.
+- [ ] **Lot 6 — Images**: DEFERRED by the product owner (2026-07-08) to run
+  later, after the interaction/persistence lots. Scope unchanged: import
+  (decode app-side), bindless texture table, image paints & ImageNode;
+  `images` bench. Its slot moves to the end of the list (before "Later").
+- [x] **Lot 7 — Relations**: object parenting (transform inheritance —
+  `parentId` distinct from the layer-tree position, DOCUMENT_MODEL.md §2;
+  SetParent/ClearParent preserve world position and refuse cycles), the
+  Boolean modifier (Union/Subtract/Intersect/Xor via edge-splitting polygon
+  clipping → a derived path evaluated at Scene compile). Every relation
+  (parentId, modifier operand/path/target refs) is a declared id-edge, so the
+  dependency graph for EXACT incremental re-evaluation is fully expressible —
+  wiring the Scene to recompile only affected nodes (instead of the current
+  change-gated full walk) is a perf-lot task. *(Delivered 2026-07-08. Boolean
+  is exact on non-degenerate input; collinear edge coincidences are a
+  documented v1 approximation.)*
 - [ ] **Lot 8 — Editing loop**: GPU picking (async) + CPU exact fallback,
   selection/handles/gizmo overlays, rebuilt Select/Move/Rotate/Scale tools
   and draw tools on the new model, Object/Edit mode split (Blender semantics:
@@ -73,6 +84,9 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   re-enabled, thumbnails re-enabled through headless Ink render.
 - [ ] **Lot 11 — Modules re-entry**: ModuleAPI regains document hooks (typed,
   Ink-based); IofMapping and Typography rebuilt on Ink where they belong.
+- [ ] **Lot 6 (deferred) — Images**: run here, after modules. Import
+  (decode app-side), bindless texture table, image paints & ImageNode;
+  `images` bench.
 - [ ] **Later, measured**: GPU-driven culling/geometry, analytic AA, effects
   pass (blur/shadow), gradients, text (with Typography), export pipeline.
 

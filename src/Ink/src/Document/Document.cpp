@@ -1,6 +1,7 @@
 #include "Ink/Document/Document.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace Ink {
 
@@ -224,10 +225,26 @@ const Page* Document::FindPage(NodeId id) const {
 }
 
 DMat23 Document::WorldTransform(NodeId id) const {
-    // pageOrigin ∘ ancestorChain ∘ local, composed in double throughout.
+    return WorldTransformDepth(id, 0);
+}
+
+DMat23 Document::WorldTransformDepth(NodeId id, int depth) const {
     const Node* n = Find(id);
     if (!n) return {};
-    DMat23 world = n->transform.Matrix();
+    const DMat23 local = n->transform.Matrix();
+
+    // OBJECT PARENTING takes precedence (docs/Ink/DOCUMENT_MODEL.md §2): a
+    // parented node inherits its parentId's world, NOT its layer-tree group.
+    // Cycles are refused at edit time, but the depth clamp is a belt-and-braces
+    // guard against a corrupted document.
+    if (n->parentId != kNullNode && depth < 64) {
+        if (Find(n->parentId))
+            return WorldTransformDepth(n->parentId, depth + 1).Compose(local);
+    }
+
+    // Unparented: the layer-tree chain carries the transform (a group moves
+    // its members). pageOrigin ∘ ancestorChain ∘ local.
+    DMat23 world = local;
     NodeId parent = n->parent;
     while (parent != kNullNode) {
         const Node* p = Find(parent);
@@ -238,6 +255,63 @@ DMat23 Document::WorldTransform(NodeId id) const {
     if (const Page* page = FindPage(n->page))
         world = DMat23::Translation(page->pos.x, page->pos.y).Compose(world);
     return world;
+}
+
+namespace {
+// True if `ancestor` is `node` or reachable from it up the parentId chain.
+bool IsParentAncestor(const Document& doc, NodeId node, NodeId ancestor) {
+    int guard = 0;
+    while (node != kNullNode && guard++ < 256) {
+        if (node == ancestor) return true;
+        const Node* n = doc.Find(node);
+        if (!n) break;
+        node = n->parentId;
+    }
+    return false;
+}
+// Invert an affine 2×3 (assumes non-degenerate; identity fallback).
+DMat23 Invert(const DMat23& m) {
+    const double det = m.m[0] * m.m[4] - m.m[1] * m.m[3];
+    DMat23 r;
+    if (std::abs(det) < 1e-18) return r;   // identity
+    const double inv = 1.0 / det;
+    r.m[0] =  m.m[4] * inv;
+    r.m[1] = -m.m[1] * inv;
+    r.m[3] = -m.m[3] * inv;
+    r.m[4] =  m.m[0] * inv;
+    r.m[2] = -(r.m[0] * m.m[2] + r.m[1] * m.m[5]);
+    r.m[5] = -(r.m[3] * m.m[2] + r.m[4] * m.m[5]);
+    return r;
+}
+} // namespace
+
+bool Document::SetParent(NodeId child, NodeId parent, bool keepWorld) {
+    Node* c = FindMutable(child);
+    if (!c || child == parent) return false;
+    if (parent != kNullNode) {
+        if (!Find(parent)) return false;
+        // Refuse a cycle: `child` must not be an ancestor of `parent`.
+        if (IsParentAncestor(*this, parent, child)) return false;
+    }
+    if (keepWorld) {
+        // Preserve the on-screen position: new local = parentWorld⁻¹ ∘ oldWorld.
+        const DMat23 oldWorld = WorldTransform(child);
+        const DMat23 parentWorld =
+            parent != kNullNode ? WorldTransform(parent)
+                                : (FindPage(c->page)
+                                       ? DMat23::Translation(FindPage(c->page)->pos.x,
+                                                             FindPage(c->page)->pos.y)
+                                       : DMat23{});
+        const DMat23 newLocal = Invert(parentWorld).Compose(oldWorld);
+        c->transform = Transform2D::FromMatrix(newLocal);
+    }
+    c->parentId = parent;
+    Log(child, ChangeKind::Moved);
+    return true;
+}
+
+void Document::ClearParent(NodeId child, bool keepWorld) {
+    SetParent(child, kNullNode, keepWorld);
 }
 
 // ── Change tracking ──────────────────────────────────────────────────────────

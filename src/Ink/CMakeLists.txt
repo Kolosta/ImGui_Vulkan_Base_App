@@ -7,10 +7,11 @@ add_library(Ink STATIC
     # Document — the persistent model (pure data + invariants, GPU-less)
     src/Document/Document.cpp
 
-    # Geometry — flatten / triangulate / stroke + the product cache (CPU)
+    # Geometry — flatten / triangulate / stroke / boolean + the product cache
     src/Geometry/Flatten.cpp
     src/Geometry/Triangulate.cpp
     src/Geometry/Stroker.cpp
+    src/Geometry/Boolean.cpp
     src/Geometry/GeometryCache.cpp
 
     # Scene — document → drawables (painter order, double transforms)

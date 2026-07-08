@@ -51,6 +51,22 @@ struct Transform2D {
         r.m[3] = s * sx;  r.m[4] =  c * sy; r.m[5] = ty;
         return r;
     }
+
+    // Decompose an affine matrix into TRS components (skew is not represented —
+    // a sheared matrix decomposes to its nearest rotation+scale). Used when a
+    // parenting op re-expresses a node's local transform to preserve its world
+    // position (docs/Ink/DOCUMENT_MODEL.md §2).
+    static Transform2D FromMatrix(const DMat23& m) {
+        Transform2D t;
+        t.tx = m.m[2];
+        t.ty = m.m[5];
+        t.rotation = std::atan2(m.m[3], m.m[0]);
+        t.sx = std::sqrt(m.m[0] * m.m[0] + m.m[3] * m.m[3]);
+        t.sy = std::sqrt(m.m[1] * m.m[1] + m.m[4] * m.m[4]);
+        // Preserve a mirrored (negative-determinant) matrix on sy.
+        if (m.m[0] * m.m[4] - m.m[1] * m.m[3] < 0.0) t.sy = -t.sy;
+        return t;
+    }
 };
 
 // Compositing blend mode — the W3C separable set (plus Erase). Values are

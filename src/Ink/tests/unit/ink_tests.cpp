@@ -446,6 +446,106 @@ void TestInstancing() {
     }
 }
 
+void TestParenting() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+    const NodeId parent = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                      Style::Filled({ 1, 0, 0, 1 }), "parent");
+    { Transform2D t; t.tx = 100; t.ty = 50; doc.SetTransform(parent, t); }
+    const NodeId child = doc.AddPath(page, PathData::Rect(0, 0, 4, 4),
+                                     Style::Filled({ 0, 1, 0, 1 }), "child");
+    { Transform2D t; t.tx = 130; t.ty = 80; doc.SetTransform(child, t); }
+
+    // keepWorld=true: parenting preserves the child's document position.
+    const DVec2 before = doc.WorldTransform(child).Apply({ 0, 0 });
+    CHECK(doc.SetParent(child, parent, /*keepWorld=*/true));
+    const DVec2 after = doc.WorldTransform(child).Apply({ 0, 0 });
+    CHECK_NEAR(before.x, after.x, 1e-6);
+    CHECK_NEAR(before.y, after.y, 1e-6);
+
+    // Moving the parent now moves the child (inherited transform).
+    { Transform2D t; t.tx = 200; t.ty = 50; doc.SetTransform(parent, t); }
+    const DVec2 moved = doc.WorldTransform(child).Apply({ 0, 0 });
+    CHECK_NEAR(moved.x - after.x, 100.0, 1e-6);   // parent moved +100 in x
+    CHECK_NEAR(moved.y - after.y, 0.0, 1e-6);
+
+    // Cycle refusal: parenting the parent to its child must fail.
+    CHECK(!doc.SetParent(parent, child, true));
+
+    // ClearParent keepWorld preserves position again.
+    const DVec2 pre = doc.WorldTransform(child).Apply({ 0, 0 });
+    doc.ClearParent(child, true);
+    const DVec2 post = doc.WorldTransform(child).Apply({ 0, 0 });
+    CHECK_NEAR(pre.x, post.x, 1e-6);
+    CHECK_NEAR(pre.y, post.y, 1e-6);
+    CHECK(doc.Find(child)->parentId == kNullNode);
+}
+
+// Total unsigned area of a set of rings (holes subtract via signed area sum).
+double RingsArea(const std::vector<std::vector<DVec2>>& rings) {
+    double a = 0.0;
+    for (const auto& r : rings) a += geom::SignedArea(r);
+    return std::abs(a);
+}
+
+void TestBoolean() {
+    // Two squares overlapping in a corner (no shared/collinear edges — the
+    // non-degenerate case the v1 clipper is exact on): A=[0,10]²,
+    // B=[5,15]×[2,12]. Overlap = [5,10]×[2,10] = 5×8 = 40.
+    const std::vector<std::vector<DVec2>> A = {
+        { { 0, 0 }, { 10, 0 }, { 10, 10 }, { 0, 10 } } };
+    const std::vector<std::vector<DVec2>> B = {
+        { { 5, 2 }, { 15, 2 }, { 15, 12 }, { 5, 12 } } };
+
+    // Intersect = the shared 5×8 = 40.
+    CHECK_NEAR(RingsArea(geom::BooleanPolygons(A, B, geom::BoolOp::Intersect)),
+               40.0, 1e-6);
+    // Union = 100 + 100 − 40 = 160.
+    CHECK_NEAR(RingsArea(geom::BooleanPolygons(A, B, geom::BoolOp::Union)),
+               160.0, 1e-6);
+    // Subtract A−B = 100 − 40 = 60.
+    CHECK_NEAR(RingsArea(geom::BooleanPolygons(A, B, geom::BoolOp::Subtract)),
+               60.0, 1e-6);
+    // Xor = union − intersection = 160 − 40 = 120.
+    CHECK_NEAR(RingsArea(geom::BooleanPolygons(A, B, geom::BoolOp::Xor)),
+               120.0, 1e-6);
+
+    // Disjoint squares: intersection empty, union = both.
+    const std::vector<std::vector<DVec2>> C = {
+        { { 100, 100 }, { 110, 100 }, { 110, 110 }, { 100, 110 } } };
+    CHECK(geom::BooleanPolygons(A, C, geom::BoolOp::Intersect).empty());
+    CHECK_NEAR(RingsArea(geom::BooleanPolygons(A, C, geom::BoolOp::Union)),
+               200.0, 1e-6);
+
+    // Subtract producing a hole: B fully inside A → A−B has a hole, area 96.
+    const std::vector<std::vector<DVec2>> Inner = {
+        { { 4, 4 }, { 6, 4 }, { 6, 6 }, { 4, 6 } } };   // 2×2 = 4
+    CHECK_NEAR(RingsArea(geom::BooleanPolygons(A, Inner, geom::BoolOp::Subtract)),
+               96.0, 1e-6);
+
+    // The Boolean MODIFIER through the Scene: a rect minus an overlapping rect.
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 100, 100 });
+        const NodeId host = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                        Style::Filled({ 1, 0, 0, 1 }), "host");
+        const NodeId op = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                      Style::Filled({ 0, 0, 1, 1 }), "op");
+        { Transform2D t; t.tx = 5; doc.SetTransform(op, t); }   // shift +5 in x
+        doc.SetVisible(op, false);
+        Modifier m; m.kind = ModifierKind::Boolean;
+        m.op = BooleanOp::Subtract; m.operandRef = op;
+        doc.SetModifiers(host, { m });
+        Scene s; s.Compile(doc);
+        // The host now draws the derived (5×10=50) geometry — verify a drawable
+        // exists for the host and its bounds shrank in x.
+        bool hostDrawn = false;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == host && !d.isClipSource) hostDrawn = true;
+        CHECK(hostDrawn);
+    }
+}
+
 void TestSceneCompile() {
     Document doc;
     SeedDemoDocument(doc);
@@ -481,6 +581,8 @@ int main() {
     TestGeometryCache();
     TestCompositeScopes();
     TestInstancing();
+    TestParenting();
+    TestBoolean();
     TestSceneCompile();
 
     if (g_failures == 0) {

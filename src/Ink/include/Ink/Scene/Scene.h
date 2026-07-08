@@ -2,6 +2,9 @@
 
 #include "Ink/Document/Document.h"
 
+#include <deque>
+#include <unordered_map>
+
 namespace Ink {
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,6 +88,11 @@ private:
     // path node at `world`.
     void EmitPath(const Document& doc, const Node& n, const DMat23& world,
                   ScopeId scope);
+    // The node's effective geometry: its own PathData, or a Boolean-modifier
+    // derived path (stored stably in derivedPaths_). Returns the path + its
+    // content hash. `n` must be a path node.
+    const PathData* ResolveGeometry(const Document& doc, const Node& n,
+                                    std::uint64_t& hashOut);
     // Expand a pattern fill: motif instances on a lattice over the fill bbox.
     void EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                      const DMat23& world, ScopeId scope);
@@ -97,6 +105,9 @@ private:
     std::vector<Drawable>       drawables_;
     std::vector<CompositeScope> scopes_;
     std::vector<PathData>       pageRects_;   // stable storage for page substrates
+    // Boolean-modifier results (stable addresses; drawables borrow them).
+    std::deque<PathData>        derivedPaths_;
+    std::unordered_map<NodeId, PathData*> derivedByNode_;
     int           maxDepth_ = 0;
     std::uint64_t version_  = 0;
     bool          compiled_ = false;
