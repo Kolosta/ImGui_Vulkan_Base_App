@@ -20,8 +20,13 @@ add_library(Application STATIC
     Chrome/TitleBar.cpp
     Chrome/Splash.cpp
 
-    # Editors: placeholders awaiting the Ink engine (Lot 1+).
+    # Editors: the Ink-backed canvas + the editing loop (Lot 8), plus the
+    # Outliner/Properties placeholders (rebuilt in Lot 9).
     Editors/Viewport/Viewport.cpp
+    Editors/Viewport/ViewportInput.cpp
+    Editors/Viewport/ViewportTools.cpp
+    Editors/Viewport/ViewportOverlays.cpp
+    Editors/Viewport/ViewportToolbar.cpp
     Editors/Outliner/Outliner.cpp
     Editors/Properties/Properties.cpp
     Editors/Info/InfoEditors.cpp

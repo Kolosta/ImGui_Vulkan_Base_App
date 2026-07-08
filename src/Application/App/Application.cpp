@@ -212,6 +212,11 @@ void Application::Update() {
     // and submits the canvas work (docs/Ink/RENDER_GRAPH.md).
     if (ink_) ink_->BeginFrame();
 
+    // Reset the per-frame hovered-viewport pointer; a Viewport leaf sets it
+    // again while building if the mouse is over it (Lot 8 keyboard actions
+    // target the hovered leaf).
+    hoveredViewport_ = nullptr;
+
     RenderTitleBar();      // publishes titleBarHeightPx_ + blockers first
     RenderMainLayout();    // viewports render their offscreen canvas here
     RenderFloatingWindows();
@@ -406,6 +411,13 @@ void Application::Action_NewFile() {
 // tools land (docs/Ink/ROADMAP.md Lot 8).
 void Application::ResetDocument() {
     project_.Reset();
+    // Fresh editing state for the new document (Lot 8).
+    edit_.Clear();
+    edit_.mode = EditorMode::Object;
+    docUndo_.Clear();
+    transformOp_ = TransformOp{};
+    canvasDrag_  = CanvasDrag{};
+    addMenuOpen_ = false;
     if (ink_) {
         Ink::SeedDemoDocument(*project_.document);
         ink_->SetDocument(project_.document.get());

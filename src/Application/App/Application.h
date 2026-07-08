@@ -20,6 +20,7 @@
 #include "Project.h"
 #include "SecondaryWindow.h"
 #include "UndoStack.h"
+#include "ViewportEditing.h"   // EditContext / DocUndoStack / TransformOp (Lot 8)
 #include "ModuleAPI.h"      // module contract (Modules::IModule / Capabilities)
 
 namespace App {
@@ -117,9 +118,74 @@ private:
     void RenderStatusBar();
 
     // ── Editors (placeholders until Ink lands — docs/Ink/ROADMAP.md) ─────────
-    // The 2D canvas editor. Will render through an Ink::View per zone leaf
-    // (100 % Vulkan canvas). For now: an empty canvas placeholder.
+    // The 2D canvas editor — renders through an Ink::View per zone leaf
+    // (100 % Vulkan canvas), drives the camera and (Lot 8) the editing loop.
     void RenderViewport(ImVec2 size, EditorState& st);
+    // The Viewport top bar (mode/rulers/swatches | orient/pivot/snap | overlay
+    // — MainUI wires it as the descriptor's topBar). Split across
+    // ViewportToolbar.cpp with the palette + snap widget.
+    void BuildViewportTopBar(EditorState& st, EditorBar& bar);
+    void RenderToolPalette(ImVec2 origin, EditorState& st);   // floating tool column
+    void DrawSnapWidget(ImVec2 pos, float widthPx);           // magnet + Snap menu
+    void DrawDefaultColorSwatches(float barHeight);           // fill/stroke chips
+    void RenderAddMenu();                                     // Shift+A spawn menu
+
+    // ── Editing loop (ViewportInput.cpp / ViewportTools.cpp / ViewportModal.cpp) ─
+    // Camera helpers, shared by input + overlay drawing.
+    struct ViewCam {   // screen = canvasMin + (doc − pan)·zoom
+        ImVec2 canvasMin; double panX = 0, panY = 0, zoom = 1;
+        Ink::Vec2  DocToView(double dx, double dy) const {
+            return { (float)((dx - panX) * zoom), (float)((dy - panY) * zoom) };
+        }
+        Ink::DVec2 ScreenToDoc(double sx, double sy) const {
+            return { (sx - canvasMin.x) / zoom + panX,
+                     (sy - canvasMin.y) / zoom + panY };
+        }
+    };
+    // Route mouse/keyboard on the hovered canvas to the active tool / modal op.
+    void HandleViewportInput(EditorState& st, const ViewCam& cam, bool hovered,
+                             const ImVec2& canvasMin, const ImVec2& canvasSize);
+    // The active-tool press/drag/release (select, draw-rect/ellipse, cursor).
+    void ToolMousePress(EditorState& st, const ViewCam& cam, Ink::DVec2 doc,
+                        bool shift);
+    void ToolMouseDrag(EditorState& st, const ViewCam& cam, Ink::DVec2 doc);
+    void ToolMouseRelease(EditorState& st, const ViewCam& cam, Ink::DVec2 doc);
+    // Modal G/R/S: begin (uses hoveredCam_), update each frame (preview),
+    // confirm/cancel.
+    void BeginTransform(TransformOp::Kind kind, EditorState& st);
+    void UpdateTransform(const ViewCam& cam);
+    void ConfirmTransform();
+    void CancelTransform();
+    // Editing actions (bound to shortcuts + the Add menu).
+    void Action_SelectAll();
+    void Action_DeselectAll();
+    void Action_DeleteSelection();
+    void Action_DuplicateSelection();
+    void Action_EnterEditMode();
+    void Action_ExitEditMode();
+    void Action_ToggleEditMode();
+    void Action_ApplyScale();
+    void Action_BeginMove();
+    void Action_BeginRotate();
+    void Action_BeginScale();
+    void Action_ConstrainAxisX();
+    void Action_ConstrainAxisY();
+    void Action_OpenAddMenu();
+    // Create a shape at the 2D cursor / view centre and select it.
+    Ink::NodeId SpawnShape(const char* kind);
+    // Build the default Style (fill+stroke) from the EditContext swatches.
+    Ink::Style DefaultStyle() const;
+    // Push an already-applied reversible command onto the doc undo stack.
+    void PushDocCommand(const std::string& label,
+                        std::function<void(Ink::Document&)> undo,
+                        std::function<void(Ink::Document&)> redo);
+    // Recompute the selection's basis (orientation) and pivot (doc space).
+    void ComputeTransformFrame(Ink::DVec2& pivot, Ink::DVec2& bx, Ink::DVec2& by) const;
+    // Selection bbox in document space (Object Mode; false when empty).
+    bool SelectionBounds(Ink::DRect& out) const;
+    // Draw selection outlines / handles / modal feedback into the view overlay.
+    void DrawEditOverlays(EditorState& st, const ViewCam& cam,
+                          Ink::OverlayList& ov, bool hovered);
     // Object organisation trees (Layers + Collections views on the new model).
     void RenderOutliner(EditorState& st);
     // Active object's style/transform editor (multi-fill / multi-stroke).
@@ -315,8 +381,26 @@ private:
     int         splashTexW_   = 0;
     int         splashTexH_   = 0;
 
-    // The shared project (transitional: bookkeeping only — see Project.h).
+    // The shared project (owns the Ink::Document — see Project.h).
     Project project_;
+
+    // ── Editing loop state (Lot 8) ───────────────────────────────────────────
+    // The selection/mode/pivot/orientation/snap context is PER-DOCUMENT (every
+    // Viewport zone shares it, like Blender). The command-based document undo
+    // replaces the quarantined snapshot history.
+    EditContext  edit_;
+    DocUndoStack docUndo_;
+    TransformOp  transformOp_;   // modal G/R/S in flight (kind == None if idle)
+    CanvasDrag   canvasDrag_;     // box-select / draw-shape gesture in flight
+    // Add menu (Shift+A) request: opened at the cursor in the hovered zone.
+    bool         addMenuOpen_ = false;
+    ImVec2       addMenuPos_{};
+    // Convenience: the currently hovered viewport leaf's EditorState (set each
+    // frame by RenderViewport when hovered), used by mode-less shortcut actions.
+    EditorState* hoveredViewport_ = nullptr;
+    // The hovered leaf's camera this frame — lets G/R/S (fired by keyboard,
+    // outside RenderViewport) map the mouse to document space.
+    ViewCam      hoveredCam_{};
 
     // The Ink render engine (docs/Ink/). Shares the app's Vulkan device;
     // frame protocol: BeginFrame() before the UI build, per-zone views during

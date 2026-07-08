@@ -141,27 +141,94 @@ void Application::RegisterDefaultShortcuts() {
         sm.RegisterAction(a, { sigKey(ImGuiKey_KeypadDecimal) });
     }
 
-    // ── Tools ────────────────────────────────────────────────────────────────
-    // Only the two base tools survive the rework; drawing/editing tools return
-    // with Ink Lot 8, re-designed on the new document model.
-    tm.RegisterTool({"tool.select", "Select",    "select",    {"tool.select.activate"}});
-    tm.RegisterTool({"tool.cursor", "2D Cursor", "crop-free", {"tool.cursor.activate"}});
+    // ── Tools (Lot 8: the editing loop) ───────────────────────────────────────
+    tm.RegisterTool({"tool.select",  "Select",     "select",         {"tool.select.activate"}});
+    tm.RegisterTool({"tool.rect",    "Rectangle",  "crop-landscape", {"tool.rect.activate"}});
+    tm.RegisterTool({"tool.ellipse", "Ellipse",    "format-shapes",  {"tool.ellipse.activate"}});
+    tm.RegisterTool({"tool.cursor",  "2D Cursor",  "crop-free",      {"tool.cursor.activate"}});
     {
         Action a; a.id = "tool.select.activate"; a.name = "Activate Select";
         a.description = "Select, box-select and grab-move objects";
         a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_ActivateNamedTool("tool.select"); };
-        sm.RegisterAction(a, { sigKey(ImGuiKey_W),
-                               sigKey(ImGuiKey_Space, /*ctrl=*/false, /*shift=*/true) });
+        sm.RegisterAction(a, { sigKey(ImGuiKey_W) });
+    }
+    {
+        Action a; a.id = "tool.rect.activate"; a.name = "Activate Rectangle";
+        a.description = "Draw rectangles by dragging on the canvas";
+        a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_ActivateNamedTool("tool.rect"); };
+        sm.RegisterAction(a, {});
+    }
+    {
+        Action a; a.id = "tool.ellipse.activate"; a.name = "Activate Ellipse";
+        a.description = "Draw ellipses by dragging on the canvas";
+        a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_ActivateNamedTool("tool.ellipse"); };
+        sm.RegisterAction(a, {});
     }
     {
         Action a; a.id = "tool.cursor.activate"; a.name = "Activate 2D Cursor";
-        a.description = "Place the 2D cursor by clicking or dragging";
+        a.description = "Place the 2D cursor by clicking (2D cursor — later)";
         a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_ActivateNamedTool("tool.cursor"); };
-        sm.RegisterAction(a, {});   // no default key
+        sm.RegisterAction(a, {});
     }
     tm.SetActiveTool("tool.select");
+
+    // ── Editing (Lot 8): selection, transforms, mode, add ────────────────────
+    // Canvas-scoped so they never steal keys while a text field is focused.
+    auto viewportKey = [&](const char* id, const char* name, const char* desc,
+                           std::function<void()> cb,
+                           std::vector<EventSignature> keys,
+                           bool modal = false, bool repeat = false,
+                           std::function<bool()> poll = {}) {
+        Action a; a.id = id; a.name = name; a.description = desc;
+        a.category = ActionCategory::Transform;
+        a.requiredContext.editor = "viewport";
+        a.callback = std::move(cb);
+        a.pollFn = std::move(poll);
+        a.isModal = modal; a.allowRepeat = repeat;
+        sm.RegisterAction(a, std::move(keys));
+    };
+    // X and Y are shared: outside a modal op they delete / (unused);
+    // during a modal op they constrain the axis. pollFn disambiguates so the
+    // two never both fire on one keypress.
+    auto idle  = [this] { return !transformOp_.Active(); };
+    auto modal = [this] { return transformOp_.Active(); };
+
+    viewportKey("edit.selectAll", "Select All", "Select every object",
+                [this]{ Action_SelectAll(); }, { sigKey(ImGuiKey_A) }, false, false, idle);
+    viewportKey("edit.deselectAll", "Deselect All", "Clear the selection",
+                [this]{ Action_DeselectAll(); }, { sigKey(ImGuiKey_A, false, false, true) });
+    viewportKey("edit.delete", "Delete", "Delete the selected objects",
+                [this]{ Action_DeleteSelection(); },
+                { sigKey(ImGuiKey_X), sigKey(ImGuiKey_Delete) }, false, false, idle);
+    viewportKey("edit.duplicate", "Duplicate", "Duplicate the selected objects",
+                [this]{ Action_DuplicateSelection(); }, { sigKey(ImGuiKey_D, true) },
+                false, false, idle);
+    viewportKey("edit.grab", "Move", "Grab-move the selection",
+                [this]{ Action_BeginMove(); }, { sigKey(ImGuiKey_G) }, true, false, idle);
+    viewportKey("edit.rotate", "Rotate", "Rotate the selection",
+                [this]{ Action_BeginRotate(); }, { sigKey(ImGuiKey_R) }, true, false, idle);
+    viewportKey("edit.scale", "Scale", "Scale the selection",
+                [this]{ Action_BeginScale(); }, { sigKey(ImGuiKey_S) }, true, false, idle);
+    viewportKey("edit.axisX", "Constrain X", "Constrain the transform to X",
+                [this]{ Action_ConstrainAxisX(); }, { sigKey(ImGuiKey_X) },
+                false, false, modal);
+    viewportKey("edit.axisY", "Constrain Y", "Constrain the transform to Y",
+                [this]{ Action_ConstrainAxisY(); }, { sigKey(ImGuiKey_Y) },
+                false, false, modal);
+    viewportKey("edit.toggleMode", "Toggle Edit Mode",
+                "Switch between Object and Edit mode",
+                [this]{ Action_ToggleEditMode(); }, { sigKey(ImGuiKey_Tab) },
+                false, false, idle);
+    viewportKey("edit.applyScale", "Apply Scale",
+                "Bake the selection's scale into its geometry",
+                [this]{ Action_ApplyScale(); }, {});
+    viewportKey("edit.addMenu", "Add", "Open the Add menu at the cursor",
+                [this]{ Action_OpenAddMenu(); }, { sigKey(ImGuiKey_A, false, true) },
+                false, false, idle);
 
     // ── Editor switch shortcuts (Blender-style) ──────────────────────────────
     // Switch the editor kind of the zone under the mouse. No requiredContext:

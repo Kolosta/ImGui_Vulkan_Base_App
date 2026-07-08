@@ -100,10 +100,10 @@ void Application::RenderStatusBar() {
 void Application::RegisterCoreEditors() {
     auto& reg = EditorRegistry::Instance();
 
-    // Viewport — the vector canvas (placeholder until the Ink engine lands —
-    // docs/Ink/ROADMAP.md Lot 1). Draws its own chrome edge-to-edge: no scroll
-    // wrap, no content inset. The editor top bar (mode/pivot/snap/pages) was
-    // part of the old editing stack and returns with the Ink editing loop.
+    // Viewport — the Ink vector canvas + the editing loop (docs/Ink/ROADMAP.md
+    // Lot 8). Draws its own chrome edge-to-edge (no scroll wrap, no content
+    // inset) and carries the editor top bar (mode/orientation/pivot/snap +
+    // overlay). Controls whose Ink feature has not landed yet are greyed.
     {
         EditorDescriptor d;
         d.id = CoreEditor::Viewport; d.name = "Viewport"; d.icon = "image";
@@ -111,6 +111,9 @@ void Application::RegisterCoreEditors() {
         d.switchAction = "editor.viewport";
         d.wrapInScroll = false; d.contentInset = false;
         d.draw = [this](ImVec2 sz, EditorState& st) { RenderViewport(sz, st); };
+        d.topBar = [this](EditorState& st, EditorBar& bar) {
+            BuildViewportTopBar(st, bar);
+        };
         reg.Register(std::move(d));
     }
 

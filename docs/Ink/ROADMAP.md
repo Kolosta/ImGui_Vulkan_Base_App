@@ -72,12 +72,27 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   change-gated full walk) is a perf-lot task. *(Delivered 2026-07-08. Boolean
   is exact on non-degenerate input; collinear edge coincidences are a
   documented v1 approximation.)*
-- [ ] **Lot 8 — Editing loop**: GPU picking (async) + CPU exact fallback,
-  selection/handles/gizmo overlays, rebuilt Select/Move/Rotate/Scale tools
-  and draw tools on the new model, Object/Edit mode split (Blender semantics:
-  Object-Mode scale stretches strokes, Edit-Mode vertex edits don't) with
-  **Apply Scale** (DOCUMENT_MODEL.md §4), command-based undo; `pick_storm`
-  bench.
+- [x] **Lot 8 — Editing loop**: CPU-exact picking on the compiled Scene
+  (`Ink::PickTop` topmost-first by fill-rule / stroke half-width; `PickBox` by
+  per-owner bounds — the async GPU path is a later perf lot and this stays its
+  correctness reference), selection + bbox-handle + Edit-Mode-anchor + modal
+  overlays (all drawn by Ink's OverlayPass, 100 % Vulkan), the Select /
+  Rectangle / Ellipse tools and the modal Move/Rotate/Scale (G/R/S with X/Y
+  axis constraint, orientation basis, pivot modes, Ctrl/magnet snapping),
+  Object/Edit mode split (Object-Mode scale stretches strokes; Edit-Mode moves
+  anchors) with **Apply Scale** (`Document::ApplyScale` bakes scale into
+  geometry — DOCUMENT_MODEL.md §4), the Shift+A Add menu, delete/duplicate, and
+  **command-based document undo** (`DocUndoStack`: reversible commands over the
+  typed ops, `Document::CopySubtree`/`RestoreSubtree`/`DuplicateSubtree` for
+  exact add/delete round-trips). The **Viewport top bar returns** on the Ink
+  model (mode / orientation / pivot / snap / overlay); controls whose Ink
+  feature has not landed (rulers, non-Increment snap modes, 2D cursor,
+  page-layout overlays, metrics) are shown GREYED until their pass.
+  `pick_storm` bench (CPU-only). *(Delivered 2026-07-09. Known v1 limits:
+  box-select uses conservative per-node bounds, not exact geometry; the 2D
+  cursor and its cursor-pivot/orientation return with a later pass;
+  Edit-Mode edits move anchors only — handle/segment editing and the curve
+  tool are a follow-up.)*
 - [ ] **Lot 9 — Organisation UI**: Outliner rebuilt on Layers + Collections
   views; Properties rebuilt (style editor incl. multi-fill/multi-stroke).
 - [ ] **Lot 10 — Persistence**: `.acu` v2 (clean break), save/open/recent

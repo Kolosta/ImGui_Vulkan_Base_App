@@ -18,9 +18,11 @@ namespace { namespace DS = DesignSystem; using Tok = DesignSystem::Tok; }
 //  inside — content AND editor overlays (page frame, origin cross, cursor
 //  crosshair) — is rendered by Ink, 100 % Vulkan.
 //
-//  The drawing/editing tools return re-designed on the Ink document with the
-//  editing-loop lot (ROADMAP Lot 8); until then the camera (wheel zoom at
-//  cursor, middle-drag pan, fit/reset requests) is the whole interaction.
+//  The editing loop (ROADMAP Lot 8) runs on top: HandleViewportInput() routes
+//  the mouse/keyboard on the hovered canvas to the active tool and the modal
+//  G/R/S operation; DrawEditOverlays() paints selection/handles/feedback into
+//  the same Vulkan OverlayPass. Camera (wheel zoom at cursor, middle-drag pan,
+//  fit/reset) is unchanged from Lot 1.
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace {
@@ -45,9 +47,13 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     Shortcuts::ShortcutManager::Instance()
         .RegisterRegionContext("##zone", "viewport", "content");
     const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
-    if (hovered) zoneLayout_.SetHoveredEditorState(&st);
+    if (hovered) { zoneLayout_.SetHoveredEditorState(&st); hoveredViewport_ = &st; }
 
     st.openNewDoc = false;   // legacy request — consumed until Lot 2
+
+    // Publish the tool-palette rect so its clicks don't fall through to the
+    // canvas hover-test (rebuilt each frame; overlays append to it after).
+    st.overlayRects.clear();
 
     const ImVec2 cMin = ImGui::GetCursorScreenPos();
 
@@ -82,6 +88,9 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         return Ink::Vec2{ (float)((dx - st.panX) * st.zoom),
                           (float)((dy - st.panY) * st.zoom) };
     };
+    ViewCam cam;
+    cam.canvasMin = cMin;  cam.panX = st.panX;  cam.panY = st.panY;  cam.zoom = st.zoom;
+    if (hovered) hoveredCam_ = cam;
 
     // ── Camera interactions ──────────────────────────────────────────────────
     if (hovered && io.MouseWheel != 0.0f) {
@@ -119,6 +128,12 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         st.panX = st.panY = -40.0;   // origin near the top-left corner
     }
 
+    // Refresh the camera snapshot after any pan/zoom this frame, then route the
+    // active-tool / modal input on the hovered canvas (Lot 8).
+    cam.panX = st.panX;  cam.panY = st.panY;  cam.zoom = st.zoom;
+    if (hovered) hoveredCam_ = cam;
+    HandleViewportInput(st, cam, hovered, cMin, size);
+
     // ── Drive the Ink view ───────────────────────────────────────────────────
     Ink::View* view = ink_->AcquireView(&st);
     view->SetViewport((std::uint32_t)size.x, (std::uint32_t)size.y);
@@ -140,8 +155,12 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         ov.AddLine({ o.x - s, o.y }, { o.x + s, o.y }, accentCol, 1.5f);
         ov.AddLine({ o.x, o.y - s }, { o.x, o.y + s }, accentCol, 1.5f);
     }
-    // Cursor crosshair while this canvas is hovered.
-    if (hovered) {
+    // Selection / handles / modal feedback / gesture preview (Lot 8).
+    DrawEditOverlays(st, cam, ov, hovered);
+
+    // Cursor crosshair while this canvas is hovered (only with a tool that has
+    // no drag gesture in flight, to keep the modal feedback readable).
+    if (hovered && !transformOp_.Active()) {
         const Ink::Vec2 m{ io.MousePos.x - cMin.x, io.MousePos.y - cMin.y };
         const float s = 9.0f;
         ov.AddLine({ m.x - s, m.y }, { m.x + s, m.y }, accentCol, 1.0f);
@@ -153,6 +172,12 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         ImGui::Image((ImTextureID)tex, size);
     else
         ImGui::Dummy(size);
+
+    // Floating tool palette (drawn OVER the canvas image, as ImGui chrome).
+    RenderToolPalette(cMin, st);
+
+    // The Shift+A Add menu, if requested over this (hovered) zone.
+    if (addMenuOpen_ && hovered) RenderAddMenu();
 }
 
 } // namespace App
