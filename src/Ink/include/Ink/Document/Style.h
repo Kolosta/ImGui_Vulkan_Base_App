@@ -25,11 +25,30 @@ struct Paint {
 };
 
 enum class FillRule : std::uint8_t { NonZero = 0, EvenOdd = 1 };
+enum class FillKind : std::uint8_t { Solid = 0, Pattern = 1 };
+
+// A pattern fill (docs/Ink/DOCUMENT_MODEL.md §Paints): the region is covered by
+// INSTANCES of a motif node on a lattice — the same instancing machinery as
+// InstanceNode, so a dense pattern is one instanced draw, not N geometries.
+// The Scene expands it into grouped motif drawables over the fill's bounding
+// box (Lot 5 clips the lattice to the bbox; exact clip-to-shape rides on the
+// clip-mask follow-up).
+struct PatternFill {
+    NodeId motifRef = kNullNode;   // node whose geometry is the tile
+    double spacingX = 40.0;        // lattice pitch (node-local units)
+    double spacingY = 40.0;
+    double phaseX   = 0.0;         // lattice origin offset
+    double phaseY   = 0.0;
+    double rotation = 0.0;         // per-motif rotation (radians)
+    double scale    = 1.0;         // per-motif uniform scale
+};
 
 struct Fill {
-    Paint    paint;
-    FillRule rule    = FillRule::NonZero;
-    bool     enabled = true;
+    FillKind    kind    = FillKind::Solid;
+    Paint       paint;             // Solid
+    PatternFill pattern;           // Pattern
+    FillRule    rule    = FillRule::NonZero;
+    bool        enabled = true;
 };
 
 enum class StrokeAlign : std::uint8_t { Center = 0, Inside = 1, Outside = 2 };
@@ -77,7 +96,9 @@ struct Style {
 
     static Style Filled(const Color& linearStraight) {
         Style s;
-        s.fills.push_back({ Paint{ linearStraight } });
+        Fill f;
+        f.paint.color = linearStraight;
+        s.fills.push_back(f);
         return s;
     }
     static Style Stroked(const Color& linearStraight, double width) {

@@ -45,9 +45,18 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   render ×1 (MSAA only on iso[0]), so a blended group's edges are aliased;
   (c) one fullscreen composite per group → blend_groups 500 groups ≈ 49 ms
   GPU, the tile/bounds-scoped-composite target for the perf lots.)*
-- [ ] **Lot 5 — Instancing**: InstanceNode, pattern paints (instanced motifs,
-  current parameter set re-specified), along-path + array modifiers;
-  `instances_100k`, `pattern_fill`, `along_path` benches.
+- [x] **Lot 5 — Instancing**: InstanceNode (renders a target subtree at its
+  own transform, depth-clamped, self-ref refused), pattern fills (a motif node
+  instanced on a lattice over the host bbox), Array + AlongPath modifiers (an
+  ordered stack expanded at Scene compile into a set of transforms). All three
+  are ONE mechanism: the Scene emits many drawables sharing the source's
+  pathHash, so they merge into one instanced indirect draw — logical
+  expansion, never geometry duplication. *(Delivered 2026-07-08. Benches:
+  instances_100k = 100 001 instances in **4 draw calls, 0.80 ms GPU** (the
+  instancing claim proven; the 6.8 ms CPU is per-instance bbox culling — the
+  GPU-cull target); pattern_fill 107 k motifs → 4 draws / 0.50 ms; along_path
+  20 k ticks → 43 draws / 0.22 ms. Known limit: pattern lattice is clipped to
+  the host BBOX, not the exact shape — that rides on the clip-mask follow-up.)*
 - [ ] **Lot 6 — Images**: import (decode app-side), bindless texture table,
   image paints & ImageNode; `images` bench.
 - [ ] **Lot 7 — Relations**: object parenting (transform inheritance),

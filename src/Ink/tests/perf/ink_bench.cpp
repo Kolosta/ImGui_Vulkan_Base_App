@@ -141,6 +141,81 @@ Ink::PathData MakeBlob(Lcg& rnd, double r) {
     return path;
 }
 
+// 100 000 instances of ~10 star definitions via Array modifiers — the
+// instancing claim (docs/Ink/PERF_TESTING.md §3): O(1) CPU/instance, one
+// merged draw per definition run.
+void BuildInstances100k(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 6000, 3500 });
+    Lcg rnd;
+    // 100 base objects, each arrayed ×1000 → 100k instances.
+    for (int b = 0; b < 100; ++b) {
+        std::vector<Ink::DVec2> pts;
+        for (int i = 0; i < 10; ++i) {
+            const double r = (i % 2 == 0) ? 12.0 : 5.0;
+            const double a = 3.14159265 * (double)i / 5.0;
+            pts.push_back({ std::cos(a) * r, std::sin(a) * r });
+        }
+        const Ink::NodeId n = doc.AddPath(
+            page, Ink::PathData::Polygon(pts),
+            Ink::Style::Filled({ (float)rnd(), (float)rnd(), (float)rnd(), 1.0f }),
+            "star");
+        Ink::Transform2D t;
+        t.tx = 40.0 + rnd() * 5900.0;
+        t.ty = 40.0 + rnd() * 3400.0;
+        doc.SetTransform(n, t);
+        Ink::Modifier arr;
+        arr.kind = Ink::ModifierKind::Array;
+        arr.count = 1000;
+        arr.step.tx = 4.0;
+        arr.step.ty = 3.0;
+        arr.step.rotation = 0.05;
+        doc.SetModifiers(n, { arr });
+    }
+}
+
+// A large rectangle pattern-filled with a dense instanced motif lattice.
+void BuildPatternFill(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 4000, 3000 });
+    const Ink::NodeId motif = doc.AddPath(page, Ink::PathData::Ellipse(0, 0, 3, 3),
+        Ink::Style::Filled({ 0.3f, 0.5f, 0.8f, 1.0f }), "motif");
+    doc.SetVisible(motif, false);
+    Ink::Fill pf;
+    pf.kind = Ink::FillKind::Pattern;
+    pf.pattern.motifRef = motif;
+    pf.pattern.spacingX = 10.0;
+    pf.pattern.spacingY = 10.0;   // 3800×2800 / 100 ≈ 106k motif instances
+    Ink::Style st; st.fills.push_back(pf);
+    const Ink::NodeId rect = doc.AddPath(
+        page, Ink::PathData::Rect(-1900, -1400, 3800, 2800), st, "host");
+    Ink::Transform2D t; t.tx = 2000; t.ty = 1500;
+    doc.SetTransform(rect, t);
+}
+
+// 20 000 ticks distributed along long curves via AlongPath modifiers.
+void BuildAlongPath(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 4000, 3000 });
+    Lcg rnd;
+    for (int c = 0; c < 20; ++c) {
+        Ink::PathData wave;
+        Ink::Subpath sp; sp.closed = false;
+        const double y = 100.0 + c * 140.0;
+        for (int i = 0; i <= 40; ++i)
+            sp.anchors.push_back({ { i * 95.0, y + std::sin(i * 0.5) * 40.0 } });
+        wave.subpaths.push_back(sp);
+        const Ink::NodeId path = doc.AddPath(page, wave,
+            Ink::Style::Stroked({ 0.5f, 0.5f, 0.5f, 0.3f }, 1.0), "wave");
+        Ink::Modifier along;
+        along.kind = Ink::ModifierKind::AlongPath;
+        along.pathRef = path;
+        along.alongCount = 1000;
+        along.align = Ink::AlongAlign::Tangent;
+        const Ink::NodeId tick = doc.AddPath(page,
+            Ink::PathData::Polygon({ { 0, -6 }, { 3, 6 }, { -3, 6 } }),
+            Ink::Style::Filled({ (float)rnd(), 0.5f, 0.3f, 1.0f }), "tick");
+        doc.SetModifiers(tick, { along });
+    }
+}
+
 // 500 nested composite groups (opacity + blend), 4 discs each, over a shared
 // backdrop — the isolation/composite stress (docs/Ink/PERF_TESTING.md §3).
 void BuildBlendGroups(Ink::Document& doc) {
@@ -232,7 +307,8 @@ int main(int argc, char** argv) {
     }
     if (scene != "bootstrap" && scene != "steady" && scene != "empty" &&
         scene != "paths_10k" && scene != "edit_heavy" && scene != "zoom_sweep" &&
-        scene != "blend_groups") {
+        scene != "blend_groups" && scene != "instances_100k" &&
+        scene != "pattern_fill" && scene != "along_path") {
         std::fprintf(stderr, "ink_bench: unknown scene '%s'\n", scene.c_str());
         return 2;
     }
@@ -261,9 +337,12 @@ int main(int argc, char** argv) {
     Ink::NodeId editNode = Ink::kNullNode;
     const bool bigDoc = (scene == "paths_10k" || scene == "edit_heavy" ||
                          scene == "zoom_sweep");
-    if (bigDoc)                        editNode = BuildPaths10k(doc);
-    else if (scene == "blend_groups") BuildBlendGroups(doc);
-    else                              Ink::SeedDemoDocument(doc);
+    if (bigDoc)                         editNode = BuildPaths10k(doc);
+    else if (scene == "blend_groups")   BuildBlendGroups(doc);
+    else if (scene == "instances_100k") BuildInstances100k(doc);
+    else if (scene == "pattern_fill")   BuildPatternFill(doc);
+    else if (scene == "along_path")     BuildAlongPath(doc);
+    else                                Ink::SeedDemoDocument(doc);
     renderer.SetDocument(&doc);
 
     constexpr std::uint32_t kW = 1920, kH = 1080;

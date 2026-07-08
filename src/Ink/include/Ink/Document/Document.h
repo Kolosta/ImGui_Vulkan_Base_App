@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Ink/Document/Modifier.h"
 #include "Ink/Document/PathData.h"
 #include "Ink/Document/Style.h"
 #include <string>
@@ -24,7 +25,8 @@ namespace Ink {
 //  exact dirtying, (3) bump the version. Undo records hook in here at Lot 8.
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum class NodeKind : std::uint8_t { Group = 0, Path = 1 };
+// Instance: renders another node's subtree with this node's transform (Lot 5).
+enum class NodeKind : std::uint8_t { Group = 0, Path = 1, Instance = 2 };
 
 struct Node {
     NodeId      id   = kNullNode;
@@ -47,6 +49,13 @@ struct Node {
     Style    style;
     // kind == Group — children in painter order (bottom → top)
     std::vector<NodeId> children;
+    // kind == Instance — the node/subtree this instance renders (Lot 5).
+    NodeId   targetRef = kNullNode;
+
+    // Instancing modifiers (Lot 5): an ordered stack evaluated at Scene
+    // compile. Each turns this node's rendered content into many copies at
+    // generated transforms (docs/Ink/DOCUMENT_MODEL.md §6).
+    std::vector<Modifier> modifiers;
 };
 
 struct Page {
@@ -79,8 +88,13 @@ public:
     NodeId AddPage(std::string name, DVec2 pos, DVec2 size);
     NodeId AddGroup(NodeId parent, std::string name);   // parent = group or page
     NodeId AddPath(NodeId parent, PathData path, Style style, std::string name);
+    // An instance of `target`'s subtree (Lot 5). Renders target's content with
+    // this node's transform; editing target updates every instance.
+    NodeId AddInstance(NodeId parent, NodeId target, std::string name);
     void   SetPath(NodeId node, PathData path);
     void   SetStyle(NodeId node, Style style);
+    // Replace a node's instancing modifier stack (Lot 5).
+    void   SetModifiers(NodeId node, std::vector<Modifier> modifiers);
     void   SetTransform(NodeId node, const Transform2D& t);
     void   SetVisible(NodeId node, bool visible);
     // Group compositing (docs/Ink/DOCUMENT_MODEL.md §2). Setting any of these

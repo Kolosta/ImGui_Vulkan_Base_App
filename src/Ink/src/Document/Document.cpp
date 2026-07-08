@@ -64,6 +64,36 @@ NodeId Document::AddPath(NodeId parent, PathData path, Style style,
     return id;
 }
 
+NodeId Document::AddInstance(NodeId parent, NodeId target, std::string name) {
+    Node n;
+    n.id        = NextId();
+    n.kind      = NodeKind::Instance;
+    n.name      = std::move(name);
+    n.targetRef = target;
+    if (Node* pg = FindMutable(parent)) {
+        if (pg->kind != NodeKind::Group) return kNullNode;
+        n.parent = parent;
+        n.page   = pg->page;
+        pg->children.push_back(n.id);
+    } else if (Page* pp = const_cast<Page*>(FindPage(parent))) {
+        n.page = parent;
+        pp->children.push_back(n.id);
+    } else {
+        return kNullNode;
+    }
+    const NodeId id = n.id;
+    nodes_.emplace(id, std::move(n));
+    Log(id, ChangeKind::Added);
+    return id;
+}
+
+void Document::SetModifiers(NodeId node, std::vector<Modifier> modifiers) {
+    if (Node* n = FindMutable(node)) {
+        n->modifiers = std::move(modifiers);
+        Log(node, ChangeKind::Geometry);   // changes the emitted drawable set
+    }
+}
+
 void Document::SetPath(NodeId node, PathData path) {
     if (Node* n = FindMutable(node); n && n->kind == NodeKind::Path) {
         n->path = std::move(path);

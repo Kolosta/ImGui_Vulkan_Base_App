@@ -208,6 +208,64 @@ void SeedDemoDocument(Document& doc) {
             }
         doc.SetClip(clipG, true);
     }
+
+    // Lot 5 instancing showcase.
+    {
+        // Array modifier: one star, 8 copies stepping right + rotating.
+        Modifier arr;
+        arr.kind = ModifierKind::Array;
+        arr.count = 8;
+        arr.step.tx = 46.0;
+        arr.step.rotation = 0.4;
+        const NodeId star = doc.AddPath(page, Star(1.0, 0.45, 5),
+            Style::Filled(Srgb(0.85f, 0.55f, 0.20f, 1)), "array star");
+        doc.SetTransform(star, TRS(120, 980, 18.0));
+        doc.SetModifiers(star, { arr });
+
+        // Along-path modifier: dots distributed along a wavy curve, aligned to
+        // its tangent.
+        PathData wave;
+        {
+            Subpath sp; sp.closed = false;
+            for (int i = 0; i <= 6; ++i) {
+                Anchor a; a.pos = { i * 60.0, (i % 2 ? 40.0 : -40.0) };
+                sp.anchors.push_back(a);
+            }
+            wave.subpaths.push_back(sp);
+        }
+        const NodeId wavePath = doc.AddPath(page, wave,
+            Style::Stroked(Srgb(0.5f, 0.5f, 0.55f, 0.5f), 2.0), "wave");
+        doc.SetTransform(wavePath, TRS(120, 700));
+        Modifier along;
+        along.kind = ModifierKind::AlongPath;
+        along.pathRef = wavePath;
+        along.alongCount = 24;
+        along.align = AlongAlign::Tangent;
+        const NodeId tick = doc.AddPath(page,
+            PathData::Polygon({ { 0, -8 }, { 4, 8 }, { -4, 8 } }),
+            Style::Filled(Srgb(0.20f, 0.62f, 0.62f, 1)), "along ticks");
+        doc.SetTransform(tick, TRS(120, 700, 1.0));   // co-located with the path
+        doc.SetModifiers(tick, { along });
+
+        // Pattern fill: a rectangle filled with an instanced small disc motif.
+        const NodeId motif = doc.AddPath(page, PathData::Ellipse(0, 0, 6, 6),
+            Style::Filled(Srgb(0.30f, 0.45f, 0.80f, 1)), "motif");
+        doc.SetVisible(motif, false);   // the motif itself is a definition
+        Fill pf;
+        pf.kind = FillKind::Pattern;
+        pf.pattern.motifRef = motif;
+        pf.pattern.spacingX = 22.0;
+        pf.pattern.spacingY = 22.0;
+        Style patStyle; patStyle.fills.push_back(pf);
+        const NodeId patRect = doc.AddPath(page, PathData::Rect(-150, -90, 300, 180),
+            patStyle, "pattern rect");
+        doc.SetTransform(patRect, TRS(430, 1000));
+
+        // Instance node: a second copy of the array-star object elsewhere
+        // (editing the source updates both).
+        const NodeId inst = doc.AddInstance(page, star, "star instance");
+        doc.SetTransform(inst, TRS(760, 260, 1.0, 0.6));
+    }
 }
 
 } // namespace Ink

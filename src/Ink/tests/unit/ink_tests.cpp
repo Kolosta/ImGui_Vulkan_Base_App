@@ -350,6 +350,102 @@ void TestCompositeScopes() {
     CHECK(sawClipSource && sawClipped);
 }
 
+void TestInstancing() {
+    // Array modifier: 1 star → `count` grouped drawables sharing ONE pathHash
+    // (so they merge into one instanced draw downstream).
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        Modifier arr;
+        arr.kind = ModifierKind::Array;
+        arr.count = 5;
+        arr.step.tx = 20.0;
+        const NodeId n = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                     Style::Filled({ 1, 0, 0, 1 }), "r");
+        doc.SetModifiers(n, { arr });
+        Scene s; s.Compile(doc);
+        int copies = 0;
+        std::uint64_t h = 0;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == n) {
+                ++copies;
+                if (h == 0) h = d.pathHash;
+                CHECK(d.pathHash == h);   // same content → same cache key
+            }
+        CHECK(copies == 5);
+        // Each copy is offset by the step: xs differ by 20.
+        double xs[5]; int k = 0;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == n && k < 5) xs[k++] = d.world.m[2];
+        CHECK_NEAR(xs[1] - xs[0], 20.0, 1e-9);
+        CHECK_NEAR(xs[4] - xs[0], 80.0, 1e-9);
+    }
+
+    // AlongPath modifier: N copies placed along a straight path, tangent-aligned.
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        const NodeId path = doc.AddPath(
+            page, PathData::Polygon({ { 0, 0 }, { 100, 0 } }, false),
+            Style::Stroked({ 0, 0, 0, 1 }, 1.0), "p");
+        Modifier along;
+        along.kind = ModifierKind::AlongPath;
+        along.pathRef = path;
+        along.alongCount = 6;
+        const NodeId dot = doc.AddPath(page, PathData::Ellipse(0, 0, 3, 3),
+                                       Style::Filled({ 0, 1, 0, 1 }), "dot");
+        doc.SetModifiers(dot, { along });
+        Scene s; s.Compile(doc);
+        int copies = 0;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == dot) ++copies;
+        CHECK(copies == 6);   // even spacing from 0..100
+    }
+
+    // Pattern fill: motif instances over the host bbox share the motif hash.
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        const NodeId motif = doc.AddPath(page, PathData::Ellipse(0, 0, 2, 2),
+                                         Style::Filled({ 0, 0, 1, 1 }), "m");
+        doc.SetVisible(motif, false);
+        Fill pf;
+        pf.kind = FillKind::Pattern;
+        pf.pattern.motifRef = motif;
+        pf.pattern.spacingX = 10.0;
+        pf.pattern.spacingY = 10.0;
+        Style st; st.fills.push_back(pf);
+        const NodeId rect = doc.AddPath(page, PathData::Rect(0, 0, 50, 30),
+                                        st, "host");
+        Scene s; s.Compile(doc);
+        const std::uint64_t motifHash =
+            PathData::Ellipse(0, 0, 2, 2).Hash();
+        int motifCopies = 0;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == rect && d.pathHash == motifHash) ++motifCopies;
+        CHECK(motifCopies >= 6 * 4);   // ~6×4 lattice over 50×30 at pitch 10
+        (void)rect;
+    }
+
+    // InstanceNode: renders the target's content; a self-reference is refused.
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        const NodeId src = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                       Style::Filled({ 1, 0, 0, 1 }), "src");
+        doc.SetTransform(src, [] { Transform2D t; t.tx = 5; t.ty = 5; return t; }());
+        const NodeId inst = doc.AddInstance(page, src, "inst");
+        doc.SetTransform(inst, [] { Transform2D t; t.tx = 200; return t; }());
+        Scene s; s.Compile(doc);
+        // Two rects of the same content: the source and the instance.
+        int rects = 0;
+        for (const Drawable& d : s.Drawables())
+            if (!d.isClipSource && d.pathHash == PathData::Rect(0,0,10,10).Hash())
+                ++rects;
+        CHECK(rects == 2);
+    }
+}
+
 void TestSceneCompile() {
     Document doc;
     SeedDemoDocument(doc);
@@ -384,6 +480,7 @@ int main() {
     TestStroker();
     TestGeometryCache();
     TestCompositeScopes();
+    TestInstancing();
     TestSceneCompile();
 
     if (g_failures == 0) {
