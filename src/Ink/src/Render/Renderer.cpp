@@ -11,10 +11,14 @@ namespace Ink {
 using detail::RendererImpl;
 using detail::ViewImpl;
 using detail::FrameSlot;
+using detail::IsoTarget;
+using detail::ScopeRun;
 using detail::PushCamera;
+using detail::PushComposite;
 using detail::kFramesInFlight;
 using detail::kContentFormat;
 using detail::kDisplayFormat;
+using detail::kStencilFormat;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Init helpers
@@ -58,6 +62,21 @@ bool CreateLayoutsAndPool(RendererImpl& r) {
     if (vkCreateDescriptorSetLayout(dev, &pl, nullptr, &r.presentSetLayout) != VK_SUCCESS)
         return false;
 
+    // Composite set: source + backdrop, both sampled by the fragment stage.
+    VkDescriptorSetLayoutBinding compBindings[2]{};
+    for (std::uint32_t i = 0; i < 2; ++i) {
+        compBindings[i].binding         = i;
+        compBindings[i].descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        compBindings[i].descriptorCount = 1;
+        compBindings[i].stageFlags      = VK_SHADER_STAGE_FRAGMENT_BIT;
+    }
+    VkDescriptorSetLayoutCreateInfo cl{};
+    cl.sType        = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    cl.bindingCount = 2;
+    cl.pBindings    = compBindings;
+    if (vkCreateDescriptorSetLayout(dev, &cl, nullptr, &r.compositeSetLayout) != VK_SUCCESS)
+        return false;
+
     // Pipeline layouts. Content and overlay share the PushCamera block.
     VkPushConstantRange push{};
     push.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -84,15 +103,27 @@ bool CreateLayoutsAndPool(RendererImpl& r) {
     if (vkCreatePipelineLayout(dev, &li, nullptr, &r.presentLayout) != VK_SUCCESS)
         return false;
 
-    // Ink's own descriptor pool (the app pool only carries sampler slots).
+    // Composite layout: the 2-sampler set + the PushComposite (fragment).
+    VkPushConstantRange compPush{};
+    compPush.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    compPush.size       = sizeof(PushComposite);
+    li.setLayoutCount         = 1;
+    li.pSetLayouts            = &r.compositeSetLayout;
+    li.pushConstantRangeCount = 1;
+    li.pPushConstantRanges    = &compPush;
+    if (vkCreatePipelineLayout(dev, &li, nullptr, &r.compositeLayout) != VK_SUCCESS)
+        return false;
+
+    // Ink's own descriptor pool. Composite sets are allocated per frame per
+    // scope and retired via the garbage ring, so size generously.
     VkDescriptorPoolSize sizes[2] = {
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         64 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 64 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         128 },
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 512 },
     };
     VkDescriptorPoolCreateInfo di{};
     di.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     di.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    di.maxSets       = 96;
+    di.maxSets       = 512;
     di.poolSizeCount = 2;
     di.pPoolSizes    = sizes;
     return vkCreateDescriptorPool(dev, &di, nullptr, &r.descriptorPool) == VK_SUCCESS;
@@ -108,7 +139,10 @@ bool CreatePipelines(RendererImpl& r) {
     VkShaderModule primF = load("prim.frag.spv");
     VkShaderModule presV = load("present.vert.spv");
     VkShaderModule presF = load("present.frag.spv");
-    const VkShaderModule all[] = { vecV, vecF, primV, primF, presV, presF };
+    VkShaderModule isoV  = load("iso.vert.spv");
+    VkShaderModule isoF  = load("iso.frag.spv");
+    const VkShaderModule all[] = { vecV, vecF, primV, primF, presV, presF,
+                                   isoV, isoF };
     bool ok = true;
     for (VkShaderModule m : all) ok = ok && m != VK_NULL_HANDLE;
 
@@ -122,6 +156,17 @@ bool CreatePipelines(RendererImpl& r) {
         d.samples      = r.device.colorSamples();
         d.layout       = r.contentLayout;
         r.contentPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        // Clip-masked content variant (stencil TestEqual) — wired for the
+        // clip follow-up (ROADMAP Lot 4 note); harmless if unused.
+        d.stencilFormat = kStencilFormat;
+        d.stencil       = rhi::StencilMode::TestEqual;
+        r.contentClipPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        // Clip-mask writer: same content vertex program, colour-write off,
+        // stencil = 1 where the clip source covers.
+        d.stencil = rhi::StencilMode::WriteMask;
+        r.clipMaskPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        d.stencil       = rhi::StencilMode::None;
+        d.stencilFormat = VK_FORMAT_UNDEFINED;
 
         d.vert         = primV;
         d.frag         = primF;
@@ -131,17 +176,26 @@ bool CreatePipelines(RendererImpl& r) {
         d.layout       = r.overlayLayout;
         r.overlayPipeline = rhi::CreateGraphicsPipeline(r.device, d);
 
+        // Composite: fullscreen, writes the parent iso (×1) with the blend
+        // result — its own maths, so fixed-function blending is OFF.
+        d.vert               = isoV;
+        d.frag               = isoF;
+        d.vertexStride       = 0;
+        d.attributes.clear();
+        d.colorFormat        = kContentFormat;
+        d.samples            = VK_SAMPLE_COUNT_1_BIT;
+        d.blendPremultiplied = false;
+        d.layout             = r.compositeLayout;
+        r.compositePipeline = rhi::CreateGraphicsPipeline(r.device, d);
+
         d.vert               = presV;
         d.frag               = presF;
-        d.vertexStride       = 0;              // fullscreen triangle
-        d.attributes.clear();
         d.colorFormat        = kDisplayFormat;
-        d.samples            = VK_SAMPLE_COUNT_1_BIT;
-        d.blendPremultiplied = false;           // opaque overwrite
         d.layout             = r.presentLayout;
         r.presentPipeline = rhi::CreateGraphicsPipeline(r.device, d);
 
-        ok = r.contentPipeline && r.overlayPipeline && r.presentPipeline;
+        ok = r.contentPipeline && r.contentClipPipeline && r.clipMaskPipeline &&
+             r.overlayPipeline && r.compositePipeline && r.presentPipeline;
     }
     for (VkShaderModule m : all)
         if (m) vkDestroyShaderModule(r.device.vk(), m, nullptr);
@@ -259,25 +313,83 @@ void FillHostRingBuffer(RendererImpl& r, rhi::Buffer& buf, const void* data,
 //  View target lifecycle
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace {
+
+// A present-layout set (1 sampler) sampling `view`.
+VkDescriptorSet MakePresentSet(RendererImpl& r, VkImageView view) {
+    VkDescriptorSetAllocateInfo ai{};
+    ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ai.descriptorPool     = r.descriptorPool;
+    ai.descriptorSetCount = 1;
+    ai.pSetLayouts        = &r.presentSetLayout;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (vkAllocateDescriptorSets(r.device.vk(), &ai, &set) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
+    VkDescriptorImageInfo img{ r.device.linearSampler(), view,
+                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkWriteDescriptorSet w{};
+    w.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    w.dstSet          = set;
+    w.dstBinding      = 0;
+    w.descriptorCount = 1;
+    w.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    w.pImageInfo      = &img;
+    vkUpdateDescriptorSets(r.device.vk(), 1, &w, 0, nullptr);
+    return set;
+}
+
+// Build one isolation target (msaa + ping-pong linear pair + stencil + the
+// two present-layout sets). Returns false on any allocation failure.
+bool CreateIso(RendererImpl& r, IsoTarget& iso, std::uint32_t w,
+               std::uint32_t h) {
+    iso.msaa = rhi::CreateImage2D(r.device, w, h, kContentFormat,
+                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                                  r.device.colorSamples());
+    const VkImageUsageFlags linUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                                       VK_IMAGE_USAGE_SAMPLED_BIT;
+    iso.linear  = rhi::CreateImage2D(r.device, w, h, kContentFormat, linUsage);
+    iso.linearB = rhi::CreateImage2D(r.device, w, h, kContentFormat, linUsage);
+    iso.stencil = rhi::CreateImage2D(r.device, w, h, kStencilFormat,
+                                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                                     r.device.colorSamples());
+    if (!iso.msaa || !iso.linear || !iso.linearB || !iso.stencil) return false;
+    iso.setA = MakePresentSet(r, iso.linear.view);
+    iso.setB = MakePresentSet(r, iso.linearB.view);
+    iso.cur  = 0;
+    return iso.setA && iso.setB;
+}
+
+void RetireIso(RendererImpl& r, IsoTarget& iso) {
+    IsoTarget hold = iso;
+    r.Defer([self = &r, hold]() mutable {
+        if (hold.setA) vkFreeDescriptorSets(self->device.vk(), self->descriptorPool, 1, &hold.setA);
+        if (hold.setB) vkFreeDescriptorSets(self->device.vk(), self->descriptorPool, 1, &hold.setB);
+        rhi::DestroyImage(self->device, hold.msaa);
+        rhi::DestroyImage(self->device, hold.linear);
+        rhi::DestroyImage(self->device, hold.linearB);
+        rhi::DestroyImage(self->device, hold.stencil);
+    });
+    iso = IsoTarget{};
+}
+
+} // namespace
+
 void RendererImpl::RetireViewTargets(ViewImpl& v) {
-    if (!v.HasTargets() && !v.msaa) return;
+    if (!v.HasTargets() && !v.iso[0].msaa) return;
     // Everything a previously-submitted frame may still reference is retired
-    // through the current slot's garbage: it is freed only after this slot's
-    // fence has been waited, which (fences signal in submission order on the
-    // queue) also covers the app's UI submit of the previous frame.
-    rhi::Image msaa = v.msaa, linear = v.linear, display = v.display;
-    VkDescriptorSet set = v.presentSet;
-    std::uint64_t   tex = v.texture;
-    RendererImpl*   self = this;
-    Defer([self, msaa, linear, display, set, tex]() mutable {
+    // through the current slot's garbage (freed after this slot's fence).
+    for (std::uint32_t i = 0; i <= v.isoLevels; ++i)
+        if (v.iso[i].msaa) RetireIso(*this, v.iso[i]);
+    v.isoLevels = 0;
+
+    rhi::Image display = v.display;
+    std::uint64_t tex = v.texture;
+    RendererImpl* self = this;
+    Defer([self, display, tex]() mutable {
         if (tex && self->hooks.destroy) self->hooks.destroy(self->hooks.user, tex);
-        if (set) vkFreeDescriptorSets(self->device.vk(), self->descriptorPool, 1, &set);
-        rhi::DestroyImage(self->device, msaa);
-        rhi::DestroyImage(self->device, linear);
         rhi::DestroyImage(self->device, display);
     });
-    v.msaa = {}; v.linear = {}; v.display = {};
-    v.presentSet = VK_NULL_HANDLE;
+    v.display = {};
     v.texture = 0;
 }
 
@@ -285,36 +397,15 @@ void RendererImpl::CreateViewTargets(ViewImpl& v, std::uint32_t w, std::uint32_t
     RetireViewTargets(v);
     v.width = w; v.height = h;
 
-    v.msaa = rhi::CreateImage2D(device, w, h, kContentFormat,
-                                VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                                device.colorSamples());
-    v.linear = rhi::CreateImage2D(device, w, h, kContentFormat,
-                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                  VK_IMAGE_USAGE_SAMPLED_BIT);
+    // iso[0] = the main content target; extra levels are added on demand when
+    // the scene's composite depth is known (EnsureIsoLevels in EndFrame).
+    if (!CreateIso(*this, v.iso[0], w, h)) { RetireViewTargets(v); return; }
+    v.isoLevels = 0;
+
     v.display = rhi::CreateImage2D(device, w, h, kDisplayFormat,
                                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                                    VK_IMAGE_USAGE_SAMPLED_BIT);
-    if (!v.msaa || !v.linear || !v.display) { RetireViewTargets(v); return; }
-
-    // Present descriptor: samples the resolved linear canvas.
-    VkDescriptorSetAllocateInfo ai{};
-    ai.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ai.descriptorPool     = descriptorPool;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts        = &presentSetLayout;
-    if (vkAllocateDescriptorSets(device.vk(), &ai, &v.presentSet) != VK_SUCCESS) {
-        RetireViewTargets(v); return;
-    }
-    VkDescriptorImageInfo img{ device.linearSampler(), v.linear.view,
-                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkWriteDescriptorSet write{};
-    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet          = v.presentSet;
-    write.dstBinding      = 0;
-    write.descriptorCount = 1;
-    write.descriptorType  = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo      = &img;
-    vkUpdateDescriptorSets(device.vk(), 1, &write, 0, nullptr);
+    if (!v.display) { RetireViewTargets(v); return; }
 
     // The UI-facing handle of the display image (ImTextureID app-side).
     if (hooks.create)
@@ -322,6 +413,15 @@ void RendererImpl::CreateViewTargets(ViewImpl& v, std::uint32_t w, std::uint32_t
                                  v.display.view,
                                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     v.forceDirty = true;
+}
+
+// Ensure `levels` isolation levels above iso[0] exist (grown on demand as the
+// scene's composite depth rises; never shrunk mid-session). Clamped.
+void RendererImpl::EnsureIsoLevels(ViewImpl& v, std::uint32_t levels) {
+    levels = std::min(levels, ViewImpl::kMaxIsoLevels);
+    for (std::uint32_t i = v.isoLevels + 1; i <= levels; ++i)
+        if (!CreateIso(*this, v.iso[i], v.width, v.height)) { levels = i - 1; break; }
+    if (levels > v.isoLevels) v.isoLevels = levels;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -362,15 +462,24 @@ void Renderer::Shutdown() {
         // Views: run every pending retirement now (device is idle).
         for (auto& [key, view] : r.views) {
             if (view->impl_) {
-                r.RetireViewTargets(*view->impl_);
-                for (auto& vb : view->impl_->overlayVb)
-                    rhi::DestroyBuffer(r.device, vb);
-                for (auto& ib : view->impl_->indirect)
-                    rhi::DestroyBuffer(r.device, ib);
-                rhi::DestroyBuffer(r.device, view->impl_->instanceBuf);
-                if (view->impl_->sceneSet)
-                    vkFreeDescriptorSets(dev, r.descriptorPool, 1,
-                                         &view->impl_->sceneSet);
+                ViewImpl& vi = *view->impl_;
+                for (std::uint32_t i = 0; i <= vi.isoLevels; ++i) {
+                    IsoTarget& iso = vi.iso[i];
+                    if (iso.setA) vkFreeDescriptorSets(dev, r.descriptorPool, 1, &iso.setA);
+                    if (iso.setB) vkFreeDescriptorSets(dev, r.descriptorPool, 1, &iso.setB);
+                    rhi::DestroyImage(r.device, iso.msaa);
+                    rhi::DestroyImage(r.device, iso.linear);
+                    rhi::DestroyImage(r.device, iso.linearB);
+                    rhi::DestroyImage(r.device, iso.stencil);
+                }
+                if (vi.texture && r.hooks.destroy)
+                    r.hooks.destroy(r.hooks.user, vi.texture);
+                rhi::DestroyImage(r.device, vi.display);
+                for (auto& vb : vi.overlayVb) rhi::DestroyBuffer(r.device, vb);
+                for (auto& ib : vi.indirect)  rhi::DestroyBuffer(r.device, ib);
+                rhi::DestroyBuffer(r.device, vi.instanceBuf);
+                if (vi.sceneSet)
+                    vkFreeDescriptorSets(dev, r.descriptorPool, 1, &vi.sceneSet);
                 delete view->impl_;
                 view->impl_ = nullptr;
             }
@@ -388,19 +497,25 @@ void Renderer::Shutdown() {
         auto destroyPipeline = [&](VkPipeline& p) {
             if (p) { vkDestroyPipeline(dev, p, nullptr); p = VK_NULL_HANDLE; } };
         destroyPipeline(r.contentPipeline);
+        destroyPipeline(r.contentClipPipeline);
+        destroyPipeline(r.clipMaskPipeline);
         destroyPipeline(r.overlayPipeline);
+        destroyPipeline(r.compositePipeline);
         destroyPipeline(r.presentPipeline);
         auto destroyLayout = [&](VkPipelineLayout& l) {
             if (l) { vkDestroyPipelineLayout(dev, l, nullptr); l = VK_NULL_HANDLE; } };
         destroyLayout(r.contentLayout);
         destroyLayout(r.overlayLayout);
         destroyLayout(r.presentLayout);
+        destroyLayout(r.compositeLayout);
         if (r.descriptorPool)
             vkDestroyDescriptorPool(dev, r.descriptorPool, nullptr);
         if (r.sceneSetLayout)
             vkDestroyDescriptorSetLayout(dev, r.sceneSetLayout, nullptr);
         if (r.presentSetLayout)
             vkDestroyDescriptorSetLayout(dev, r.presentSetLayout, nullptr);
+        if (r.compositeSetLayout)
+            vkDestroyDescriptorSetLayout(dev, r.compositeSetLayout, nullptr);
         r.device.Shutdown();
     }
     impl_.reset();
@@ -555,58 +670,55 @@ void Renderer::EndFrame() {
         const double vx0 = v.panX, vy0 = v.panY;
         const double vx1 = v.panX + (double)v.width / v.zoom;
         const double vy1 = v.panY + (double)v.height / v.zoom;
+        auto culled = [&](const Drawable& d) {
+            const geom::LocalBounds& lb =
+                r.cache.GetLocalBounds(*d.path, d.pathHash, tier);
+            if (!lb.valid) return true;
+            double inflate = 0.0;
+            if (d.isStroke) {
+                const double w = GeometryCache::EffectiveWidth(d.stroke, tier);
+                inflate = w * (0.5 * std::max(2.0, d.stroke.miterLimit) + 1.0);
+            }
+            double bx0 = 1e300, by0 = 1e300, bx1 = -1e300, by1 = -1e300;
+            const DVec2 corners[4] = {
+                { lb.min.x - inflate, lb.min.y - inflate },
+                { lb.max.x + inflate, lb.min.y - inflate },
+                { lb.max.x + inflate, lb.max.y + inflate },
+                { lb.min.x - inflate, lb.max.y + inflate } };
+            for (const DVec2& c : corners) {
+                const DVec2 p = d.world.Apply(c);
+                bx0 = std::min(bx0, p.x); by0 = std::min(by0, p.y);
+                bx1 = std::max(bx1, p.x); by1 = std::max(by1, p.y);
+            }
+            return bx1 < vx0 || bx0 > vx1 || by1 < vy0 || by0 > vy1;
+        };
 
-        // Build the view's indirect command list: one command per run of
-        // consecutive drawables sharing a mesh range (instance index ==
-        // drawable index, so runs merge for free — the grid is one command).
+        // Composite scopes: assign iso levels + build the post-order run list.
+        r.EnsureIsoLevels(v, (std::uint32_t)r.scene.MaxScopeDepth());
+        BuildScopePlan(r.scene, v);
+
+        // Build one command run PER scope (only that scope's drawables). Each
+        // run merges consecutive same-mesh drawables; firstInstance is the
+        // GLOBAL drawable index (the instance table is global). Clip-source
+        // drawables of a scope are emitted as a separate leading run.
         auto& cmds = v.indirectScratch;
         cmds.clear();
-        MeshRange lastRange{};
-        for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
+        auto emitDrawable = [&](std::uint32_t i, MeshRange& last) {
             const Drawable& d = drawables[i];
-
-            // Bounds cull (conservative: flatten AABB + stroke band + miter,
-            // transformed corners in double).
-            {
-                const geom::LocalBounds& lb =
-                    r.cache.GetLocalBounds(*d.path, d.pathHash, tier);
-                if (!lb.valid) continue;
-                double inflate = 0.0;
-                if (d.isStroke) {
-                    const double w =
-                        GeometryCache::EffectiveWidth(d.stroke, tier);
-                    inflate = w * (0.5 * std::max(2.0, d.stroke.miterLimit) + 1.0);
-                }
-                double bx0 = 1e300, by0 = 1e300, bx1 = -1e300, by1 = -1e300;
-                const DVec2 corners[4] = {
-                    { lb.min.x - inflate, lb.min.y - inflate },
-                    { lb.max.x + inflate, lb.min.y - inflate },
-                    { lb.max.x + inflate, lb.max.y + inflate },
-                    { lb.min.x - inflate, lb.max.y + inflate } };
-                for (const DVec2& c : corners) {
-                    const DVec2 p = d.world.Apply(c);
-                    bx0 = std::min(bx0, p.x); by0 = std::min(by0, p.y);
-                    bx1 = std::max(bx1, p.x); by1 = std::max(by1, p.y);
-                }
-                if (bx1 < vx0 || bx0 > vx1 || by1 < vy0 || by0 > vy1)
-                    continue;   // fully outside this view
-            }
-
             std::uint64_t productKey = 0;
             const geom::Mesh* mesh =
                 d.isStroke ? r.cache.GetStroke(*d.path, d.pathHash, tier,
                                                d.stroke, productKey)
                            : r.cache.GetFill(*d.path, d.pathHash, tier, d.rule,
                                              productKey);
-            if (!mesh) continue;
+            if (!mesh) return;
             const MeshRange range =
                 r.gpu.EnsureResident(r.device, productKey, *mesh, r.cache, defer);
-            if (range.indexCount == 0) continue;
-
+            if (range.indexCount == 0) return;
             if (!cmds.empty() &&
-                range.firstIndex == lastRange.firstIndex &&
-                range.indexCount == lastRange.indexCount &&
-                range.vertexOffset == lastRange.vertexOffset &&
+                range.firstIndex == last.firstIndex &&
+                range.indexCount == last.indexCount &&
+                range.vertexOffset == last.vertexOffset &&
                 cmds.back().firstInstance + cmds.back().instanceCount == i) {
                 ++cmds.back().instanceCount;
             } else {
@@ -618,10 +730,29 @@ void Renderer::EndFrame() {
                 c.firstInstance = i;
                 cmds.push_back(c);
             }
-            lastRange = range;
+            last = range;
             r.stats.triangles += range.indexCount / 3;
+        };
+        for (ScopeRun& run : v.scopeRuns) {
+            run.clipOffset = (std::uint32_t)cmds.size();
+            MeshRange lastClip{};
+            for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
+                const Drawable& d = drawables[i];
+                if (d.scope != run.scope || !d.isClipSource) continue;
+                emitDrawable(i, lastClip);
+            }
+            run.clipCount = (std::uint32_t)cmds.size() - run.clipOffset;
+
+            run.cmdOffset = (std::uint32_t)cmds.size();
+            MeshRange last{};
+            for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
+                const Drawable& d = drawables[i];
+                if (d.scope != run.scope || d.isClipSource) continue;
+                if (culled(d)) continue;
+                emitDrawable(i, last);
+            }
+            run.cmdCount = (std::uint32_t)cmds.size() - run.cmdOffset;
         }
-        v.indirectCount = (std::uint32_t)cmds.size();
         FillHostRingBuffer(r, v.indirect[r.slot], cmds.data(),
                            cmds.size() * sizeof(VkDrawIndexedIndirectCommand),
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
@@ -663,33 +794,22 @@ void Renderer::EndFrame() {
         ViewImpl& v = *job.v;
 
         graph::RenderGraph g;
-        graph::RenderGraph::ColorTarget content{};
-        content.image         = &v.msaa;
-        content.clear         = true;
-        content.clearColor[0] = v.background.r;
-        content.clearColor[1] = v.background.g;
-        content.clearColor[2] = v.background.b;
-        content.clearColor[3] = v.background.a;
-        content.resolveTo     = &v.linear;
-        VkBuffer indirectBuffer   = v.indirect[r.slot].buffer;
-        const std::uint32_t nCmds = v.indirectCount;
         VkBuffer overlayBuffer    = v.overlayVb[r.slot].buffer;
         const std::uint32_t nOverlay = v.overlayVertexCount;
-        VkDescriptorSet sceneSet  = v.sceneSet;
-        const PushCamera world = job.world, px = job.px;
-        g.AddRenderPass("content", content, {},
-                        [&r, world, px, indirectBuffer, nCmds, overlayBuffer,
-                         nOverlay, sceneSet](VkCommandBuffer cmd) {
-            detail::RecordContentPass(r, cmd, world, indirectBuffer, nCmds,
-                                      sceneSet);
-            detail::RecordOverlayPass(r, cmd, px, overlayBuffer, nOverlay);
-        });
 
+        // Content + compositing: play every scope (post-order) into the iso
+        // targets; the root content ends up in iso[0].Cur().
+        detail::PlayScopes(r, v, r.slot, g, job.world, job.px, overlayBuffer,
+                           nOverlay);
+
+        // Present: sRGB-encode iso[0]'s current linear into the display image.
+        IsoTarget& main = v.iso[0];
         graph::RenderGraph::ColorTarget present{};
         present.image = &v.display;
         present.clear = true;   // fullscreen overwrite; clear beats a load
-        VkDescriptorSet presentSet = v.presentSet;
-        g.AddRenderPass("present", present, { &v.linear },
+        VkDescriptorSet presentSet = main.CurSet();
+        rhi::Image* presentSrc = &main.Cur();
+        g.AddRenderPass("present", present, { presentSrc },
                         [&r, presentSet](VkCommandBuffer cmd) {
             detail::RecordPresentPass(r, cmd, presentSet);
         });
@@ -698,7 +818,11 @@ void Renderer::EndFrame() {
 
         v.overlay.Clear();
         ++r.stats.viewsRendered;
-        r.stats.drawCalls += nCmds + (nOverlay ? 1u : 0u) + 1u;
+        // Content indirect commands + one composite per scope + overlay +
+        // present. (indirectScratch holds every scope's commands back-to-back.)
+        r.stats.drawCalls += (std::uint32_t)v.indirectScratch.size() +
+                             (std::uint32_t)v.scopeRuns.size() +
+                             (nOverlay ? 1u : 0u) + 1u;
     }
     r.stats.recordMs = MsSince(tRec);
 

@@ -31,6 +31,8 @@ add_library(Ink STATIC
     src/Render/DemoScene.cpp
     src/Render/Passes/ContentPass.cpp
     src/Render/Passes/OverlayPass.cpp
+    src/Render/Passes/CompositePass.cpp
+    src/Render/Passes/ScopePlayback.cpp
     src/Render/Passes/PresentPass.cpp
 
     # View — per-viewport camera/target/overlay façade
@@ -56,6 +58,8 @@ set(INK_SHADER_SOURCES
     shaders/content/vector.frag
     shaders/overlay/prim.vert
     shaders/overlay/prim.frag
+    shaders/composite/iso.vert
+    shaders/composite/iso.frag
     shaders/present/present.vert
     shaders/present/present.frag
 )

@@ -110,6 +110,25 @@ void Document::SetVisible(NodeId node, bool visible) {
     }
 }
 
+void Document::SetOpacity(NodeId group, float opacity) {
+    if (Node* n = FindMutable(group)) {
+        n->opacity = opacity < 0.0f ? 0.0f : (opacity > 1.0f ? 1.0f : opacity);
+        Log(group, ChangeKind::Hierarchy);   // may open/close a composite scope
+    }
+}
+
+void Document::SetBlend(NodeId group, BlendMode blend) {
+    if (Node* n = FindMutable(group)) { n->blend = blend; Log(group, ChangeKind::Hierarchy); }
+}
+
+void Document::SetIsolate(NodeId group, bool isolate) {
+    if (Node* n = FindMutable(group)) { n->isolate = isolate; Log(group, ChangeKind::Hierarchy); }
+}
+
+void Document::SetClip(NodeId group, bool clip) {
+    if (Node* n = FindMutable(group)) { n->clip = clip; Log(group, ChangeKind::Hierarchy); }
+}
+
 void Document::DetachFromParent(const Node& n) {
     std::vector<NodeId>* siblings = nullptr;
     if (n.parent != kNullNode) {

@@ -53,9 +53,17 @@ struct Transform2D {
     }
 };
 
-// Compositing blend mode. Lot 2 renders Normal only; the full W3C set (+
-// Erase) activates with the compositing lot (docs/Ink/ROADMAP.md Lot 4).
-enum class BlendMode : std::uint8_t { Normal = 0 };
+// Compositing blend mode — the W3C separable set (plus Erase). Values are
+// stable (persisted in .acu, sent to the composite shader as an index).
+// Non-separable modes (Hue/Saturation/Color/Luminosity) come later.
+enum class BlendMode : std::uint8_t {
+    Normal = 0,
+    Multiply, Screen, Overlay, Darken, Lighten,
+    ColorDodge, ColorBurn, HardLight, SoftLight,
+    Difference, Exclusion,
+    Erase,            // dst-out: the group's coverage removes the backdrop
+    Count
+};
 
 // Hash helper for doubles (bit pattern, so 0.0 == 0.0 deterministically).
 inline std::uint64_t HashDouble(double v, std::uint64_t seed) {

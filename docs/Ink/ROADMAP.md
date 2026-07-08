@@ -31,9 +31,20 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   edit_heavy: 12.3 ms/frame dominated by the v1 full-walk compile — the
   dirty-range target for the perf lots; zoom_sweep p50 3.4 ms, tier-change
   spikes ~120 ms re-tessellation to absorb asynchronously later.)*
-- [ ] **Lot 4 — Layers compositing**: groups as layers, opacity, W3C blend
-  modes + Erase, isolation stack, clip groups (stencil), page substrate rule;
-  `blend_groups` bench.
+- [x] **Lot 4 — Layers compositing**: groups as layers (a group with
+  opacity<1 / non-Normal blend / isolate / clip opens a composite scope), the
+  W3C separable blend set + Erase (straight-output iso composite shader —
+  un-premultiply, blend, re-premultiply), a per-view reserved isolation-target
+  stack played back in post-order (child renders + composites before its
+  parent continues; ping-pong linear pair per level avoids attachment
+  feedback), page substrate as a non-layer backdrop; `blend_groups` bench.
+  *(Delivered 2026-07-08. Known limits, deferred to follow-ups: (a) clip is
+  wired end-to-end in the RHI — stencil pipelines + graph stencil attachment +
+  the Scene emits clip-source drawables — but the playback does not yet bind
+  the mask, so clip scopes isolate WITHOUT masking; (b) isolation levels
+  render ×1 (MSAA only on iso[0]), so a blended group's edges are aliased;
+  (c) one fullscreen composite per group → blend_groups 500 groups ≈ 49 ms
+  GPU, the tile/bounds-scoped-composite target for the perf lots.)*
 - [ ] **Lot 5 — Instancing**: InstanceNode, pattern paints (instanced motifs,
   current parameter set re-specified), along-path + array modifiers;
   `instances_100k`, `pattern_fill`, `along_path` benches.

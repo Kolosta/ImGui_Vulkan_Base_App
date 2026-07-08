@@ -87,10 +87,41 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
         blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         blend.alphaBlendOp        = VK_BLEND_OP_ADD;
     }
+    // A mask-writing pipeline emits no colour (only the stencil is touched).
+    if (desc.stencil == StencilMode::WriteMask)
+        blend.colorWriteMask = 0;
+
     VkPipelineColorBlendStateCreateInfo cb{};
     cb.sType           = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
     cb.attachmentCount = 1;
     cb.pAttachments    = &blend;
+
+    // Stencil (clip masks). WriteMask: always pass, replace stencil with 1.
+    // TestEqual: keep the buffer, draw only where stencil == 1.
+    VkPipelineDepthStencilStateCreateInfo ds{};
+    ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    if (desc.stencil != StencilMode::None) {
+        ds.stencilTestEnable = VK_TRUE;
+        VkStencilOpState op{};
+        if (desc.stencil == StencilMode::WriteMask) {
+            op.compareOp   = VK_COMPARE_OP_ALWAYS;
+            op.passOp      = VK_STENCIL_OP_REPLACE;
+            op.failOp      = VK_STENCIL_OP_KEEP;
+            op.depthFailOp = VK_STENCIL_OP_KEEP;
+            op.reference   = 1;
+            op.writeMask   = 0xFF;
+            op.compareMask = 0xFF;
+        } else {   // TestEqual
+            op.compareOp   = VK_COMPARE_OP_EQUAL;
+            op.passOp      = VK_STENCIL_OP_KEEP;
+            op.failOp      = VK_STENCIL_OP_KEEP;
+            op.depthFailOp = VK_STENCIL_OP_KEEP;
+            op.reference   = 1;
+            op.writeMask   = 0x00;
+            op.compareMask = 0xFF;
+        }
+        ds.front = ds.back = op;
+    }
 
     const VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT,
                                          VK_DYNAMIC_STATE_SCISSOR };
@@ -104,6 +135,8 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
     rendering.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     rendering.colorAttachmentCount    = 1;
     rendering.pColorAttachmentFormats = &desc.colorFormat;
+    if (desc.stencil != StencilMode::None)
+        rendering.stencilAttachmentFormat = desc.stencilFormat;
 
     VkGraphicsPipelineCreateInfo ci{};
     ci.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -118,6 +151,8 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
     ci.pColorBlendState    = &cb;
     ci.pDynamicState       = &dyn;
     ci.layout              = desc.layout;
+    if (desc.stencil != StencilMode::None)
+        ci.pDepthStencilState = &ds;
 
     VkPipeline pipeline = VK_NULL_HANDLE;
     if (vkCreateGraphicsPipelines(dev.vk(), VK_NULL_HANDLE, 1, &ci, nullptr,

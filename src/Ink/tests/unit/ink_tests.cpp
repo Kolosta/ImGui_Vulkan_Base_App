@@ -278,6 +278,78 @@ void TestGeometryCache() {
     CHECK(GeometryCache::StableTier(1, 1.5) == 1);   // held from above too
 }
 
+void TestCompositeScopes() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 100, 100 });
+
+    // A plain group is a pass-through layer: no scope, children stay in root.
+    const NodeId plain = doc.AddGroup(page, "plain");
+    doc.AddPath(plain, PathData::Rect(0, 0, 10, 10),
+                Style::Filled({ 1, 0, 0, 1 }), "r");
+    Scene s0;
+    s0.Compile(doc);
+    CHECK(s0.Scopes().size() == 1);          // only the root scope
+    CHECK(s0.MaxScopeDepth() == 0);
+    CHECK(s0.Drawables().back().scope == kRootScope);
+
+    // Opacity opens a composite scope; its drawable is tagged with it.
+    const NodeId fade = doc.AddGroup(page, "fade");
+    const NodeId child = doc.AddPath(fade, PathData::Rect(0, 0, 5, 5),
+                                     Style::Filled({ 0, 1, 0, 1 }), "c");
+    (void)child;
+    doc.SetOpacity(fade, 0.5f);
+    Scene s1;
+    s1.Compile(doc);
+    CHECK(s1.Scopes().size() == 2);          // root + fade
+    CHECK(s1.MaxScopeDepth() == 1);
+    const CompositeScope& sc = s1.Scopes().back();
+    CHECK(sc.node == fade);
+    CHECK(sc.parent == kRootScope);
+    CHECK(std::abs(sc.opacity - 0.5f) < 1e-6f);
+    CHECK(sc.blend == BlendMode::Normal);
+    // The fade group's own child is in the fade scope; the plain group's is not.
+    bool sawFadeChild = false, sawPlainChild = false;
+    for (const Drawable& d : s1.Drawables()) {
+        if (d.scope != kRootScope) sawFadeChild = true;
+        if (d.node != page && d.node != child && d.scope == kRootScope &&
+            !d.isClipSource)
+            sawPlainChild = true;
+    }
+    CHECK(sawFadeChild && sawPlainChild);
+
+    // Nested composite groups deepen the scope tree.
+    const NodeId outer = doc.AddGroup(page, "outer");
+    doc.SetBlend(outer, BlendMode::Multiply);
+    const NodeId inner = doc.AddGroup(outer, "inner");
+    doc.SetOpacity(inner, 0.3f);
+    doc.AddPath(inner, PathData::Rect(0, 0, 3, 3),
+                Style::Filled({ 0, 0, 1, 1 }), "deep");
+    Scene s2;
+    s2.Compile(doc);
+    CHECK(s2.MaxScopeDepth() == 2);          // outer(1) → inner(2)
+
+    // A clip group emits a stencil-only clip-source drawable (the mask never
+    // paints) plus the clipped content.
+    const NodeId clipG = doc.AddGroup(page, "clip");
+    doc.AddPath(clipG, PathData::Ellipse(0, 0, 20, 20),
+                Style::Filled({ 0, 0, 0, 1 }), "mask");   // first child = mask
+    doc.AddPath(clipG, PathData::Rect(0, 0, 8, 8),
+                Style::Filled({ 1, 1, 0, 1 }), "clipped");
+    doc.SetClip(clipG, true);
+    Scene s3;
+    s3.Compile(doc);
+    bool sawClipSource = false, sawClipped = false;
+    for (const Drawable& d : s3.Drawables()) {
+        if (d.isClipSource) sawClipSource = true;
+        else if (d.scope != kRootScope) {
+            // find the clip scope's painted content
+            const CompositeScope& cs = s3.Scopes()[d.scope];
+            if (cs.clipNode != kNullNode) sawClipped = true;
+        }
+    }
+    CHECK(sawClipSource && sawClipped);
+}
+
 void TestSceneCompile() {
     Document doc;
     SeedDemoDocument(doc);
@@ -311,6 +383,7 @@ int main() {
     TestTriangulate();
     TestStroker();
     TestGeometryCache();
+    TestCompositeScopes();
     TestSceneCompile();
 
     if (g_failures == 0) {

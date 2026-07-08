@@ -9,13 +9,14 @@ namespace Ink::detail {
 // Records inside the MSAA rendering scope opened by the graph.
 void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& worldToNdc, VkBuffer indirect,
-                       std::uint32_t commandCount, VkDescriptorSet sceneSet) {
+                       std::uint32_t firstByte, std::uint32_t commandCount,
+                       VkDescriptorSet sceneSet, VkPipeline pipeline) {
     const GpuScene& s = r.gpu;
     if (commandCount == 0 || indirect == VK_NULL_HANDLE ||
         sceneSet == VK_NULL_HANDLE || !s.StyleTablesReady())
         return;
 
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, r.contentPipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             r.contentLayout, 0, 1, &sceneSet, 0, nullptr);
     vkCmdPushConstants(cmd, r.contentLayout, VK_SHADER_STAGE_VERTEX_BIT, 0,
@@ -26,7 +27,7 @@ void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
     vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &zero);
     vkCmdBindIndexBuffer(cmd, s.IndexPool().buffer, 0, VK_INDEX_TYPE_UINT32);
 
-    vkCmdDrawIndexedIndirect(cmd, indirect, 0, commandCount,
+    vkCmdDrawIndexedIndirect(cmd, indirect, firstByte, commandCount,
                              sizeof(VkDrawIndexedIndirectCommand));
 }
 

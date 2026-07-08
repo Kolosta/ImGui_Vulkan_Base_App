@@ -77,12 +77,33 @@ void RenderGraph::Execute(VkCommandBuffer cmd) {
             att.resolveImageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
 
+        // Optional stencil attachment (clip masks). It shares the color's
+        // sample count and extent; the depth/stencil layout is used.
+        VkRenderingAttachmentInfo stencilAtt{};
+        if (p.target.stencil) {
+            TransitionImage(cmd, *p.target.stencil,
+                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                            VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                            VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
+            stencilAtt.sType       = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+            stencilAtt.imageView   = p.target.stencil->view;
+            stencilAtt.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            stencilAtt.loadOp      = p.target.clearStencil
+                                         ? VK_ATTACHMENT_LOAD_OP_CLEAR
+                                         : VK_ATTACHMENT_LOAD_OP_LOAD;
+            stencilAtt.storeOp     = VK_ATTACHMENT_STORE_OP_STORE;
+            stencilAtt.clearValue.depthStencil.stencil = 0;
+        }
+
         VkRenderingInfo ri{};
         ri.sType      = VK_STRUCTURE_TYPE_RENDERING_INFO;
         ri.renderArea = { { 0, 0 }, { color.width, color.height } };
         ri.layerCount = 1;
         ri.colorAttachmentCount = 1;
         ri.pColorAttachments    = &att;
+        if (p.target.stencil) ri.pStencilAttachment = &stencilAtt;
 
         vkCmdBeginRendering(cmd, &ri);
         // Dynamic viewport/scissor cover the whole target for every pipeline.

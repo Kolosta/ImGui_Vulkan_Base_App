@@ -35,9 +35,12 @@ struct Node {
     Transform2D transform;
     bool        visible = true;
     bool        locked  = false;
-    float       opacity = 1.0f;                    // acts from Lot 4
-    BlendMode   blend   = BlendMode::Normal;       // acts from Lot 4
-    bool        isolate = false;                   // acts from Lot 4
+    float       opacity = 1.0f;                    // compositing (Lot 4)
+    BlendMode   blend   = BlendMode::Normal;       // compositing (Lot 4)
+    bool        isolate = false;                   // compositing (Lot 4)
+    // kind == Group: clip the subtree by the group's first path child
+    // (docs/Ink/RENDER_GRAPH.md §ClipPass). Ignored on a path node.
+    bool        clip    = false;
 
     // kind == Path
     PathData path;
@@ -80,6 +83,12 @@ public:
     void   SetStyle(NodeId node, Style style);
     void   SetTransform(NodeId node, const Transform2D& t);
     void   SetVisible(NodeId node, bool visible);
+    // Group compositing (docs/Ink/DOCUMENT_MODEL.md §2). Setting any of these
+    // to a non-default value makes the group composite its subtree as a unit.
+    void   SetOpacity(NodeId group, float opacity);
+    void   SetBlend(NodeId group, BlendMode blend);
+    void   SetIsolate(NodeId group, bool isolate);
+    void   SetClip(NodeId group, bool clip);
     void   Remove(NodeId node);      // node or page (subtree included)
     void   Clear();                  // everything (fresh document)
 

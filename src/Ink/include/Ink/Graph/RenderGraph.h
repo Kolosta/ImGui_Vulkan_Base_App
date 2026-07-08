@@ -29,6 +29,11 @@ public:
         bool  clear = false;
         float clearColor[4] = { 0, 0, 0, 0 };
         rhi::Image* resolveTo = nullptr;   // optional MSAA resolve destination
+        // Optional stencil attachment (clip masks). `clearStencil` zeroes it
+        // at load; `loadStencil` keeps a mask written by a previous pass to
+        // the same image. MSAA stencil must match the color sample count.
+        rhi::Image* stencil = nullptr;
+        bool        clearStencil = false;
     };
 
     using RecordFn = std::function<void(VkCommandBuffer)>;

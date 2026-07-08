@@ -141,6 +141,36 @@ Ink::PathData MakeBlob(Lcg& rnd, double r) {
     return path;
 }
 
+// 500 nested composite groups (opacity + blend), 4 discs each, over a shared
+// backdrop — the isolation/composite stress (docs/Ink/PERF_TESTING.md §3).
+void BuildBlendGroups(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 2400, 1400 });
+    Lcg rnd;
+    const Ink::BlendMode modes[] = {
+        Ink::BlendMode::Normal, Ink::BlendMode::Multiply, Ink::BlendMode::Screen,
+        Ink::BlendMode::Overlay, Ink::BlendMode::Darken, Ink::BlendMode::Lighten,
+        Ink::BlendMode::Difference };
+    for (int n = 0; n < 500; ++n) {
+        const Ink::NodeId g = doc.AddGroup(page, "grp");
+        Ink::Transform2D t;
+        t.tx = 60.0 + rnd() * 2280.0;
+        t.ty = 60.0 + rnd() * 1280.0;
+        doc.SetTransform(g, t);
+        for (int d = 0; d < 4; ++d) {
+            const Ink::NodeId disc = doc.AddPath(
+                g, Ink::PathData::Ellipse(0, 0, 30, 30),
+                Ink::Style::Filled({ (float)rnd(), (float)rnd(), (float)rnd(),
+                                     1.0f }), "d");
+            Ink::Transform2D dt;
+            dt.tx = (rnd() - 0.5) * 40.0;
+            dt.ty = (rnd() - 0.5) * 40.0;
+            doc.SetTransform(disc, dt);
+        }
+        doc.SetOpacity(g, 0.4f + (float)rnd() * 0.55f);
+        doc.SetBlend(g, modes[(std::size_t)(rnd() * 7.0) % 7]);
+    }
+}
+
 // 10 000 random filled+stroked Bézier blobs over an 8000×4500 page —
 // deterministic (LCG seed), built through the public Document API
 // (docs/Ink/PERF_TESTING.md §3: scenes double as API integration tests).
@@ -201,7 +231,8 @@ int main(int argc, char** argv) {
         else if (!std::strcmp(argv[i], "--out"))     outPath = argv[++i];
     }
     if (scene != "bootstrap" && scene != "steady" && scene != "empty" &&
-        scene != "paths_10k" && scene != "edit_heavy" && scene != "zoom_sweep") {
+        scene != "paths_10k" && scene != "edit_heavy" && scene != "zoom_sweep" &&
+        scene != "blend_groups") {
         std::fprintf(stderr, "ink_bench: unknown scene '%s'\n", scene.c_str());
         return 2;
     }
@@ -230,8 +261,9 @@ int main(int argc, char** argv) {
     Ink::NodeId editNode = Ink::kNullNode;
     const bool bigDoc = (scene == "paths_10k" || scene == "edit_heavy" ||
                          scene == "zoom_sweep");
-    if (bigDoc) editNode = BuildPaths10k(doc);
-    else        Ink::SeedDemoDocument(doc);
+    if (bigDoc)                        editNode = BuildPaths10k(doc);
+    else if (scene == "blend_groups") BuildBlendGroups(doc);
+    else                              Ink::SeedDemoDocument(doc);
     renderer.SetDocument(&doc);
 
     constexpr std::uint32_t kW = 1920, kH = 1080;

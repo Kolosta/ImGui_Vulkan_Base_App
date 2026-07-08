@@ -11,11 +11,33 @@ namespace Ink {
 //  enabled style piece (fills bottom-up, then strokes) of every visible path
 //  node, with the world transform resolved in double.
 //
-//  Lot 2 granularity: the walk itself is O(nodes) and runs only when the
-//  ChangeLog is non-empty; the expensive work stays incremental behind it —
-//  geometry by cache key, GPU tables by scene version. Finer per-change
-//  diffing (dirty ranges instead of a re-walk) layers on in the perf lots.
+//  Compositing (docs/Ink/DOCUMENT_MODEL.md §2, RENDER_GRAPH.md §4): a group is
+//  a LAYER. A group that carries opacity<1, a non-Normal blend, isolate, or a
+//  clip opens a COMPOSITE SCOPE — its subtree renders into its own isolation
+//  target, then composites onto the parent as a unit. The compile records the
+//  scope tree and tags every drawable with the scope it belongs to; the
+//  Renderer plays scopes deepest-first and composites back up.
+//
+//  Lot 2/4 granularity: the walk is O(nodes) and runs only when the ChangeLog
+//  is non-empty; finer per-change diffing layers on in the perf lots.
 // ─────────────────────────────────────────────────────────────────────────────
+
+// index into Scene::Scopes(); 0 = the page root (no isolation).
+using ScopeId = std::uint32_t;
+inline constexpr ScopeId kRootScope = 0;
+
+struct CompositeScope {
+    NodeId    node   = kNullNode;
+    ScopeId   parent = kRootScope;
+    float     opacity = 1.0f;
+    BlendMode blend   = BlendMode::Normal;
+    bool      isolate = false;
+    // Clip: the scope's contents are masked by the clip source geometry (the
+    // group's first path child, Lot 4). kNullNode = no clip.
+    NodeId    clipNode = kNullNode;
+    // Filled by the Renderer while playing the scope tree (transient).
+    int       depth = 0;
+};
 
 struct Drawable {
     NodeId          node = kNullNode;
@@ -27,6 +49,8 @@ struct Drawable {
     FillRule        rule = FillRule::NonZero;   // fill pieces
     Stroke          stroke;                     // stroke pieces (geometry params)
     Color           color;              // linear straight (premultiplied later)
+    ScopeId         scope = kRootScope; // the composite scope this belongs to
+    bool            isClipSource = false;  // draws to the clip stencil, not color
 };
 
 class Scene {
@@ -36,18 +60,29 @@ public:
     // was rebuilt (GPU tables must resync).
     bool Compile(Document& doc, bool force = false);
 
-    const std::vector<Drawable>& Drawables() const { return drawables_; }
+    const std::vector<Drawable>&      Drawables() const { return drawables_; }
+    const std::vector<CompositeScope>& Scopes()   const { return scopes_; }
+    // Deepest composite-scope nesting in the scene (drives the isolation
+    // target reservation — RENDER_GRAPH.md §2).
+    int MaxScopeDepth() const { return maxDepth_; }
     // Document version this scene reflects (mixed into view signatures).
     std::uint64_t Version() const { return version_; }
     // Document-space bounds (pages ∪ node anchor boxes) — drives fit-view.
     Rect Bounds() const { return bounds_; }
 
 private:
-    void EmitNode(const Document& doc, const Node& n, const DMat23& parentWorld);
+    void EmitNode(const Document& doc, const Node& n, const DMat23& parentWorld,
+                  ScopeId scope);
+    // A group that composites as a unit opens a scope; returns its id (or the
+    // parent scope when the group is a plain pass-through layer).
+    ScopeId OpenScopeIfNeeded(const Document& doc, const Node& group,
+                              ScopeId parent, int depth);
     void GrowBounds(DVec2 p);
 
-    std::vector<Drawable> drawables_;
-    std::vector<PathData> pageRects_;   // stable storage for page substrates
+    std::vector<Drawable>       drawables_;
+    std::vector<CompositeScope> scopes_;
+    std::vector<PathData>       pageRects_;   // stable storage for page substrates
+    int           maxDepth_ = 0;
     std::uint64_t version_  = 0;
     bool          compiled_ = false;
     Rect          bounds_{};

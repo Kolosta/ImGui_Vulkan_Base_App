@@ -167,6 +167,47 @@ void SeedDemoDocument(Document& doc) {
             hair, "hairline");
         doc.SetTransform(h, TRS(960, 980));
     }
+
+    // Lot 4 compositing showcase: overlapping discs in composite groups.
+    //   • a 45 %-opacity group (the pair fades as ONE unit — no double-count
+    //     of the overlap, unlike two 45 % discs),
+    //   • a Multiply group and a Screen group over a shared backdrop.
+    {
+        auto discGroup = [&](double x, double y, BlendMode blend, float opacity,
+                             const char* name) {
+            const NodeId g = doc.AddGroup(page, name);
+            doc.SetTransform(g, TRS(x, y));
+            auto disc = [&](double dx, double dy, Color c) {
+                const NodeId n = doc.AddPath(g, PathData::Ellipse(0, 0, 55, 55),
+                                             Style::Filled(c), "d");
+                doc.SetTransform(n, TRS(dx, dy));
+            };
+            disc(-28, 0, Srgb(0.90f, 0.20f, 0.25f, 1));
+            disc( 28, 0, Srgb(0.20f, 0.45f, 0.90f, 1));
+            disc(  0, 34, Srgb(0.25f, 0.80f, 0.35f, 1));
+            if (opacity < 1.0f) doc.SetOpacity(g, opacity);
+            if (blend != BlendMode::Normal) doc.SetBlend(g, blend);
+        };
+        discGroup(1360, 560, BlendMode::Normal,   0.45f, "opacity 45%");
+        discGroup(1560, 560, BlendMode::Multiply, 1.00f, "multiply");
+        discGroup(1560, 760, BlendMode::Screen,   1.00f, "screen");
+
+        // A clip group: a big ellipse mask over a dense grid of dots (the mask
+        // is the group's first path child).
+        const NodeId clipG = doc.AddGroup(page, "clip group");
+        doc.SetTransform(clipG, TRS(360, 300));
+        const NodeId mask = doc.AddPath(clipG, PathData::Ellipse(0, 0, 90, 60),
+                                        Style::Filled(Srgb(0, 0, 0, 1)), "mask");
+        (void)mask;
+        for (int gy = -3; gy <= 3; ++gy)
+            for (int gx = -4; gx <= 4; ++gx) {
+                const NodeId dot = doc.AddPath(
+                    clipG, PathData::Ellipse(0, 0, 10, 10),
+                    Style::Filled(Srgb(0.85f, 0.45f, 0.15f, 1)), "dot");
+                doc.SetTransform(dot, TRS(gx * 24.0, gy * 22.0));
+            }
+        doc.SetClip(clipG, true);
+    }
 }
 
 } // namespace Ink
