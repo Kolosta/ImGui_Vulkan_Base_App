@@ -51,9 +51,9 @@ Node (common: id, name, parent link, transform, visibility, lock,
 
 Key semantics:
 
-- **Group = layer** (Affinity model, kept from the Compositor experience): a
-  group carries opacity/blend/isolation and composites its subtree as a unit.
-  There is no separate "folder" concept.
+- **Group = layer** (the Affinity/Photoshop model): a group carries
+  opacity/blend/isolation and composites its subtree as a unit. There is no
+  separate "folder" concept.
 - **Transforms** are affine 2D (`Mat23`, stored as translate/rotate/scale/
   skew components + cached matrix). Resolved transform =
   `parentChain(parentId) × local`. The parent chain is object parenting, NOT
@@ -190,7 +190,7 @@ Collection { id, name, color tag, members: [nodeId], childCollections: [id] }
 document coordinate space (unchanged concept, reworked implementation). Each
 page owns a layer tree root. The page *background* is a display substrate,
 **not** a layer: erase/blend inside the stack never punches through it (rule
-inherited from the Compositor's validated design).
+— the substrate is a display backdrop, not a layer).
 
 ## 9. Change tracking & undo
 

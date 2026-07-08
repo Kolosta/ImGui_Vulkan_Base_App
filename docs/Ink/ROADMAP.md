@@ -33,8 +33,8 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   spikes ~120 ms re-tessellation to absorb asynchronously later.)*
 - [x] **Lot 4 — Layers compositing**: groups as layers (a group with
   opacity<1 / non-Normal blend / isolate / clip opens a composite scope), the
-  W3C separable blend set + Erase (straight-output iso composite shader —
-  un-premultiply, blend, re-premultiply), a per-view reserved isolation-target
+  W3C "Compositing and Blending Level 1" model verbatim (the SVG/CSS/Canvas/PDF
+  standard — separable blends + Erase), a per-view reserved isolation-target
   stack played back in post-order (child renders + composites before its
   parent continues; ping-pong linear pair per level avoids attachment
   feedback), page substrate as a non-layer backdrop; `blend_groups` bench.

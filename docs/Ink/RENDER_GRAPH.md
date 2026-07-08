@@ -67,7 +67,8 @@ Pass order inside one isolation level is painter's order; P1–P3 recurse per
 isolation level (a group with blend/opacity/clip opens a level: render subtree
 into `iso[depth]`, composite onto `iso[depth-1]`). Levels are a pre-reserved
 stack of targets (max depth documented = 8, clamped) — lesson learned from the
-Compositor's reallocation crash: reserve once, never grow mid-recording.
+reserve once, never grow mid-recording (a growable stack would reallocate a
+target that in-flight command recording still references).
 
 ### Steady-state short-circuit
 
@@ -109,8 +110,9 @@ culled).
 
 ### ContentPass (P1)
 - Target: `color_ms` (RGBA16F, MSAA ×4, linear premultiplied), cleared to
-  transparent; page substrate drawn LAST in dst-over (validated Compositor
-  rule: erase/blends never punch through the page background).
+  transparent; page substrate drawn LAST in dst-over so erase/blends never
+  punch through the page background (the substrate is a display backdrop, not
+  a layer — DOCUMENT_MODEL.md §8).
 - Input: batches in painter order. No depth buffer; stencil shared with P2.
 
 ### ClipPass (P2)
@@ -121,11 +123,13 @@ culled).
 ### CompositePass (P3)
 - Normal-blend items composite directly in P1 (hardware premultiplied-over).
 - A node/group with blend ≠ Normal or opacity < 1 or isolate=true renders to
-  `iso[d]`, then a fullscreen-in-scissor composite applies opacity +
-  blend shader; blend modes that need the backdrop copy the scissored
-  backdrop region once (`iso[d].backdrop`). Shaders un-premultiply, apply the
-  W3C formula, re-premultiply — the straight-output rule that fixed the
-  Compositor's double-premultiply greying is baked in from day one.
+  `iso[d]`, then a fullscreen composite applies opacity + blend, reading the
+  parent as the backdrop and writing the parent (a ping-pong linear pair per
+  level avoids attachment feedback). The composite shader implements the W3C
+  *Compositing and Blending Level 1* model verbatim — the SVG/CSS/Canvas/PDF
+  standard: blends are defined on non-premultiplied colours, so the shader
+  un-premultiplies at the blend and re-premultiplies the output (standard, not
+  a workaround).
 - Erase is `BlendMode::Erase` (dst-out), same path, no special casing.
 
 ### OverlayPass (P5)

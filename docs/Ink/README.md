@@ -11,6 +11,15 @@ integration, picking, overlays and the `.acu` v2 file format. It replaces
 > application editor code). Features are *re-designed and re-implemented*,
 > not ported. The legacy tree exists only as a behavioural reference
 > ("how did the old stroke dash spacing feel?"), never as a code source.
+>
+> **Implement to industry standards, not to the old engines.** We are
+> rewriting *because* Renderer and Compositor were poorly designed — so a
+> feature is built the way current-standard vector/compositing systems build
+> it (e.g. W3C Compositing & Blending for blend modes, the PDF/SVG paint
+> model, standard camera-relative precision for deep zoom), NOT by imitating
+> what the old engines did. If a doc ever cites the old engine as a *design
+> authority*, that is a smell to fix; citing it as a fact ("this hazard
+> exists, avoid it") is fine.
 
 ## Why a codename
 
