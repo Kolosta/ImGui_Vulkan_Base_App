@@ -161,7 +161,8 @@ std::vector<DMat23> ExpandModifiers(const Document& doc,
 } // namespace
 
 void Scene::EmitNode(const Document& doc, const Node& n,
-                     const DMat23& parentWorld, ScopeId scope, int instDepth) {
+                     const DMat23& parentWorld, ScopeId scope, int instDepth,
+                     NodeId owner) {
     if (!n.visible) return;
 
     // Object PARENTING overrides the layer-tree origin (docs/Ink/
@@ -182,22 +183,24 @@ void Scene::EmitNode(const Document& doc, const Node& n,
         return false;
     }();
     if (!hasMods) {
-        EmitContent(doc, n, world, scope, instDepth);
+        EmitContent(doc, n, world, scope, instDepth, owner);
         return;
     }
     for (const DMat23& local : ExpandModifiers(doc, n.modifiers))
-        EmitContent(doc, n, world.Compose(local), scope, instDepth);
+        EmitContent(doc, n, world.Compose(local), scope, instDepth, owner);
 }
 
 void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
-                        ScopeId scope, int instDepth) {
+                        ScopeId scope, int instDepth, NodeId owner) {
     if (n.kind == NodeKind::Instance) {
         if (instDepth >= kMaxInstanceDepth) return;
         const Node* target = doc.Find(n.targetRef);
         if (!target || target == &n) return;   // missing / self-reference
         // Render the target's OWN content at this instance's world (the
         // target's own transform is part of its identity — apply it).
-        EmitNode(doc, *target, world, scope, instDepth + 1);
+        // Selection-wise the whole subtree belongs to the OUTERMOST instance.
+        EmitNode(doc, *target, world, scope, instDepth + 1,
+                 owner != kNullNode ? owner : n.id);
         return;
     }
 
@@ -212,7 +215,8 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
             if (const Node* clip = doc.Find(clipNode); clip && !clip->path.Empty()) {
                 const DMat23 cw = world.Compose(clip->transform.Matrix());
                 Drawable d;
-                d.node = clip->id;  d.world = cw;
+                d.node = clip->id;  d.owner = owner != kNullNode ? owner : clip->id;
+                d.world = cw;
                 d.pathHash = clip->path.Hash();  d.path = &clip->path;
                 d.rule = clip->style.fills.empty() ? FillRule::NonZero
                          : clip->style.fills.front().rule;
@@ -224,14 +228,14 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
         for (NodeId c : n.children) {
             if (c == clipNode) continue;   // the mask never paints
             if (const Node* child = doc.Find(c))
-                EmitNode(doc, *child, world, childScope, instDepth);
+                EmitNode(doc, *child, world, childScope, instDepth, owner);
         }
         return;
     }
 
     // Path.
     if (n.path.Empty()) return;
-    EmitPath(doc, n, world, scope);
+    EmitPath(doc, n, world, scope, owner != kNullNode ? owner : n.id);
 }
 
 const PathData* Scene::ResolveGeometry(const Document& doc, const Node& n,
@@ -299,15 +303,45 @@ const PathData* Scene::ResolveGeometry(const Document& doc, const Node& n,
 }
 
 void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
-                     ScopeId scope) {
+                     ScopeId scope, NodeId owner) {
     std::uint64_t pathHash = 0;
     const PathData* geo = ResolveGeometry(doc, n, pathHash);
     if (!geo || geo->Empty()) return;
 
-    // Anchor-box bounds (cheap conservative fit-view input).
+    // Bounds: the Bézier control-point hull (a cubic lies inside the convex
+    // hull of its control points, so anchor+handle points give a CONSERVATIVE
+    // box), grown into the global fit-view bounds and the per-owner box.
+    DRect& nb = nodeBounds_[owner];
     for (const Subpath& sp : geo->subpaths)
-        for (const Anchor& a : sp.anchors)
-            GrowBounds(world.Apply(a.pos));
+        for (const Anchor& a : sp.anchors) {
+            const DVec2 p = world.Apply(a.pos);
+            GrowBounds(p); nb.Grow(p);
+            if (a.hasIn) {
+                const DVec2 q = world.Apply({ a.pos.x + a.in.x, a.pos.y + a.in.y });
+                GrowBounds(q); nb.Grow(q);
+            }
+            if (a.hasOut) {
+                const DVec2 q = world.Apply({ a.pos.x + a.out.x, a.pos.y + a.out.y });
+                GrowBounds(q); nb.Grow(q);
+            }
+        }
+    // Outward stroke extent (world units): Center = w/2, Outside = w,
+    // Inside = 0. Conservative for the selection outline / box select.
+    {
+        double outward = 0.0;
+        for (const Stroke& s : n.style.strokes) {
+            if (!s.enabled || s.width <= 0.0 ||
+                s.widthSpace != WidthSpace::Document) continue;
+            const double e = s.align == StrokeAlign::Center ? s.width * 0.5
+                           : s.align == StrokeAlign::Outside ? s.width : 0.0;
+            outward = std::max(outward, e);
+        }
+        if (outward > 0.0) {
+            const double sx = std::sqrt(world.m[0]*world.m[0] + world.m[3]*world.m[3]);
+            const double sy = std::sqrt(world.m[1]*world.m[1] + world.m[4]*world.m[4]);
+            nb.Inflate(outward * std::max(sx, sy));
+        }
+    }
 
     // Fills bottom-up (a pattern fill expands into motif instances), then
     // strokes bottom-up — the unified paint order (docs/Ink/DOCUMENT_MODEL §4).
@@ -315,11 +349,11 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         const Fill& f = n.style.fills[i];
         if (!f.enabled) continue;
         if (f.kind == FillKind::Pattern) {
-            EmitPattern(doc, f, n, world, scope);
+            EmitPattern(doc, f, n, world, scope, owner);
             continue;
         }
         Drawable d;
-        d.node = n.id;  d.world = world;
+        d.node = n.id;  d.owner = owner;  d.world = world;
         d.pathHash = pathHash;  d.path = geo;
         d.isStroke = false;  d.pieceIndex = (std::uint8_t)i;
         d.rule = f.rule;  d.color = f.paint.color;
@@ -330,7 +364,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         const Stroke& s = n.style.strokes[i];
         if (!s.enabled || s.width <= 0.0) continue;
         Drawable d;
-        d.node = n.id;  d.world = world;
+        d.node = n.id;  d.owner = owner;  d.world = world;
         d.pathHash = pathHash;  d.path = geo;
         d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
         d.stroke = s;  d.color = s.paint.color;
@@ -340,7 +374,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
 }
 
 void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
-                        const DMat23& world, ScopeId scope) {
+                        const DMat23& world, ScopeId scope, NodeId owner) {
     const Node* motif = doc.Find(fill.pattern.motifRef);
     if (!motif || motif->kind != NodeKind::Path || motif->path.Empty()) return;
 
@@ -375,7 +409,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                        rs.m[3] = s * sc; rs.m[4] =  c * sc;
             const DMat23 mw = world.Compose(place.Compose(rs));
             Drawable d;
-            d.node = host.id;  d.world = mw;
+            d.node = host.id;  d.owner = owner;  d.world = mw;
             d.pathHash = motifHash;  d.path = &motif->path;
             d.isStroke = false;
             d.rule = FillRule::NonZero;
@@ -396,6 +430,7 @@ bool Scene::Compile(Document& doc, bool force) {
     pageRects_.clear();
     derivedPaths_.clear();
     derivedByNode_.clear();
+    nodeBounds_.clear();
     scopes_.clear();
     maxDepth_ = 0;
     boundsValid_ = false;

@@ -882,4 +882,14 @@ void Renderer::EndFrame() {
 const Stats& Renderer::GetStats() const { return impl_->published; }
 Rect Renderer::SceneBounds() const { return impl_->scene.Bounds(); }
 
+NodeId Renderer::PickAt(DVec2 docPoint, const PickOptions& opt) const {
+    return PickTop(impl_->scene, docPoint, opt);
+}
+std::vector<NodeId> Renderer::PickInBox(DVec2 boxMin, DVec2 boxMax) const {
+    return PickBox(impl_->scene, boxMin, boxMax);
+}
+bool Renderer::NodeBounds(NodeId id, DRect& out) const {
+    return impl_->scene.NodeBounds(id, out);
+}
+
 } // namespace Ink

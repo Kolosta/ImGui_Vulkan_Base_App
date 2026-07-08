@@ -16,6 +16,7 @@ add_library(Ink STATIC
 
     # Scene — document → drawables (painter order, double transforms)
     src/Scene/Scene.cpp
+    src/Scene/Picking.cpp
 
     # RHI — the only layer that touches raw Vulkan object creation
     src/RHI/Device.cpp

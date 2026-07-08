@@ -69,6 +69,34 @@ struct Transform2D {
     }
 };
 
+// Document-space axis-aligned rectangle (double — unbounded canvas). Invalid
+// until the first Grow.
+struct DRect {
+    DVec2 min{ 0, 0 }, max{ 0, 0 };
+    bool  valid = false;
+
+    void Grow(DVec2 p) {
+        if (!valid) { min = max = p; valid = true; return; }
+        if (p.x < min.x) min.x = p.x;
+        if (p.y < min.y) min.y = p.y;
+        if (p.x > max.x) max.x = p.x;
+        if (p.y > max.y) max.y = p.y;
+    }
+    void Inflate(double d) {
+        if (!valid) return;
+        min.x -= d; min.y -= d; max.x += d; max.y += d;
+    }
+    bool Contains(DVec2 p) const {
+        return valid && p.x >= min.x && p.x <= max.x &&
+               p.y >= min.y && p.y <= max.y;
+    }
+    bool Intersects(const DRect& o) const {
+        return valid && o.valid && min.x <= o.max.x && o.min.x <= max.x &&
+               min.y <= o.max.y && o.min.y <= max.y;
+    }
+    DVec2 Center() const { return { (min.x + max.x) * 0.5, (min.y + max.y) * 0.5 }; }
+};
+
 // Compositing blend mode — the W3C separable set (plus Erase). Values are
 // stable (persisted in .acu, sent to the composite shader as an index).
 // Non-separable modes (Hue/Saturation/Color/Luminosity) come later.

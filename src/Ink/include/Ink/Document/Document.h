@@ -117,6 +117,30 @@ public:
     void   Remove(NodeId node);      // node or page (subtree included)
     void   Clear();                  // everything (fresh document)
 
+    // ── Editing / undo support (Lot 8) ───────────────────────────────────────
+    // A detached copy of a node subtree with its placement — the currency of
+    // command-based undo (Remove ↔ Restore round-trips exactly).
+    struct SubtreeSnapshot {
+        std::vector<Node> nodes;     // pre-order; [0] = the root (ids preserved)
+        int indexInParent = -1;      // root's position among its siblings
+    };
+    SubtreeSnapshot CopySubtree(NodeId root) const;
+    // Reinsert a subtree removed earlier. Ids restore VERBATIM (ids are never
+    // reused, so this is the same logical nodes coming back). False if the
+    // root id still exists or its parent is gone.
+    bool RestoreSubtree(const SubtreeSnapshot& snap);
+    // Deep copy of `src` (fresh ids) inserted right after it among its
+    // siblings. Intra-subtree references (children, parentId, targetRef,
+    // modifier refs) are remapped; references OUTSIDE the subtree are kept.
+    NodeId DuplicateSubtree(NodeId src);
+    // Bake the node's scale into its geometry (Blender's Apply Scale —
+    // docs/Ink/DOCUMENT_MODEL.md §4): anchors/handles scale, Document-space
+    // stroke widths scale by the geometric mean of |sx|,|sy|, then sx/sy
+    // reset to 1. World appearance is unchanged (local matrix is R·S — S
+    // folds into the geometry exactly). Path nodes only.
+    void   ApplyScale(NodeId node);
+    int    IndexInParent(NodeId id) const;   // −1 when not found
+
     // ── Queries ──────────────────────────────────────────────────────────────
     const Node* Find(NodeId id) const;
     Node*       FindMutable(NodeId id);   // for editors; pair with NotifyEdited

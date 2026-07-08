@@ -2,11 +2,13 @@
 
 #include "Ink/Core/Math.h"
 #include "Ink/Render/Stats.h"
+#include "Ink/Scene/Picking.h"   // PickOptions (editing queries)
 #include "Ink/View/View.h"
 #include <vulkan/vulkan.h>
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace Ink {
 
@@ -77,6 +79,16 @@ public:
     const Stats& GetStats() const;
     // Compiled-scene bounds (doc units) — drives the Viewport's fit-view.
     Rect SceneBounds() const;
+
+    // ── Editing queries on the compiled Scene (docs/Ink/ROADMAP.md Lot 8) ─────
+    // The topmost object at a document-space point (exact CPU hit-test), or
+    // kNullNode. `tolerance` is in document units, `zoom` in view-px/doc-unit.
+    NodeId PickAt(DVec2 docPoint, const PickOptions& opt) const;
+    // Distinct objects whose rendered bounds intersect the document-space box.
+    std::vector<NodeId> PickInBox(DVec2 boxMin, DVec2 boxMax) const;
+    // A single object's rendered document-space bounds (selection outline /
+    // fit-selection). False when it produced nothing in the last compile.
+    bool NodeBounds(NodeId id, DRect& out) const;
 
 private:
     std::unique_ptr<detail::RendererImpl> impl_;

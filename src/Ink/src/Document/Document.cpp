@@ -314,6 +314,156 @@ void Document::ClearParent(NodeId child, bool keepWorld) {
     SetParent(child, kNullNode, keepWorld);
 }
 
+// ── Editing / undo support (Lot 8) ───────────────────────────────────────────
+
+int Document::IndexInParent(NodeId id) const {
+    const Node* n = Find(id);
+    if (!n) return -1;
+    const std::vector<NodeId>* siblings = nullptr;
+    if (n->parent != kNullNode) {
+        if (const Node* pg = Find(n->parent)) siblings = &pg->children;
+    } else if (const Page* pp = FindPage(n->page)) {
+        siblings = &pp->children;
+    }
+    if (!siblings) return -1;
+    for (std::size_t i = 0; i < siblings->size(); ++i)
+        if ((*siblings)[i] == id) return (int)i;
+    return -1;
+}
+
+Document::SubtreeSnapshot Document::CopySubtree(NodeId root) const {
+    SubtreeSnapshot snap;
+    snap.indexInParent = IndexInParent(root);
+    // Pre-order copy (parents before children so a restore can re-link).
+    std::vector<NodeId> stack{ root };
+    while (!stack.empty()) {
+        const NodeId id = stack.back();
+        stack.pop_back();
+        const Node* n = Find(id);
+        if (!n) continue;
+        snap.nodes.push_back(*n);
+        // Reverse push keeps the children's relative order in the snapshot.
+        for (auto it = n->children.rbegin(); it != n->children.rend(); ++it)
+            stack.push_back(*it);
+    }
+    return snap;
+}
+
+bool Document::RestoreSubtree(const SubtreeSnapshot& snap) {
+    if (snap.nodes.empty()) return false;
+    const Node& root = snap.nodes.front();
+    if (Find(root.id)) return false;   // already present
+    // The insertion point must still exist.
+    std::vector<NodeId>* siblings = nullptr;
+    if (root.parent != kNullNode) {
+        Node* pg = FindMutable(root.parent);
+        if (!pg || pg->kind != NodeKind::Group) return false;
+        siblings = &pg->children;
+    } else if (Page* pp = const_cast<Page*>(FindPage(root.page))) {
+        siblings = &pp->children;
+    } else {
+        return false;
+    }
+    for (const Node& n : snap.nodes) {
+        nodes_.emplace(n.id, n);
+        if (n.id >= nextId_) nextId_ = n.id + 1;   // ids stay never-reused
+        Log(n.id, ChangeKind::Added);
+    }
+    const int idx = snap.indexInParent < 0 ? (int)siblings->size()
+                  : std::min(snap.indexInParent, (int)siblings->size());
+    siblings->insert(siblings->begin() + idx, root.id);
+    return true;
+}
+
+NodeId Document::DuplicateSubtree(NodeId src) {
+    const Node* srcNode = Find(src);
+    if (!srcNode) return kNullNode;
+
+    // Collect the subtree (pre-order) and assign fresh ids.
+    std::vector<const Node*> order;
+    std::vector<NodeId> stack{ src };
+    while (!stack.empty()) {
+        const NodeId id = stack.back();
+        stack.pop_back();
+        const Node* n = Find(id);
+        if (!n) continue;
+        order.push_back(n);
+        for (auto it = n->children.rbegin(); it != n->children.rend(); ++it)
+            stack.push_back(*it);
+    }
+    std::unordered_map<NodeId, NodeId> remap;
+    for (const Node* n : order) remap[n->id] = NextId();
+    auto mapped = [&](NodeId id) {
+        auto it = remap.find(id);
+        return it == remap.end() ? id : it->second;   // external refs kept
+    };
+
+    for (const Node* n : order) {
+        Node c = *n;
+        c.id     = remap[n->id];
+        c.parent = n->id == src ? n->parent : mapped(n->parent);
+        c.parentId  = mapped(c.parentId);
+        c.targetRef = mapped(c.targetRef);
+        for (NodeId& ch : c.children) ch = mapped(ch);
+        for (Modifier& m : c.modifiers) {
+            m.pathRef    = mapped(m.pathRef);
+            m.operandRef = mapped(m.operandRef);
+        }
+        for (Fill& f : c.style.fills)
+            f.pattern.motifRef = mapped(f.pattern.motifRef);
+        const NodeId newId = c.id;
+        nodes_.emplace(newId, std::move(c));
+        Log(newId, ChangeKind::Added);
+    }
+
+    // Insert the copy right after the source among its siblings.
+    const NodeId copyRoot = remap[src];
+    std::vector<NodeId>* siblings = nullptr;
+    if (srcNode->parent != kNullNode) {
+        if (Node* pg = FindMutable(srcNode->parent)) siblings = &pg->children;
+    } else if (Page* pp = const_cast<Page*>(FindPage(srcNode->page))) {
+        siblings = &pp->children;
+    }
+    if (siblings) {
+        auto it = std::find(siblings->begin(), siblings->end(), src);
+        siblings->insert(it == siblings->end() ? siblings->end() : it + 1,
+                         copyRoot);
+    }
+    return copyRoot;
+}
+
+void Document::ApplyScale(NodeId node) {
+    Node* n = FindMutable(node);
+    if (!n || n->kind != NodeKind::Path) return;
+    const double sx = n->transform.sx, sy = n->transform.sy;
+    if (sx == 1.0 && sy == 1.0) return;
+
+    for (Subpath& sp : n->path.subpaths)
+        for (Anchor& a : sp.anchors) {
+            a.pos.x *= sx;  a.pos.y *= sy;
+            a.in.x  *= sx;  a.in.y  *= sy;
+            a.out.x *= sx;  a.out.y *= sy;
+        }
+    // Uniform-equivalent factor for the scalar style lengths.
+    const double s = std::sqrt(std::abs(sx * sy));
+    for (Stroke& st : n->style.strokes) {
+        if (st.widthSpace == WidthSpace::Document) st.width *= s;
+        for (double& d : st.dashPattern) d *= s;
+        st.dashOffset *= s;
+    }
+    for (Fill& f : n->style.fills)
+        if (f.kind == FillKind::Pattern) {
+            f.pattern.spacingX *= std::abs(sx);
+            f.pattern.spacingY *= std::abs(sy);
+            f.pattern.phaseX   *= std::abs(sx);
+            f.pattern.phaseY   *= std::abs(sy);
+            f.pattern.scale    *= s;
+        }
+    n->transform.sx = n->transform.sy = 1.0;
+    Log(node, ChangeKind::Geometry);       // re-tessellate (+ covers style)
+    Log(node, ChangeKind::Moved);          // transform changed too
+}
+
 // ── Change tracking ──────────────────────────────────────────────────────────
 
 void Document::Log(NodeId id, ChangeKind kind) {

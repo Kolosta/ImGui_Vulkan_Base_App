@@ -4,8 +4,10 @@
 
 #include <Ink/Document/Document.h>
 #include <Ink/Geometry/GeometryCache.h>
+#include <Ink/Scene/Picking.h>
 #include <Ink/Scene/Scene.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -446,6 +448,118 @@ void TestInstancing() {
     }
 }
 
+void TestPicking() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 400, 300 });
+    // Bottom: a filled 100×100 square at (50,50). Top: a 40×40 square at
+    // (80,80) overlapping it. Plus a stroked-only ring (no fill) at (250,50).
+    const NodeId below = doc.AddPath(page, PathData::Rect(50, 50, 100, 100),
+                                     Style::Filled({ 1, 0, 0, 1 }), "below");
+    const NodeId above = doc.AddPath(page, PathData::Rect(80, 80, 40, 40),
+                                     Style::Filled({ 0, 1, 0, 1 }), "above");
+    Style ringStyle;
+    ringStyle.strokes.push_back({});
+    ringStyle.strokes.back().width = 6.0;
+    const NodeId ring = doc.AddPath(page, PathData::Rect(250, 50, 60, 60),
+                                    ringStyle, "ring");
+    Scene s; s.Compile(doc);
+
+    PickOptions opt; opt.tolerance = 1.0;
+    // Overlap region → the TOP node wins.
+    CHECK(PickTop(s, { 100, 100 }, opt) == above);
+    // Below-only region → the bottom node.
+    CHECK(PickTop(s, { 60, 60 }, opt) == below);
+    // Page background → no object.
+    CHECK(PickTop(s, { 10, 10 }, opt) == kNullNode);
+    // Stroke-only shape: near the edge hits…
+    CHECK(PickTop(s, { 250, 80 }, opt) == ring);
+    // …the hollow inside does not.
+    CHECK(PickTop(s, { 280, 80 }, opt) == kNullNode);
+    // Tolerance (stroke): 6 units outside the spine (half-width 3) hits with
+    // tol 4 (3+4 ≥ 6), not with tol 0.5.
+    PickOptions wide; wide.tolerance = 4.0;
+    PickOptions tight; tight.tolerance = 0.5;
+    CHECK(PickTop(s, { 244, 80 }, wide) == ring);
+    CHECK(PickTop(s, { 244, 80 }, tight) == kNullNode);
+
+    // An instance picks the INSTANCE node, not its target.
+    const NodeId inst = doc.AddInstance(page, above, "inst");
+    { Transform2D t; t.tx = 200; t.ty = 150; doc.SetTransform(inst, t); }
+    s.Compile(doc);
+    CHECK(PickTop(s, { 300, 250 }, opt) == inst);   // 200+100,150+100 inside copy
+
+    // Box select: intersecting bounds report each owner once.
+    auto hits = PickBox(s, { 40, 40 }, { 160, 160 });
+    CHECK(hits.size() == 2);
+    CHECK(std::find(hits.begin(), hits.end(), below) != hits.end());
+    CHECK(std::find(hits.begin(), hits.end(), above) != hits.end());
+}
+
+void TestApplyScale() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 400, 300 });
+    const NodeId n = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+        Style::Filled({ 1, 0, 0, 1 }).WithStroke({ 0, 0, 0, 1 }, 4.0), "r");
+    Transform2D t; t.tx = 30; t.ty = 40; t.sx = 3.0; t.sy = 2.0;
+    t.rotation = 0.5;
+    doc.SetTransform(n, t);
+
+    // World positions of the four corners before the bake.
+    const DMat23 before = doc.WorldTransform(n);
+    DVec2 c0 = before.Apply({ 0, 0 }), c1 = before.Apply({ 10, 10 });
+
+    doc.ApplyScale(n);
+    const Node* nd = doc.Find(n);
+    CHECK_NEAR(nd->transform.sx, 1.0, 1e-12);
+    CHECK_NEAR(nd->transform.sy, 1.0, 1e-12);
+    // Geometry now spans 30×20 locally…
+    CHECK_NEAR(nd->path.subpaths[0].anchors[2].pos.x, 30.0, 1e-9);
+    CHECK_NEAR(nd->path.subpaths[0].anchors[2].pos.y, 20.0, 1e-9);
+    // …and the world appearance is unchanged.
+    const DMat23 after = doc.WorldTransform(n);
+    const DVec2 a0 = after.Apply({ 0, 0 }), a1 = after.Apply({ 30, 20 });
+    CHECK_NEAR(a0.x, c0.x, 1e-9); CHECK_NEAR(a0.y, c0.y, 1e-9);
+    CHECK_NEAR(a1.x, c1.x, 1e-9); CHECK_NEAR(a1.y, c1.y, 1e-9);
+    // Stroke width scaled by the geometric mean √(3·2).
+    CHECK_NEAR(nd->style.strokes[0].width, 4.0 * std::sqrt(6.0), 1e-9);
+}
+
+void TestSubtreeRoundtrip() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 400, 300 });
+    const NodeId g = doc.AddGroup(page, "G");
+    const NodeId a = doc.AddPath(g, PathData::Rect(0, 0, 10, 10),
+                                 Style::Filled({ 1, 0, 0, 1 }), "a");
+    const NodeId sib = doc.AddPath(page, PathData::Rect(50, 0, 10, 10),
+                                   Style::Filled({ 0, 0, 1, 1 }), "sib");
+    (void)sib;
+
+    // Remove the group (its child goes too), then restore: same ids, same
+    // place, same content.
+    const auto snap = doc.CopySubtree(g);
+    CHECK(snap.nodes.size() == 2);
+    CHECK(snap.indexInParent == 0);
+    doc.Remove(g);
+    CHECK(!doc.Find(g) && !doc.Find(a));
+    CHECK(doc.RestoreSubtree(snap));
+    CHECK(doc.Find(g) && doc.Find(a));
+    CHECK(doc.Find(a)->parent == g);
+    CHECK(doc.IndexInParent(g) == 0);
+    // Restoring twice is refused (the id exists again).
+    CHECK(!doc.RestoreSubtree(snap));
+
+    // Duplicate: fresh ids, same geometry, inserted after the source.
+    const NodeId dup = doc.DuplicateSubtree(g);
+    CHECK(dup != kNullNode && dup != g);
+    CHECK(doc.IndexInParent(dup) == doc.IndexInParent(g) + 1);
+    const Node* dg = doc.Find(dup);
+    CHECK(dg->children.size() == 1);
+    const Node* da = doc.Find(dg->children[0]);
+    CHECK(da && da->id != a);
+    CHECK(da->path.Hash() == doc.Find(a)->path.Hash());
+    CHECK(da->parent == dup);   // intra-subtree parent remapped
+}
+
 void TestParenting() {
     Document doc;
     const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
@@ -583,6 +697,9 @@ int main() {
     TestInstancing();
     TestParenting();
     TestBoolean();
+    TestPicking();
+    TestApplyScale();
+    TestSubtreeRoundtrip();
     TestSceneCompile();
 
     if (g_failures == 0) {

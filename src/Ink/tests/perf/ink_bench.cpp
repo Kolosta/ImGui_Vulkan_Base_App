@@ -19,6 +19,7 @@
 
 #include <Ink/Document/Document.h>
 #include <Ink/Render/Renderer.h>
+#include <Ink/Scene/Picking.h>
 
 #include <vulkan/vulkan.h>
 #include <algorithm>
@@ -308,9 +309,62 @@ int main(int argc, char** argv) {
     if (scene != "bootstrap" && scene != "steady" && scene != "empty" &&
         scene != "paths_10k" && scene != "edit_heavy" && scene != "zoom_sweep" &&
         scene != "blend_groups" && scene != "instances_100k" &&
-        scene != "pattern_fill" && scene != "along_path") {
+        scene != "pattern_fill" && scene != "along_path" &&
+        scene != "pick_storm") {
         std::fprintf(stderr, "ink_bench: unknown scene '%s'\n", scene.c_str());
         return 2;
+    }
+
+    // pick_storm — CPU-only (no device): exact picking over the 10k-paths
+    // document at random points (docs/Ink/ROADMAP.md Lot 8). `--frames` scales
+    // the workload: picks = frames × 100.
+    if (scene == "pick_storm") {
+        Ink::Document doc;
+        BuildPaths10k(doc);
+        Ink::Scene s;
+        const auto tc0 = std::chrono::steady_clock::now();
+        s.Compile(doc);
+        const double compileOnce = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - tc0).count();
+
+        const Ink::Rect b = s.Bounds();
+        Lcg rnd;
+        Ink::PickOptions opt;
+        opt.tolerance = 3.0;
+        opt.zoom = 1.0;
+        const int picks = frames * 100;
+        Series pickUs;
+        std::uint64_t hits = 0;
+        for (int i = 0; i < picks; ++i) {
+            const Ink::DVec2 p{ b.min.x + rnd() * (b.max.x - b.min.x),
+                                b.min.y + rnd() * (b.max.y - b.min.y) };
+            const auto t0 = std::chrono::steady_clock::now();
+            if (Ink::PickTop(s, p, opt) != Ink::kNullNode) ++hits;
+            pickUs.Add(std::chrono::duration<double, std::micro>(
+                std::chrono::steady_clock::now() - t0).count());
+        }
+        char json[768];
+        std::snprintf(json, sizeof json,
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"scene\": \"pick_storm\",\n"
+            "  \"picks\": %d,\n"
+            "  \"hitRate\": %.3f,\n"
+            "  \"compileMs\": %.3f,\n"
+            "  \"metrics\": {\n"
+            "    \"pickUs\": { \"avg\": %.2f, \"p50\": %.2f, \"p95\": %.2f, \"p99\": %.2f }\n"
+            "  }\n"
+            "}\n",
+            picks, (double)hits / (double)picks, compileOnce,
+            pickUs.Avg(), pickUs.Percentile(0.50), pickUs.Percentile(0.95),
+            pickUs.Percentile(0.99));
+        std::fputs(json, stdout);
+        if (!outPath.empty())
+            if (std::FILE* f = std::fopen(outPath.c_str(), "wb")) {
+                std::fputs(json, f);
+                std::fclose(f);
+            }
+        return 0;
     }
 
     BenchDevice bd;
