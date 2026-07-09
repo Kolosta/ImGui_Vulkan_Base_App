@@ -178,12 +178,40 @@ struct EditContext {
     bool   defaultFillEnabled = true;
     bool   defaultStrokeEnabled = true;
 
-    // Edit Mode vertex selection on `active`: (subpath, anchor) pairs.
-    std::vector<std::pair<int, int>> vertSel;
-    // Edit Mode handle being dragged (in/out of one anchor). which: 1 = in,
-    // 2 = out, 0 = none. Only ONE handle is manipulated at a time (like Blender).
-    struct HandleRef { int sp = -1, a = -1, which = 0; };
-    HandleRef handleSel;
+    // ── Edit Mode element selection ──────────────────────────────────────────
+    // Points and the two handles of a point are selected INDIVIDUALLY (Blender-
+    // style): an element is (subpath, anchor, part) with part ∈ {Point, In, Out}.
+    // Selecting the point does not select its handles and vice-versa; a transform
+    // acts on exactly the selected elements.
+    enum class ElemPart : uint8_t { Point = 0, In = 1, Out = 2 };
+    struct ElemRef {
+        int sp = -1, a = -1; ElemPart part = ElemPart::Point;
+        bool operator==(const ElemRef& o) const {
+            return sp == o.sp && a == o.a && part == o.part;
+        }
+    };
+    std::vector<ElemRef> elemSel;
+    // The handle being dragged directly (single-handle drag). part != Point.
+    ElemRef handleDrag;   // sp<0 = none
+
+    bool ElemSelected(int sp, int a, ElemPart part) const {
+        for (const ElemRef& e : elemSel)
+            if (e.sp == sp && e.a == a && e.part == part) return true;
+        return false;
+    }
+    void ElemToggle(int sp, int a, ElemPart part) {
+        ElemRef r{ sp, a, part };
+        auto it = std::find(elemSel.begin(), elemSel.end(), r);
+        if (it != elemSel.end()) elemSel.erase(it); else elemSel.push_back(r);
+    }
+    void ElemSelectOnly(int sp, int a, ElemPart part) {
+        elemSel.clear(); elemSel.push_back({ sp, a, part });
+    }
+    // Any element of this anchor selected (point or a handle)?
+    bool AnchorTouched(int sp, int a) const {
+        for (const ElemRef& e : elemSel) if (e.sp == sp && e.a == a) return true;
+        return false;
+    }
 
     // The 2D cursor (document space). New shapes spawn here; it is a snap /
     // pivot / orientation reference. Seeded to the first page centre on Reset.
@@ -198,7 +226,7 @@ struct EditContext {
         selection.clear();
         if (id != Ink::kNullNode) selection.push_back(id);
         active = id;
-        vertSel.clear();
+        elemSel.clear();
     }
     void SelectAdd(Ink::NodeId id) {
         if (id == Ink::kNullNode) return;
@@ -214,7 +242,7 @@ struct EditContext {
     void Clear() {
         selection.clear();
         active = Ink::kNullNode;
-        vertSel.clear();
+        elemSel.clear();
     }
     // Drop ids that no longer exist (after undo/redo/delete).
     void Prune(const Ink::Document& doc) {
@@ -223,12 +251,7 @@ struct EditContext {
                         selection.end());
         if (active != Ink::kNullNode && !doc.Find(active))
             active = selection.empty() ? Ink::kNullNode : selection.back();
-        if (selection.empty()) vertSel.clear();
-    }
-
-    bool VertSelected(int sp, int a) const {
-        return std::find(vertSel.begin(), vertSel.end(),
-                         std::make_pair(sp, a)) != vertSel.end();
+        if (selection.empty()) elemSel.clear();
     }
 };
 

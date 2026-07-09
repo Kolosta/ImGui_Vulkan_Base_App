@@ -352,20 +352,25 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
         ov.triggerIcon = "image-aspect-ratio";
         ov.triggerLabel = "";
         ov.menuSize = ImVec2(bodyW, bodyH);
-        ov.bodyDraw = [&ds2]() {
+        ov.bodyDraw = [this, &ds2]() {
+            ImGui::PushStyleColor(ImGuiCol_Text, ds2.GetColor(Tok::S_Color_Text_Subtle));
+            ImGui::TextUnformatted("2D Cursor"); ImGui::PopStyleColor();
+            ImGui::Checkbox("Show 2D cursor", &show2DCursor_);
+            if (ImGui::Button("Reset to origin"))     Action_Cursor2DToOrigin();
+            if (ImGui::Button("Move to selection"))   Action_Cursor2DToSelection();
+            ImGui::Separator();
             ImGui::PushStyleColor(ImGuiCol_Text, ds2.GetColor(Tok::S_Color_Text_Subtle));
             ImGui::TextUnformatted("Overlays"); ImGui::PopStyleColor();
             ImGui::BeginDisabled(true);
-            bool page = true, pages = true, cursor = false, metrics = false;
+            bool page = true, pages = true, metrics = false;
             ImGui::Checkbox("Page layout (later)", &page);
             ImGui::Checkbox("Show pages (later)", &pages);
-            ImGui::Checkbox("2D cursor (later)", &cursor);
             ImGui::Checkbox("Performance metrics (later)", &metrics);
             ImGui::EndDisabled();
         };
         UI::Dropdown(ov);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-            UI::DrawTooltip("Viewport overlays (page layout, cursor, metrics — later)",
+            UI::DrawTooltip("Viewport overlays (2D cursor, page layout, metrics)",
                             ImGui::GetIO().MousePos);
     };
 }
@@ -388,9 +393,33 @@ void Application::RenderAddMenu() {
     leaf("Rectangle", "rect",     "Add a rectangle at the 2D cursor");
     leaf("Ellipse",   "ellipse",  "Add an ellipse at the 2D cursor");
     leaf("Triangle",  "triangle", "Add a triangle at the 2D cursor");
+    leaf("Bézier Curve", "curve", "Add an open Bézier curve at the 2D cursor");
 
     const bool open = UI::ContextMenu("##addMenu", addMenuPos_, entries, "Add");
     if (!open) addMenuOpen_ = false;
+}
+
+// The Edit-mode "Set Handle Type" menu (V) — restores the legacy vertex-type
+// chooser. Rendered unconditionally like the Add menu.
+void Application::RenderHandleTypeMenu() {
+    if (!handleMenuOpen_) return;
+    std::vector<UI::MenuEntry> entries;
+    auto add = [&](const char* lbl, const char* tip, int mode) {
+        UI::MenuEntry e; e.label = lbl; e.tooltip = tip;
+        e.onClick = [this, mode]{ Action_SetHandleType(mode); handleMenuOpen_ = false; };
+        entries.push_back(std::move(e));
+    };
+    add("Free",     "Both handles move independently",                    0);
+    add("Aligned",  "Handles stay collinear (lengths independent)",       1);
+    add("Mirrored", "Handles keep equal length (directions independent)", 2);
+    add("Aligned + Mirrored", "Handles stay collinear AND equal length",  3);
+    add("Vector",   "Handles point at the neighbouring points (straight)",4);
+    { UI::MenuEntry e; e.label = "Remove Handles";
+      e.tooltip = "Delete both handles — a straight corner point";
+      e.onClick = [this]{ Action_RemoveHandles(); handleMenuOpen_ = false; };
+      entries.push_back(std::move(e)); }
+    const bool open = UI::ContextMenu("##handleMenu", handleMenuPos_, entries, "Set Handle Type");
+    if (!open) handleMenuOpen_ = false;
 }
 
 // The viewport right-click context menu. Same unconditional-render rule.
@@ -436,7 +465,8 @@ void Application::RenderViewportContextMenu() {
             e.onClick = [this, kind, close]{ SpawnShape(kind); close(); };
             add.submenu.push_back(std::move(e));
         };
-        leaf("Rectangle", "rect"); leaf("Ellipse", "ellipse"); leaf("Triangle", "triangle");
+        leaf("Rectangle", "rect"); leaf("Ellipse", "ellipse");
+        leaf("Triangle", "triangle"); leaf("Bézier Curve", "curve");
         entries.push_back(std::move(add));
         { UI::MenuEntry e; e.label = "Select All"; e.shortcut = "A";
           e.onClick = [this, close]{ Action_SelectAll(); close(); };

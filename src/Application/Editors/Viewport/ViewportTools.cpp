@@ -86,6 +86,20 @@ Ink::NodeId Application::SpawnShape(const char* kind) {
                                         { at.x + r, at.y + r },
                                         { at.x - r, at.y + r } });
         name = "Triangle";
+    } else if (!std::strcmp(kind, "curve")) {
+        // An open Bézier curve: three smooth anchors with tangent handles.
+        Ink::Subpath sp; sp.closed = false;
+        auto anchor = [&](double x, double y, double ix, double iy) {
+            Ink::Anchor an; an.pos = { x, y };
+            an.in = { -ix, -iy }; an.out = { ix, iy };
+            an.hasIn = an.hasOut = true; an.kind = Ink::AnchorKind::Symmetric;
+            sp.anchors.push_back(an);
+        };
+        anchor(at.x - r,      at.y,        0,  r * 0.6);
+        anchor(at.x,          at.y - r*0.6, r*0.6, 0);
+        anchor(at.x + r,      at.y,        0, -r * 0.6);
+        path.subpaths.push_back(std::move(sp));
+        name = "Curve";
     } else {
         path = Ink::PathData::Rect(at.x - r, at.y - r, r * 2, r * 2);
         name = "Shape";
@@ -121,61 +135,115 @@ void Application::Action_DeselectAll() {
     LogInfoAction("Deselect All");
 }
 
-void Application::Action_CycleHandleMode() {
+// Distinct anchors (subpath,anchor) touched by the element selection.
+static std::vector<std::pair<int,int>> TouchedAnchors(const EditContext& e) {
+    std::vector<std::pair<int,int>> out;
+    for (const auto& r : e.elemSel) {
+        auto k = std::make_pair(r.sp, r.a);
+        if (std::find(out.begin(), out.end(), k) == out.end()) out.push_back(k);
+    }
+    return out;
+}
+
+// Set the handle type of every touched anchor (the V menu). `mode`:
+//   0 Free (Corner, keep both handles free)   1 Aligned (Smooth)
+//   2 Mirrored (Symmetric)   3 Aligned+Mirrored (Symmetric)
+//   4 Vector (Corner, handles point at neighbours → straight)
+void Application::Action_SetHandleType(int mode) {
     if (edit_.mode != EditorMode::Edit || !project_.document ||
-        edit_.active == Ink::kNullNode || edit_.vertSel.empty()) return;
+        edit_.active == Ink::kNullNode || edit_.elemSel.empty()) return;
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(edit_.active);
     if (!n) return;
     const Ink::PathData before = n->path;
     Ink::PathData p = before;
-    for (auto [sp, ai] : edit_.vertSel) {
+    for (auto [sp, ai] : TouchedAnchors(edit_)) {
         if (sp >= (int)p.subpaths.size() || ai >= (int)p.subpaths[sp].anchors.size()) continue;
-        Ink::Anchor& an = p.subpaths[sp].anchors[ai];
-        an.kind = an.kind == Ink::AnchorKind::Corner ? Ink::AnchorKind::Smooth
-                : an.kind == Ink::AnchorKind::Smooth ? Ink::AnchorKind::Symmetric
-                                                     : Ink::AnchorKind::Corner;
-        // Re-derive handle constraints from the new kind.
-        if (an.kind == Ink::AnchorKind::Symmetric && an.hasOut) {
-            an.in = { -an.out.x, -an.out.y }; an.hasIn = true;
-        } else if (an.kind == Ink::AnchorKind::Smooth && an.hasIn && an.hasOut) {
-            const double li = std::hypot(an.in.x, an.in.y), lo = std::hypot(an.out.x, an.out.y);
-            if (lo > 1e-9) { an.in = { -an.out.x/lo*li, -an.out.y/lo*li }; }
+        Ink::Subpath& subp = p.subpaths[sp];
+        Ink::Anchor& an = subp.anchors[ai];
+        if (mode == 4) {
+            // Vector: handles aim at the neighbouring anchors (⅓ of the way).
+            const int cnt = (int)subp.anchors.size();
+            const Ink::Anchor& prev = subp.anchors[(ai - 1 + cnt) % cnt];
+            const Ink::Anchor& next = subp.anchors[(ai + 1) % cnt];
+            an.in  = { (prev.pos.x - an.pos.x) / 3.0, (prev.pos.y - an.pos.y) / 3.0 };
+            an.out = { (next.pos.x - an.pos.x) / 3.0, (next.pos.y - an.pos.y) / 3.0 };
+            an.hasIn = an.hasOut = true;
+            an.kind = Ink::AnchorKind::Corner;
+        } else {
+            an.kind = mode == 1 ? Ink::AnchorKind::Smooth
+                    : (mode == 2 || mode == 3) ? Ink::AnchorKind::Symmetric
+                                               : Ink::AnchorKind::Corner;   // 0 Free
+            // If it has no handles yet, seed a small tangent so it becomes editable.
+            if (!an.hasIn && !an.hasOut && mode != 0) {
+                an.out = { 20, 0 }; an.in = { -20, 0 }; an.hasIn = an.hasOut = true;
+            }
+            if (an.kind == Ink::AnchorKind::Symmetric && an.hasOut) {
+                an.in = { -an.out.x, -an.out.y }; an.hasIn = true;
+            } else if (an.kind == Ink::AnchorKind::Smooth && an.hasIn && an.hasOut) {
+                const double li = std::hypot(an.in.x, an.in.y), lo = std::hypot(an.out.x, an.out.y);
+                if (lo > 1e-9) an.in = { -an.out.x/lo*li, -an.out.y/lo*li };
+            }
         }
     }
     doc.SetPath(edit_.active, p);
-    const Ink::NodeId id = edit_.active;
-    const Ink::PathData after = p;
-    PushDocCommand("Handle Mode",
+    const Ink::NodeId id = edit_.active; const Ink::PathData after = p;
+    PushDocCommand("Set Handle Type",
         [id, before](Ink::Document& d) { d.SetPath(id, before); },
         [id, after](Ink::Document& d)  { d.SetPath(id, after); });
-    LogInfoAction("Handle Mode");
+    LogInfoAction("Set Handle Type");
+}
+
+void Application::Action_RemoveHandles() {
+    if (edit_.mode != EditorMode::Edit || !project_.document ||
+        edit_.active == Ink::kNullNode || edit_.elemSel.empty()) return;
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(edit_.active);
+    if (!n) return;
+    const Ink::PathData before = n->path;
+    Ink::PathData p = before;
+    for (auto [sp, ai] : TouchedAnchors(edit_)) {
+        if (sp >= (int)p.subpaths.size() || ai >= (int)p.subpaths[sp].anchors.size()) continue;
+        Ink::Anchor& an = p.subpaths[sp].anchors[ai];
+        an.in = an.out = { 0, 0 }; an.hasIn = an.hasOut = false;
+        an.kind = Ink::AnchorKind::Corner;
+    }
+    doc.SetPath(edit_.active, p);
+    const Ink::NodeId id = edit_.active; const Ink::PathData after = p;
+    PushDocCommand("Remove Handles",
+        [id, before](Ink::Document& d) { d.SetPath(id, before); },
+        [id, after](Ink::Document& d)  { d.SetPath(id, after); });
+    LogInfoAction("Remove Handles");
+}
+
+void Application::Action_OpenHandleMenu() {
+    if (edit_.mode != EditorMode::Edit || edit_.elemSel.empty()) return;
+    handleMenuOpen_ = true;
+    handleMenuPos_  = ImGui::GetIO().MousePos;
+    ImGui::OpenPopup("##handleMenu");
 }
 
 void Application::Action_DeleteVertices() {
     if (edit_.mode != EditorMode::Edit || !project_.document ||
-        edit_.active == Ink::kNullNode || edit_.vertSel.empty()) return;
+        edit_.active == Ink::kNullNode || edit_.elemSel.empty()) return;
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(edit_.active);
     if (!n) return;
     const Ink::PathData before = n->path;
     Ink::PathData p = before;
-    // Remove anchors from the highest index down per subpath so indices stay valid.
-    std::vector<std::pair<int,int>> sel = edit_.vertSel;
-    std::sort(sel.begin(), sel.end(), [](auto& a, auto& b){
+    // Remove touched anchors (highest index first so indices stay valid).
+    auto anchors = TouchedAnchors(edit_);
+    std::sort(anchors.begin(), anchors.end(), [](auto& a, auto& b){
         return a.first != b.first ? a.first > b.first : a.second > b.second; });
-    for (auto [sp, ai] : sel)
+    for (auto [sp, ai] : anchors)
         if (sp < (int)p.subpaths.size() && ai < (int)p.subpaths[sp].anchors.size())
             p.subpaths[sp].anchors.erase(p.subpaths[sp].anchors.begin() + ai);
-    // Drop subpaths that fell below 2 anchors.
     p.subpaths.erase(std::remove_if(p.subpaths.begin(), p.subpaths.end(),
         [](const Ink::Subpath& s){ return s.anchors.size() < 2; }), p.subpaths.end());
-    edit_.vertSel.clear();
-    // Deleting all geometry deletes the object itself.
+    edit_.elemSel.clear();
     if (p.Empty()) { edit_.mode = EditorMode::Object; Action_DeleteSelection(); return; }
     doc.SetPath(edit_.active, p);
-    const Ink::NodeId id = edit_.active;
-    const Ink::PathData after = p;
+    const Ink::NodeId id = edit_.active; const Ink::PathData after = p;
     PushDocCommand("Delete Vertices",
         [id, before](Ink::Document& d) { d.SetPath(id, before); },
         [id, after](Ink::Document& d)  { d.SetPath(id, after); });
@@ -244,13 +312,13 @@ void Application::Action_EnterEditMode() {
     const Ink::Node* n = project_.document->Find(edit_.active);
     if (!n || n->kind != Ink::NodeKind::Path) return;   // only paths editable
     edit_.mode = EditorMode::Edit;
-    edit_.vertSel.clear();
+    edit_.elemSel.clear();
     LogInfoAction("Enter Edit Mode");
 }
 
 void Application::Action_ExitEditMode() {
     edit_.mode = EditorMode::Object;
-    edit_.vertSel.clear();
+    edit_.elemSel.clear();
     LogInfoAction("Exit Edit Mode");
 }
 
@@ -315,6 +383,23 @@ void Application::Action_OpenAddMenu() {
     addMenuOpen_ = true;
     addMenuPos_  = ImGui::GetIO().MousePos;
     ImGui::OpenPopup("##addMenu");   // open ONCE; RenderAddMenu renders each frame
+}
+
+void Application::Action_Cursor2DToOrigin() {
+    if (!project_.document || project_.document->Pages().empty()) {
+        edit_.cursor2D = { 0, 0 };
+    } else {
+        const Ink::Page& pg = project_.document->Pages().front();
+        edit_.cursor2D = { pg.pos.x, pg.pos.y };   // page origin (top-left)
+    }
+    edit_.cursor2DValid = true;
+    LogInfoAction("2D Cursor to Origin");
+}
+
+void Application::Action_Cursor2DToSelection() {
+    Ink::DRect b;
+    if (SelectionBounds(b)) { edit_.cursor2D = b.Center(); edit_.cursor2DValid = true;
+        LogInfoAction("2D Cursor to Selection"); }
 }
 
 } // namespace App

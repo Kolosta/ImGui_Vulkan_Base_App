@@ -172,10 +172,21 @@ private:
     void Action_ConstrainAxisX();
     void Action_ConstrainAxisY();
     void Action_OpenAddMenu();
-    // Edit mode: cycle the selected anchors' kind (Corner→Smooth→Symmetric),
-    // re-deriving handle constraints. Delete removes selected anchors.
-    void Action_CycleHandleMode();
+    // Edit mode handle-type ops (the V menu). SetHandleType applies a legacy
+    // handle mode (0 Free / 1 Aligned / 2 Mirrored / 3 Aligned+Mirrored /
+    // 4 Vector) to the touched anchors; RemoveHandles clears them; the menu is
+    // opened by V and rendered unconditionally like the Add menu.
+    void Action_SetHandleType(int mode);
+    void Action_RemoveHandles();
+    void Action_OpenHandleMenu();
+    void RenderHandleTypeMenu();
     void Action_DeleteVertices();
+    bool   handleMenuOpen_ = false;
+    ImVec2 handleMenuPos_{};
+    bool   show2DCursor_ = true;   // draw the 2D cursor overlay
+    // Reset the 2D cursor to the document/page origin, or to the selection.
+    void   Action_Cursor2DToOrigin();
+    void   Action_Cursor2DToSelection();
     // Create a shape at the 2D cursor / view centre and select it.
     Ink::NodeId SpawnShape(const char* kind);
     // Build the default Style (fill+stroke) from the EditContext swatches.

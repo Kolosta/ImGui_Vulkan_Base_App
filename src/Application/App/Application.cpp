@@ -216,10 +216,7 @@ void Application::Update() {
     // again while building if the mouse is over it (Lot 8 keyboard actions
     // target the hovered leaf).
     hoveredViewport_ = nullptr;
-    // Safety: never leave the OS cursor hidden if no modal op is running.
-    if (osCursorHidden_ && !transformOp_.Active()) {
-        SDL_ShowCursor(); osCursorHidden_ = false;
-    }
+    if (!transformOp_.Active()) osCursorHidden_ = false;
 
     RenderTitleBar();      // publishes titleBarHeightPx_ + blockers first
     RenderMainLayout();    // viewports render their offscreen canvas here
@@ -228,10 +225,19 @@ void Application::Update() {
     // place regardless of which zone the cursor is over (fixes the freeze).
     RenderAddMenu();
     RenderViewportContextMenu();
+    RenderHandleTypeMenu();
     RenderFloatingWindows();
     RenderSplash();        // start screen overlay (and the logo-menu re-open)
     RenderAbout();         // "About Carto" popup
     RenderUnsavedDialog(); // "Unsaved changes" guard for splash New File presets
+
+    // Hide the OS cursor while a modal transform runs (a custom cursor is drawn
+    // in Vulkan). Forcing ImGui's cursor to None LAST in the frame — after all
+    // widgets have had their say — is the legacy-proven, reliable way (the SDL
+    // backend then hides it; a bare SDL_HideCursor is undone by ImGui's own
+    // per-frame cursor update).
+    if (osCursorHidden_ && transformOp_.Active())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_None);
 
     // With every floating window now submitted, register the ones overlapping the
     // title bar as hit-test blockers so clicking them grabs the floating window,
@@ -434,7 +440,7 @@ void Application::ResetDocument() {
     canvasDrag_  = CanvasDrag{};
     addMenuOpen_ = false;
     viewportCtxOpen_ = false;
-    if (osCursorHidden_) { SDL_ShowCursor(); osCursorHidden_ = false; }
+    osCursorHidden_ = false;   // (cursor visibility is driven from Update)
     if (ink_) {
         Ink::SeedDemoDocument(*project_.document);
         ink_->SetDocument(project_.document.get());

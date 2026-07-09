@@ -70,8 +70,32 @@ void Application::ComputeTransformFrame(Ink::DVec2& pivot,
             }
         }
     }
-    // Cursor orientation: the 2D cursor has no rotation → same as Global.
-    // Pivot.
+    // ── Edit mode: pivot from the SELECTED ELEMENTS (points + handles), not the
+    // object. The 2D cursor / median / active rules apply to those world points.
+    if (edit_.mode == EditorMode::Edit && edit_.active != Ink::kNullNode &&
+        project_.document && !edit_.elemSel.empty()) {
+        const Ink::Node* n = project_.document->Find(edit_.active);
+        const Ink::DMat23 w = n ? project_.document->WorldTransform(edit_.active) : Ink::DMat23{};
+        auto elemWorld = [&](const EditContext::ElemRef& e) -> Ink::DVec2 {
+            const Ink::Anchor& an = n->path.subpaths[e.sp].anchors[e.a];
+            if (e.part == EditContext::ElemPart::In)  return w.Apply({ an.pos.x+an.in.x, an.pos.y+an.in.y });
+            if (e.part == EditContext::ElemPart::Out) return w.Apply({ an.pos.x+an.out.x, an.pos.y+an.out.y });
+            return w.Apply(an.pos);
+        };
+        if (edit_.pivot == PivotMode::Cursor2D && edit_.cursor2DValid) {
+            pivot = edit_.cursor2D;
+        } else if (edit_.pivot == PivotMode::ActiveElement) {
+            pivot = elemWorld(edit_.elemSel.back());   // last-picked element
+        } else {
+            // Median / bbox-centre of the selected elements.
+            Ink::DVec2 sum{ 0, 0 }; int cnt = 0;
+            for (const auto& e : edit_.elemSel) { const Ink::DVec2 p = elemWorld(e); sum.x += p.x; sum.y += p.y; ++cnt; }
+            if (cnt > 0) pivot = { sum.x / cnt, sum.y / cnt };
+        }
+        return;
+    }
+
+    // ── Object mode pivot ──
     Ink::DRect b;
     const bool haveBounds = SelectionBounds(b);
     pivot = haveBounds ? b.Center() : Ink::DVec2{ 0, 0 };
@@ -97,7 +121,7 @@ void Application::ComputeTransformFrame(Ink::DVec2& pivot,
 void Application::BeginTransform(TransformOp::Kind kind, EditorState& st) {
     if (edit_.selection.empty() && edit_.mode == EditorMode::Object) return;
     if (edit_.mode == EditorMode::Edit &&
-        (edit_.active == Ink::kNullNode || edit_.vertSel.empty())) return;
+        (edit_.active == Ink::kNullNode || edit_.elemSel.empty())) return;
     if (!project_.document) return;
 
     transformOp_ = TransformOp{};
@@ -110,8 +134,7 @@ void Application::BeginTransform(TransformOp::Kind kind, EditorState& st) {
     transformOp_.startDoc = hoveredCam_.ScreenToDoc(m.x, m.y);
     transformOp_.gestureAccum = { 0, 0 };
     gestureRef_ = m;                       // gesture-delta reference
-    // Hide the OS cursor for the duration; a custom cursor is drawn in Vulkan.
-    if (!osCursorHidden_) { SDL_HideCursor(); osCursorHidden_ = true; }
+    osCursorHidden_ = true;                // suppress the OS cursor (see Update)
 
     Ink::Document& doc = *project_.document;
     if (transformOp_.editVerts) {
@@ -147,79 +170,92 @@ void Application::UpdateTransform(const ViewCam& cam) {
                           transformOp_.startDoc.y + transformOp_.gestureAccum.y };
     const bool snap = edit_.snap.enabled ^ io.KeyCtrl;   // magnet XOR Ctrl
 
+    const Ink::DVec2 P = transformOp_.pivot;
+
+    // Build a world-space point transform for the current op (translate for
+    // Move, rotate/scale about the pivot for the others).
+    Ink::DVec2 moveD{ cur.x - transformOp_.startDoc.x, cur.y - transformOp_.startDoc.y };
+    double ang = 0.0, fx = 1.0, fy = 1.0;
     if (transformOp_.kind == TransformOp::Kind::Move) {
-        Ink::DVec2 d{ cur.x - transformOp_.startDoc.x,
-                      cur.y - transformOp_.startDoc.y };
-        // Axis constraint in the orientation basis.
         if (transformOp_.axis == 0) {
-            const double t = d.x * transformOp_.basisX.x + d.y * transformOp_.basisX.y;
-            d = { transformOp_.basisX.x * t, transformOp_.basisX.y * t };
+            const double t = moveD.x*transformOp_.basisX.x + moveD.y*transformOp_.basisX.y;
+            moveD = { transformOp_.basisX.x*t, transformOp_.basisX.y*t };
         } else if (transformOp_.axis == 1) {
-            const double t = d.x * transformOp_.basisY.x + d.y * transformOp_.basisY.y;
-            d = { transformOp_.basisY.x * t, transformOp_.basisY.y * t };
+            const double t = moveD.x*transformOp_.basisY.x + moveD.y*transformOp_.basisY.y;
+            moveD = { transformOp_.basisY.x*t, transformOp_.basisY.y*t };
         }
         if (snap && edit_.snap.affectMove) {
-            const double inc = precise ? edit_.snap.movePrecision
-                                       : edit_.snap.moveIncrement;
-            d.x = SnapTo(d.x, inc);  d.y = SnapTo(d.y, inc);
-        }
-        if (transformOp_.editVerts) {
-            Ink::PathData p = transformOp_.origPath;
-            for (auto [sp, ai] : edit_.vertSel)
-                if (sp < (int)p.subpaths.size() &&
-                    ai < (int)p.subpaths[sp].anchors.size()) {
-                    p.subpaths[sp].anchors[ai].pos.x += d.x;
-                    p.subpaths[sp].anchors[ai].pos.y += d.y;
-                }
-            doc.SetPath(transformOp_.editNode, p);
-        } else {
-            for (const auto& o : transformOp_.nodes) {
-                Ink::Transform2D t = o.t;
-                t.tx += d.x;  t.ty += d.y;
-                doc.SetTransform(o.id, t);
-            }
+            const double inc = precise ? edit_.snap.movePrecision : edit_.snap.moveIncrement;
+            moveD.x = SnapTo(moveD.x, inc); moveD.y = SnapTo(moveD.y, inc);
         }
     } else if (transformOp_.kind == TransformOp::Kind::Rotate) {
-        const Ink::DVec2 p = transformOp_.pivot;
-        const double a0 = std::atan2(transformOp_.startDoc.y - p.y,
-                                     transformOp_.startDoc.x - p.x);
-        const double a1 = std::atan2(cur.y - p.y, cur.x - p.x);
-        double ang = a1 - a0;
+        const double a0 = std::atan2(transformOp_.startDoc.y-P.y, transformOp_.startDoc.x-P.x);
+        const double a1 = std::atan2(cur.y-P.y, cur.x-P.x);
+        ang = a1 - a0;
         if (snap && edit_.snap.affectRotate) {
-            const double inc = (precise ? edit_.snap.rotPrecisionIncrement
-                                        : edit_.snap.rotIncrement) * 3.14159265358979 / 180.0;
+            const double inc = (precise ? edit_.snap.rotPrecisionIncrement : edit_.snap.rotIncrement)
+                             * 3.14159265358979 / 180.0;
             ang = SnapTo(ang, inc);
         }
-        const double c = std::cos(ang), s = std::sin(ang);
-        for (const auto& o : transformOp_.nodes) {
-            Ink::Transform2D t = o.t;
-            const Ink::DVec2 rel{ o.t.tx - p.x, o.t.ty - p.y };
-            const Ink::DVec2 rr = Rotate(rel, c, s);
-            t.tx = p.x + rr.x;  t.ty = p.y + rr.y;
-            t.rotation = o.t.rotation + ang;
-            doc.SetTransform(o.id, t);
-        }
-    } else if (transformOp_.kind == TransformOp::Kind::Scale) {
-        const Ink::DVec2 p = transformOp_.pivot;
-        const double d0 = std::hypot(transformOp_.startDoc.x - p.x,
-                                     transformOp_.startDoc.y - p.y);
-        const double d1 = std::hypot(cur.x - p.x, cur.y - p.y);
-        double f = d0 > 1e-9 ? d1 / d0 : 1.0;
+    } else { // Scale
+        const double d0 = std::hypot(transformOp_.startDoc.x-P.x, transformOp_.startDoc.y-P.y);
+        const double d1 = std::hypot(cur.x-P.x, cur.y-P.y);
+        double f = d0 > 1e-9 ? d1/d0 : 1.0;
         if (snap && edit_.snap.affectScale) {
-            const double inc = precise ? edit_.snap.scalePrecision
-                                       : edit_.snap.scaleIncrement;
+            const double inc = precise ? edit_.snap.scalePrecision : edit_.snap.scaleIncrement;
             f = SnapTo(f, inc);
         }
-        double fx = f, fy = f;
-        if (transformOp_.axis == 0) fy = 1.0;
-        else if (transformOp_.axis == 1) fx = 1.0;
-        for (const auto& o : transformOp_.nodes) {
-            Ink::Transform2D t = o.t;
-            const Ink::DVec2 rel{ o.t.tx - p.x, o.t.ty - p.y };
-            t.tx = p.x + rel.x * fx;  t.ty = p.y + rel.y * fy;
-            t.sx = o.t.sx * fx;  t.sy = o.t.sy * fy;
-            doc.SetTransform(o.id, t);
+        fx = fy = f;
+        if (transformOp_.axis == 0) fy = 1.0; else if (transformOp_.axis == 1) fx = 1.0;
+    }
+    const double rc = std::cos(ang), rs = std::sin(ang);
+    // Apply the op to a world point around the pivot.
+    auto xf = [&](Ink::DVec2 wp) -> Ink::DVec2 {
+        if (transformOp_.kind == TransformOp::Kind::Move)
+            return { wp.x + moveD.x, wp.y + moveD.y };
+        const Ink::DVec2 rel{ wp.x - P.x, wp.y - P.y };
+        if (transformOp_.kind == TransformOp::Kind::Rotate) {
+            const Ink::DVec2 rr = Rotate(rel, rc, rs);
+            return { P.x + rr.x, P.y + rr.y };
         }
+        return { P.x + rel.x * fx, P.y + rel.y * fy };  // Scale
+    };
+
+    if (transformOp_.editVerts) {
+        // Transform the SELECTED ELEMENTS of the active path. Points move their
+        // anchor (handles ride along); handle elements move only that handle.
+        const Ink::Node* n = doc.Find(transformOp_.editNode);
+        if (!n) return;
+        const Ink::DMat23 w = doc.WorldTransform(transformOp_.editNode);
+        const Ink::DMat23 wi = InvertAffine(w);
+        Ink::PathData p = transformOp_.origPath;
+        for (const auto& e : edit_.elemSel) {
+            if (e.sp >= (int)p.subpaths.size() ||
+                e.a  >= (int)p.subpaths[e.sp].anchors.size()) continue;
+            Ink::Anchor& an = p.subpaths[e.sp].anchors[e.a];
+            if (e.part == EditContext::ElemPart::Point) {
+                const Ink::DVec2 np = wi.Apply(xf(w.Apply(an.pos)));
+                an.pos = np;   // handles are relative → they follow the point
+            } else if (e.part == EditContext::ElemPart::In && an.hasIn) {
+                const Ink::DVec2 nh = wi.Apply(xf(w.Apply({ an.pos.x+an.in.x, an.pos.y+an.in.y })));
+                an.in = { nh.x - an.pos.x, nh.y - an.pos.y };
+            } else if (e.part == EditContext::ElemPart::Out && an.hasOut) {
+                const Ink::DVec2 nh = wi.Apply(xf(w.Apply({ an.pos.x+an.out.x, an.pos.y+an.out.y })));
+                an.out = { nh.x - an.pos.x, nh.y - an.pos.y };
+            }
+        }
+        doc.SetPath(transformOp_.editNode, p);
+        return;
+    }
+
+    // Object mode: transform each selected node's origin (and rotation/scale).
+    for (const auto& o : transformOp_.nodes) {
+        Ink::Transform2D t = o.t;
+        const Ink::DVec2 no = xf({ o.t.tx, o.t.ty });
+        t.tx = no.x;  t.ty = no.y;
+        if (transformOp_.kind == TransformOp::Kind::Rotate) t.rotation = o.t.rotation + ang;
+        else if (transformOp_.kind == TransformOp::Kind::Scale) { t.sx = o.t.sx*fx; t.sy = o.t.sy*fy; }
+        doc.SetTransform(o.id, t);
     }
 }
 
@@ -252,7 +288,7 @@ void Application::ConfirmTransform() {
             });
     }
     transformOp_ = TransformOp{};
-    if (osCursorHidden_) { SDL_ShowCursor(); osCursorHidden_ = false; }
+    osCursorHidden_ = false;   // Update stops forcing the None cursor
 }
 
 void Application::CancelTransform() {
@@ -263,7 +299,7 @@ void Application::CancelTransform() {
     else
         for (const auto& o : transformOp_.nodes) doc.SetTransform(o.id, o.t);
     transformOp_ = TransformOp{};
-    if (osCursorHidden_) { SDL_ShowCursor(); osCursorHidden_ = false; }
+    osCursorHidden_ = false;   // Update stops forcing the None cursor
 }
 
 // Edge-wrap the OS cursor during a modal op: when it reaches a canvas border,
@@ -368,56 +404,50 @@ void Application::ToolMousePress(EditorState& st, const ViewCam& cam,
             if (!n) return;
             const Ink::DMat23 w = project_.document->WorldTransform(edit_.active);
             const double tol = 9.0 / cam.zoom, tol2 = tol * tol;
+            using ElemPart = EditContext::ElemPart;
 
-            // 1) A handle point (in/out) beats an anchor (drawn on top).
-            int hsp = -1, ha = -1, hw = 0; double hbest = tol2;
+            // Pick the nearest element (a handle of a touched anchor beats a
+            // point; handles are only shown/pickable for touched anchors).
+            int bsp = -1, ba = -1; ElemPart bpart = ElemPart::Point; double best = tol2;
             for (int sp = 0; sp < (int)n->path.subpaths.size(); ++sp)
                 for (int a = 0; a < (int)n->path.subpaths[sp].anchors.size(); ++a) {
                     const Ink::Anchor& an = n->path.subpaths[sp].anchors[a];
-                    if (!edit_.VertSelected(sp, a)) continue;   // handles show only for selected anchors
-                    auto test = [&](Ink::DVec2 rel, int which) {
-                        const Ink::DVec2 wp = w.Apply({ an.pos.x + rel.x, an.pos.y + rel.y });
-                        const double d2 = (wp.x-doc.x)*(wp.x-doc.x) + (wp.y-doc.y)*(wp.y-doc.y);
-                        if (d2 < hbest) { hbest = d2; hsp = sp; ha = a; hw = which; }
-                    };
-                    if (an.hasIn)  test(an.in, 1);
-                    if (an.hasOut) test(an.out, 2);
+                    const Ink::DVec2 pp = w.Apply(an.pos);
+                    const double dp = (pp.x-doc.x)*(pp.x-doc.x) + (pp.y-doc.y)*(pp.y-doc.y);
+                    if (dp < best) { best = dp; bsp = sp; ba = a; bpart = ElemPart::Point; }
+                    if (edit_.AnchorTouched(sp, a)) {
+                        if (an.hasIn) {
+                            const Ink::DVec2 hp = w.Apply({ an.pos.x+an.in.x, an.pos.y+an.in.y });
+                            const double d = (hp.x-doc.x)*(hp.x-doc.x) + (hp.y-doc.y)*(hp.y-doc.y);
+                            if (d < best) { best = d; bsp = sp; ba = a; bpart = ElemPart::In; }
+                        }
+                        if (an.hasOut) {
+                            const Ink::DVec2 hp = w.Apply({ an.pos.x+an.out.x, an.pos.y+an.out.y });
+                            const double d = (hp.x-doc.x)*(hp.x-doc.x) + (hp.y-doc.y)*(hp.y-doc.y);
+                            if (d < best) { best = d; bsp = sp; ba = a; bpart = ElemPart::Out; }
+                        }
+                    }
                 }
-            if (hsp >= 0) {
-                edit_.handleSel = { hsp, ha, hw };
-                canvasDrag_ = CanvasDrag{};
-                canvasDrag_.kind = CanvasDrag::Kind::MoveVerts;   // direct handle drag
-                canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
-                canvasDrag_.leaf = &st;
-                // Capture the before-path so the whole drag is one undo command.
-                transformOp_.origPath = n->path;
-                transformOp_.editNode = edit_.active;
+
+            if (bsp >= 0) {
+                // A handle drag starts immediately; a point selection may start a move.
+                if (shift) edit_.ElemToggle(bsp, ba, bpart);
+                else if (!edit_.ElemSelected(bsp, ba, bpart))
+                    edit_.ElemSelectOnly(bsp, ba, bpart);
+                if (bpart != ElemPart::Point) {
+                    // Direct handle drag (one undo command on release).
+                    edit_.handleDrag = { bsp, ba, bpart };
+                    canvasDrag_ = CanvasDrag{};
+                    canvasDrag_.kind = CanvasDrag::Kind::MoveVerts;
+                    canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
+                    canvasDrag_.leaf = &st;
+                    transformOp_.origPath = n->path;
+                    transformOp_.editNode = edit_.active;
+                }
                 return;
             }
-            edit_.handleSel = {};
-
-            // 2) An anchor.
-            double best = tol2; int bsp = -1, ba = -1;
-            for (int sp = 0; sp < (int)n->path.subpaths.size(); ++sp)
-                for (int a = 0; a < (int)n->path.subpaths[sp].anchors.size(); ++a) {
-                    const Ink::DVec2 wp = w.Apply(n->path.subpaths[sp].anchors[a].pos);
-                    const double d2 = (wp.x-doc.x)*(wp.x-doc.x) + (wp.y-doc.y)*(wp.y-doc.y);
-                    if (d2 < best) { best = d2; bsp = sp; ba = a; }
-                }
-            if (bsp >= 0) {
-                auto key = std::make_pair(bsp, ba);
-                if (shift) {
-                    if (edit_.VertSelected(bsp, ba))
-                        edit_.vertSel.erase(std::remove(edit_.vertSel.begin(),
-                            edit_.vertSel.end(), key), edit_.vertSel.end());
-                    else edit_.vertSel.push_back(key);
-                } else if (!edit_.VertSelected(bsp, ba)) {
-                    edit_.vertSel.clear();
-                    edit_.vertSel.push_back(key);
-                }
-            } else if (!shift) {
-                // Empty click in Edit mode → box-select over anchors.
-                edit_.vertSel.clear();
+            if (!shift) {
+                edit_.elemSel.clear();
                 canvasDrag_ = CanvasDrag{};
                 canvasDrag_.kind = CanvasDrag::Kind::BoxSelect;
                 canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
@@ -464,30 +494,30 @@ void Application::ToolMouseDrag(EditorState& st, const ViewCam& cam, Ink::DVec2 
     // honouring the anchor's kind (Smooth keeps the opposite collinear,
     // Symmetric mirrors it).
     if (canvasDrag_.kind == CanvasDrag::Kind::MoveVerts &&
-        edit_.handleSel.which != 0 && project_.document) {
+        edit_.handleDrag.part != EditContext::ElemPart::Point && project_.document) {
         Ink::Document& d = *project_.document;
         const Ink::Node* n = d.Find(edit_.active);
         if (!n) return;
         const Ink::DMat23 w = d.WorldTransform(edit_.active);
         const Ink::DMat23 wi = InvertAffine(w);
         Ink::PathData p = n->path;
-        auto& an = p.subpaths[edit_.handleSel.sp].anchors[edit_.handleSel.a];
+        auto& an = p.subpaths[edit_.handleDrag.sp].anchors[edit_.handleDrag.a];
+        const bool inSide = (edit_.handleDrag.part == EditContext::ElemPart::In);
         const Ink::DVec2 local = wi.Apply(doc);
         const Ink::DVec2 rel{ local.x - an.pos.x, local.y - an.pos.y };
-        if (edit_.handleSel.which == 1) { an.in = rel; an.hasIn = true; }
-        else                            { an.out = rel; an.hasOut = true; }
+        if (inSide) { an.in = rel; an.hasIn = true; }
+        else        { an.out = rel; an.hasOut = true; }
         // Keep the opposite handle consistent with the anchor kind.
-        const int other = edit_.handleSel.which == 1 ? 2 : 1;
         if (an.kind == Ink::AnchorKind::Symmetric) {
-            if (other == 1) { an.in = { -rel.x, -rel.y }; an.hasIn = true; }
-            else            { an.out = { -rel.x, -rel.y }; an.hasOut = true; }
+            if (inSide) { an.out = { -rel.x, -rel.y }; an.hasOut = true; }
+            else        { an.in  = { -rel.x, -rel.y }; an.hasIn  = true; }
         } else if (an.kind == Ink::AnchorKind::Smooth) {
             const double len = std::hypot(rel.x, rel.y);
-            Ink::DVec2& op = (other == 1) ? an.in : an.out;
+            Ink::DVec2& op = inSide ? an.out : an.in;
             const double olen = std::hypot(op.x, op.y);
             if (len > 1e-9 && olen > 1e-9) {
                 op = { -rel.x / len * olen, -rel.y / len * olen };
-                if (other == 1) an.hasIn = true; else an.hasOut = true;
+                if (inSide) an.hasOut = true; else an.hasIn = true;
             }
         }
         d.SetPath(edit_.active, p);
@@ -510,23 +540,23 @@ void Application::ToolMouseRelease(EditorState& st, const ViewCam& cam, Ink::DVe
                 [id, before](Ink::Document& dc) { dc.SetPath(id, before); },
                 [id, after](Ink::Document& dc)  { dc.SetPath(id, after); });
         }
-        edit_.handleSel = {};
+        edit_.handleDrag = {};
         transformOp_ = TransformOp{};
     } else if (canvasDrag_.kind == CanvasDrag::Kind::BoxSelect && edit_.mode == EditorMode::Edit &&
                project_.document && edit_.active != Ink::kNullNode) {
-        // Edit-mode box select over anchors of the active path.
+        // Edit-mode box select over anchor POINTS of the active path.
         const Ink::Node* n = project_.document->Find(edit_.active);
         if (n) {
             const Ink::DMat23 w = project_.document->WorldTransform(edit_.active);
             const Ink::DVec2 a = canvasDrag_.startDoc, b = canvasDrag_.curDoc;
             const double x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x);
             const double y0 = std::min(a.y, b.y), y1 = std::max(a.y, b.y);
-            edit_.vertSel.clear();
+            edit_.elemSel.clear();
             for (int sp = 0; sp < (int)n->path.subpaths.size(); ++sp)
                 for (int an = 0; an < (int)n->path.subpaths[sp].anchors.size(); ++an) {
                     const Ink::DVec2 wp = w.Apply(n->path.subpaths[sp].anchors[an].pos);
                     if (wp.x >= x0 && wp.x <= x1 && wp.y >= y0 && wp.y <= y1)
-                        edit_.vertSel.push_back({ sp, an });
+                        edit_.elemSel.push_back({ sp, an, EditContext::ElemPart::Point });
                 }
         }
     } else if (canvasDrag_.kind == CanvasDrag::Kind::BoxSelect && ink_) {
