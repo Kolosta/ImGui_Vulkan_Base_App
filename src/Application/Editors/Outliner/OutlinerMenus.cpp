@@ -1,156 +1,264 @@
 #include "Application.h"
 
+#include "OutlinerRowLayout.h"
 #include <DesignSystem/DesignSystem.h>
 #include <VectorGraphics/IconManager.h>
 #include <UI/Widgets/Dropdown.h>
+#include <UI/Widgets/Checkbox.h>
 #include <UI/Widgets/PopupMenu.h>
 #include <UI/Widgets/ScrollArea.h>
+#include <UI/Widgets/ListRow.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <algorithm>
-#include <cstring>
+#include <cstdio>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Outliner top bar, Collections view, context menu and the organisation
-//  commands (group / ungroup / collections) — docs/Ink/ROADMAP.md Lot 9. Every
-//  command is undoable via the shared DocUndoStack: it captures the reverse
-//  before applying, so a single Ctrl+Z restores the exact prior structure.
+//  Outliner top bar (display / search / viewport-sync / Filter), the
+//  Collections view and the context menu + organisation commands — the legacy
+//  design restored on the Ink model (docs/Ink/ROADMAP.md Lot 9 rework). Every
+//  command is undoable through the shared DocUndoStack.
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace App {
 
 namespace { namespace DS = DesignSystem; using Tok = DesignSystem::Tok; }
 
-// ── Top bar: display-mode toggle + search + kind filters ──────────────────────
+// ── Top bar ───────────────────────────────────────────────────────────────────
 
 void Application::BuildOutlinerTopBar(EditorState& st, EditorBar& bar) {
     auto& ds = DS::DesignSystem::Instance();
     const float gs = ds.GetGlobalScale();
-    EditorState* pst = &st;
+    const float h  = ds.GetFloat(Tok::S_Size_ControlHeight) * gs;
+    OutlinerState* os = &st.outliner;
+    outlinerCur_ = os;
 
-    bar.left.width = 150.0f * gs;
-    bar.left.draw = [this, pst](ImVec2 pos, float) {
+    // LEFT — display dropdown.
+    bar.left.width = 110.0f * gs;
+    bar.left.draw = [this, os](ImVec2 pos, float) {
+        outlinerCur_ = os;
         ImGui::SetCursorPos(pos);
+        static const char* kModes[] = { "Collections", "Layers" };
         UI::DropdownConfig cfg; cfg.id = "##outDisplay";
-        cfg.triggerLabel = pst->outliner.display == OutlinerDisplayMode::Collections
-                               ? "Collections" : "Layers";
-        { UI::DropdownItem it; it.label = "Layers";
-          it.tooltip = "Pages and their layer trees (z-order)"; cfg.items.push_back(it); }
-        { UI::DropdownItem it; it.label = "Collections";
-          it.tooltip = "Organisational sets (no z-order)"; cfg.items.push_back(it); }
-        cfg.selectedIndex = (int)pst->outliner.display;
+        cfg.triggerLabel = kModes[(int)os->display];
+        for (const char* m : kModes) { UI::DropdownItem it; it.label = m; cfg.items.push_back(it); }
+        cfg.selectedIndex = (int)os->display;
         UI::DropdownResult r = UI::Dropdown(cfg);
-        if (r.changed && r.selected >= 0)
-            pst->outliner.display = (OutlinerDisplayMode)r.selected;
+        if (r.changed) os->display = (OutlinerDisplayMode)r.selected;
     };
 
-    bar.right.width = 200.0f * gs;
-    bar.right.draw = [this, gs, pst](ImVec2 pos, float bh) {
+    // MIDDLE — search.
+    bar.middle.width = 200.0f * gs;
+    bar.middle.draw = [this, os, gs, h](ImVec2 pos, float) {
+        outlinerCur_ = os;
         ImGui::SetCursorPos(pos);
-        ImGui::SetNextItemWidth(150.0f * gs);
-        ImGui::InputTextWithHint("##outSearch", "Search",
-                                 pst->outliner.search, sizeof pst->outliner.search);
-        ImGui::SameLine(0.0f, 4.0f * gs);
-        (void)bh;
-        // Kind filter popup (objects / groups).
-        if (ImGui::Button("Filter")) ImGui::OpenPopup("##outFilter");
-        if (ImGui::BeginPopup("##outFilter")) {
-            ImGui::Checkbox("Objects", &pst->outliner.showObjects);
-            ImGui::Checkbox("Groups",  &pst->outliner.showGroups);
-            ImGui::EndPopup();
+        const float padY = std::max(0.0f, (h - ImGui::GetTextLineHeight()) * 0.5f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                            ImVec2(ImGui::GetStyle().FramePadding.x, padY));
+        ImGui::SetNextItemWidth(200.0f * gs);
+        ImGui::InputTextWithHint("##outSearch", "Search…", os->search, sizeof os->search);
+        ImGui::PopStyleVar();
+    };
+
+    // RIGHT — viewport-sync button + Filter dropdown.
+    const float syncW = h;
+    const float grpGap = 6.0f * gs;
+    bar.right.width = syncW + grpGap + 100.0f * gs;
+    bar.right.draw = [this, os, gs, h, syncW, grpGap](ImVec2 pos, float) {
+        outlinerCur_ = os;
+        auto& ds2 = DS::DesignSystem::Instance();
+        auto& iconMgr = VectorGraphics::IconManager::Instance();
+
+        // Sync-with-viewport button.
+        const bool hasViewport = zoneLayout_.CountEditors(CoreEditor::Viewport) > 0;
+        const bool syncOn = os->syncTarget != nullptr || os->syncPicking;
+        ImGui::SetCursorPos(pos);
+        const ImVec2 sp = ImGui::GetCursorScreenPos();
+        ImGui::BeginDisabled(!hasViewport);
+        const bool sclk = ImGui::InvisibleButton("##outSyncBtn", ImVec2(syncW, h));
+        const bool shov = ImGui::IsItemHovered();
+        ImGui::EndDisabled();
+        {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            ImVec4 sbg = ds2.GetColor(syncOn ? Tok::S_Color_Accent_Default
+                                    : shov   ? Tok::C_IconButton_BackgroundHover
+                                             : Tok::C_IconButton_Background);
+            if (!hasViewport) sbg.w *= ds2.GetFloat(Tok::S_Opacity_Disabled);
+            const float rad = ds2.GetFloat(Tok::C_Dropdown_CornerRadius) * gs;
+            dl->AddRectFilled(sp, ImVec2(sp.x + syncW, sp.y + h),
+                              ImGui::ColorConvertFloat4ToU32(sbg), rad);
+            const float isz = ds2.GetFloat(Tok::C_Dropdown_IconSize) * gs;
+            ImVec4 tn = ds2.GetColor(Tok::S_Color_Text_Default);
+            if (!hasViewport) tn.w *= ds2.GetFloat(Tok::S_Opacity_Disabled);
+            auto md = iconMgr.GetDefaultMetadata("arrow-warm-up");
+            if (!md.colorZones.empty()) md.colorZones[0].customColor = tn;
+            iconMgr.RenderIcon(dl, "arrow-warm-up",
+                               ImVec2(sp.x + (syncW-isz)*0.5f, sp.y + (h-isz)*0.5f), isz, md);
         }
+        if (sclk && hasViewport) {
+            if (syncOn) {
+                os->syncTarget = nullptr; os->syncPicking = false;
+                if (outlinerPickingState_ == os) outlinerPickingState_ = nullptr;
+            } else {
+                os->syncPicking = true; outlinerPickingState_ = os;
+            }
+        }
+        if (shov && hasViewport && !syncOn &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            UI::DrawTooltip("Synchronise the Outliner with a viewport", ImGui::GetIO().MousePos);
+
+        // Filter dropdown.
+        ImGui::SetCursorPos(ImVec2(pos.x + syncW + grpGap, pos.y));
+        const bool anyFilter = !os->showObjects || !os->showPages || !os->showCollections ||
+                               !os->showGroups || os->objState != ObjStateFilter::All ||
+                               os->invertFilter;
+        UI::DropdownConfig fc;
+        fc.id = "##outFilter";
+        fc.triggerIcon = anyFilter ? "filter" : "filter_off";
+        fc.triggerLabel = "Filter";
+        fc.menuSize = ImVec2(210.0f * gs, 210.0f * gs);
+        fc.bodyDraw = [this, os, &ds2, gs, &iconMgr, h]() {
+            ImGui::TextDisabled("Show");
+            UI::Checkbox("##fObjects",     "Objects",     &os->showObjects);
+            UI::Checkbox("##fGroups",      "Groups",      &os->showGroups);
+            UI::Checkbox("##fPages",       "Pages",       &os->showPages);
+            UI::Checkbox("##fCollections", "Collections", &os->showCollections);
+            ImGui::Separator();
+            static const char* kStates[] = { "All", "Visible", "Selected", "Active", "Selectable" };
+            UI::DropdownConfig sc; sc.id = "##outState";
+            sc.triggerLabel = std::string("State: ") + kStates[(int)os->objState];
+            for (int i = 0; i < 5; ++i) { UI::DropdownItem it; it.label = kStates[i]; sc.items.push_back(it); }
+            sc.selectedIndex = (int)os->objState;
+            UI::DropdownResult sr = UI::Dropdown(sc);
+            if (sr.changed && sr.selected >= 0 && sr.selected < 5)
+                os->objState = (ObjStateFilter)sr.selected;
+            ImGui::SameLine(0.0f, 4.0f * gs);
+            ImGui::PushStyleColor(ImGuiCol_Button, os->invertFilter
+                ? ds2.GetColor(Tok::S_Color_Accent_Default)
+                : ds2.GetColor(Tok::C_IconButton_Background));
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ds2.GetColor(Tok::C_IconButton_BackgroundHover));
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+            if (ImGui::Button("##invFilter", ImVec2(h, h))) os->invertFilter = !os->invertFilter;
+            ImGui::PopStyleVar(); ImGui::PopStyleColor(2);
+            { const ImVec2 bm = ImGui::GetItemRectMin();
+              const float isz = ds2.GetFloat(Tok::C_Dropdown_IconSize) * gs;
+              auto md = iconMgr.GetDefaultMetadata("swap_horiz");
+              if (!md.colorZones.empty()) md.colorZones[0].customColor = ds2.GetColor(Tok::S_Color_Text_Default);
+              iconMgr.RenderIcon(ImGui::GetWindowDrawList(), "swap_horiz",
+                                 ImVec2(bm.x + (h-isz)*0.5f, bm.y + (h-isz)*0.5f), isz, md); }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+                UI::DrawTooltip("Invert the filter (show the complement)", ImGui::GetIO().MousePos);
+        };
+        UI::Dropdown(fc);
     };
 }
 
 // ── Collections view ──────────────────────────────────────────────────────────
 
-void Application::OutlinerCollectionsView(EditorState& st) {
+void Application::OutlinerCollectionNode(const Ink::Collection& coll) {
     auto& ds = DS::DesignSystem::Instance();
     Ink::Document& doc = *project_.document;
-    const float gs = ds.GetGlobalScale();
-    const float rowH = ds.GetFloat(Tok::S_Size_ControlHeight) * gs;
+    OutlinerState& o = *outlinerCur_;
+    const bool collapsed = o.IsCollapsed(coll.id);
 
-    if (doc.Collections().empty()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(Tok::S_Color_Text_Subtle));
-        ImGui::TextUnformatted("No collections");
-        ImGui::TextUnformatted("Right-click a selection to create one");
-        ImGui::PopStyleColor();
-        return;
+    UI::ListRowConfig cfg;
+    cfg.id = ImGui::GetID((void*)(uintptr_t)coll.id);
+    cfg.zebraOdd = (UI::ListRowZebraIndex() & 1);
+    cfg.zebraColor = ImGui::ColorConvertFloat4ToU32(
+        ol::SafeColor(Tok::S_Color_Background_Layer2, ImVec4(0.15f,0.15f,0.15f,1)));
+    cfg.selected = o.RowSelected(coll.id);
+    cfg.bandMarginLeft = ol::BandMargin();
+    cfg.cornerRadius = ol::SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * ol::Gs();
+    ImVec4 selc = ds.GetColor(Tok::C_Outliner_Row_Selected);
+    cfg.colors.hover    = ImGui::ColorConvertFloat4ToU32(ImVec4(selc.x, selc.y, selc.z, 0.55f));
+    cfg.colors.selected = ImGui::ColorConvertFloat4ToU32(selc);
+    UI::ListRow row(cfg);
+    UI::ListRowAdvanceZebra();
+    ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
+    ImGui::PushID((int)coll.id);
+    ol::DotGutter();
+    bool open = !collapsed;
+    ol::Chevron("##cch", open);
+    if (open == collapsed) o.ToggleCollapsed(coll.id);
+    ol::SlotSwatch(ImVec4(coll.colorTag.r, coll.colorTag.g, coll.colorTag.b, coll.colorTag.a));
+
+    const float nameX = ImGui::GetCursorScreenPos().x;
+    const float eyeSlot = ol::RowH();
+    const float eyeX = row.BandRight() - 6.0f * ol::Gs() - eyeSlot;
+    if (o.renaming == coll.id) {
+        ImGui::SetCursorScreenPos(ImVec2(nameX, row.RowTop() +
+            (ol::RowH() - ImGui::GetTextLineHeight()) * 0.5f));
+        ImGui::SetNextItemWidth(std::max(40.0f, eyeX - nameX - 4.0f));
+        ImGui::SetKeyboardFocusHere();
+        if (ImGui::InputText("##crename", o.renameBuf, sizeof o.renameBuf,
+                             ImGuiInputTextFlags_EnterReturnsTrue |
+                             ImGuiInputTextFlags_AutoSelectAll)) {
+            doc.SetCollectionName(coll.id, o.renameBuf); o.renaming = 0;
+        }
+        if (ImGui::IsItemDeactivated()) o.renaming = 0;
+    } else {
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(nameX, row.RowTop() + (ol::RowH() - ImGui::GetTextLineHeight()) * 0.5f),
+            ol::LabelColor(false, !coll.visible),
+            coll.name.empty() ? "(collection)" : coll.name.c_str());
     }
 
-    OutlinerState& os = st.outliner;
-    for (const Ink::Collection& c : doc.Collections()) {
-        const bool collapsed = os.IsCollapsed(c.id);
-        ImGui::PushID((int)c.id);
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 rowMin = ImGui::GetCursorScreenPos();
-        const float fullW = ImGui::GetContentRegionAvail().x;
-        const bool clicked = ImGui::InvisibleButton("##crow", ImVec2(fullW, rowH));
-        const float cy = rowMin.y + rowH * 0.5f;
-        float x = rowMin.x + 4.0f * gs;
-
-        // Disclosure.
-        const float s = 3.2f * gs;
-        ImU32 tcol = ImGui::GetColorU32(ds.GetColor(Tok::S_Color_Text_Subtle));
-        if (collapsed)
-            dl->AddTriangleFilled({ x, cy - s }, { x + 2 * s, cy }, { x, cy + s }, tcol);
-        else
-            dl->AddTriangleFilled({ x, cy - s }, { x + 2 * s, cy - s }, { x + s, cy + s }, tcol);
-        x += 16.0f * gs;
-
-        // Color tag chip.
-        const ImVec4 tag{ c.colorTag.r, c.colorTag.g, c.colorTag.b, c.colorTag.a };
-        dl->AddRectFilled(ImVec2(x, cy - 5 * gs), ImVec2(x + 10 * gs, cy + 5 * gs),
-                          ImGui::GetColorU32(tag), 2.0f * gs);
-        x += 16.0f * gs;
-
-        ImVec4 tc = ds.GetColor(Tok::S_Color_Text_Default);
-        if (!c.visible) tc.w *= 0.4f;
-        dl->AddText(ImVec2(x, cy - ImGui::GetTextLineHeight() * 0.5f),
-                    ImGui::GetColorU32(tc),
-                    c.name.empty() ? "(collection)" : c.name.c_str());
-
-        // Eye toggle on the right.
-        const float btn = rowH * 0.7f;
-        const ImRect eye(ImVec2(rowMin.x + fullW - btn - 4 * gs, rowMin.y + (rowH - btn) * 0.5f),
-                         ImVec2(rowMin.x + fullW - 4 * gs, rowMin.y + (rowH + btn) * 0.5f));
-        const bool eyeHov = eye.Contains(ImGui::GetIO().MousePos);
-        {
-            auto& im = VectorGraphics::IconManager::Instance();
-            auto md = im.GetDefaultMetadata(c.visible ? "eye" : "eye-closed");
-            ImVec4 col = ds.GetColor(c.visible ? Tok::S_Color_Text_Default
-                                               : Tok::S_Color_Text_Subtle);
-            if (eyeHov) col = ds.GetColor(Tok::S_Color_Accent_Default);
-            if (!md.colorZones.empty()) md.colorZones[0].customColor = col;
-            im.RenderIcon(dl, c.visible ? "eye" : "eye-closed", eye.Min, btn, md);
-        }
-        if (eyeHov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-            doc.SetCollectionVisible(c.id, !c.visible);
-        else if (clicked) os.ToggleCollapsed(c.id);
-
-        // Right-click → collection context (delete).
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-            outlinerCtxOpen_ = true;
-            outlinerCtxPos_  = ImGui::GetIO().MousePos;
-            outlinerCtxNode_ = c.id;   // a collection id
-        }
-
-        ImGui::SetCursorScreenPos(ImVec2(rowMin.x, rowMin.y + rowH));
-
-        // Members.
-        if (!collapsed)
-            for (Ink::NodeId m : c.members) {
-                const Ink::Node* mn = doc.Find(m);
-                if (!mn) continue;
-                ImGui::Indent(28.0f * gs);
-                const bool sel = edit_.IsSelected(m);
-                if (ImGui::Selectable(
-                        (mn->name.empty() ? "(unnamed)" : mn->name).c_str(), sel))
-                    edit_.SelectOnly(m);
-                ImGui::Unindent(28.0f * gs);
-            }
-        ImGui::PopID();
+    // Eye toggle.
+    row.SuppressInputIn(eyeX, eyeX + eyeSlot);
+    {
+        auto& im = VectorGraphics::IconManager::Instance();
+        const char* icon = coll.visible ? "eye" : "eye-closed";
+        const float isz = ol::IconSize();
+        const ImRect er(ImVec2(eyeX, row.RowTop()), ImVec2(eyeX + eyeSlot, row.RowTop() + ol::RowH()));
+        const bool ehov = er.Contains(ImGui::GetIO().MousePos);
+        ImVec4 tint = ol::SafeColor(coll.visible ? Tok::S_Color_Text_Subtle
+                                                 : Tok::S_Color_Text_Disabled, ImVec4(0.6f,0.6f,0.6f,1));
+        if (ehov) tint = ds.GetColor(Tok::S_Color_Accent_Default);
+        auto md = im.GetDefaultMetadata(icon);
+        if (!md.colorZones.empty()) md.colorZones[0].customColor = tint;
+        im.RenderIcon(ImGui::GetWindowDrawList(), icon,
+                      ImVec2(eyeX + (eyeSlot - isz) * 0.5f, row.RowTop() + (ol::RowH() - isz) * 0.5f), isz, md);
+        if (ehov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            doc.SetCollectionVisible(coll.id, !coll.visible);
     }
+    ImGui::PopID();
+
+    const UI::ListRowInput& in = row.Input();
+    if (in.doubleClicked) {
+        o.renaming = coll.id;
+        std::snprintf(o.renameBuf, sizeof o.renameBuf, "%s", coll.name.c_str());
+    }
+    if (in.rightClicked) {
+        outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+        outlinerCtxNode_ = coll.id;
+    }
+
+    // Members (objects), one indent in.
+    if (!collapsed)
+        for (Ink::NodeId m : coll.members)
+            if (doc.Find(m)) OutlinerObjectRow(m, 1);
+}
+
+void Application::OutlinerCollectionsView(EditorState& st) {
+    (void)st;
+    Ink::Document& doc = *project_.document;
+    OutlinerState& o = *outlinerCur_;
+
+    if (o.showCollections)
+        for (const Ink::Collection& c : doc.Collections())
+            OutlinerCollectionNode(c);
+
+    // Objects not in any collection, listed under their page (the default
+    // organisation — a top-level object belongs to its page until collected).
+    auto inAnyCollection = [&](Ink::NodeId id) {
+        for (const Ink::Collection& c : doc.Collections())
+            if (std::find(c.members.begin(), c.members.end(), id) != c.members.end())
+                return true;
+        return false;
+    };
+    for (const Ink::Page& page : doc.Pages())
+        for (auto it = page.children.rbegin(); it != page.children.rend(); ++it)
+            if (!inAnyCollection(*it)) OutlinerObjectRow(*it, 0);
 }
 
 // ── Context menu ──────────────────────────────────────────────────────────────
@@ -162,63 +270,58 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
 
     std::vector<UI::MenuEntry> entries;
     const bool hasSel = !edit_.selection.empty();
-    const bool ctxIsCollection = doc.FindCollection(outlinerCtxNode_) != nullptr;
+    const Ink::Collection* ctxColl = doc.FindCollection(outlinerCtxNode_);
 
-    if (ctxIsCollection) {
+    if (ctxColl) {
         const Ink::NodeId col = outlinerCtxNode_;
-        { UI::MenuEntry e; e.label = "Rename Collection";
+        { UI::MenuEntry e; e.label = "Rename";
           e.onClick = [this, col, &st]() {
               if (const Ink::Collection* c = project_.document->FindCollection(col)) {
                   st.outliner.renaming = col;
-                  std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf,
-                                "%s", c->name.c_str());
+                  std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf, "%s", c->name.c_str());
               }
           };
           entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Delete Collection";
-          e.onClick = [this, col]() {
-              std::string name = project_.document->FindCollection(col)
-                                     ? project_.document->FindCollection(col)->name : "";
-              // (Collections aren't in the subtree undo model; a simple redo
-              // re-adds by value would change ids. Kept direct: log only.)
-              project_.document->RemoveCollection(col);
-              LogInfoAction("Delete Collection");
-          };
+          e.tooltip = "Its objects are kept (only the set is removed)";
+          e.onClick = [this, col]() { project_.document->RemoveCollection(col);
+                                      LogInfoAction("Delete Collection"); };
           entries.push_back(std::move(e)); }
     } else {
+        { UI::MenuEntry e; e.label = "Select"; e.enabled = !OutlinerRowSelected(outlinerCtxNode_) &&
+              outlinerCtxNode_ != Ink::kNullNode;
+          e.onClick = [this]() { edit_.SelectOnly(outlinerCtxNode_); };
+          entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Group"; e.shortcut = "Ctrl G"; e.enabled = hasSel;
           e.onClick = [this]() { Action_GroupSelection(); };
           entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Ungroup"; e.shortcut = "Ctrl Alt G";
-          e.enabled = hasSel; e.onClick = [this]() { Action_UngroupSelection(); };
+        { UI::MenuEntry e; e.label = "Ungroup"; e.shortcut = "Ctrl Alt G"; e.enabled = hasSel;
+          e.onClick = [this]() { Action_UngroupSelection(); };
           entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Rename"; e.enabled = edit_.active != Ink::kNullNode;
           e.onClick = [this, &st]() {
               if (const Ink::Node* n = project_.document->Find(edit_.active)) {
                   st.outliner.renaming = edit_.active;
-                  std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf,
-                                "%s", n->name.c_str());
+                  std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf, "%s", n->name.c_str());
               }
           };
-          entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Delete"; e.shortcut = "X"; e.enabled = hasSel;
-          e.onClick = [this]() { Action_DeleteSelection(); };
           entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Duplicate"; e.shortcut = "Ctrl D"; e.enabled = hasSel;
           e.onClick = [this]() { Action_DuplicateSelection(); };
           entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Delete"; e.shortcut = "X"; e.icon = "ink-eraser";
+          e.enabled = hasSel; e.onClick = [this]() { Action_DeleteSelection(); };
+          entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "New Collection from Selection"; e.enabled = hasSel;
           e.onClick = [this]() { Action_NewCollectionFromSelection(); };
           entries.push_back(std::move(e)); }
-        // Add-to-existing-collection submenu.
         if (hasSel && !doc.Collections().empty()) {
             UI::MenuEntry add; add.label = "Add to Collection";
             for (const Ink::Collection& c : doc.Collections()) {
                 UI::MenuEntry e; e.label = c.name.empty() ? "(collection)" : c.name;
                 const Ink::NodeId col = c.id;
                 e.onClick = [this, col]() {
-                    for (Ink::NodeId id : edit_.selection)
-                        project_.document->AddToCollection(col, id);
+                    for (Ink::NodeId id : edit_.selection) project_.document->AddToCollection(col, id);
                     LogInfoAction("Add to Collection");
                 };
                 add.submenu.push_back(std::move(e));
@@ -237,10 +340,10 @@ void Application::Action_ToggleNodeVisible(Ink::NodeId id) {
     if (!project_.document) return;
     const Ink::Node* n = project_.document->Find(id);
     if (!n) return;
-    const bool now = !n->visible;
+    const bool now = !n->visible, was = n->visible;
     project_.document->SetVisible(id, now);
     PushDocCommand(now ? "Show" : "Hide",
-        [id, was = n->visible](Ink::Document& d) { d.SetVisible(id, was); },
+        [id, was](Ink::Document& d) { d.SetVisible(id, was); },
         [id, now](Ink::Document& d) { d.SetVisible(id, now); });
 }
 
@@ -258,29 +361,19 @@ void Application::Action_RenameNode(Ink::NodeId id, const std::string& name) {
 void Application::Action_GroupSelection() {
     if (!project_.document || edit_.selection.empty()) return;
     Ink::Document& doc = *project_.document;
-    // GroupNodes requires a common parent; grouping a mixed-parent selection
-    // is out of v1 scope — take the members that share the active's parent.
     const Ink::Node* act = doc.Find(edit_.active);
     if (!act) return;
     std::vector<Ink::NodeId> members;
     for (Ink::NodeId id : edit_.selection)
-        if (const Ink::Node* n = doc.Find(id); n && n->parent == act->parent &&
-            n->page == act->page)
+        if (const Ink::Node* n = doc.Find(id); n && n->parent == act->parent && n->page == act->page)
             members.push_back(id);
     if (members.empty()) return;
-
-    // Snapshot the members' current placement for undo (ungroup on redo-undo).
-    std::vector<Ink::Document::SubtreeSnapshot> before;
-    for (Ink::NodeId id : members) before.push_back(doc.CopySubtree(id));
     const Ink::NodeId g = doc.GroupNodes(members, "Group");
     if (g == Ink::kNullNode) return;
     edit_.SelectOnly(g);
     auto after = doc.CopySubtree(g);
     PushDocCommand("Group",
-        [g, before](Ink::Document& d) {
-            d.UngroupNode(g);
-            (void)before;   // children returned to their siblings by UngroupNode
-        },
+        [g](Ink::Document& d) { d.UngroupNode(g); },
         [after](Ink::Document& d) { d.RestoreSubtree(after); });
     LogInfoAction("Group");
 }

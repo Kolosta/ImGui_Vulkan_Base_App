@@ -173,6 +173,23 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     else
         ImGui::Dummy(size);
 
+    // Outliner viewport-sync picking (Lot 9): an Outliner armed "pick a
+    // viewport" paints a hovered zone with an accent wash and consumes the
+    // click to bind this leaf as its sync target.
+    if (outlinerPickingState_ && hovered) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec4 wash = ds.GetColor(Tok::S_Color_Accent_Default); wash.w = 0.18f;
+        dl->AddRectFilled(cMin, ImVec2(cMin.x + size.x, cMin.y + size.y),
+                          ImGui::GetColorU32(wash));
+        dl->AddRect(cMin, ImVec2(cMin.x + size.x, cMin.y + size.y),
+                    ImGui::GetColorU32(ds.GetColor(Tok::S_Color_Accent_Default)), 0, 0, 2.0f);
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            outlinerPickingState_->syncTarget  = &st;
+            outlinerPickingState_->syncPicking = false;
+            outlinerPickingState_ = nullptr;
+        }
+    }
+
     // Floating tool palette (drawn OVER the canvas image, as ImGui chrome).
     RenderToolPalette(cMin, st);
 

@@ -2,28 +2,59 @@
 
 #include <DesignSystem/DesignSystem.h>
 #include <UI/Widgets/ScrollArea.h>
+#include <UI/Widgets/Panel.h>
+#include <UI/Widgets/DragValue.h>
+#include <UI/Widgets/Checkbox.h>
+#include <UI/Widgets/Dropdown.h>
+#include <UI/Widgets/ButtonGroup.h>
 #include <imgui.h>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <string>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Properties editor — the active object's transform + unified style
-//  (multi-fill / multi-stroke) on the Ink model (docs/Ink/ROADMAP.md Lot 9).
-//  Every field drives the document's typed ops so edits are undoable and the
-//  scene recompiles exactly. Continuous edits (a colour or width drag) fold
-//  into ONE undo command: the style is captured on the first active frame
-//  (propEditBefore_) and committed when the widget is released.
+//  Properties editor — the active object's transform + unified style, rebuilt
+//  to restore the legacy Compositor layout and component set on the Ink model
+//  (docs/Ink/ROADMAP.md Lot 9 rework): the 40%-label property-row convention,
+//  Blender-style collapsible UI::Panel sections, UI::DragValue numeric fields,
+//  UI::Checkbox / UI::ButtonGroup / UI::Dropdown controls, and raw ColorEdit for
+//  document colours. Continuous drags fold into one undo command (captured on
+//  the first edited frame, committed on release).
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace App {
 
 namespace { namespace DS = DesignSystem; using Tok = DesignSystem::Tok;
 
-// linear-straight (document) ↔ sRGB (UI colour pickers).
+constexpr float kLabelFrac = 0.40f;
+
+float PropRowH() {
+    auto& ds = DS::DesignSystem::Instance();
+    try { return ds.GetFloat(Tok::S_Size_ControlHeight) * ds.GetGlobalScale(); }
+    catch (...) { return 22.0f; }
+}
+
+// A right-justified label in the left 40%, vertically centred on a ui-unit row.
+// Returns the control width to the right. Leaves the cursor at the control.
+float PropLabel(const char* text) {
+    auto& ds = DS::DesignSystem::Instance();
+    const float full = ImGui::GetContentRegionAvail().x;
+    const float lblW = full * kLabelFrac;
+    const float pad  = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float rowH = PropRowH();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    const float ty = origin.y + std::max(0.0f, (rowH - ts.y) * 0.5f);
+    ImGui::GetWindowDrawList()->AddText(ImVec2(origin.x + lblW - ts.x, ty),
+        ImGui::ColorConvertFloat4ToU32(ds.GetColor(Tok::S_Color_Text_Default)), text);
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + lblW + pad, origin.y));
+    return std::max(40.0f, full - lblW - pad);
+}
+
 ImVec4 ToSrgb(const Ink::Color& c) {
     auto s = [](float u) {
-        return u <= 0.0031308f ? u * 12.92f
-                               : 1.055f * std::pow(u, 1.0f / 2.4f) - 0.055f;
+        return u <= 0.0031308f ? u * 12.92f : 1.055f * std::pow(u, 1.0f / 2.4f) - 0.055f;
     };
     return { s(c.r), s(c.g), s(c.b), c.a };
 }
@@ -33,10 +64,44 @@ Ink::Color ToLinear(const ImVec4& c) {
     };
     return { l(c.x), l(c.y), l(c.z), c.w };
 }
+
+// One labelled DragValue row. Returns true while changing.
+bool PropDragFloat(const char* label, float* v, float speed, float mn, float mx,
+                   int decimals = 3, const char* unit = "") {
+    const float w = PropLabel(label);
+    UI::DragValueConfig dc;
+    dc.id = "##dv"; dc.speed = speed; dc.min = mn; dc.max = mx;
+    dc.displayDecimals = decimals; dc.unit = unit; dc.width = w;
+    ImGui::PushID(label);
+    const bool ch = UI::DragValue(dc, v);
+    ImGui::PopID();
+    return ch;
+}
+
+// A labelled checkbox row (box on the control side).
+bool PropCheckRow(const char* label, bool* v) {
+    PropLabel(label);
+    ImGui::PushID(label);
+    const bool ch = UI::CheckboxBox("##cb", v);
+    ImGui::PopID();
+    return ch;
+}
+
+// A labelled dropdown row. Returns the picked index (or -1).
+int PropDropdown(const char* label, const char* const* items, int count, int cur) {
+    const float w = PropLabel(label);
+    (void)w;
+    UI::DropdownConfig cfg; cfg.id = "##pdd";
+    cfg.triggerLabel = (cur >= 0 && cur < count) ? items[cur] : "";
+    for (int i = 0; i < count; ++i) { UI::DropdownItem it; it.label = items[i]; cfg.items.push_back(it); }
+    cfg.selectedIndex = cur;
+    ImGui::PushID(label);
+    UI::DropdownResult r = UI::Dropdown(cfg);
+    ImGui::PopID();
+    return r.changed ? r.selected : -1;
+}
 } // namespace
 
-// Begin a live style edit (capture the before-state once), returning a mutable
-// copy the caller mutates in place; call CommitStyleEdit on release.
 void Application::CommitStyleEdit(Ink::NodeId id, const Ink::Style& before,
                                   const std::string& label) {
     if (!project_.document) return;
@@ -48,174 +113,177 @@ void Application::CommitStyleEdit(Ink::NodeId id, const Ink::Style& before,
         [id, after](Ink::Document& d)  { d.SetStyle(id, after); });
 }
 
+// ── Transform panel ───────────────────────────────────────────────────────────
+
 void Application::PropTransformSection(Ink::NodeId id) {
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(id);
     if (!n) return;
-    if (!ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    UI::PanelConfig pc; pc.id = "##transform"; pc.label = "Transform"; pc.defaultOpen = true;
+    UI::PanelResult pr = UI::BeginPanel(pc);
+    if (pr.open) {
+        Ink::Transform2D t = n->transform;
+        float loc[2] = { (float)t.tx, (float)t.ty };
+        float scl[2] = { (float)t.sx, (float)t.sy };
+        float rotDeg = (float)(t.rotation * 180.0 / 3.14159265358979);
 
-    Ink::Transform2D t = n->transform;
-    bool changed = false;
-    auto row2 = [&](const char* label, double* a, double* b, float speed) {
-        float v[2] = { (float)*a, (float)*b };
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::DragFloat2(label, v, speed)) {
-            *a = v[0]; *b = v[1]; changed = true;
+        // Each field applies live and commits ONE undo command when THAT field
+        // is released (IsItemDeactivatedAfterEdit right after its own widget).
+        auto field = [&](bool changed, auto apply) {
+            if (changed) {
+                if (!propEditActive_) {
+                    propEditActive_ = true; propEditNode_ = id;
+                    transformBeforeScratch_ = n->transform;
+                }
+                Ink::Transform2D nt = doc.Find(id)->transform;
+                apply(nt);
+                doc.SetTransform(id, nt);
+            }
+            if (propEditActive_ && propEditNode_ == id &&
+                ImGui::IsItemDeactivatedAfterEdit()) {
+                const Ink::Transform2D before = transformBeforeScratch_;
+                const Ink::Transform2D after  = doc.Find(id)->transform;
+                PushDocCommand("Transform",
+                    [id, before](Ink::Document& d) { d.SetTransform(id, before); },
+                    [id, after](Ink::Document& d)  { d.SetTransform(id, after); });
+                propEditActive_ = false; propEditNode_ = Ink::kNullNode;
+            }
+        };
+        field(PropDragFloat("Location X", &loc[0], 0.5f, 0, 0), [&](Ink::Transform2D& x){ x.tx = loc[0]; });
+        field(PropDragFloat("Location Y", &loc[1], 0.5f, 0, 0), [&](Ink::Transform2D& x){ x.ty = loc[1]; });
+        field(PropDragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600, 1, "\xC2\xB0"),
+              [&](Ink::Transform2D& x){ x.rotation = rotDeg * 3.14159265358979 / 180.0; });
+        field(PropDragFloat("Scale X", &scl[0], 0.01f, 0, 0), [&](Ink::Transform2D& x){ x.sx = scl[0]; });
+        field(PropDragFloat("Scale Y", &scl[1], 0.01f, 0, 0), [&](Ink::Transform2D& x){ x.sy = scl[1]; });
+
+        if (n->kind == Ink::NodeKind::Path && (t.sx != 1.0 || t.sy != 1.0)) {
+            PropLabel("");
+            if (ImGui::SmallButton("Apply Scale")) Action_ApplyScale();
         }
-        return ImGui::IsItemDeactivatedAfterEdit();
-    };
-    const bool posDone = row2("Position##pos", &t.tx, &t.ty, 0.5f);
-    const bool sclDone = row2("Scale##scl", &t.sx, &t.sy, 0.01f);
-    float rotDeg = (float)(t.rotation * 180.0 / 3.14159265358979);
-    ImGui::SetNextItemWidth(-1);
-    const bool rotChanged = ImGui::DragFloat("Rotation##rot", &rotDeg, 0.5f);
-    const bool rotDone = ImGui::IsItemDeactivatedAfterEdit();
-    if (rotChanged) { t.rotation = rotDeg * 3.14159265358979 / 180.0; changed = true; }
-
-    if (changed) {
-        if (!propEditActive_) {   // capture the before-transform once
-            propEditActive_ = true; propEditNode_ = id;
-            propEditBefore_.fills.clear(); propEditBefore_.strokes.clear();
-            // Stash the transform in a scratch (reuse a NodeOrig-like closure).
-            transformBeforeScratch_ = n->transform;
-        }
-        doc.SetTransform(id, t);
     }
-    if ((posDone || sclDone || rotDone) && propEditActive_ && propEditNode_ == id) {
-        const Ink::Transform2D before = transformBeforeScratch_;
-        const Ink::Transform2D after  = doc.Find(id)->transform;
-        PushDocCommand("Transform",
-            [id, before](Ink::Document& d) { d.SetTransform(id, before); },
-            [id, after](Ink::Document& d)  { d.SetTransform(id, after); });
-        propEditActive_ = false; propEditNode_ = Ink::kNullNode;
-    }
-
-    // Apply Scale button (Blender's bake — Lot 8 op).
-    if (t.sx != 1.0 || t.sy != 1.0) {
-        if (ImGui::Button("Apply Scale")) Action_ApplyScale();
-    }
+    UI::EndPanel();
 }
+
+// ── Paint (fills + strokes) ───────────────────────────────────────────────────
 
 void Application::PropFillsSection(Ink::NodeId id) {
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(id);
     if (!n || n->kind != Ink::NodeKind::Path) return;
-    if (!ImGui::CollapsingHeader("Fills", ImGuiTreeNodeFlags_DefaultOpen)) return;
+    UI::PanelConfig pc; pc.id = "##fills"; pc.label = "Fills"; pc.defaultOpen = true;
+    if (UI::BeginPanel(pc).open) {
+        Ink::Style style = n->style;
+        bool structural = false;
+        for (std::size_t i = 0; i < style.fills.size(); ++i) {
+            ImGui::PushID((int)(1000 + i));
+            Ink::Fill& f = style.fills[i];
+            bool enabled = f.enabled;
+            char lab[24]; std::snprintf(lab, sizeof lab, "Fill %d", (int)i + 1);
+            if (PropCheckRow(lab, &enabled)) { f.enabled = enabled; structural = true; }
 
-    Ink::Style style = n->style;   // working copy
-    bool structural = false;       // add/remove/toggle → single-shot command
-    for (std::size_t i = 0; i < style.fills.size(); ++i) {
-        ImGui::PushID((int)(1000 + i));
-        Ink::Fill& f = style.fills[i];
-        bool enabled = f.enabled;
-        if (ImGui::Checkbox("##fen", &enabled)) { f.enabled = enabled; structural = true; }
-        ImGui::SameLine();
-        ImVec4 col = ToSrgb(f.paint.color);
-        if (ImGui::ColorEdit4("##fcol", &col.x,
-                ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar)) {
-            f.paint.color = ToLinear(col);
-            if (!propEditActive_) { propEditActive_ = true; propEditNode_ = id;
-                                    propEditBefore_ = n->style; }
+            ImVec4 col = ToSrgb(f.paint.color);
+            PropLabel("Color");
+            if (ImGui::ColorEdit4("##fcol", &col.x,
+                    ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar)) {
+                f.paint.color = ToLinear(col);
+                if (!propEditActive_) { propEditActive_ = true; propEditNode_ = id; propEditBefore_ = n->style; }
+                doc.SetStyle(id, style);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && propEditActive_) {
+                CommitStyleEdit(id, propEditBefore_, "Fill Colour"); propEditActive_ = false;
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Remove")) { style.fills.erase(style.fills.begin() + i);
+                structural = true; ImGui::PopID(); break; }
+            ImGui::PopID();
+        }
+        PropLabel("");
+        if (ImGui::SmallButton("+ Fill")) {
+            Ink::Fill f; f.paint.color = ToLinear(edit_.defaultFill);
+            style.fills.push_back(f); structural = true;
+        }
+        if (structural) {
+            const Ink::Style before = n->style;
             doc.SetStyle(id, style);
+            CommitStyleEdit(id, before, "Edit Fills");
         }
-        if (ImGui::IsItemDeactivatedAfterEdit() && propEditActive_) {
-            CommitStyleEdit(id, propEditBefore_, "Fill Colour");
-            propEditActive_ = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("X")) {
-            style.fills.erase(style.fills.begin() + i); structural = true;
-            ImGui::PopID(); break;
-        }
-        ImGui::PopID();
     }
-    if (ImGui::Button("Add Fill")) {
-        Ink::Fill f; f.paint.color = ToLinear(edit_.defaultFill);
-        style.fills.push_back(f); structural = true;
-    }
-    if (structural) {
-        const Ink::Style before = n->style;
-        doc.SetStyle(id, style);
-        CommitStyleEdit(id, before, "Edit Fills");
-    }
+    UI::EndPanel();
 }
 
 void Application::PropStrokesSection(Ink::NodeId id) {
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(id);
     if (!n || n->kind != Ink::NodeKind::Path) return;
-    if (!ImGui::CollapsingHeader("Strokes", ImGuiTreeNodeFlags_DefaultOpen)) return;
-
-    Ink::Style style = n->style;
-    bool structural = false;
-    static const char* kAlign[] = { "Center", "Inside", "Outside" };
+    static const char* kAlign[] = { "Center", "Inner", "Outer" };
     static const char* kCap[]   = { "Butt", "Round", "Square" };
     static const char* kJoin[]  = { "Miter", "Round", "Bevel" };
 
-    for (std::size_t i = 0; i < style.strokes.size(); ++i) {
-        ImGui::PushID((int)(2000 + i));
-        Ink::Stroke& s = style.strokes[i];
-        bool enabled = s.enabled;
-        if (ImGui::Checkbox("##sen", &enabled)) { s.enabled = enabled; structural = true; }
-        ImGui::SameLine();
-        ImVec4 col = ToSrgb(s.paint.color);
-        if (ImGui::ColorEdit4("##scol", &col.x,
-                ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar)) {
-            s.paint.color = ToLinear(col);
-            if (!propEditActive_) { propEditActive_ = true; propEditNode_ = id;
-                                    propEditBefore_ = n->style; }
+    UI::PanelConfig pc; pc.id = "##strokes"; pc.label = "Strokes"; pc.defaultOpen = true;
+    if (UI::BeginPanel(pc).open) {
+        Ink::Style style = n->style;
+        bool structural = false;
+        for (std::size_t i = 0; i < style.strokes.size(); ++i) {
+            ImGui::PushID((int)(2000 + i));
+            Ink::Stroke& s = style.strokes[i];
+            bool enabled = s.enabled;
+            char lab[24]; std::snprintf(lab, sizeof lab, "Stroke %d", (int)i + 1);
+            if (PropCheckRow(lab, &enabled)) { s.enabled = enabled; structural = true; }
+
+            ImVec4 col = ToSrgb(s.paint.color);
+            PropLabel("Color");
+            if (ImGui::ColorEdit4("##scol", &col.x,
+                    ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar)) {
+                s.paint.color = ToLinear(col);
+                if (!propEditActive_) { propEditActive_ = true; propEditNode_ = id; propEditBefore_ = n->style; }
+                doc.SetStyle(id, style);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && propEditActive_) {
+                CommitStyleEdit(id, propEditBefore_, "Stroke Colour"); propEditActive_ = false;
+            }
+
+            float w = (float)s.width;
+            if (PropDragFloat("Width", &w, 0.1f, 0.0f, 1000.0f, 2)) {
+                s.width = w;
+                if (!propEditActive_) { propEditActive_ = true; propEditNode_ = id; propEditBefore_ = n->style; }
+                doc.SetStyle(id, style);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit() && propEditActive_) {
+                CommitStyleEdit(id, propEditBefore_, "Stroke Width"); propEditActive_ = false;
+            }
+
+            int align = (int)s.align, cap = (int)s.cap, join = (int)s.join;
+            if (int r = PropDropdown("Align", kAlign, 3, align); r >= 0) { s.align = (Ink::StrokeAlign)r; structural = true; }
+            if (int r = PropDropdown("Cap",   kCap,   3, cap);   r >= 0) { s.cap   = (Ink::CapStyle)r;   structural = true; }
+            if (int r = PropDropdown("Join",  kJoin,  3, join);  r >= 0) { s.join  = (Ink::JoinStyle)r;  structural = true; }
+            if (s.join == Ink::JoinStyle::Miter) {
+                float ml = (float)s.miterLimit;
+                if (PropDragFloat("Miter limit", &ml, 0.1f, 1.0f, 100.0f, 1)) { s.miterLimit = ml; structural = true; }
+            }
+            ImGui::PushID("rm");
+            PropLabel("");
+            if (ImGui::SmallButton("Remove")) { style.strokes.erase(style.strokes.begin() + i);
+                structural = true; ImGui::PopID(); ImGui::PopID(); break; }
+            ImGui::PopID();
+            ImGui::Separator();
+            ImGui::PopID();
+        }
+        PropLabel("");
+        if (ImGui::SmallButton("+ Stroke")) {
+            Ink::Stroke s; s.paint.color = ToLinear(edit_.defaultStroke);
+            s.width = edit_.defaultStrokeWidth;
+            style.strokes.push_back(s); structural = true;
+        }
+        if (structural) {
+            const Ink::Style before = n->style;
             doc.SetStyle(id, style);
+            CommitStyleEdit(id, before, "Edit Strokes");
         }
-        if (ImGui::IsItemDeactivatedAfterEdit() && propEditActive_) {
-            CommitStyleEdit(id, propEditBefore_, "Stroke Colour");
-            propEditActive_ = false;
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("X")) {
-            style.strokes.erase(style.strokes.begin() + i); structural = true;
-            ImGui::PopID(); break;
-        }
-        // Width (geometry-affecting → one command on release).
-        float w = (float)s.width;
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::DragFloat("Width##w", &w, 0.1f, 0.0f, 1000.0f, "%.2f")) {
-            s.width = w;
-            if (!propEditActive_) { propEditActive_ = true; propEditNode_ = id;
-                                    propEditBefore_ = n->style; }
-            doc.SetStyle(id, style);
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit() && propEditActive_) {
-            CommitStyleEdit(id, propEditBefore_, "Stroke Width");
-            propEditActive_ = false;
-        }
-        // Align / cap / join.
-        int align = (int)s.align, cap = (int)s.cap, join = (int)s.join;
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("Align##al", &align, kAlign, 3)) {
-            s.align = (Ink::StrokeAlign)align; structural = true;
-        }
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("Cap##cap", &cap, kCap, 3)) {
-            s.cap = (Ink::CapStyle)cap; structural = true;
-        }
-        ImGui::SetNextItemWidth(-1);
-        if (ImGui::Combo("Join##jn", &join, kJoin, 3)) {
-            s.join = (Ink::JoinStyle)join; structural = true;
-        }
-        ImGui::Separator();
-        ImGui::PopID();
     }
-    if (ImGui::Button("Add Stroke")) {
-        Ink::Stroke s; s.paint.color = ToLinear(edit_.defaultStroke);
-        s.width = edit_.defaultStrokeWidth;
-        style.strokes.push_back(s); structural = true;
-    }
-    if (structural) {
-        const Ink::Style before = n->style;
-        doc.SetStyle(id, style);
-        CommitStyleEdit(id, before, "Edit Strokes");
-    }
+    UI::EndPanel();
 }
+
+// ── Render entry ──────────────────────────────────────────────────────────────
 
 void Application::RenderProperties() {
     auto& ds = DS::DesignSystem::Instance();
@@ -226,35 +294,64 @@ void Application::RenderProperties() {
     const Ink::NodeId id = edit_.active;
     if (id == Ink::kNullNode || !doc.Find(id)) {
         ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(Tok::S_Color_Text_Subtle));
-        ImGui::TextUnformatted("No active object");
-        ImGui::TextUnformatted("Select an object to edit its properties");
+        ImGui::TextUnformatted("No active object.");
+        ImGui::TextUnformatted("(select an object in the Viewport or Outliner)");
         ImGui::PopStyleColor();
         return;
     }
-
     const Ink::Node* n = doc.Find(id);
-    // Header: name + kind.
-    ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(Tok::S_Color_Text_Default));
-    ImGui::TextUnformatted(n->name.empty() ? "(unnamed)" : n->name.c_str());
-    ImGui::PopStyleColor();
-    ImGui::Separator();
+
+    static const char* kBlend[] = {
+        "Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
+        "Color Dodge", "Color Burn", "Hard Light", "Soft Light",
+        "Difference", "Exclusion", "Erase" };
+    const int kBlendCount = (int)(sizeof(kBlend) / sizeof(kBlend[0]));
 
     if (UI::BeginScroll("##propsScroll", ImVec2(0, 0))) {
+        // Name.
+        {
+            char nameBuf[128];
+            std::snprintf(nameBuf, sizeof nameBuf, "%s", n->name.c_str());
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::InputText("##objname", nameBuf, sizeof nameBuf,
+                                 ImGuiInputTextFlags_EnterReturnsTrue))
+                Action_RenameNode(id, nameBuf);
+        }
+
+        // Type (read-only).
+        {
+            const char* kind = n->kind == Ink::NodeKind::Group ? "Group"
+                             : n->kind == Ink::NodeKind::Instance ? "Instance" : "Path";
+            ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(Tok::S_Color_Text_Subtle));
+            ImGui::Text("Type: %s", kind);
+            ImGui::PopStyleColor();
+        }
+        ImGui::Separator();
+
+        // Transform.
         PropTransformSection(id);
-        if (n->kind == Ink::NodeKind::Path) {
-            PropFillsSection(id);
-            PropStrokesSection(id);
-        } else if (n->kind == Ink::NodeKind::Group) {
-            if (ImGui::CollapsingHeader("Group", ImGuiTreeNodeFlags_DefaultOpen)) {
+
+        if (n->kind == Ink::NodeKind::Group) {
+            UI::PanelConfig gc; gc.id = "##group"; gc.label = "Group"; gc.defaultOpen = true;
+            if (UI::BeginPanel(gc).open) {
                 float op = n->opacity;
-                if (ImGui::SliderFloat("Opacity", &op, 0.0f, 1.0f))
-                    doc.SetOpacity(id, op);
-                if (ImGui::IsItemDeactivatedAfterEdit())
-                    LogInfoAction("Group Opacity");
+                if (PropDragFloat("Opacity", &op, 0.005f, 0.0f, 1.0f, 3)) doc.SetOpacity(id, op);
+                if (ImGui::IsItemDeactivatedAfterEdit()) LogInfoAction("Group Opacity");
+                int blend = std::min((int)n->blend, kBlendCount - 1);
+                if (int r = PropDropdown("Blend", kBlend, kBlendCount, blend); r >= 0)
+                    doc.SetBlend(id, (Ink::BlendMode)r);
                 bool clip = n->clip;
-                if (ImGui::Checkbox("Clip to first child", &clip))
-                    doc.SetClip(id, clip);
+                if (PropCheckRow("Clip", &clip)) doc.SetClip(id, clip);
             }
+            UI::EndPanel();
+        } else if (n->kind == Ink::NodeKind::Path) {
+            // Paint panel (fills + strokes).
+            UI::PanelConfig pc; pc.id = "##paint"; pc.label = "Paint"; pc.defaultOpen = true;
+            if (UI::BeginPanel(pc).open) {
+                PropFillsSection(id);
+                PropStrokesSection(id);
+            }
+            UI::EndPanel();
         }
     }
     UI::EndScroll();

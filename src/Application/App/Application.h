@@ -191,10 +191,19 @@ private:
     // context menu and the organisation commands (group/ungroup/collections).
     void RenderOutliner(EditorState& st);
     void BuildOutlinerTopBar(EditorState& st, EditorBar& bar);
-    // One Layers-view row (recursive): a node + its subtree. Returns the row
-    // rect height consumed (for range logic). `depth` drives indentation.
-    void OutlinerLayersRow(EditorState& st, Ink::NodeId id, int depth);
+    // One object/group row + its subtree (parented children), recursive.
+    void OutlinerObjectRow(Ink::NodeId id, int depth);
+    // A page header + its layer tree (Layers view: top-of-stack first).
+    void OutlinerPageLayersNode(const Ink::Page& page);
+    // A collection row + its members (Collections view).
+    void OutlinerCollectionNode(const Ink::Collection& coll);
     void OutlinerCollectionsView(EditorState& st);
+    void OutlinerLayersView(EditorState& st);
+    // Filter + selection helpers (legacy parity).
+    bool OutlinerPassesFilter(Ink::NodeId id) const;   // kind + state + invert
+    bool OutlinerSearchHit(Ink::NodeId id) const;      // own name matches search
+    bool OutlinerRowSelected(Ink::NodeId id) const;    // shared selection or sel[]
+    void OutlinerSelectClick(Ink::NodeId id, bool isObject);
     // Right-click context menu for the Outliner (opened over a row or empty).
     void RenderOutlinerContextMenu(EditorState& st);
     // Organisation commands (undoable), shared by the Outliner + shortcuts.
@@ -203,6 +212,11 @@ private:
     void Action_ToggleNodeVisible(Ink::NodeId id);
     void Action_RenameNode(Ink::NodeId id, const std::string& name);
     void Action_NewCollectionFromSelection();
+    // The Outliner state the top-bar lambdas + row builders act on this frame
+    // (all zones' top bars build first, draw later — legacy pattern).
+    OutlinerState* outlinerCur_ = nullptr;
+    // The Outliner currently in "pick a viewport to sync" mode (or nullptr).
+    OutlinerState* outlinerPickingState_ = nullptr;
 
     // Active object's style/transform editor (multi-fill / multi-stroke) — Lot 9.
     void RenderProperties();

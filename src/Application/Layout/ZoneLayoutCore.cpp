@@ -206,11 +206,15 @@ std::vector<uint8_t> ZoneLayout::Serialize() const {
                 w.u32((uint32_t)pl.hiddenPages.size());
                 for (uint64_t id : pl.hiddenPages) w.u64(id);
                 w.u8((uint8_t)t.state.rulerSpace);   // v3
-                // v7: Outliner state (Ink model) — display mode + show toggles.
+                // v7: Outliner state (Ink model, legacy-parity filters).
                 const OutlinerState& o = t.state.outliner;
                 w.u8((uint8_t)o.display);
                 w.u8(o.showObjects ? 1 : 0);
+                w.u8(o.showPages ? 1 : 0);
+                w.u8(o.showCollections ? 1 : 0);
                 w.u8(o.showGroups ? 1 : 0);
+                w.u8((uint8_t)o.objState);
+                w.u8(o.invertFilter ? 1 : 0);
                 w.u8(t.state.nPanelShowOrphans ? 1 : 0);
             }
         } else {
@@ -271,9 +275,13 @@ bool ZoneLayout::Deserialize(const std::vector<uint8_t>& blob) {
                         t.state.rulerSpace = (EditorState::RulerSpace)r.u8();
                     if (ver >= 7) {   // Outliner state (Ink model)
                         OutlinerState& o = t.state.outliner;
-                        o.display     = (OutlinerDisplayMode)r.u8();
-                        o.showObjects = r.u8() != 0;
-                        o.showGroups  = r.u8() != 0;
+                        o.display         = (OutlinerDisplayMode)r.u8();
+                        o.showObjects     = r.u8() != 0;
+                        o.showPages       = r.u8() != 0;
+                        o.showCollections = r.u8() != 0;
+                        o.showGroups      = r.u8() != 0;
+                        o.objState        = (ObjStateFilter)r.u8();
+                        o.invertFilter    = r.u8() != 0;
                         t.state.nPanelShowOrphans = r.u8() != 0;
                     } else if (ver >= 5) {   // migrate: discard old filter block
                         for (int k = 0; k < 7; ++k) r.u8();   // old show*/objState/invert
