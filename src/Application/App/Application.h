@@ -191,19 +191,35 @@ private:
     // context menu and the organisation commands (group/ungroup/collections).
     void RenderOutliner(EditorState& st);
     void BuildOutlinerTopBar(EditorState& st, EditorBar& bar);
-    // One object/group row + its subtree (parented children), recursive.
-    void OutlinerObjectRow(Ink::NodeId id, int depth);
-    // A page header + its layer tree (Layers view: top-of-stack first).
-    void OutlinerPageLayersNode(const Ink::Page& page);
-    // A collection row + its members (Collections view).
-    void OutlinerCollectionNode(const Ink::Collection& coll);
-    void OutlinerCollectionsView(EditorState& st);
-    void OutlinerLayersView(EditorState& st);
+    // One flattened Outliner row (built once per frame; drawn only if within
+    // the visible scroll window — the culling that keeps the editor O(visible)
+    // instead of O(document), so a 100k-object document stays fluid).
+    struct OutlinerRow {
+        enum class Kind : uint8_t { Object, CollectionHeader, PageHeader };
+        uint64_t id = 0;        // node / collection / page id
+        Kind     kind = Kind::Object;
+        int      depth = 0;
+        bool     hasChildren = false;
+    };
+    // Append the visible rows of a node subtree (respecting collapse + filter +
+    // search) to `out`. Pure computation, no drawing.
+    void OutlinerFlattenNode(Ink::NodeId id, int depth,
+                             std::vector<OutlinerRow>& out);
+    void OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& out);
+    // Draw one already-flattened row at the current cursor (a ListRow stripe).
+    void OutlinerDrawRow(EditorState& st, const OutlinerRow& r, float rowStripeH);
     // Filter + selection helpers (legacy parity).
     bool OutlinerPassesFilter(Ink::NodeId id) const;   // kind + state + invert
     bool OutlinerSearchHit(Ink::NodeId id) const;      // own name matches search
+    bool OutlinerSubtreeSearchHit(Ink::NodeId id) const; // it or a descendant
     bool OutlinerRowSelected(Ink::NodeId id) const;    // shared selection or sel[]
     void OutlinerSelectClick(Ink::NodeId id, bool isObject);
+    // Draw a lightweight live vector preview of a node into the rect (Layers
+    // view tall rows). Flattens the node's paths on the fly (visible-only, so
+    // it never costs for off-screen rows) — no Vulkan target, no texture.
+    void OutlinerDrawPreview(Ink::NodeId id, ImVec2 min, ImVec2 max);
+    // In-collection membership test (Collections view page-orphan listing).
+    bool OutlinerInAnyCollection(Ink::NodeId id) const;
     // Right-click context menu for the Outliner (opened over a row or empty).
     void RenderOutlinerContextMenu(EditorState& st);
     // Organisation commands (undoable), shared by the Outliner + shortcuts.
