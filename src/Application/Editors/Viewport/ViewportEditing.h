@@ -135,6 +135,10 @@ struct TransformOp {
     Ink::DVec2 basisX{ 1, 0 }, basisY{ 0, 1 };   // orientation basis (doc space)
     Ink::DVec2 pivot{};                  // doc space
     Ink::DVec2 startDoc{};               // mouse at op start (doc space)
+    // Accumulated doc-space motion since the op began, integrated from the
+    // per-frame gesture delta so an edge-wrap of the cursor does NOT jump the
+    // transform (the "effective cursor" = startDoc + gestureAccum).
+    Ink::DVec2 gestureAccum{ 0, 0 };
 
     struct NodeOrig { Ink::NodeId id; Ink::Transform2D t; };
     std::vector<NodeOrig> nodes;         // Object Mode originals
@@ -176,6 +180,15 @@ struct EditContext {
 
     // Edit Mode vertex selection on `active`: (subpath, anchor) pairs.
     std::vector<std::pair<int, int>> vertSel;
+    // Edit Mode handle being dragged (in/out of one anchor). which: 1 = in,
+    // 2 = out, 0 = none. Only ONE handle is manipulated at a time (like Blender).
+    struct HandleRef { int sp = -1, a = -1, which = 0; };
+    HandleRef handleSel;
+
+    // The 2D cursor (document space). New shapes spawn here; it is a snap /
+    // pivot / orientation reference. Seeded to the first page centre on Reset.
+    Ink::DVec2 cursor2D{ 960.0, 540.0 };
+    bool       cursor2DValid = false;   // false until first placed / seeded
 
     bool IsSelected(Ink::NodeId id) const {
         return std::find(selection.begin(), selection.end(), id) !=

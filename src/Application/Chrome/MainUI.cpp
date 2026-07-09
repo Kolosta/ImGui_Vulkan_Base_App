@@ -125,8 +125,11 @@ void Application::RegisterCoreEditors() {
         d.column = 2; d.themeScope = "editors/outliner";
         d.switchAction = "editor.outliner";
         // No content inset: the selection bands run flush to the editor's left
-        // edge (Blender-style).
+        // edge (Blender-style). The editor owns its OWN overlay scrollbar
+        // (BeginScroll, needed by the row culling) — do NOT let the zone wrap it
+        // in a second one, which would reserve an empty right gutter.
         d.contentInset = false;
+        d.wrapInScroll = false;
         d.draw   = [this](ImVec2, EditorState& st) { RenderOutliner(st); };
         d.topBar = [this](EditorState& st, EditorBar& bar) { BuildOutlinerTopBar(st, bar); };
         reg.Register(std::move(d));
@@ -138,6 +141,9 @@ void Application::RegisterCoreEditors() {
         d.id = CoreEditor::Properties; d.name = "Properties"; d.icon = "settings";
         d.column = 2; d.themeScope = "editors/properties";
         d.switchAction = "editor.properties";
+        // Owns its own overlay scrollbar (BeginScroll inside RenderProperties) —
+        // don't double-wrap (that reserved the spurious empty right gutter).
+        d.wrapInScroll = false;
         d.draw = [this](ImVec2, EditorState&) { RenderProperties(); };
         reg.Register(std::move(d));
     }

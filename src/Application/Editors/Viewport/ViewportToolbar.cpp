@@ -308,19 +308,17 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
             "Transform along the document axes",
             "Transform along the active object's own axes",
             "Transform along the view axes",
-            "Transform along the 2D cursor's axes (2D cursor — later)",
+            "Transform along the 2D cursor's axes",
             "Transform along the active object's parent axes" };
         { UI::DropdownConfig cfg; cfg.id = "##orient"; cfg.triggerIcon = "crop-free";
           cfg.triggerLabel = kOrients[(int)edit_.orientation];
           for (int i = 0; i < 5; ++i) {
               UI::DropdownItem it; it.label = kOrients[i]; it.tooltip = kOrientTips[i];
-              it.enabled = (i != (int)TransformOrientation::Cursor);   // 2D cursor later
               cfg.items.push_back(it);
           }
           cfg.selectedIndex = (int)edit_.orientation;
           UI::DropdownResult r = UI::Dropdown(cfg);
-          if (r.changed && r.selected >= 0 && r.selected < 5 &&
-              r.selected != (int)TransformOrientation::Cursor)
+          if (r.changed && r.selected >= 0 && r.selected < 5)
               edit_.orientation = (TransformOrientation)r.selected;
         }
         ImGui::SameLine(0.0f, kMidGap);
@@ -330,13 +328,11 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
           cfg.triggerLabel = kPivots[(int)edit_.pivot];
           for (int i = 0; i < 5; ++i) {
               UI::DropdownItem it; it.label = kPivots[i];
-              it.enabled = (i != (int)PivotMode::Cursor2D);   // 2D cursor later
               cfg.items.push_back(it);
           }
           cfg.selectedIndex = (int)edit_.pivot;
           UI::DropdownResult r = UI::Dropdown(cfg);
-          if (r.changed && r.selected >= 0 && r.selected < 5 &&
-              r.selected != (int)PivotMode::Cursor2D)
+          if (r.changed && r.selected >= 0 && r.selected < 5)
               edit_.pivot = (PivotMode)r.selected;
         }
         ImGui::SameLine(0.0f, kMidGap);
@@ -376,22 +372,82 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
 
 // ── Shift+A Add menu ──────────────────────────────────────────────────────────
 
+// The Add menu (Shift+A). CRITICAL: this must be called every frame from a
+// STABLE, unconditional place (RenderViewport calls it after the canvas blit,
+// not gated by hover) — a popup whose BeginPopup stops being called freezes.
+// Action_OpenAddMenu opens the ImGui popup exactly once; here we only render it.
 void Application::RenderAddMenu() {
     if (!addMenuOpen_) return;
-    if (!ImGui::IsPopupOpen("##addMenu")) ImGui::OpenPopup("##addMenu");
 
     std::vector<UI::MenuEntry> entries;
     auto leaf = [&](const char* label, const char* kind, const char* tip) {
         UI::MenuEntry e; e.label = label; e.tooltip = tip;
-        e.onClick = [this, kind]() { SpawnShape(kind); };
+        e.onClick = [this, kind]() { SpawnShape(kind); addMenuOpen_ = false; };
         entries.push_back(std::move(e));
     };
-    leaf("Rectangle", "rect",     "Add a rectangle at the view centre");
-    leaf("Ellipse",   "ellipse",  "Add an ellipse at the view centre");
-    leaf("Triangle",  "triangle", "Add a triangle at the view centre");
+    leaf("Rectangle", "rect",     "Add a rectangle at the 2D cursor");
+    leaf("Ellipse",   "ellipse",  "Add an ellipse at the 2D cursor");
+    leaf("Triangle",  "triangle", "Add a triangle at the 2D cursor");
 
     const bool open = UI::ContextMenu("##addMenu", addMenuPos_, entries, "Add");
     if (!open) addMenuOpen_ = false;
+}
+
+// The viewport right-click context menu. Same unconditional-render rule.
+// viewportCtxNode_ is the object under the cursor (or null for empty space).
+void Application::RenderViewportContextMenu() {
+    if (!viewportCtxOpen_) return;
+    Ink::Document* doc = project_.document.get();
+
+    std::vector<UI::MenuEntry> entries;
+    const bool onObject = viewportCtxNode_ != Ink::kNullNode && doc && doc->Find(viewportCtxNode_);
+    const bool hasSel = !edit_.selection.empty();
+    auto close = [this]{ viewportCtxOpen_ = false; };
+
+    if (onObject) {
+        const Ink::NodeId id = viewportCtxNode_;
+        const bool isPath = doc->Find(id)->kind == Ink::NodeKind::Path;
+        { UI::MenuEntry e; e.label = "Select"; e.enabled = !edit_.IsSelected(id);
+          e.onClick = [this, id, close]{ edit_.SelectOnly(id); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Deselect"; e.enabled = edit_.IsSelected(id);
+          e.onClick = [this, id, close]{ edit_.Deselect(id); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Enter Edit Mode"; e.enabled = isPath;
+          e.onClick = [this, id, close]{ edit_.SelectOnly(id); Action_EnterEditMode(); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Duplicate"; e.shortcut = "Ctrl D";
+          e.onClick = [this, close]{ Action_DuplicateSelection(); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Group"; e.shortcut = "Ctrl G"; e.enabled = hasSel;
+          e.onClick = [this, close]{ Action_GroupSelection(); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Ungroup"; e.shortcut = "Ctrl Alt G";
+          e.onClick = [this, close]{ Action_UngroupSelection(); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Delete"; e.shortcut = "X"; e.icon = "ink-eraser";
+          e.onClick = [this, close]{ Action_DeleteSelection(); close(); };
+          entries.push_back(std::move(e)); }
+    } else {
+        // Empty space: the Add submenu + selection helpers.
+        UI::MenuEntry add; add.label = "Add";
+        auto leaf = [&](const char* label, const char* kind) {
+            UI::MenuEntry e; e.label = label;
+            e.onClick = [this, kind, close]{ SpawnShape(kind); close(); };
+            add.submenu.push_back(std::move(e));
+        };
+        leaf("Rectangle", "rect"); leaf("Ellipse", "ellipse"); leaf("Triangle", "triangle");
+        entries.push_back(std::move(add));
+        { UI::MenuEntry e; e.label = "Select All"; e.shortcut = "A";
+          e.onClick = [this, close]{ Action_SelectAll(); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Deselect All"; e.enabled = hasSel;
+          e.onClick = [this, close]{ Action_DeselectAll(); close(); };
+          entries.push_back(std::move(e)); }
+    }
+
+    const bool open = UI::ContextMenu("##viewportCtx", viewportCtxPos_, entries, "Object");
+    if (!open) viewportCtxOpen_ = false;
 }
 
 } // namespace App

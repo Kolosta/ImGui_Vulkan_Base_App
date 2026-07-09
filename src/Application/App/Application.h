@@ -129,6 +129,7 @@ private:
     void DrawSnapWidget(ImVec2 pos, float widthPx);           // magnet + Snap menu
     void DrawDefaultColorSwatches(float barHeight);           // fill/stroke chips
     void RenderAddMenu();                                     // Shift+A spawn menu
+    void RenderViewportContextMenu();                        // right-click menu
 
     // ── Editing loop (ViewportInput.cpp / ViewportTools.cpp / ViewportModal.cpp) ─
     // Camera helpers, shared by input + overlay drawing.
@@ -171,6 +172,10 @@ private:
     void Action_ConstrainAxisX();
     void Action_ConstrainAxisY();
     void Action_OpenAddMenu();
+    // Edit mode: cycle the selected anchors' kind (Corner→Smooth→Symmetric),
+    // re-deriving handle constraints. Delete removes selected anchors.
+    void Action_CycleHandleMode();
+    void Action_DeleteVertices();
     // Create a shape at the 2D cursor / view centre and select it.
     Ink::NodeId SpawnShape(const char* kind);
     // Build the default Style (fill+stroke) from the EditContext swatches.
@@ -457,15 +462,32 @@ private:
     DocUndoStack docUndo_;
     TransformOp  transformOp_;   // modal G/R/S in flight (kind == None if idle)
     CanvasDrag   canvasDrag_;     // box-select / draw-shape gesture in flight
-    // Add menu (Shift+A) request: opened at the cursor in the hovered zone.
+    // Add menu (Shift+A) request: opened at the cursor. Rendered UNCONDITIONALLY
+    // once armed (the popup lifecycle must not be gated by canvas hover, or it
+    // freezes the frame — the Shift+A bug).
     bool         addMenuOpen_ = false;
     ImVec2       addMenuPos_{};
+    // Viewport right-click context menu request (same unconditional-render rule).
+    bool         viewportCtxOpen_ = false;
+    ImVec2       viewportCtxPos_{};
+    Ink::NodeId  viewportCtxNode_ = Ink::kNullNode;   // clicked object (or null)
     // Convenience: the currently hovered viewport leaf's EditorState (set each
     // frame by RenderViewport when hovered), used by mode-less shortcut actions.
     EditorState* hoveredViewport_ = nullptr;
     // The hovered leaf's camera this frame — lets G/R/S (fired by keyboard,
     // outside RenderViewport) map the mouse to document space.
     ViewCam      hoveredCam_{};
+    // Modal-transform gesture accumulation (edge-wrap-safe): the last mouse pos
+    // used as the delta reference; the accumulated doc-space offset since the op
+    // began. Warping the cursor updates gestureRef_ so the jump is excluded.
+    ImVec2       gestureRef_{};
+    bool         osCursorHidden_ = false;   // we hid the OS cursor for a modal op
+    // Screen rect of the hovered viewport's canvas this frame (for edge-wrap).
+    ImVec2       canvasRectMin_{}, canvasRectMax_{};
+    // Warp the OS cursor to the opposite canvas edge when it reaches a border
+    // during a modal op; keeps the transform direction (gestureRef_ follows the
+    // warp so the jump is excluded). Returns true if a warp happened.
+    bool WrapCursorInCanvas();
 
     // The Ink render engine (docs/Ink/). Shares the app's Vulkan device;
     // frame protocol: BeginFrame() before the UI build, per-zone views during

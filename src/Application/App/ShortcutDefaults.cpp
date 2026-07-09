@@ -226,6 +226,9 @@ void Application::RegisterDefaultShortcuts() {
     viewportKey("edit.applyScale", "Apply Scale",
                 "Bake the selection's scale into its geometry",
                 [this]{ Action_ApplyScale(); }, {});
+    viewportKey("edit.handleMode", "Cycle Handle Type",
+                "Cycle the selected vertices between Corner / Smooth / Symmetric",
+                [this]{ Action_CycleHandleMode(); }, { sigKey(ImGuiKey_V) }, false, false, idle);
     viewportKey("edit.addMenu", "Add", "Open the Add menu at the cursor",
                 [this]{ Action_OpenAddMenu(); }, { sigKey(ImGuiKey_A, false, true) },
                 false, false, idle);

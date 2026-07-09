@@ -216,9 +216,18 @@ void Application::Update() {
     // again while building if the mouse is over it (Lot 8 keyboard actions
     // target the hovered leaf).
     hoveredViewport_ = nullptr;
+    // Safety: never leave the OS cursor hidden if no modal op is running.
+    if (osCursorHidden_ && !transformOp_.Active()) {
+        SDL_ShowCursor(); osCursorHidden_ = false;
+    }
 
     RenderTitleBar();      // publishes titleBarHeightPx_ + blockers first
     RenderMainLayout();    // viewports render their offscreen canvas here
+    // Viewport popups (Add / right-click context) — rendered ONCE here, after
+    // the whole layout, so their BeginPopup is called every frame from a stable
+    // place regardless of which zone the cursor is over (fixes the freeze).
+    RenderAddMenu();
+    RenderViewportContextMenu();
     RenderFloatingWindows();
     RenderSplash();        // start screen overlay (and the logo-menu re-open)
     RenderAbout();         // "About Carto" popup
@@ -414,10 +423,18 @@ void Application::ResetDocument() {
     // Fresh editing state for the new document (Lot 8).
     edit_.Clear();
     edit_.mode = EditorMode::Object;
+    // Seed the 2D cursor at the first page centre.
+    if (project_.document && !project_.document->Pages().empty()) {
+        const Ink::Page& pg = project_.document->Pages().front();
+        edit_.cursor2D = { pg.pos.x + pg.size.x * 0.5, pg.pos.y + pg.size.y * 0.5 };
+        edit_.cursor2DValid = true;
+    }
     docUndo_.Clear();
     transformOp_ = TransformOp{};
     canvasDrag_  = CanvasDrag{};
     addMenuOpen_ = false;
+    viewportCtxOpen_ = false;
+    if (osCursorHidden_) { SDL_ShowCursor(); osCursorHidden_ = false; }
     if (ink_) {
         Ink::SeedDemoDocument(*project_.document);
         ink_->SetDocument(project_.document.get());

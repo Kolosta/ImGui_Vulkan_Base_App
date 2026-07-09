@@ -64,15 +64,13 @@ Ink::NodeId Application::SpawnShape(const char* kind) {
     Ink::Document& doc = *project_.document;
     if (doc.Pages().empty()) return Ink::kNullNode;
 
-    // Spawn on the first page, centred on the hovered viewport (or page centre).
+    // Spawn at the 2D cursor (its default is the first page centre), so the new
+    // shape lands where the user placed the cursor — Blender's Add semantics.
     const Ink::Page& page = doc.Pages().front();
     const Ink::NodeId parent = page.id;
-    Ink::DVec2 at{ page.pos.x + page.size.x * 0.5,
-                   page.pos.y + page.size.y * 0.5 };
-    if (hoveredViewport_) {
-        // Place at the view centre so the new shape lands where the user looks.
-        // (The 2D-cursor placement returns with the cursor tool in a later pass.)
-    }
+    Ink::DVec2 at = edit_.cursor2D;
+    if (!edit_.cursor2DValid)
+        at = { page.pos.x + page.size.x * 0.5, page.pos.y + page.size.y * 0.5 };
 
     const double r = 80.0;
     Ink::PathData path;
@@ -123,7 +121,70 @@ void Application::Action_DeselectAll() {
     LogInfoAction("Deselect All");
 }
 
+void Application::Action_CycleHandleMode() {
+    if (edit_.mode != EditorMode::Edit || !project_.document ||
+        edit_.active == Ink::kNullNode || edit_.vertSel.empty()) return;
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(edit_.active);
+    if (!n) return;
+    const Ink::PathData before = n->path;
+    Ink::PathData p = before;
+    for (auto [sp, ai] : edit_.vertSel) {
+        if (sp >= (int)p.subpaths.size() || ai >= (int)p.subpaths[sp].anchors.size()) continue;
+        Ink::Anchor& an = p.subpaths[sp].anchors[ai];
+        an.kind = an.kind == Ink::AnchorKind::Corner ? Ink::AnchorKind::Smooth
+                : an.kind == Ink::AnchorKind::Smooth ? Ink::AnchorKind::Symmetric
+                                                     : Ink::AnchorKind::Corner;
+        // Re-derive handle constraints from the new kind.
+        if (an.kind == Ink::AnchorKind::Symmetric && an.hasOut) {
+            an.in = { -an.out.x, -an.out.y }; an.hasIn = true;
+        } else if (an.kind == Ink::AnchorKind::Smooth && an.hasIn && an.hasOut) {
+            const double li = std::hypot(an.in.x, an.in.y), lo = std::hypot(an.out.x, an.out.y);
+            if (lo > 1e-9) { an.in = { -an.out.x/lo*li, -an.out.y/lo*li }; }
+        }
+    }
+    doc.SetPath(edit_.active, p);
+    const Ink::NodeId id = edit_.active;
+    const Ink::PathData after = p;
+    PushDocCommand("Handle Mode",
+        [id, before](Ink::Document& d) { d.SetPath(id, before); },
+        [id, after](Ink::Document& d)  { d.SetPath(id, after); });
+    LogInfoAction("Handle Mode");
+}
+
+void Application::Action_DeleteVertices() {
+    if (edit_.mode != EditorMode::Edit || !project_.document ||
+        edit_.active == Ink::kNullNode || edit_.vertSel.empty()) return;
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(edit_.active);
+    if (!n) return;
+    const Ink::PathData before = n->path;
+    Ink::PathData p = before;
+    // Remove anchors from the highest index down per subpath so indices stay valid.
+    std::vector<std::pair<int,int>> sel = edit_.vertSel;
+    std::sort(sel.begin(), sel.end(), [](auto& a, auto& b){
+        return a.first != b.first ? a.first > b.first : a.second > b.second; });
+    for (auto [sp, ai] : sel)
+        if (sp < (int)p.subpaths.size() && ai < (int)p.subpaths[sp].anchors.size())
+            p.subpaths[sp].anchors.erase(p.subpaths[sp].anchors.begin() + ai);
+    // Drop subpaths that fell below 2 anchors.
+    p.subpaths.erase(std::remove_if(p.subpaths.begin(), p.subpaths.end(),
+        [](const Ink::Subpath& s){ return s.anchors.size() < 2; }), p.subpaths.end());
+    edit_.vertSel.clear();
+    // Deleting all geometry deletes the object itself.
+    if (p.Empty()) { edit_.mode = EditorMode::Object; Action_DeleteSelection(); return; }
+    doc.SetPath(edit_.active, p);
+    const Ink::NodeId id = edit_.active;
+    const Ink::PathData after = p;
+    PushDocCommand("Delete Vertices",
+        [id, before](Ink::Document& d) { d.SetPath(id, before); },
+        [id, after](Ink::Document& d)  { d.SetPath(id, after); });
+    LogInfoAction("Delete Vertices");
+}
+
 void Application::Action_DeleteSelection() {
+    // In Edit mode, X deletes the selected anchors, not the object.
+    if (edit_.mode == EditorMode::Edit) { Action_DeleteVertices(); return; }
     if (!project_.document || edit_.selection.empty()) return;
     Ink::Document& doc = *project_.document;
     // Snapshot each selected subtree so undo restores them exactly.
@@ -253,6 +314,7 @@ void Application::Action_ConstrainAxisY() {
 void Application::Action_OpenAddMenu() {
     addMenuOpen_ = true;
     addMenuPos_  = ImGui::GetIO().MousePos;
+    ImGui::OpenPopup("##addMenu");   // open ONCE; RenderAddMenu renders each frame
 }
 
 } // namespace App

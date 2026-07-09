@@ -90,7 +90,12 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     };
     ViewCam cam;
     cam.canvasMin = cMin;  cam.panX = st.panX;  cam.panY = st.panY;  cam.zoom = st.zoom;
-    if (hovered) hoveredCam_ = cam;
+    if (hovered) {
+        hoveredCam_ = cam;
+        // Publish the canvas screen rect for the modal-op edge-wrap.
+        canvasRectMin_ = cMin;
+        canvasRectMax_ = ImVec2(cMin.x + size.x, cMin.y + size.y);
+    }
 
     // ── Camera interactions ──────────────────────────────────────────────────
     if (hovered && io.MouseWheel != 0.0f) {
@@ -112,14 +117,26 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
 
     // Pending view requests (fit / reset), consumed by this leaf only.
     if (st.reqFitDoc || st.reqFitSelection) {
+        const bool fitSel = st.reqFitSelection;
         st.reqFitDoc = st.reqFitSelection = false;
-        const Ink::Rect b = ink_->SceneBounds();
-        if (b.Width() > 0.0f && b.Height() > 0.0f) {
-            const double z = std::min((double)size.x / b.Width(),
-                                      (double)size.y / b.Height()) * 0.94;
+        // Numpad . frames the SELECTION (if any); Home/fit-doc frames everything.
+        double minx, miny, w, h; bool have = false;
+        Ink::DRect sb;
+        if (fitSel && SelectionBounds(sb)) {
+            minx = sb.min.x; miny = sb.min.y;
+            w = std::max(1.0, sb.max.x - sb.min.x); h = std::max(1.0, sb.max.y - sb.min.y);
+            have = true;
+        } else {
+            const Ink::Rect b = ink_->SceneBounds();
+            if (b.Width() > 0.0f && b.Height() > 0.0f) {
+                minx = b.min.x; miny = b.min.y; w = b.Width(); h = b.Height(); have = true;
+            }
+        }
+        if (have) {
+            const double z = std::min((double)size.x / w, (double)size.y / h) * 0.9;
             st.zoom = z;
-            st.panX = (double)b.min.x + b.Width()  * 0.5 - (double)size.x * 0.5 / z;
-            st.panY = (double)b.min.y + b.Height() * 0.5 - (double)size.y * 0.5 / z;
+            st.panX = minx + w * 0.5 - (double)size.x * 0.5 / z;
+            st.panY = miny + h * 0.5 - (double)size.y * 0.5 / z;
         }
     }
     if (st.reqResetOrigin) {
@@ -192,9 +209,9 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
 
     // Floating tool palette (drawn OVER the canvas image, as ImGui chrome).
     RenderToolPalette(cMin, st);
-
-    // The Shift+A Add menu, if requested over this (hovered) zone.
-    if (addMenuOpen_ && hovered) RenderAddMenu();
+    // NB: the Add / context popups are rendered ONCE per frame from Update()
+    // (after the whole layout), not here — a popup gated by per-zone hover
+    // freezes when the cursor leaves the canvas onto the popup.
 }
 
 } // namespace App
