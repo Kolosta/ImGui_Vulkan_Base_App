@@ -161,8 +161,7 @@ void Application::BuildOutlinerTopBar(EditorState& st, EditorBar& bar) {
 // ── Context menu ──────────────────────────────────────────────────────────────
 
 void Application::RenderOutlinerContextMenu(EditorState& st) {
-    if (!outlinerCtxOpen_) return;
-    if (!ImGui::IsPopupOpen("##outlinerCtx")) ImGui::OpenPopup("##outlinerCtx");
+    if (!outlinerCtxOpen_) return;   // OpenPopup happened ONCE at the click site
     Ink::Document& doc = *project_.document;
 
     std::vector<UI::MenuEntry> entries;
@@ -227,6 +226,10 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
         }
     }
 
+    // ContextMenu returns false once ImGui closed the popup (item click, click
+    // outside, or Esc — ImGui closes popups on Esc itself), which clears the flag.
+    // The flag is only ever SET at the click site, together with a single
+    // OpenPopup — never re-opened here, or the menu could never close.
     const bool open = UI::ContextMenu("##outlinerCtx", outlinerCtxPos_, entries, "Outliner");
     if (!open) outlinerCtxOpen_ = false;
 }

@@ -7,6 +7,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <UI/Tokens/TokenEditor.h>
@@ -181,12 +182,19 @@ private:
     void Action_OpenHandleMenu();
     void RenderHandleTypeMenu();
     void Action_DeleteVertices();
-    bool   handleMenuOpen_ = false;
+    bool   handleMenuOpen_ = false, handleMenuRequested_ = false;
     ImVec2 handleMenuPos_{};
     bool   show2DCursor_ = true;   // draw the 2D cursor overlay
     // Reset the 2D cursor to the document/page origin, or to the selection.
     void   Action_Cursor2DToOrigin();
     void   Action_Cursor2DToSelection();
+    // Set Origin ▸ (legacy parity). The node's origin is its transform's
+    // translation; moving it re-bases the geometry so the shape stays put.
+    void   MoveOriginTo(Ink::NodeId id, Ink::DVec2 worldTarget);
+    void   Action_OriginToGeometry();    // origin → geometry centre
+    void   Action_GeometryToOrigin();    // geometry re-centred on the origin
+    void   Action_OriginTo2DCursor();    // origin → 2D cursor
+    void   Action_SelectGroup();         // select the active object's parent group
     // Create a shape at the 2D cursor / view centre and select it.
     Ink::NodeId SpawnShape(const char* kind);
     // Build the default Style (fill+stroke) from the EditContext swatches.
@@ -218,9 +226,18 @@ private:
         bool     hasChildren = false;
     };
     // Append the visible rows of a node subtree (respecting collapse + filter +
-    // search) to `out`. Pure computation, no drawing.
+    // search) to `out`. Pure computation, no drawing. In the Collections view
+    // the recursion follows OBJECT PARENTING (parentId, Lot 7) so parented
+    // children nest under their parent; in Layers it follows the layer tree.
     void OutlinerFlattenNode(Ink::NodeId id, int depth,
                              std::vector<OutlinerRow>& out);
+    // parentId → children, rebuilt once per Outliner frame (Collections view),
+    // plus a per-frame cache of each row's combined child list.
+    std::unordered_map<Ink::NodeId, std::vector<Ink::NodeId>> outlinerParentKids_;
+    std::unordered_map<Ink::NodeId, std::vector<Ink::NodeId>> outlinerRowKids_;
+    void OutlinerBuildParentIndex();
+    // The children a row shows in the CURRENT view (layer children or parented).
+    const std::vector<Ink::NodeId>* OutlinerRowChildren(const Ink::Node& n) const;
     void OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& out);
     // Draw one already-flattened row at the current cursor (a ListRow stripe).
     void OutlinerDrawRow(EditorState& st, const OutlinerRow& r, float rowStripeH);
@@ -473,13 +490,14 @@ private:
     DocUndoStack docUndo_;
     TransformOp  transformOp_;   // modal G/R/S in flight (kind == None if idle)
     CanvasDrag   canvasDrag_;     // box-select / draw-shape gesture in flight
-    // Add menu (Shift+A) request: opened at the cursor. Rendered UNCONDITIONALLY
-    // once armed (the popup lifecycle must not be gated by canvas hover, or it
-    // freezes the frame — the Shift+A bug).
-    bool         addMenuOpen_ = false;
+    // Viewport popups. RULE (learned the hard way): an id-string popup is scoped
+    // to the window that calls OpenPopup, so OpenPopup and BeginPopup must run in
+    // the SAME window scope — and BeginPopup must be called every frame or the
+    // frame freezes. Hence: a click only ARMS `*Requested`; Update() (root scope,
+    // unconditional) issues the single OpenPopup and renders the menu.
+    bool         addMenuOpen_ = false, addMenuRequested_ = false;
     ImVec2       addMenuPos_{};
-    // Viewport right-click context menu request (same unconditional-render rule).
-    bool         viewportCtxOpen_ = false;
+    bool         viewportCtxOpen_ = false, viewportCtxRequested_ = false;
     ImVec2       viewportCtxPos_{};
     Ink::NodeId  viewportCtxNode_ = Ink::kNullNode;   // clicked object (or null)
     // Convenience: the currently hovered viewport leaf's EditorState (set each
@@ -488,16 +506,11 @@ private:
     // The hovered leaf's camera this frame — lets G/R/S (fired by keyboard,
     // outside RenderViewport) map the mouse to document space.
     ViewCam      hoveredCam_{};
-    // Modal-transform gesture accumulation (edge-wrap-safe): the last mouse pos
-    // used as the delta reference; the accumulated doc-space offset since the op
-    // began. Warping the cursor updates gestureRef_ so the jump is excluded.
-    ImVec2       gestureRef_{};
     bool         osCursorHidden_ = false;   // we hid the OS cursor for a modal op
     // Screen rect of the hovered viewport's canvas this frame (for edge-wrap).
     ImVec2       canvasRectMin_{}, canvasRectMax_{};
-    // Warp the OS cursor to the opposite canvas edge when it reaches a border
-    // during a modal op; keeps the transform direction (gestureRef_ follows the
-    // warp so the jump is excluded). Returns true if a warp happened.
+    // Edge-wrap the cursor during a modal op via io.WantSetMousePos (ImGui
+    // zeroes MouseDelta on the warp frame, so the accumulation never drifts).
     bool WrapCursorInCanvas();
 
     // The Ink render engine (docs/Ink/). Shares the app's Vulkan device;

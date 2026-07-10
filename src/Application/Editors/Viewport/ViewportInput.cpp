@@ -133,7 +133,6 @@ void Application::BeginTransform(TransformOp::Kind kind, EditorState& st) {
     const ImVec2 m = ImGui::GetIO().MousePos;
     transformOp_.startDoc = hoveredCam_.ScreenToDoc(m.x, m.y);
     transformOp_.gestureAccum = { 0, 0 };
-    gestureRef_ = m;                       // gesture-delta reference
     osCursorHidden_ = true;                // suppress the OS cursor (see Update)
 
     Ink::Document& doc = *project_.document;
@@ -156,18 +155,19 @@ void Application::UpdateTransform(const ViewCam& cam) {
     ImGuiIO& io = ImGui::GetIO();
     const bool precise = io.KeyShift;
 
-    // Edge-wrap the OS cursor (updates gestureRef_ so the jump is excluded).
-    WrapCursorInCanvas();
-
-    // Integrate the per-frame gesture delta (excludes warp jumps) into the
-    // accumulated doc-space offset. Shift = precision (finer relative motion).
-    ImVec2 dPx{ io.MousePos.x - gestureRef_.x, io.MousePos.y - gestureRef_.y };
-    gestureRef_ = io.MousePos;
+    // Integrate the REAL per-frame motion from ImGui's own MouseDelta, which is
+    // ZERO on the frame we teleport the cursor (see the wrap below) — so the
+    // warp jump is excluded EXACTLY, with no residual drift no matter how fast
+    // the cursor crosses a border. Shift = finer relative motion.
     const double pf = precise ? 0.1 : 1.0;
-    transformOp_.gestureAccum.x += (double)dPx.x * pf / cam.zoom;
-    transformOp_.gestureAccum.y += (double)dPx.y * pf / cam.zoom;
+    transformOp_.gestureAccum.x += (double)io.MouseDelta.x * pf / cam.zoom;
+    transformOp_.gestureAccum.y += (double)io.MouseDelta.y * pf / cam.zoom;
     const Ink::DVec2 cur{ transformOp_.startDoc.x + transformOp_.gestureAccum.x,
                           transformOp_.startDoc.y + transformOp_.gestureAccum.y };
+    // Edge-wrap the cursor for the NEXT frame via ImGui's teleport channel
+    // (io.WantSetMousePos): ImGui then reports MouseDelta == 0 on the warp
+    // frame, so the jump never enters the accumulation.
+    WrapCursorInCanvas();
     const bool snap = edit_.snap.enabled ^ io.KeyCtrl;   // magnet XOR Ctrl
 
     const Ink::DVec2 P = transformOp_.pivot;
@@ -302,15 +302,18 @@ void Application::CancelTransform() {
     osCursorHidden_ = false;   // Update stops forcing the None cursor
 }
 
-// Edge-wrap the OS cursor during a modal op: when it reaches a canvas border,
-// warp it to the opposite side and move gestureRef_ with it so the gesture
-// delta excludes the jump (legacy WrapMouseInRect). Needs window_ + the canvas
-// rect published each frame by RenderViewport.
+// Edge-wrap the cursor during a modal op: when it reaches a canvas border,
+// teleport it to the opposite side through ImGui's io.WantSetMousePos channel.
+// ImGui applies the warp AND sets MouseDelta = 0 on the resulting frame, so the
+// gesture accumulation (which reads io.MouseDelta) never sees the jump — this is
+// what keeps the pivot→cursor line perfectly glued with zero cumulative drift,
+// however fast the cursor crosses the border. The custom cursor is drawn at the
+// real reported position (which becomes the warp target next frame).
 bool Application::WrapCursorInCanvas() {
-    if (!window_) return false;
+    ImGuiIO& io = ImGui::GetIO();
     const ImVec2 mn = canvasRectMin_, mx = canvasRectMax_;
     if (mx.x - mn.x < 16.0f || mx.y - mn.y < 16.0f) return false;
-    ImVec2 mp = ImGui::GetIO().MousePos;
+    const ImVec2 mp = io.MousePos;
     const float pad = 2.0f;
     float nx = mp.x, ny = mp.y; bool wrap = false;
     if (mp.x <= mn.x + pad)      { nx = mx.x - pad - 1.0f; wrap = true; }
@@ -318,9 +321,8 @@ bool Application::WrapCursorInCanvas() {
     if (mp.y <= mn.y + pad)      { ny = mx.y - pad - 1.0f; wrap = true; }
     else if (mp.y >= mx.y - pad) { ny = mn.y + pad + 1.0f; wrap = true; }
     if (!wrap) return false;
-    SDL_WarpMouseInWindow(window_, nx, ny);
-    ImGui::GetIO().MousePos = ImVec2(nx, ny);   // reflect the warp this frame
-    gestureRef_ = ImVec2(nx, ny);               // reference follows the warp
+    io.MousePos = ImVec2(nx, ny);
+    io.WantSetMousePos = true;   // ImGui warps + zeroes MouseDelta next frame
     return true;
 }
 
@@ -363,15 +365,19 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     const Ink::DVec2 doc = cam.ScreenToDoc(mp.x, mp.y);
     const bool shift = io.KeyShift;
 
-    // Right-click: pick the object under the cursor and open the context menu.
+    // Right-click: open the context menu. In Object mode it first picks (and
+    // selects) the object under the cursor; in Edit mode the menu acts on the
+    // current vertex/handle selection, so nothing is re-picked.
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-        Ink::PickOptions opt; opt.tolerance = 4.0 / cam.zoom; opt.zoom = cam.zoom;
-        Ink::NodeId hit = ink_ ? ink_->PickAt(doc, opt) : Ink::kNullNode;
-        if (hit != Ink::kNullNode && !edit_.IsSelected(hit)) edit_.SelectOnly(hit);
+        Ink::NodeId hit = Ink::kNullNode;
+        if (edit_.mode == EditorMode::Object) {
+            Ink::PickOptions opt; opt.tolerance = 4.0 / cam.zoom; opt.zoom = cam.zoom;
+            hit = ink_ ? ink_->PickAt(doc, opt) : Ink::kNullNode;
+            if (hit != Ink::kNullNode && !edit_.IsSelected(hit)) edit_.SelectOnly(hit);
+        }
         viewportCtxNode_ = hit;
         viewportCtxPos_  = mp;
-        viewportCtxOpen_ = true;
-        ImGui::OpenPopup("##viewportCtx");
+        viewportCtxRequested_ = true;   // Update() opens + renders it (root scope)
         return;
     }
 

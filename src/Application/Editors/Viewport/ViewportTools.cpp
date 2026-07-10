@@ -218,9 +218,8 @@ void Application::Action_RemoveHandles() {
 
 void Application::Action_OpenHandleMenu() {
     if (edit_.mode != EditorMode::Edit || edit_.elemSel.empty()) return;
-    handleMenuOpen_ = true;
-    handleMenuPos_  = ImGui::GetIO().MousePos;
-    ImGui::OpenPopup("##handleMenu");
+    handleMenuRequested_ = true;
+    handleMenuPos_ = ImGui::GetIO().MousePos;
 }
 
 void Application::Action_DeleteVertices() {
@@ -380,9 +379,10 @@ void Application::Action_ConstrainAxisY() {
 }
 
 void Application::Action_OpenAddMenu() {
-    addMenuOpen_ = true;
-    addMenuPos_  = ImGui::GetIO().MousePos;
-    ImGui::OpenPopup("##addMenu");   // open ONCE; RenderAddMenu renders each frame
+    // Only ARM the menu here — Update() (root window scope) issues the single
+    // OpenPopup and renders it, so open/render share one window scope.
+    addMenuRequested_ = true;
+    addMenuPos_ = ImGui::GetIO().MousePos;
 }
 
 void Application::Action_Cursor2DToOrigin() {
@@ -400,6 +400,116 @@ void Application::Action_Cursor2DToSelection() {
     Ink::DRect b;
     if (SelectionBounds(b)) { edit_.cursor2D = b.Center(); edit_.cursor2DValid = true;
         LogInfoAction("2D Cursor to Selection"); }
+}
+
+namespace {
+// The node's local bbox centre (control-point hull — matches the picking hull).
+Ink::DVec2 LocalCentre(const Ink::PathData& p) {
+    Ink::DRect b;
+    for (const Ink::Subpath& sp : p.subpaths)
+        for (const Ink::Anchor& a : sp.anchors) b.Grow(a.pos);
+    return b.valid ? b.Center() : Ink::DVec2{ 0, 0 };
+}
+} // namespace
+
+// Move a path node's ORIGIN to `worldTarget`, keeping the geometry where it is:
+// the transform translation moves, and the local anchors shift by the inverse of
+// that move expressed in the node's local (rotation·scale) frame.
+void Application::MoveOriginTo(Ink::NodeId id, Ink::DVec2 worldTarget) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(id);
+    if (!n || n->kind != Ink::NodeKind::Path) return;
+
+    // Current origin in world = the node's world translation.
+    const Ink::DMat23 w = doc.WorldTransform(id);
+    const Ink::DVec2 curOrigin{ w.m[2], w.m[5] };
+    const Ink::DVec2 dWorld{ worldTarget.x - curOrigin.x, worldTarget.y - curOrigin.y };
+    if (std::abs(dWorld.x) < 1e-12 && std::abs(dWorld.y) < 1e-12) return;
+
+    const Ink::PathData before = n->path;
+    const Ink::Transform2D tBefore = n->transform;
+
+    // Local delta = (R·S)⁻¹ · dWorld — the linear part of the LOCAL matrix
+    // (the parent chain's linear part cancels since both origin and geometry
+    // live under it).
+    const Ink::Transform2D& t = n->transform;
+    const double c = std::cos(t.rotation), s = std::sin(t.rotation);
+    // local matrix linear part L = [c*sx, -s*sy; s*sx, c*sy]
+    const double a11 = c * t.sx, a12 = -s * t.sy, a21 = s * t.sx, a22 = c * t.sy;
+    const double det = a11 * a22 - a12 * a21;
+    if (std::abs(det) < 1e-18) return;
+    // Express dWorld in the PARENT frame first (strip the parent's linear part).
+    // WorldTransform = P ∘ L; dWorld is in world, so dParent = P_linear⁻¹ · dWorld.
+    // We approximate with the full world linear part: dLocal = W_linear⁻¹ · dWorld.
+    const double w11 = w.m[0], w12 = w.m[1], w21 = w.m[3], w22 = w.m[4];
+    const double wdet = w11 * w22 - w12 * w21;
+    if (std::abs(wdet) < 1e-18) return;
+    const Ink::DVec2 dLocal{ ( w22 * dWorld.x - w12 * dWorld.y) / wdet,
+                             (-w21 * dWorld.x + w11 * dWorld.y) / wdet };
+
+    Ink::PathData p = before;
+    for (Ink::Subpath& sp : p.subpaths)
+        for (Ink::Anchor& an : sp.anchors) { an.pos.x -= dLocal.x; an.pos.y -= dLocal.y; }
+
+    // Move the origin: translate in the PARENT frame, i.e. add dWorld mapped
+    // through the parent's inverse. For an unparented node the parent frame is
+    // the page, whose linear part is identity → tx/ty += dWorld.
+    Ink::Transform2D nt = tBefore;
+    nt.tx += dWorld.x;  nt.ty += dWorld.y;
+
+    doc.SetPath(id, p);
+    doc.SetTransform(id, nt);
+    const Ink::PathData after = p; const Ink::Transform2D tAfter = nt;
+    PushDocCommand("Set Origin",
+        [id, before, tBefore](Ink::Document& d) { d.SetPath(id, before); d.SetTransform(id, tBefore); },
+        [id, after, tAfter](Ink::Document& d)   { d.SetPath(id, after);  d.SetTransform(id, tAfter); });
+}
+
+void Application::Action_OriginToGeometry() {
+    if (!project_.document) return;
+    for (Ink::NodeId id : edit_.selection) {
+        const Ink::Node* n = project_.document->Find(id);
+        if (!n || n->kind != Ink::NodeKind::Path) continue;
+        const Ink::DMat23 w = project_.document->WorldTransform(id);
+        MoveOriginTo(id, w.Apply(LocalCentre(n->path)));
+    }
+    LogInfoAction("Origin to Geometry");
+}
+
+void Application::Action_GeometryToOrigin() {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    for (Ink::NodeId id : edit_.selection) {
+        const Ink::Node* n = doc.Find(id);
+        if (!n || n->kind != Ink::NodeKind::Path) continue;
+        const Ink::PathData before = n->path;
+        const Ink::DVec2 c = LocalCentre(before);
+        if (std::abs(c.x) < 1e-12 && std::abs(c.y) < 1e-12) continue;
+        Ink::PathData p = before;
+        for (Ink::Subpath& sp : p.subpaths)
+            for (Ink::Anchor& an : sp.anchors) { an.pos.x -= c.x; an.pos.y -= c.y; }
+        doc.SetPath(id, p);
+        const Ink::PathData after = p;
+        PushDocCommand("Geometry to Origin",
+            [id, before](Ink::Document& d) { d.SetPath(id, before); },
+            [id, after](Ink::Document& d)  { d.SetPath(id, after); });
+    }
+    LogInfoAction("Geometry to Origin");
+}
+
+void Application::Action_OriginTo2DCursor() {
+    if (!edit_.cursor2DValid) return;
+    for (Ink::NodeId id : edit_.selection) MoveOriginTo(id, edit_.cursor2D);
+    LogInfoAction("Origin to 2D Cursor");
+}
+
+void Application::Action_SelectGroup() {
+    if (!project_.document || edit_.active == Ink::kNullNode) return;
+    const Ink::Node* n = project_.document->Find(edit_.active);
+    if (!n || n->parent == Ink::kNullNode) return;
+    edit_.SelectOnly(n->parent);
+    LogInfoAction("Select Group");
 }
 
 } // namespace App

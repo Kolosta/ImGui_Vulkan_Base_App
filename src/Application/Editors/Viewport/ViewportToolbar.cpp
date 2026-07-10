@@ -382,6 +382,11 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
 // not gated by hover) — a popup whose BeginPopup stops being called freezes.
 // Action_OpenAddMenu opens the ImGui popup exactly once; here we only render it.
 void Application::RenderAddMenu() {
+    if (addMenuRequested_) {           // arm → open ONCE, in THIS window scope
+        addMenuRequested_ = false;
+        addMenuOpen_ = true;
+        ImGui::OpenPopup("##addMenu");
+    }
     if (!addMenuOpen_) return;
 
     std::vector<UI::MenuEntry> entries;
@@ -402,6 +407,11 @@ void Application::RenderAddMenu() {
 // The Edit-mode "Set Handle Type" menu (V) — restores the legacy vertex-type
 // chooser. Rendered unconditionally like the Add menu.
 void Application::RenderHandleTypeMenu() {
+    if (handleMenuRequested_) {
+        handleMenuRequested_ = false;
+        handleMenuOpen_ = true;
+        ImGui::OpenPopup("##handleMenu");
+    }
     if (!handleMenuOpen_) return;
     std::vector<UI::MenuEntry> entries;
     auto add = [&](const char* lbl, const char* tip, int mode) {
@@ -425,40 +435,96 @@ void Application::RenderHandleTypeMenu() {
 // The viewport right-click context menu. Same unconditional-render rule.
 // viewportCtxNode_ is the object under the cursor (or null for empty space).
 void Application::RenderViewportContextMenu() {
+    if (viewportCtxRequested_) {        // arm → open ONCE, in THIS window scope
+        viewportCtxRequested_ = false;
+        viewportCtxOpen_ = true;
+        ImGui::OpenPopup("##viewportCtx");
+    }
     if (!viewportCtxOpen_) return;
     Ink::Document* doc = project_.document.get();
+    if (!doc) { viewportCtxOpen_ = false; return; }
 
     std::vector<UI::MenuEntry> entries;
-    const bool onObject = viewportCtxNode_ != Ink::kNullNode && doc && doc->Find(viewportCtxNode_);
+    const bool onObject = viewportCtxNode_ != Ink::kNullNode && doc->Find(viewportCtxNode_);
     const bool hasSel = !edit_.selection.empty();
+    const bool editing = (edit_.mode == EditorMode::Edit);
     auto close = [this]{ viewportCtxOpen_ = false; };
+    const char* title = editing ? "Vertex" : (onObject ? "Object" : "Viewport");
 
-    if (onObject) {
+    if (editing) {
+        // ── Edit-mode menu (acts on the selected vertices/handles) ──
+        const bool hasElems = !edit_.elemSel.empty();
+        { UI::MenuEntry e; e.label = "Set Handle Type"; e.enabled = hasElems;
+          auto add = [&](const char* l, int m) {
+              UI::MenuEntry s; s.label = l;
+              s.onClick = [this, m, close]{ Action_SetHandleType(m); close(); };
+              e.submenu.push_back(std::move(s)); };
+          add("Free", 0); add("Aligned", 1); add("Mirrored", 2);
+          add("Aligned + Mirrored", 3); add("Vector", 4);
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Remove Handles"; e.enabled = hasElems;
+          e.onClick = [this, close]{ Action_RemoveHandles(); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Delete Vertices"; e.shortcut = "X"; e.icon = "ink-eraser";
+          e.enabled = hasElems;
+          e.onClick = [this, close]{ Action_DeleteVertices(); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Exit Edit Mode"; e.shortcut = "Tab";
+          e.onClick = [this, close]{ Action_ExitEditMode(); close(); };
+          entries.push_back(std::move(e)); }
+    } else if (onObject) {
         const Ink::NodeId id = viewportCtxNode_;
-        const bool isPath = doc->Find(id)->kind == Ink::NodeKind::Path;
+        const Ink::Node* n = doc->Find(id);
+        const bool isPath = n->kind == Ink::NodeKind::Path;
+        const bool inGroup = n->parent != Ink::kNullNode;
         { UI::MenuEntry e; e.label = "Select"; e.enabled = !edit_.IsSelected(id);
           e.onClick = [this, id, close]{ edit_.SelectOnly(id); close(); };
           entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Deselect"; e.enabled = edit_.IsSelected(id);
           e.onClick = [this, id, close]{ edit_.Deselect(id); close(); };
           entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Enter Edit Mode"; e.enabled = isPath;
+        { UI::MenuEntry e; e.label = "Enter Edit Mode"; e.shortcut = "Tab"; e.enabled = isPath;
           e.onClick = [this, id, close]{ edit_.SelectOnly(id); Action_EnterEditMode(); close(); };
           entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Duplicate"; e.shortcut = "Ctrl D";
+        { UI::MenuEntry e; e.label = "Duplicate"; e.shortcut = "Ctrl D"; e.enabled = hasSel;
           e.onClick = [this, close]{ Action_DuplicateSelection(); close(); };
           entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Group"; e.shortcut = "Ctrl G"; e.enabled = hasSel;
           e.onClick = [this, close]{ Action_GroupSelection(); close(); };
           entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Ungroup"; e.shortcut = "Ctrl Alt G";
+        { UI::MenuEntry e; e.label = "Ungroup"; e.shortcut = "Ctrl Alt G"; e.enabled = hasSel;
           e.onClick = [this, close]{ Action_UngroupSelection(); close(); };
           entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Select Group"; e.enabled = inGroup;
+          e.tooltip = "Select the group this object belongs to";
+          e.onClick = [this, close]{ Action_SelectGroup(); close(); };
+          entries.push_back(std::move(e)); }
+        // Set Origin ▸ (legacy parity)
+        { UI::MenuEntry so; so.label = "Set Origin"; so.enabled = hasSel;
+          { UI::MenuEntry e; e.label = "Origin to Geometry";
+            e.tooltip = "Move the origin to the geometry centre (geometry stays put)";
+            e.onClick = [this, close]{ Action_OriginToGeometry(); close(); };
+            so.submenu.push_back(std::move(e)); }
+          { UI::MenuEntry e; e.label = "Geometry to Origin";
+            e.tooltip = "Re-centre the geometry on the object's origin";
+            e.onClick = [this, close]{ Action_GeometryToOrigin(); close(); };
+            so.submenu.push_back(std::move(e)); }
+          { UI::MenuEntry e; e.label = "Origin to 2D Cursor";
+            e.tooltip = "Move the origin onto the 2D cursor (geometry stays put)";
+            e.enabled = edit_.cursor2DValid;
+            e.onClick = [this, close]{ Action_OriginTo2DCursor(); close(); };
+            so.submenu.push_back(std::move(e)); }
+          entries.push_back(std::move(so)); }
+        { UI::MenuEntry e; e.label = "Apply Scale"; e.enabled = isPath;
+          e.tooltip = "Bake the scale into the geometry";
+          e.onClick = [this, close]{ Action_ApplyScale(); close(); };
+          entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Delete"; e.shortcut = "X"; e.icon = "ink-eraser";
+          e.enabled = hasSel;
           e.onClick = [this, close]{ Action_DeleteSelection(); close(); };
           entries.push_back(std::move(e)); }
     } else {
-        // Empty space: the Add submenu + selection helpers.
+        // Empty space: the Add submenu + selection / cursor helpers.
         UI::MenuEntry add; add.label = "Add";
         auto leaf = [&](const char* label, const char* kind) {
             UI::MenuEntry e; e.label = label;
@@ -474,9 +540,15 @@ void Application::RenderViewportContextMenu() {
         { UI::MenuEntry e; e.label = "Deselect All"; e.enabled = hasSel;
           e.onClick = [this, close]{ Action_DeselectAll(); close(); };
           entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "2D Cursor to Origin";
+          e.onClick = [this, close]{ Action_Cursor2DToOrigin(); close(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "2D Cursor to Selection"; e.enabled = hasSel;
+          e.onClick = [this, close]{ Action_Cursor2DToSelection(); close(); };
+          entries.push_back(std::move(e)); }
     }
 
-    const bool open = UI::ContextMenu("##viewportCtx", viewportCtxPos_, entries, "Object");
+    const bool open = UI::ContextMenu("##viewportCtx", viewportCtxPos_, entries, title);
     if (!open) viewportCtxOpen_ = false;
 }
 

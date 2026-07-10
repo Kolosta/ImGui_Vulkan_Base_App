@@ -128,6 +128,57 @@ void Application::OutlinerSelectClick(Ink::NodeId id, bool isObject) {
 
 // ── Pass 1: flatten the visible tree ──────────────────────────────────────────
 
+// Rebuild the parentId → children index (Collections view nesting, Lot 7).
+void Application::OutlinerBuildParentIndex() {
+    outlinerParentKids_.clear();
+    outlinerRowKids_.clear();
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    for (const Ink::Page& page : doc.Pages()) {
+        std::vector<Ink::NodeId> stack(page.children.begin(), page.children.end());
+        while (!stack.empty()) {
+            const Ink::NodeId id = stack.back(); stack.pop_back();
+            const Ink::Node* n = doc.Find(id);
+            if (!n) continue;
+            if (n->parentId != Ink::kNullNode && doc.Find(n->parentId))
+                outlinerParentKids_[n->parentId].push_back(id);
+            for (Ink::NodeId c : n->children) stack.push_back(c);
+        }
+    }
+}
+
+// The children a row shows in the CURRENT view. Layers: the layer-tree children.
+// Collections: the layer children (a group still contains its members) PLUS the
+// objects parented to this node (parentId, Lot 7) — deduplicated, so a parented
+// child appears exactly once, nested under its parent.
+const std::vector<Ink::NodeId>*
+Application::OutlinerRowChildren(const Ink::Node& n) const {
+    if (outlinerCur_ && outlinerCur_->display == OutlinerDisplayMode::Collections) {
+        auto& cache = const_cast<Application*>(this)->outlinerRowKids_;
+        auto cit = cache.find(n.id);
+        if (cit != cache.end())
+            return cit->second.empty() ? nullptr : &cit->second;
+        Ink::Document& doc = *project_.document;
+        std::vector<Ink::NodeId> kids;
+        // Layer children, minus those parented to ANOTHER node (they nest there).
+        for (Ink::NodeId c : n.children) {
+            const Ink::Node* cn = doc.Find(c);
+            if (cn && cn->parentId != Ink::kNullNode && cn->parentId != n.id &&
+                doc.Find(cn->parentId)) continue;
+            kids.push_back(c);
+        }
+        // Plus the objects parented to this node.
+        auto it = outlinerParentKids_.find(n.id);
+        if (it != outlinerParentKids_.end())
+            for (Ink::NodeId c : it->second)
+                if (std::find(kids.begin(), kids.end(), c) == kids.end()) kids.push_back(c);
+        auto& slot = cache[n.id];
+        slot = std::move(kids);
+        return slot.empty() ? nullptr : &slot;
+    }
+    return n.children.empty() ? nullptr : &n.children;
+}
+
 void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
                                       std::vector<OutlinerRow>& out) {
     Ink::Document& doc = *project_.document;
@@ -139,7 +190,8 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
     const bool passes = OutlinerPassesFilter(id);
     const bool searchOk = !searching || OutlinerSubtreeSearchHit(id);
     const bool drawSelf = passes && searchOk;
-    const bool hasKids = !n->children.empty();
+    const std::vector<Ink::NodeId>* kids = OutlinerRowChildren(*n);
+    const bool hasKids = kids && !kids->empty();
 
     if (drawSelf) {
         OutlinerRow r; r.id = id; r.kind = OutlinerRow::Kind::Object;
@@ -150,7 +202,7 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
     if (hasKids && !o.IsCollapsed(id)) {
         const int childDepth = drawSelf ? depth + 1 : depth;
         // Top-of-stack first (reverse painter order) for a layer-stack read.
-        for (auto it = n->children.rbegin(); it != n->children.rend(); ++it)
+        for (auto it = kids->rbegin(); it != kids->rend(); ++it)
             OutlinerFlattenNode(*it, childDepth, out);
     }
 }
@@ -158,21 +210,37 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
 void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& out) {
     Ink::Document& doc = *project_.document;
     OutlinerState& o = st.outliner;
+    OutlinerBuildParentIndex();
 
     if (o.display == OutlinerDisplayMode::Collections) {
+        // A parented object is listed UNDER its parent, never at a top level.
+        auto isParented = [&](Ink::NodeId id) {
+            const Ink::Node* n = doc.Find(id);
+            return n && n->parentId != Ink::kNullNode && doc.Find(n->parentId);
+        };
         if (o.showCollections)
             for (const Ink::Collection& c : doc.Collections()) {
                 OutlinerRow r; r.id = c.id; r.kind = OutlinerRow::Kind::CollectionHeader;
                 r.depth = 0; r.hasChildren = !c.members.empty();
                 out.push_back(r);
                 if (!o.IsCollapsed(c.id))
-                    for (Ink::NodeId m : c.members)
-                        if (doc.Find(m)) OutlinerFlattenNode(m, 1, out);
+                    for (Ink::NodeId m : c.members) {
+                        // Skip members whose parent is ALSO a member — they will
+                        // be drawn nested under that parent.
+                        const Ink::Node* mn = doc.Find(m);
+                        if (!mn) continue;
+                        if (mn->parentId != Ink::kNullNode &&
+                            std::find(c.members.begin(), c.members.end(), mn->parentId)
+                                != c.members.end()) continue;
+                        OutlinerFlattenNode(m, 1, out);
+                    }
             }
-        // Page-orphan objects (not in any collection), under their page.
+        // Page objects that are in no collection, top-level ones only (parented
+        // children nest under their parent through the parentId index).
         for (const Ink::Page& page : doc.Pages())
             for (auto it = page.children.rbegin(); it != page.children.rend(); ++it)
-                if (!OutlinerInAnyCollection(*it)) OutlinerFlattenNode(*it, 0, out);
+                if (!OutlinerInAnyCollection(*it) && !isParented(*it))
+                    OutlinerFlattenNode(*it, 0, out);
     } else {
         // Layers: page header + its layer tree, top of stack first.
         for (const Ink::Page& page : doc.Pages()) {
@@ -333,7 +401,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ImGui::PopID();
         const UI::ListRowInput& in = row.Input();
         if (in.doubleClicked) { o.renaming = rrow.id; std::snprintf(o.renameBuf, sizeof o.renameBuf, "%s", c->name.c_str()); }
-        if (in.rightClicked) { outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos; outlinerCtxNode_ = rrow.id; }
+        if (in.rightClicked) { outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos; outlinerCtxNode_ = rrow.id; ImGui::OpenPopup("##outlinerCtx"); }
         return;
     }
 
@@ -459,8 +527,8 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     if (in.rightClicked) {
         if (!OutlinerRowSelected(rrow.id)) OutlinerSelectClick(rrow.id, true);
         outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos; outlinerCtxNode_ = rrow.id;
+        ImGui::OpenPopup("##outlinerCtx");
     }
-    if (active && o.reqScrollToActive) ImGui::SetScrollHereY(0.5f);
 }
 
 // ── Render entry ──────────────────────────────────────────────────────────────
@@ -512,6 +580,19 @@ void Application::RenderOutliner(EditorState& st) {
         const float viewBot = scrollY + ImGui::GetWindowHeight();
         const float startY = ImGui::GetCursorPosY();   // local Y of the first row
 
+        // Numpad "." — frame the selection: scroll straight to the active row's
+        // index. Computed from the FLAT row list, so it works even when that row
+        // is culled (SetScrollHereY only fires for rows we actually draw).
+        if (st.outliner.reqScrollToActive && edit_.active != Ink::kNullNode) {
+            for (std::size_t i = 0; i < rows.size(); ++i)
+                if (rows[i].id == edit_.active && rows[i].kind == OutlinerRow::Kind::Object) {
+                    const float rowTop = startY + (float)i * stripeH;
+                    const float target = rowTop - (ImGui::GetWindowHeight() - stripeH) * 0.5f;
+                    ImGui::SetScrollY(std::max(0.0f, target));
+                    break;
+                }
+        }
+
         for (std::size_t i = 0; i < rows.size(); ++i) {
             const float rowTop = startY + (float)i * stripeH;
             const float rowBot = rowTop + stripeH;
@@ -539,13 +620,16 @@ void Application::RenderOutliner(EditorState& st) {
             if (belowRows && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                 outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
                 outlinerCtxNode_ = Ink::kNullNode;
+                ImGui::OpenPopup("##outlinerCtx");
             }
         }
+        // Render the context menu INSIDE the scroll child, the same window scope
+        // its OpenPopup was issued from (an id-string popup is scoped to the
+        // current window — opening and rendering must share that scope).
+        RenderOutlinerContextMenu(st);
     }
     UI::EndScroll();
     st.outliner.reqScrollToActive = false;
-
-    RenderOutlinerContextMenu(st);
 }
 
 } // namespace App
