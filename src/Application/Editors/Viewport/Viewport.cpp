@@ -50,10 +50,10 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     if (hovered) { zoneLayout_.SetHoveredEditorState(&st); hoveredViewport_ = &st; }
 
     st.openNewDoc = false;   // legacy request — consumed until Lot 2
-
-    // Publish the tool-palette rect so its clicks don't fall through to the
-    // canvas hover-test (rebuilt each frame; overlays append to it after).
-    st.overlayRects.clear();
+    // NB: st.overlayRects intentionally NOT cleared here — the input router
+    // (below) reads LAST frame's rects so a click on the tool palette never
+    // falls through to the canvas; they are cleared right before the palette
+    // repopulates them at the end of this function.
 
     const ImVec2 cMin = ImGui::GetCursorScreenPos();
 
@@ -190,16 +190,21 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     else
         ImGui::Dummy(size);
 
-    // Outliner viewport-sync picking (Lot 9): an Outliner armed "pick a
-    // viewport" paints a hovered zone with an accent wash and consumes the
-    // click to bind this leaf as its sync target.
+    // Outliner viewport-sync picking (Lot 9): while an Outliner is armed, the
+    // hovered viewport paints the LEGACY preview — the full zone inset like the
+    // editor-tab drop preview, rounded like the window, filled with the notice
+    // (orange) colour at the faint opacity — and consumes a left-click to
+    // become the sync target.
     if (outlinerPickingState_ && hovered) {
+        const float gs = ds.GetGlobalScale();
+        const float inset = ds.GetFloat(Tok::C_ZoneTab_DropCenterInset) * gs;
+        const float rnd   = ds.GetFloat(Tok::C_Window_CornerRadius) * gs;
+        ImVec4 orange = ds.GetColor(Tok::S_Color_Notice_Default);
+        orange.w = ds.GetFloat(Tok::S_Opacity_Faint);
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImVec4 wash = ds.GetColor(Tok::S_Color_Accent_Default); wash.w = 0.18f;
-        dl->AddRectFilled(cMin, ImVec2(cMin.x + size.x, cMin.y + size.y),
-                          ImGui::GetColorU32(wash));
-        dl->AddRect(cMin, ImVec2(cMin.x + size.x, cMin.y + size.y),
-                    ImGui::GetColorU32(ds.GetColor(Tok::S_Color_Accent_Default)), 0, 0, 2.0f);
+        dl->AddRectFilled(ImVec2(cMin.x + inset, cMin.y + inset),
+                          ImVec2(cMin.x + size.x - inset, cMin.y + size.y - inset),
+                          ImGui::GetColorU32(orange), rnd);
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             outlinerPickingState_->syncTarget  = &st;
             outlinerPickingState_->syncPicking = false;
@@ -207,7 +212,13 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         }
     }
 
+    // The transform-cursor icon (legacy glyphs), for the leaf owning the op.
+    if (transformOp_.Active() && transformOp_.leaf == &st)
+        DrawTransformCursor(cam);
+
     // Floating tool palette (drawn OVER the canvas image, as ImGui chrome).
+    // Clear + repopulate the overlay rects HERE (input read last frame's).
+    st.overlayRects.clear();
     RenderToolPalette(cMin, st);
     // NB: the Add / context popups are rendered ONCE per frame from Update()
     // (after the whole layout), not here — a popup gated by per-zone hover

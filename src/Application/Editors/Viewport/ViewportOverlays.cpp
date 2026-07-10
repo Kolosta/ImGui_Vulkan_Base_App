@@ -190,17 +190,28 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
         }
     }
 
-    // ── 2D cursor ─────────────────────────────────────────────────────────────
+    // ── 2D cursor (legacy design): a red/white ringed crosshair. The four
+    // ticks run from the inner radius to the outer length so the ring stays
+    // concentric; −X/−Y are dark (readable on the page), +X red and +Y green
+    // (the axes). All colours are the viewport-cursor tokens. ────────────────
     if (edit_.cursor2DValid && show2DCursor_) {
         const Ink::Vec2 c = cam.DocToView(edit_.cursor2D.x, edit_.cursor2D.y);
-        const Ink::Color cw = Rgb(1, 1, 1, 0.9f), cr = Rgb(0.85f, 0.15f, 0.15f, 0.9f);
-        ov.AddCircle(c, 9.0f, cw, 1.5f);
-        ov.AddCircle(c, 9.0f, cr, 0.8f);
-        const float s = 12.0f;
-        ov.AddLine({ c.x - s, c.y }, { c.x - 4, c.y }, cr, 1.0f);
-        ov.AddLine({ c.x + 4, c.y }, { c.x + s, c.y }, cr, 1.0f);
-        ov.AddLine({ c.x, c.y - s }, { c.x, c.y - 4 }, cr, 1.0f);
-        ov.AddLine({ c.x, c.y + 4 }, { c.x, c.y + s }, cr, 1.0f);
+        const float rr = 9.0f, ri = 3.0f, ro = 14.0f;
+        const Ink::Color ringW = Tint(ds, Tok::C_Viewport_CursorRing, 1.0f);
+        const Ink::Color ringR = Tint(ds, Tok::C_Viewport_CursorRingAccent, 1.0f);
+        const Ink::Color tickC = Tint(ds, Tok::C_Viewport_CursorTick, 1.0f);
+        const Ink::Color axisX = Tint(ds, Tok::C_Viewport_CursorAxisX, 1.0f);
+        const Ink::Color axisY = Tint(ds, Tok::C_Viewport_CursorAxisY, 1.0f);
+        ov.AddCircle(c, rr, ringW, 3.0f, 24);
+        ov.AddCircle(c, rr, ringR, 1.5f, 24);
+        auto tick = [&](float dx, float dy, const Ink::Color& col) {
+            ov.AddLine({ c.x + dx * ri, c.y + dy * ri },
+                       { c.x + dx * ro, c.y + dy * ro }, col, 1.8f);
+        };
+        tick(-1, 0, tickC);   // −X
+        tick(0, -1, tickC);   // −Y
+        tick(+1, 0, axisX);   // +X
+        tick(0, +1, axisY);   // +Y
     }
 
     // ── Modal transform feedback ──────────────────────────────────────────────
@@ -219,29 +230,18 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
                                                               : Rgb(0.35f,0.75f,0.3f,0.8f);
             ov.AddLine({ a.x, a.y }, { b.x, b.y }, axisCol, 1.0f);
         }
-        if (hovered) {
-            const ImVec2 m = ImGui::GetIO().MousePos;
-            // Custom cursor at the REAL (possibly edge-wrapped) mouse position.
-            const Ink::Vec2 realCur{ m.x - cam.canvasMin.x, m.y - cam.canvasMin.y };
-            // For Scale/Rotate, the pivot→cursor line follows the VIRTUAL,
-            // never-warped cursor (pivot + accumulated gesture, in doc space) so
-            // it keeps pointing in the true transform direction — even off the
-            // canvas — and stays exactly glued to the real cursor whenever the
-            // mouse is back at its logical spot (no warp offset there). Move
-            // shows NO origin line (the object itself tracks the cursor).
-            // No origin line in Move, nor in Edit mode (the pivot cross is
-            // enough there — the request).
-            if (transformOp_.kind != TransformOp::Kind::Move &&
-                edit_.mode != EditorMode::Edit) {
-                const Ink::Vec2 virt = cam.DocToView(
-                    transformOp_.startDoc.x + transformOp_.gestureAccum.x,
-                    transformOp_.startDoc.y + transformOp_.gestureAccum.y);
-                DashLine(ov, p, virt, subtleCol, 1.0f, 5.0f, 4.0f);
-            }
-            const float cs = 8.0f;
-            ov.AddLine({ realCur.x - cs, realCur.y }, { realCur.x + cs, realCur.y }, activeCol, 1.5f);
-            ov.AddLine({ realCur.x, realCur.y - cs }, { realCur.x, realCur.y + cs }, activeCol, 1.5f);
-            ov.AddCircle(realCur, 3.0f, activeCol, 1.2f);
+        // The pivot→cursor guide follows the VIRTUAL cursor (unbounded, real
+        // speed — TransformOp.virtPx): it keeps pointing in the true transform
+        // direction beyond the canvas edge, and coincides exactly with the
+        // displayed cursor whenever that virtual point is inside the canvas
+        // (both derive from the same accumulation). No line in Move, none in
+        // Edit mode. The cursor GLYPH itself is the legacy icon, drawn by
+        // DrawTransformCursor (ViewportModal.cpp).
+        if (transformOp_.kind != TransformOp::Kind::Move &&
+            edit_.mode != EditorMode::Edit) {
+            const Ink::Vec2 virt{ (float)(transformOp_.virtPx.x - cam.canvasMin.x),
+                                  (float)(transformOp_.virtPx.y - cam.canvasMin.y) };
+            DashLine(ov, p, virt, subtleCol, 1.0f, 5.0f, 4.0f);
         }
     }
 

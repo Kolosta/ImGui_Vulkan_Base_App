@@ -255,6 +255,27 @@ private:
     bool OutlinerInAnyCollection(Ink::NodeId id) const;
     // Right-click context menu for the Outliner (opened over a row or empty).
     void RenderOutlinerContextMenu(EditorState& st);
+    // Drag & drop (OutlinerDragDrop.cpp): rows are drag sources (objects and
+    // collections) and drop targets — Collections view: object→object parents,
+    // object→collection re-collections, collection→collection nests; Layers
+    // view: object→object reorders in the stack, object→group moves into it.
+    // The background (below the rows) un-parents / un-collections.
+    void OutlinerRowDragDrop(const OutlinerRow& row);
+    void OutlinerBackgroundDropTarget(ImVec2 rectMin, ImVec2 rectMax);
+    // The dragged object set: the whole selection when the payload id is part
+    // of it, else just that id (legacy multi-drag rule).
+    std::vector<Ink::NodeId> OutlinerDraggedIds(Ink::NodeId trigger) const;
+    // Undoable drop / organisation operations (OutlinerDragDrop.cpp).
+    void OutlinerDropParentTo(const std::vector<Ink::NodeId>& ids, Ink::NodeId parent);
+    void OutlinerDropToCollection(const std::vector<Ink::NodeId>& ids, Ink::NodeId coll);
+    void OutlinerDropToRoot(const std::vector<Ink::NodeId>& ids);
+    void OutlinerDropReorder(const std::vector<Ink::NodeId>& ids, Ink::NodeId target);
+    void OutlinerRemoveFromCollections(const std::vector<Ink::NodeId>& ids);
+    void OutlinerUnparent(const std::vector<Ink::NodeId>& ids);
+    // The collection-colour picker popup (Custom… in the Icon Colour submenu).
+    void RenderOutlinerColorPicker();
+    Ink::NodeId outlinerColorPickColl_ = Ink::kNullNode;
+    bool        outlinerColorPickRequested_ = false;
     // Organisation commands (undoable), shared by the Outliner + shortcuts.
     void Action_GroupSelection();
     void Action_UngroupSelection();
@@ -507,11 +528,23 @@ private:
     // outside RenderViewport) map the mouse to document space.
     ViewCam      hoveredCam_{};
     bool         osCursorHidden_ = false;   // we hid the OS cursor for a modal op
-    // Screen rect of the hovered viewport's canvas this frame (for edge-wrap).
+    // Screen rect of the hovered viewport's canvas this frame (wrap bounds).
     ImVec2       canvasRectMin_{}, canvasRectMax_{};
-    // Edge-wrap the cursor during a modal op via io.WantSetMousePos (ImGui
-    // zeroes MouseDelta on the warp frame, so the accumulation never drifts).
-    bool WrapCursorInCanvas();
+    // Modal mouse capture (ViewportModal.cpp): SDL RELATIVE mouse mode for the
+    // whole op — the OS cursor is grabbed/hidden, raw xrel/yrel deltas are
+    // accumulated in ProcessEvents, and NO warp ever happens during the op
+    // (Blender's grab model: drift is impossible by construction).
+    bool         modalRelMode_ = false;
+    ImVec2       modalRelAccum_{};          // raw px since last UpdateTransform
+    void   SetModalMouseCapture(bool on);
+    // Release the capture and land the OS cursor on the displayed cursor.
+    void   EndModalCapture();
+    // Fold an unbounded virtual point into the canvas rect (pure math).
+    ImVec2 WrapPointInCanvas(ImVec2 p) const;
+    // Draw the legacy transform cursor icon (multi-directional for Move; the
+    // double-arrow parallel to the guide for Scale, tangent for Rotate) at the
+    // wrapped virtual position, on the ImGui foreground list.
+    void   DrawTransformCursor(const ViewCam& cam);
 
     // The Ink render engine (docs/Ink/). Shares the app's Vulkan device;
     // frame protocol: BeginFrame() before the UI build, per-zone views during

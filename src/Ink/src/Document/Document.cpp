@@ -477,24 +477,80 @@ const Collection* Document::FindCollection(NodeId id) const {
     return nullptr;
 }
 
-NodeId Document::AddCollection(std::string name) {
+NodeId Document::AddCollection(std::string name, NodeId parent) {
     Collection c;
     c.id = NextId();
     c.name = std::move(name);
+    const NodeId id = c.id;
     collections_.push_back(std::move(c));
-    Log(collections_.back().id, ChangeKind::Added);
-    return collections_.back().id;
+    if (parent != kNullNode)
+        for (Collection& p : collections_)
+            if (p.id == parent) { p.childCollections.push_back(id); break; }
+    Log(id, ChangeKind::Added);
+    return id;
 }
 
-void Document::RemoveCollection(NodeId coll) {
+bool Document::IsChildCollection(NodeId id) const {
+    for (const Collection& c : collections_)
+        if (std::find(c.childCollections.begin(), c.childCollections.end(), id)
+            != c.childCollections.end())
+            return true;
+    return false;
+}
+
+void Document::MoveCollection(NodeId coll, NodeId parent) {
+    if (coll == parent || !FindCollection(coll)) return;
+    if (parent != kNullNode) {
+        if (!FindCollection(parent)) return;
+        // Refuse a cycle: `coll` must not be an ancestor of `parent`.
+        NodeId walk = parent;
+        int guard = 0;
+        while (walk != kNullNode && guard++ < 256) {
+            if (walk == coll) return;
+            NodeId up = kNullNode;
+            for (const Collection& c : collections_)
+                if (std::find(c.childCollections.begin(), c.childCollections.end(),
+                              walk) != c.childCollections.end()) { up = c.id; break; }
+            walk = up;
+        }
+    }
+    for (Collection& c : collections_)
+        c.childCollections.erase(std::remove(c.childCollections.begin(),
+            c.childCollections.end(), coll), c.childCollections.end());
+    if (parent != kNullNode)
+        for (Collection& p : collections_)
+            if (p.id == parent) { p.childCollections.push_back(coll); break; }
+    Log(coll, ChangeKind::Hierarchy);
+}
+
+void Document::RemoveCollection(NodeId coll, bool deleteContents) {
+    const Collection* c = FindCollection(coll);
+    if (!c) return;
+    // Copies — the erase below invalidates `c`.
+    const std::vector<NodeId> members  = c->members;
+    const std::vector<NodeId> children = c->childCollections;
+    const bool wasHiding = !c->visible && !members.empty();
+
+    if (deleteContents) {
+        for (NodeId child : children) RemoveCollection(child, true);
+        for (NodeId m : members) Remove(m);
+    }
+    // Detach from any parent collection.
+    for (Collection& p : collections_)
+        p.childCollections.erase(std::remove(p.childCollections.begin(),
+            p.childCollections.end(), coll), p.childCollections.end());
     for (auto it = collections_.begin(); it != collections_.end(); ++it)
         if (it->id == coll) {
-            const bool wasHiding = !it->visible && !it->members.empty();
             collections_.erase(it);
             // Removing a hiding collection may reveal members → recompile.
             Log(coll, wasHiding ? ChangeKind::Hierarchy : ChangeKind::Removed);
             return;
         }
+}
+
+void Document::SetCollectionColor(NodeId coll, const Color& colorTag) {
+    for (Collection& c : collections_)
+        if (c.id == coll) { c.colorTag = colorTag; Log(coll, ChangeKind::StyleChanged); return; }
 }
 
 void Document::SetCollectionName(NodeId coll, std::string name) {

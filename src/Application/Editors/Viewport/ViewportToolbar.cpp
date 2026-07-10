@@ -56,11 +56,16 @@ void Application::RenderToolPalette(ImVec2 origin, EditorState& st) {
                                      origin.x + kPad + w, origin.y + kPad + h));
 
     ImGui::SetCursorScreenPos(ImVec2(origin.x + kPad, origin.y + kPad));
+    // Container chrome from the design tokens (border colour + control corner
+    // radius), so the palette matches the rest of the system.
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ds.GetColor(Tok::S_Color_Background_Layer1));
+    ImGui::PushStyleColor(ImGuiCol_Border,  ds.GetColor(Tok::S_Color_Border_Default));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kPad, kPad));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(0, kPad));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 5.0f * gs);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 1.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,
+                        ds.GetFloat(Tok::S_CornerRadius_Control) * gs);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize,
+                        ds.BordersEnabled() ? 1.0f : 0.0f);
     ImGui::BeginChild("##InkTools", ImVec2(w, h), true,
                       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     {
@@ -103,7 +108,7 @@ void Application::RenderToolPalette(ImVec2 origin, EditorState& st) {
     }
     ImGui::EndChild();
     ImGui::PopStyleVar(4);
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(2);   // ChildBg + Border
 }
 
 // ── Default fill / stroke swatches (new-shape style) ──────────────────────────

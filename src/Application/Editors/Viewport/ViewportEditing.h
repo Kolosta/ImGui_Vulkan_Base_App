@@ -135,10 +135,18 @@ struct TransformOp {
     Ink::DVec2 basisX{ 1, 0 }, basisY{ 0, 1 };   // orientation basis (doc space)
     Ink::DVec2 pivot{};                  // doc space
     Ink::DVec2 startDoc{};               // mouse at op start (doc space)
-    // Accumulated doc-space motion since the op began, integrated from the
-    // per-frame gesture delta so an edge-wrap of the cursor does NOT jump the
-    // transform (the "effective cursor" = startDoc + gestureAccum).
+    // Accumulated doc-space motion driving the transform (precision-scaled).
+    // Integrated from RAW relative mouse motion (SDL relative mode — the OS
+    // cursor is grabbed for the whole op, so there is NO warp at all and the
+    // accumulation can never drift). The "effective cursor" for the maths is
+    // startDoc + gestureAccum.
     Ink::DVec2 gestureAccum{ 0, 0 };
+    // The VIRTUAL cursor in screen px, unbounded (integrates the same raw
+    // motion at real speed, never precision-scaled, never wrapped). The dashed
+    // guide line ends here; the drawn cursor is this point FOLDED into the
+    // canvas rect — both derive from one accumulation, so whenever the virtual
+    // point is inside the canvas they are the same pixel, by construction.
+    Ink::DVec2 virtPx{ 0, 0 };
 
     struct NodeOrig { Ink::NodeId id; Ink::Transform2D t; };
     std::vector<NodeOrig> nodes;         // Object Mode originals

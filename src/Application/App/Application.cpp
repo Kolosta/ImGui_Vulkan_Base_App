@@ -81,6 +81,13 @@ void Application::ProcessEvents() {
             if (w->HandleEvent(event)) { consumed = true; break; }
         if (consumed) continue;
         ImGui_ImplSDL3_ProcessEvent(&event);
+        // Modal-transform mouse capture (SDL relative mode): accumulate the RAW
+        // relative motion. This is the transform's only motion source — no
+        // absolute positions, no warps → no drift (ViewportModal.cpp).
+        if (modalRelMode_ && event.type == SDL_EVENT_MOUSE_MOTION) {
+            modalRelAccum_.x += event.motion.xrel;
+            modalRelAccum_.y += event.motion.yrel;
+        }
         if (event.type == SDL_EVENT_QUIT)
             running_ = false;
         if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&

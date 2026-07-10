@@ -24,11 +24,13 @@ add_library(Application STATIC
     # Outliner/Properties placeholders (rebuilt in Lot 9).
     Editors/Viewport/Viewport.cpp
     Editors/Viewport/ViewportInput.cpp
+    Editors/Viewport/ViewportModal.cpp
     Editors/Viewport/ViewportTools.cpp
     Editors/Viewport/ViewportOverlays.cpp
     Editors/Viewport/ViewportToolbar.cpp
     Editors/Outliner/Outliner.cpp
     Editors/Outliner/OutlinerMenus.cpp
+    Editors/Outliner/OutlinerDragDrop.cpp
     Editors/Properties/Properties.cpp
     Editors/Info/InfoEditors.cpp
 

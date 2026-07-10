@@ -160,33 +160,158 @@ void Application::BuildOutlinerTopBar(EditorState& st, EditorBar& bar) {
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
+// The legacy collection hue palette (primitive tokens), in the legacy order.
+namespace {
+struct CollHue { const char* name; Tok token; };
+constexpr CollHue kCollHues[] = {
+    { "Cyan",      Tok::P_Color_Cyan_500 },      { "Indigo",    Tok::P_Color_Indigo_500 },
+    { "Cinnamon",  Tok::P_Color_Cinnamon_500 },  { "Green",     Tok::P_Color_Green_500 },
+    { "Yellow",    Tok::P_Color_Yellow_500 },    { "Orange",    Tok::P_Color_Orange_500 },
+    { "Red",       Tok::P_Color_Red_500 },       { "Magenta",   Tok::P_Color_Magenta_500 },
+    { "Purple",    Tok::P_Color_Purple_500 },    { "Turquoise", Tok::P_Color_Turquoise_500 },
+};
+Ink::Color TokenToInk(Tok t, const ImVec4& fallback) {
+    ImVec4 c = fallback;
+    try { c = DS::DesignSystem::Instance().GetColor(t); } catch (...) {}
+    return { c.x, c.y, c.z, c.w };
+}
+} // namespace
+
 void Application::RenderOutlinerContextMenu(EditorState& st) {
     if (!outlinerCtxOpen_) return;   // OpenPopup happened ONCE at the click site
     Ink::Document& doc = *project_.document;
 
     std::vector<UI::MenuEntry> entries;
     const bool hasSel = !edit_.selection.empty();
+    const bool collectionsMode =
+        st.outliner.display == OutlinerDisplayMode::Collections;
     const Ink::Collection* ctxColl = doc.FindCollection(outlinerCtxNode_);
+    const bool onObject = !ctxColl && outlinerCtxNode_ != Ink::kNullNode &&
+                          doc.Find(outlinerCtxNode_);
+    // Menu actions act on the SELECTION when the clicked row is part of it,
+    // else on the clicked row alone (legacy rule).
+    auto targetIds = [&]() -> std::vector<Ink::NodeId> {
+        if (onObject && !edit_.IsSelected(outlinerCtxNode_)) return { outlinerCtxNode_ };
+        std::vector<Ink::NodeId> ids;
+        for (Ink::NodeId id : edit_.selection) if (doc.Find(id)) ids.push_back(id);
+        return ids;
+    };
+    const char* title = ctxColl ? "Collection" : (onObject ? "Object" : "Outliner");
 
     if (ctxColl) {
+        // ── Collection menu (Collections view) ──
         const Ink::NodeId col = outlinerCtxNode_;
+        { UI::MenuEntry e; e.label = "Add Collection";
+          e.tooltip = "Create a new collection nested inside this one";
+          e.onClick = [this, col]() {
+              project_.document->AddCollection("Collection", col);
+              LogInfoAction("Add Collection");
+          };
+          entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Rename";
           e.onClick = [this, col, &st]() {
               if (const Ink::Collection* c = project_.document->FindCollection(col)) {
                   st.outliner.renaming = col;
-                  std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf, "%s", c->name.c_str());
+                  std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf,
+                                "%s", c->name.c_str());
               }
           };
           entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Delete Collection";
-          e.tooltip = "Its objects are kept (only the set is removed)";
-          e.onClick = [this, col]() { project_.document->RemoveCollection(col);
-                                      LogInfoAction("Delete Collection"); };
+        // Icon Colour ▸ — Default, the 10 legacy hues, then Custom…
+        { UI::MenuEntry cc; cc.label = "Icon Colour";
+          { UI::MenuEntry e; e.label = "Default";
+            e.onClick = [this, col]() {
+                project_.document->SetCollectionColor(col,
+                    TokenToInk(Tok::S_Color_Text_Subtle, ImVec4(0.55f,0.60f,0.70f,1)));
+            };
+            cc.submenu.push_back(std::move(e)); }
+          for (const CollHue& h : kCollHues) {
+              UI::MenuEntry e; e.label = h.name;
+              const Tok tok = h.token;
+              e.onClick = [this, col, tok]() {
+                  project_.document->SetCollectionColor(col,
+                      TokenToInk(tok, ImVec4(0.5f,0.5f,0.5f,1)));
+              };
+              cc.submenu.push_back(std::move(e));
+          }
+          { UI::MenuEntry e; e.label = "Custom...";
+            e.onClick = [this, col]() {
+                outlinerColorPickColl_ = col;
+                outlinerColorPickRequested_ = true;
+            };
+            cc.submenu.push_back(std::move(e)); }
+          entries.push_back(std::move(cc)); }
+        { UI::MenuEntry e; e.label = "Delete";
+          e.tooltip = "Remove the collection; its objects are kept";
+          e.onClick = [this, col]() {
+              project_.document->RemoveCollection(col, false);
+              LogInfoAction("Delete Collection");
+          };
           entries.push_back(std::move(e)); }
-    } else {
-        { UI::MenuEntry e; e.label = "Select"; e.enabled = !OutlinerRowSelected(outlinerCtxNode_) &&
-              outlinerCtxNode_ != Ink::kNullNode;
+        { UI::MenuEntry e; e.label = "Delete Hierarchy"; e.icon = "ink-eraser";
+          e.tooltip = "Remove the collection AND delete its objects and child collections";
+          e.onClick = [this, col]() {
+              project_.document->RemoveCollection(col, true);
+              edit_.Prune(*project_.document);
+              LogInfoAction("Delete Hierarchy");
+          };
+          entries.push_back(std::move(e)); }
+    } else if (onObject && collectionsMode) {
+        // ── Object menu, Collections view (organisation: collections/parents;
+        //    NO layer-group entries here — groups are a Layers concept) ──
+        { UI::MenuEntry e; e.label = "Select"; e.enabled = !OutlinerRowSelected(outlinerCtxNode_);
           e.onClick = [this]() { edit_.SelectOnly(outlinerCtxNode_); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Deselect"; e.enabled = OutlinerRowSelected(outlinerCtxNode_);
+          e.onClick = [this]() { edit_.Deselect(outlinerCtxNode_); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Copy"; e.shortcut = "Ctrl C"; e.enabled = false;
+          e.tooltip = "Returns with the clipboard rework";
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Cut"; e.shortcut = "Ctrl X"; e.enabled = false;
+          e.tooltip = "Returns with the clipboard rework";
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Paste"; e.shortcut = "Ctrl V"; e.enabled = false;
+          e.tooltip = "Returns with the clipboard rework";
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Duplicate"; e.shortcut = "Ctrl D";
+          e.onClick = [this]() { Action_DuplicateSelection(); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Delete"; e.shortcut = "X"; e.icon = "ink-eraser";
+          e.onClick = [this]() { Action_DeleteSelection(); };
+          entries.push_back(std::move(e)); }
+        if (!doc.Collections().empty()) {
+            UI::MenuEntry mv; mv.label = "Move to Collection";
+            for (const Ink::Collection& c : doc.Collections()) {
+                UI::MenuEntry e; e.label = c.name.empty() ? "(collection)" : c.name;
+                const Ink::NodeId col = c.id;
+                e.onClick = [this, col, targetIds]() {
+                    OutlinerDropToCollection(targetIds(), col);
+                };
+                mv.submenu.push_back(std::move(e));
+            }
+            entries.push_back(std::move(mv));
+        }
+        { UI::MenuEntry e; e.label = "Remove from Collections";
+          e.onClick = [this, targetIds]() { OutlinerRemoveFromCollections(targetIds()); };
+          entries.push_back(std::move(e)); }
+        { const Ink::Node* n = doc.Find(outlinerCtxNode_);
+          UI::MenuEntry e; e.label = "Unparent";
+          e.tooltip = "Clear the object parenting (keeps the world position)";
+          e.enabled = n && n->parentId != Ink::kNullNode;
+          e.onClick = [this, targetIds]() { OutlinerUnparent(targetIds()); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "New Collection from Selection"; e.enabled = hasSel;
+          e.onClick = [this]() { Action_NewCollectionFromSelection(); };
+          entries.push_back(std::move(e)); }
+    } else if (onObject) {
+        // ── Object menu, Layers view (stacking: groups/z-order; NO collection
+        //    entries here — collections are the other organisation) ──
+        { UI::MenuEntry e; e.label = "Select"; e.enabled = !OutlinerRowSelected(outlinerCtxNode_);
+          e.onClick = [this]() { edit_.SelectOnly(outlinerCtxNode_); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Deselect"; e.enabled = OutlinerRowSelected(outlinerCtxNode_);
+          e.onClick = [this]() { edit_.Deselect(outlinerCtxNode_); };
           entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Group"; e.shortcut = "Ctrl G"; e.enabled = hasSel;
           e.onClick = [this]() { Action_GroupSelection(); };
@@ -198,7 +323,8 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
           e.onClick = [this, &st]() {
               if (const Ink::Node* n = project_.document->Find(edit_.active)) {
                   st.outliner.renaming = edit_.active;
-                  std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf, "%s", n->name.c_str());
+                  std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf,
+                                "%s", n->name.c_str());
               }
           };
           entries.push_back(std::move(e)); }
@@ -208,30 +334,48 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
         { UI::MenuEntry e; e.label = "Delete"; e.shortcut = "X"; e.icon = "ink-eraser";
           e.enabled = hasSel; e.onClick = [this]() { Action_DeleteSelection(); };
           entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "New Collection from Selection"; e.enabled = hasSel;
-          e.onClick = [this]() { Action_NewCollectionFromSelection(); };
+    } else {
+        // ── Background ── Collections view: Add Collection. Layers: nothing.
+        if (!collectionsMode) { outlinerCtxOpen_ = false; return; }
+        { UI::MenuEntry e; e.label = "Add Collection";
+          e.onClick = [this]() {
+              project_.document->AddCollection("Collection");
+              LogInfoAction("Add Collection");
+          };
           entries.push_back(std::move(e)); }
-        if (hasSel && !doc.Collections().empty()) {
-            UI::MenuEntry add; add.label = "Add to Collection";
-            for (const Ink::Collection& c : doc.Collections()) {
-                UI::MenuEntry e; e.label = c.name.empty() ? "(collection)" : c.name;
-                const Ink::NodeId col = c.id;
-                e.onClick = [this, col]() {
-                    for (Ink::NodeId id : edit_.selection) project_.document->AddToCollection(col, id);
-                    LogInfoAction("Add to Collection");
-                };
-                add.submenu.push_back(std::move(e));
-            }
-            entries.push_back(std::move(add));
-        }
     }
 
     // ContextMenu returns false once ImGui closed the popup (item click, click
     // outside, or Esc — ImGui closes popups on Esc itself), which clears the flag.
     // The flag is only ever SET at the click site, together with a single
     // OpenPopup — never re-opened here, or the menu could never close.
-    const bool open = UI::ContextMenu("##outlinerCtx", outlinerCtxPos_, entries, "Outliner");
+    const bool open = UI::ContextMenu("##outlinerCtx", outlinerCtxPos_, entries, title);
     if (!open) outlinerCtxOpen_ = false;
+}
+
+// The Custom… collection colour picker. Rendered every frame in the same
+// window scope (the Outliner scroll child); opened exactly once on request.
+void Application::RenderOutlinerColorPicker() {
+    if (outlinerColorPickRequested_) {
+        outlinerColorPickRequested_ = false;
+        ImGui::OpenPopup("##collColorPick");
+    }
+    if (outlinerColorPickColl_ == Ink::kNullNode) return;
+    if (ImGui::BeginPopup("##collColorPick")) {
+        const Ink::Collection* c = project_.document
+            ? project_.document->FindCollection(outlinerColorPickColl_) : nullptr;
+        if (!c) { ImGui::CloseCurrentPopup(); }
+        else {
+            ImVec4 col(c->colorTag.r, c->colorTag.g, c->colorTag.b, c->colorTag.a);
+            if (ImGui::ColorPicker4("##collCol", &col.x,
+                    ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview))
+                project_.document->SetCollectionColor(outlinerColorPickColl_,
+                    { col.x, col.y, col.z, col.w });
+        }
+        ImGui::EndPopup();
+    } else {
+        outlinerColorPickColl_ = Ink::kNullNode;   // closed
+    }
 }
 
 // ── Organisation commands (undoable) ──────────────────────────────────────────

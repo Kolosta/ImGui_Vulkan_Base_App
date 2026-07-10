@@ -1,330 +1,24 @@
-#include "Application.h"
+﻿#include "Application.h"
 
+#include "ViewportMath.h"
 #include <Ink/Scene/Picking.h>
 #include <Shortcuts/ToolManager.h>
 #include <algorithm>
 #include <cmath>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Viewport input — the interactive editing loop (docs/Ink/ROADMAP.md Lot 8):
-//  the transform frame (pivot + orientation basis), the modal G/R/S operation
-//  (live preview, axis constraint, snapping, confirm/cancel) and the active
-//  tool's mouse gestures (pick, box-select, draw rect/ellipse).
+//  Viewport input router + active-tool mouse gestures (docs/Ink/ROADMAP.md
+//  Lot 8): pick / box-select / draw rect-ellipse / edit-mode element picking
+//  and the direct handle drag. The modal G/R/S transform itself lives in
+//  ViewportModal.cpp.
 //
-//  Ink is the source of truth for geometry: picking and selection bounds come
-//  from the compiled Scene (Ink::PickTop / Scene::NodeBounds), so the editor
-//  never re-derives geometry the engine already owns.
+//  Right-click NEVER acts on the canvas (no selection change, no tool click):
+//  it only opens the context menu — except Shift+RMB, which places the 2D
+//  cursor (legacy behaviour).
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace App {
 
-namespace {
-Ink::DVec2 Rotate(Ink::DVec2 v, double c, double s) {
-    return { v.x * c - v.y * s, v.x * s + v.y * c };
-}
-double SnapTo(double v, double inc) {
-    return inc > 0.0 ? std::round(v / inc) * inc : v;
-}
-// Invert an affine 2×3 (non-degenerate; identity fallback).
-Ink::DMat23 InvertAffine(const Ink::DMat23& m) {
-    const double det = m.m[0] * m.m[4] - m.m[1] * m.m[3];
-    Ink::DMat23 r;
-    if (std::abs(det) < 1e-18) return r;
-    const double inv = 1.0 / det;
-    r.m[0] =  m.m[4] * inv; r.m[1] = -m.m[1] * inv;
-    r.m[3] = -m.m[3] * inv; r.m[4] =  m.m[0] * inv;
-    r.m[2] = -(r.m[0] * m.m[2] + r.m[1] * m.m[5]);
-    r.m[5] = -(r.m[3] * m.m[2] + r.m[4] * m.m[5]);
-    return r;
-}
-} // namespace
-
-bool Application::SelectionBounds(Ink::DRect& out) const {
-    if (!ink_ || edit_.selection.empty()) return false;
-    out = {};
-    Ink::DRect nb;
-    for (Ink::NodeId id : edit_.selection)
-        if (ink_->NodeBounds(id, nb)) {
-            out.Grow(nb.min);
-            out.Grow(nb.max);
-        }
-    return out.valid;
-}
-
-void Application::ComputeTransformFrame(Ink::DVec2& pivot,
-                                        Ink::DVec2& bx, Ink::DVec2& by) const {
-    bx = { 1, 0 };  by = { 0, 1 };
-    // Orientation basis.
-    if (project_.document && edit_.active != Ink::kNullNode &&
-        (edit_.orientation == TransformOrientation::Local ||
-         edit_.orientation == TransformOrientation::Parent)) {
-        const Ink::Node* n = project_.document->Find(edit_.active);
-        if (n) {
-            Ink::NodeId src = edit_.orientation == TransformOrientation::Parent
-                                  ? n->parentId : edit_.active;
-            if (src != Ink::kNullNode) {
-                const Ink::DMat23 w = project_.document->WorldTransform(src);
-                const double a = std::atan2(w.m[3], w.m[0]);
-                const double c = std::cos(a), s = std::sin(a);
-                bx = { c, s };  by = { -s, c };
-            }
-        }
-    }
-    // ── Edit mode: pivot from the SELECTED ELEMENTS (points + handles), not the
-    // object. The 2D cursor / median / active rules apply to those world points.
-    if (edit_.mode == EditorMode::Edit && edit_.active != Ink::kNullNode &&
-        project_.document && !edit_.elemSel.empty()) {
-        const Ink::Node* n = project_.document->Find(edit_.active);
-        const Ink::DMat23 w = n ? project_.document->WorldTransform(edit_.active) : Ink::DMat23{};
-        auto elemWorld = [&](const EditContext::ElemRef& e) -> Ink::DVec2 {
-            const Ink::Anchor& an = n->path.subpaths[e.sp].anchors[e.a];
-            if (e.part == EditContext::ElemPart::In)  return w.Apply({ an.pos.x+an.in.x, an.pos.y+an.in.y });
-            if (e.part == EditContext::ElemPart::Out) return w.Apply({ an.pos.x+an.out.x, an.pos.y+an.out.y });
-            return w.Apply(an.pos);
-        };
-        if (edit_.pivot == PivotMode::Cursor2D && edit_.cursor2DValid) {
-            pivot = edit_.cursor2D;
-        } else if (edit_.pivot == PivotMode::ActiveElement) {
-            pivot = elemWorld(edit_.elemSel.back());   // last-picked element
-        } else {
-            // Median / bbox-centre of the selected elements.
-            Ink::DVec2 sum{ 0, 0 }; int cnt = 0;
-            for (const auto& e : edit_.elemSel) { const Ink::DVec2 p = elemWorld(e); sum.x += p.x; sum.y += p.y; ++cnt; }
-            if (cnt > 0) pivot = { sum.x / cnt, sum.y / cnt };
-        }
-        return;
-    }
-
-    // ── Object mode pivot ──
-    Ink::DRect b;
-    const bool haveBounds = SelectionBounds(b);
-    pivot = haveBounds ? b.Center() : Ink::DVec2{ 0, 0 };
-    if (edit_.pivot == PivotMode::Cursor2D && edit_.cursor2DValid) {
-        pivot = edit_.cursor2D;
-    } else if (edit_.pivot == PivotMode::ActiveElement && project_.document &&
-        edit_.active != Ink::kNullNode) {
-        Ink::DRect ab;
-        if (ink_->NodeBounds(edit_.active, ab)) pivot = ab.Center();
-    } else if (edit_.pivot == PivotMode::MedianPoint && project_.document) {
-        // Median of the selected object origins (world translation).
-        Ink::DVec2 sum{ 0, 0 }; int n = 0;
-        for (Ink::NodeId id : edit_.selection) {
-            const Ink::DMat23 w = project_.document->WorldTransform(id);
-            sum.x += w.m[2]; sum.y += w.m[5]; ++n;
-        }
-        if (n > 0) pivot = { sum.x / n, sum.y / n };
-    }
-}
-
-// ── Modal transform ─────────────────────────────────────────────────────────
-
-void Application::BeginTransform(TransformOp::Kind kind, EditorState& st) {
-    if (edit_.selection.empty() && edit_.mode == EditorMode::Object) return;
-    if (edit_.mode == EditorMode::Edit &&
-        (edit_.active == Ink::kNullNode || edit_.elemSel.empty())) return;
-    if (!project_.document) return;
-
-    transformOp_ = TransformOp{};
-    transformOp_.kind = kind;
-    transformOp_.leaf = &st;
-    transformOp_.editVerts = (edit_.mode == EditorMode::Edit);
-    ComputeTransformFrame(transformOp_.pivot, transformOp_.basisX, transformOp_.basisY);
-
-    const ImVec2 m = ImGui::GetIO().MousePos;
-    transformOp_.startDoc = hoveredCam_.ScreenToDoc(m.x, m.y);
-    transformOp_.gestureAccum = { 0, 0 };
-    osCursorHidden_ = true;                // suppress the OS cursor (see Update)
-
-    Ink::Document& doc = *project_.document;
-    if (transformOp_.editVerts) {
-        const Ink::Node* n = doc.Find(edit_.active);
-        if (n) { transformOp_.origPath = n->path; transformOp_.editNode = edit_.active; }
-    } else {
-        for (Ink::NodeId id : edit_.selection)
-            if (const Ink::Node* n = doc.Find(id))
-                transformOp_.nodes.push_back({ id, n->transform });
-    }
-    const char* name = kind == TransformOp::Kind::Move ? "Move"
-                     : kind == TransformOp::Kind::Rotate ? "Rotate" : "Scale";
-    LogInfoAction(name);
-}
-
-void Application::UpdateTransform(const ViewCam& cam) {
-    if (!transformOp_.Active() || !project_.document) return;
-    Ink::Document& doc = *project_.document;
-    ImGuiIO& io = ImGui::GetIO();
-    const bool precise = io.KeyShift;
-
-    // Integrate the REAL per-frame motion from ImGui's own MouseDelta, which is
-    // ZERO on the frame we teleport the cursor (see the wrap below) — so the
-    // warp jump is excluded EXACTLY, with no residual drift no matter how fast
-    // the cursor crosses a border. Shift = finer relative motion.
-    const double pf = precise ? 0.1 : 1.0;
-    transformOp_.gestureAccum.x += (double)io.MouseDelta.x * pf / cam.zoom;
-    transformOp_.gestureAccum.y += (double)io.MouseDelta.y * pf / cam.zoom;
-    const Ink::DVec2 cur{ transformOp_.startDoc.x + transformOp_.gestureAccum.x,
-                          transformOp_.startDoc.y + transformOp_.gestureAccum.y };
-    // Edge-wrap the cursor for the NEXT frame via ImGui's teleport channel
-    // (io.WantSetMousePos): ImGui then reports MouseDelta == 0 on the warp
-    // frame, so the jump never enters the accumulation.
-    WrapCursorInCanvas();
-    const bool snap = edit_.snap.enabled ^ io.KeyCtrl;   // magnet XOR Ctrl
-
-    const Ink::DVec2 P = transformOp_.pivot;
-
-    // Build a world-space point transform for the current op (translate for
-    // Move, rotate/scale about the pivot for the others).
-    Ink::DVec2 moveD{ cur.x - transformOp_.startDoc.x, cur.y - transformOp_.startDoc.y };
-    double ang = 0.0, fx = 1.0, fy = 1.0;
-    if (transformOp_.kind == TransformOp::Kind::Move) {
-        if (transformOp_.axis == 0) {
-            const double t = moveD.x*transformOp_.basisX.x + moveD.y*transformOp_.basisX.y;
-            moveD = { transformOp_.basisX.x*t, transformOp_.basisX.y*t };
-        } else if (transformOp_.axis == 1) {
-            const double t = moveD.x*transformOp_.basisY.x + moveD.y*transformOp_.basisY.y;
-            moveD = { transformOp_.basisY.x*t, transformOp_.basisY.y*t };
-        }
-        if (snap && edit_.snap.affectMove) {
-            const double inc = precise ? edit_.snap.movePrecision : edit_.snap.moveIncrement;
-            moveD.x = SnapTo(moveD.x, inc); moveD.y = SnapTo(moveD.y, inc);
-        }
-    } else if (transformOp_.kind == TransformOp::Kind::Rotate) {
-        const double a0 = std::atan2(transformOp_.startDoc.y-P.y, transformOp_.startDoc.x-P.x);
-        const double a1 = std::atan2(cur.y-P.y, cur.x-P.x);
-        ang = a1 - a0;
-        if (snap && edit_.snap.affectRotate) {
-            const double inc = (precise ? edit_.snap.rotPrecisionIncrement : edit_.snap.rotIncrement)
-                             * 3.14159265358979 / 180.0;
-            ang = SnapTo(ang, inc);
-        }
-    } else { // Scale
-        const double d0 = std::hypot(transformOp_.startDoc.x-P.x, transformOp_.startDoc.y-P.y);
-        const double d1 = std::hypot(cur.x-P.x, cur.y-P.y);
-        double f = d0 > 1e-9 ? d1/d0 : 1.0;
-        if (snap && edit_.snap.affectScale) {
-            const double inc = precise ? edit_.snap.scalePrecision : edit_.snap.scaleIncrement;
-            f = SnapTo(f, inc);
-        }
-        fx = fy = f;
-        if (transformOp_.axis == 0) fy = 1.0; else if (transformOp_.axis == 1) fx = 1.0;
-    }
-    const double rc = std::cos(ang), rs = std::sin(ang);
-    // Apply the op to a world point around the pivot.
-    auto xf = [&](Ink::DVec2 wp) -> Ink::DVec2 {
-        if (transformOp_.kind == TransformOp::Kind::Move)
-            return { wp.x + moveD.x, wp.y + moveD.y };
-        const Ink::DVec2 rel{ wp.x - P.x, wp.y - P.y };
-        if (transformOp_.kind == TransformOp::Kind::Rotate) {
-            const Ink::DVec2 rr = Rotate(rel, rc, rs);
-            return { P.x + rr.x, P.y + rr.y };
-        }
-        return { P.x + rel.x * fx, P.y + rel.y * fy };  // Scale
-    };
-
-    if (transformOp_.editVerts) {
-        // Transform the SELECTED ELEMENTS of the active path. Points move their
-        // anchor (handles ride along); handle elements move only that handle.
-        const Ink::Node* n = doc.Find(transformOp_.editNode);
-        if (!n) return;
-        const Ink::DMat23 w = doc.WorldTransform(transformOp_.editNode);
-        const Ink::DMat23 wi = InvertAffine(w);
-        Ink::PathData p = transformOp_.origPath;
-        for (const auto& e : edit_.elemSel) {
-            if (e.sp >= (int)p.subpaths.size() ||
-                e.a  >= (int)p.subpaths[e.sp].anchors.size()) continue;
-            Ink::Anchor& an = p.subpaths[e.sp].anchors[e.a];
-            if (e.part == EditContext::ElemPart::Point) {
-                const Ink::DVec2 np = wi.Apply(xf(w.Apply(an.pos)));
-                an.pos = np;   // handles are relative → they follow the point
-            } else if (e.part == EditContext::ElemPart::In && an.hasIn) {
-                const Ink::DVec2 nh = wi.Apply(xf(w.Apply({ an.pos.x+an.in.x, an.pos.y+an.in.y })));
-                an.in = { nh.x - an.pos.x, nh.y - an.pos.y };
-            } else if (e.part == EditContext::ElemPart::Out && an.hasOut) {
-                const Ink::DVec2 nh = wi.Apply(xf(w.Apply({ an.pos.x+an.out.x, an.pos.y+an.out.y })));
-                an.out = { nh.x - an.pos.x, nh.y - an.pos.y };
-            }
-        }
-        doc.SetPath(transformOp_.editNode, p);
-        return;
-    }
-
-    // Object mode: transform each selected node's origin (and rotation/scale).
-    for (const auto& o : transformOp_.nodes) {
-        Ink::Transform2D t = o.t;
-        const Ink::DVec2 no = xf({ o.t.tx, o.t.ty });
-        t.tx = no.x;  t.ty = no.y;
-        if (transformOp_.kind == TransformOp::Kind::Rotate) t.rotation = o.t.rotation + ang;
-        else if (transformOp_.kind == TransformOp::Kind::Scale) { t.sx = o.t.sx*fx; t.sy = o.t.sy*fy; }
-        doc.SetTransform(o.id, t);
-    }
-}
-
-void Application::ConfirmTransform() {
-    if (!transformOp_.Active() || !project_.document) return;
-    Ink::Document& doc = *project_.document;
-    const char* label = transformOp_.kind == TransformOp::Kind::Move ? "Move"
-                      : transformOp_.kind == TransformOp::Kind::Rotate ? "Rotate" : "Scale";
-
-    if (transformOp_.editVerts) {
-        const Ink::Node* n = doc.Find(transformOp_.editNode);
-        Ink::PathData before = transformOp_.origPath;
-        Ink::PathData after  = n ? n->path : before;
-        const Ink::NodeId id = transformOp_.editNode;
-        PushDocCommand(label,
-            [id, before](Ink::Document& d) { d.SetPath(id, before); },
-            [id, after](Ink::Document& d)  { d.SetPath(id, after); });
-    } else {
-        std::vector<TransformOp::NodeOrig> before = transformOp_.nodes;
-        std::vector<TransformOp::NodeOrig> after;
-        for (const auto& o : transformOp_.nodes)
-            if (const Ink::Node* n = doc.Find(o.id))
-                after.push_back({ o.id, n->transform });
-        PushDocCommand(label,
-            [before](Ink::Document& d) {
-                for (const auto& o : before) d.SetTransform(o.id, o.t);
-            },
-            [after](Ink::Document& d) {
-                for (const auto& o : after) d.SetTransform(o.id, o.t);
-            });
-    }
-    transformOp_ = TransformOp{};
-    osCursorHidden_ = false;   // Update stops forcing the None cursor
-}
-
-void Application::CancelTransform() {
-    if (!transformOp_.Active() || !project_.document) return;
-    Ink::Document& doc = *project_.document;
-    if (transformOp_.editVerts)
-        doc.SetPath(transformOp_.editNode, transformOp_.origPath);
-    else
-        for (const auto& o : transformOp_.nodes) doc.SetTransform(o.id, o.t);
-    transformOp_ = TransformOp{};
-    osCursorHidden_ = false;   // Update stops forcing the None cursor
-}
-
-// Edge-wrap the cursor during a modal op: when it reaches a canvas border,
-// teleport it to the opposite side through ImGui's io.WantSetMousePos channel.
-// ImGui applies the warp AND sets MouseDelta = 0 on the resulting frame, so the
-// gesture accumulation (which reads io.MouseDelta) never sees the jump — this is
-// what keeps the pivot→cursor line perfectly glued with zero cumulative drift,
-// however fast the cursor crosses the border. The custom cursor is drawn at the
-// real reported position (which becomes the warp target next frame).
-bool Application::WrapCursorInCanvas() {
-    ImGuiIO& io = ImGui::GetIO();
-    const ImVec2 mn = canvasRectMin_, mx = canvasRectMax_;
-    if (mx.x - mn.x < 16.0f || mx.y - mn.y < 16.0f) return false;
-    const ImVec2 mp = io.MousePos;
-    const float pad = 2.0f;
-    float nx = mp.x, ny = mp.y; bool wrap = false;
-    if (mp.x <= mn.x + pad)      { nx = mx.x - pad - 1.0f; wrap = true; }
-    else if (mp.x >= mx.x - pad) { nx = mn.x + pad + 1.0f; wrap = true; }
-    if (mp.y <= mn.y + pad)      { ny = mx.y - pad - 1.0f; wrap = true; }
-    else if (mp.y >= mx.y - pad) { ny = mn.y + pad + 1.0f; wrap = true; }
-    if (!wrap) return false;
-    io.MousePos = ImVec2(nx, ny);
-    io.WantSetMousePos = true;   // ImGui warps + zeroes MouseDelta next frame
-    return true;
-}
 
 // ── Frame router ──────────────────────────────────────────────────────────────
 
@@ -342,6 +36,7 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
             ImGui::IsMouseClicked(ImGuiMouseButton_Right))
             CancelTransform();
         else if (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+                 ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ||
                  ImGui::IsMouseClicked(ImGuiMouseButton_Left))
             ConfirmTransform();
         return;
@@ -355,9 +50,11 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
 
     if (!hovered) return;
     // A popup is up: don't also drive the canvas underneath it.
-    if (addMenuOpen_ || viewportCtxOpen_) return;
+    if (addMenuOpen_ || viewportCtxOpen_ || handleMenuOpen_) return;
 
     // Exclude the floating overlays (tool palette) from canvas interaction.
+    // (These are LAST frame's rects — the palette draws after input — which is
+    // exactly right: they are stable corner anchors.)
     const ImVec2 mp = io.MousePos;
     for (const ImVec4& r : st.overlayRects)
         if (mp.x >= r.x && mp.x <= r.z && mp.y >= r.y && mp.y <= r.w) return;
@@ -365,15 +62,23 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     const Ink::DVec2 doc = cam.ScreenToDoc(mp.x, mp.y);
     const bool shift = io.KeyShift;
 
-    // Right-click: open the context menu. In Object mode it first picks (and
-    // selects) the object under the cursor; in Edit mode the menu acts on the
-    // current vertex/handle selection, so nothing is re-picked.
+    // Shift+RMB (press or drag): place the 2D cursor — the legacy gesture.
+    // Checked BEFORE the context menu so the two never fight over the button.
+    if (shift && (ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||
+                  ImGui::IsMouseDragging(ImGuiMouseButton_Right, 0.0f))) {
+        edit_.cursor2D = doc;
+        edit_.cursor2DValid = true;
+        return;
+    }
+
+    // Right-click: ONLY open the context menu — never a canvas click, never a
+    // selection change (the menu acts on the current selection; the picked
+    // node is context for the menu's entries only).
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         Ink::NodeId hit = Ink::kNullNode;
-        if (edit_.mode == EditorMode::Object) {
+        if (edit_.mode == EditorMode::Object && ink_) {
             Ink::PickOptions opt; opt.tolerance = 4.0 / cam.zoom; opt.zoom = cam.zoom;
-            hit = ink_ ? ink_->PickAt(doc, opt) : Ink::kNullNode;
-            if (hit != Ink::kNullNode && !edit_.IsSelected(hit)) edit_.SelectOnly(hit);
+            hit = ink_->PickAt(doc, opt);
         }
         viewportCtxNode_ = hit;
         viewportCtxPos_  = mp;
@@ -505,7 +210,7 @@ void Application::ToolMouseDrag(EditorState& st, const ViewCam& cam, Ink::DVec2 
         const Ink::Node* n = d.Find(edit_.active);
         if (!n) return;
         const Ink::DMat23 w = d.WorldTransform(edit_.active);
-        const Ink::DMat23 wi = InvertAffine(w);
+        const Ink::DMat23 wi = vpm::InvertAffine(w);
         Ink::PathData p = n->path;
         auto& an = p.subpaths[edit_.handleDrag.sp].anchors[edit_.handleDrag.a];
         const bool inSide = (edit_.handleDrag.part == EditContext::ElemPart::In);

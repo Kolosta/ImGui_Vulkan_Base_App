@@ -3,6 +3,7 @@
 #include "OutlinerRowLayout.h"
 #include <Ink/Geometry/Geometry.h>
 #include <DesignSystem/DesignSystem.h>
+#include <Shortcuts/ShortcutManager.h>
 #include <UI/Widgets/ScrollArea.h>
 #include <UI/Widgets/PopupMenu.h>
 #include <imgui.h>
@@ -218,23 +219,31 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
             const Ink::Node* n = doc.Find(id);
             return n && n->parentId != Ink::kNullNode && doc.Find(n->parentId);
         };
-        if (o.showCollections)
-            for (const Ink::Collection& c : doc.Collections()) {
+        // Recursive collection flatten: header row, then CHILD collections,
+        // then members (parented members nest under their in-collection parent).
+        std::function<void(const Ink::Collection&, int)> flattenColl =
+            [&](const Ink::Collection& c, int depth) {
                 OutlinerRow r; r.id = c.id; r.kind = OutlinerRow::Kind::CollectionHeader;
-                r.depth = 0; r.hasChildren = !c.members.empty();
+                r.depth = depth;
+                r.hasChildren = !c.members.empty() || !c.childCollections.empty();
                 out.push_back(r);
-                if (!o.IsCollapsed(c.id))
-                    for (Ink::NodeId m : c.members) {
-                        // Skip members whose parent is ALSO a member — they will
-                        // be drawn nested under that parent.
-                        const Ink::Node* mn = doc.Find(m);
-                        if (!mn) continue;
-                        if (mn->parentId != Ink::kNullNode &&
-                            std::find(c.members.begin(), c.members.end(), mn->parentId)
-                                != c.members.end()) continue;
-                        OutlinerFlattenNode(m, 1, out);
-                    }
-            }
+                if (o.IsCollapsed(c.id)) return;
+                for (Ink::NodeId cc : c.childCollections)
+                    if (const Ink::Collection* child = doc.FindCollection(cc))
+                        flattenColl(*child, depth + 1);
+                for (Ink::NodeId m : c.members) {
+                    const Ink::Node* mn = doc.Find(m);
+                    if (!mn) continue;
+                    if (mn->parentId != Ink::kNullNode &&
+                        std::find(c.members.begin(), c.members.end(), mn->parentId)
+                            != c.members.end()) continue;   // nests under parent
+                    OutlinerFlattenNode(m, depth + 1, out);
+                }
+            };
+        if (o.showCollections)
+            for (const Ink::Collection& c : doc.Collections())
+                if (!doc.IsChildCollection(c.id))   // top-level roots only
+                    flattenColl(c, 0);
         // Page objects that are in no collection, top-level ones only (parented
         // children nest under their parent through the parentId index).
         for (const Ink::Page& page : doc.Pages())
@@ -358,9 +367,11 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         cfg.colors.hover    = ImGui::ColorConvertFloat4ToU32(ImVec4(selc.x, selc.y, selc.z, 0.55f));
         cfg.colors.selected = ImGui::ColorConvertFloat4ToU32(selc);
         UI::ListRow row(cfg);
+        OutlinerRowDragDrop(rrow);   // drag source + drop target on the row item
         ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
         ImGui::PushID((int)rrow.id);
         ol::DotGutter();
+        for (int d = 0; d < rrow.depth; ++d) ol::ChevronSpacer();
         bool open = !o.IsCollapsed(rrow.id);
         ol::Chevron("##cch", open);
         if (open == o.IsCollapsed(rrow.id)) o.ToggleCollapsed(rrow.id);
@@ -450,6 +461,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         cfg.colors.idle = colf(Tok::C_Outliner_Search_Visual, Tok::C_Outliner_Search_Visual, 0.45f);
 
     UI::ListRow row(cfg);
+    OutlinerRowDragDrop(rrow);   // drag source + drop target on the row item
     ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
     ImGui::PushID((int)rrow.id);
 
@@ -536,6 +548,15 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
 void Application::RenderOutliner(EditorState& st) {
     auto& ds = DS::DesignSystem::Instance();
     outlinerCur_ = &st.outliner;
+
+    // Shortcut context + hovered-leaf tracking (numpad-. targets the hovered
+    // editor — only the Viewport used to register itself, so "frame selected"
+    // never reached the Outliner).
+    Shortcuts::ShortcutManager::Instance()
+        .RegisterRegionContext("##zone", "outliner", "content");
+    if (ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
+        zoneLayout_.SetHoveredEditorState(&st);
+
     if (!project_.document) {
         ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(Tok::S_Color_Text_Subtle));
         ImGui::TextUnformatted("No document");
@@ -623,10 +644,23 @@ void Application::RenderOutliner(EditorState& st) {
                 ImGui::OpenPopup("##outlinerCtx");
             }
         }
-        // Render the context menu INSIDE the scroll child, the same window scope
-        // its OpenPopup was issued from (an id-string popup is scoped to the
-        // current window — opening and rendering must share that scope).
+        // The empty area below the rows is a drop target: dropping an object
+        // there un-parents / un-collections it; a collection becomes top-level.
+        {
+            const ImVec2 winPos = ImGui::GetWindowPos();
+            const float rowsBotY = winPos.y - scrollY + startY +
+                                   (float)rows.size() * stripeH;
+            OutlinerBackgroundDropTarget(
+                ImVec2(winPos.x, std::max(rowsBotY, winPos.y)),
+                ImVec2(winPos.x + ImGui::GetWindowWidth(),
+                       winPos.y + ImGui::GetWindowHeight()));
+        }
+        // Render the context menu (and the collection colour picker) INSIDE the
+        // scroll child, the same window scope their OpenPopup was issued from
+        // (an id-string popup is scoped to the current window — opening and
+        // rendering must share that scope).
         RenderOutlinerContextMenu(st);
+        RenderOutlinerColorPicker();
     }
     UI::EndScroll();
     st.outliner.reqScrollToActive = false;

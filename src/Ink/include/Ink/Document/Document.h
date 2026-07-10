@@ -150,14 +150,24 @@ public:
     std::vector<NodeId> UngroupNode(NodeId group);
 
     // ── Collections (docs/Ink/DOCUMENT_MODEL.md §7) ──────────────────────────
-    NodeId AddCollection(std::string name);
-    void   RemoveCollection(NodeId coll);          // frees the set, not members
+    // `parent` nests the new collection under an existing one (kNullNode = a
+    // top-level collection).
+    NodeId AddCollection(std::string name, NodeId parent = kNullNode);
+    // `deleteContents` also removes the member NODES and every child collection
+    // recursively (the legacy "Delete Hierarchy"); false frees only the set.
+    void   RemoveCollection(NodeId coll, bool deleteContents = false);
     void   SetCollectionName(NodeId coll, std::string name);
     void   SetCollectionVisible(NodeId coll, bool visible);
+    void   SetCollectionColor(NodeId coll, const Color& colorTag);
     void   AddToCollection(NodeId coll, NodeId node);
     void   RemoveFromCollection(NodeId coll, NodeId node);
+    // Re-nest a collection under `parent` (kNullNode = make it top-level).
+    // Refused (no-op) on cycles / self.
+    void   MoveCollection(NodeId coll, NodeId parent);
     const std::vector<Collection>& Collections() const { return collections_; }
     const Collection* FindCollection(NodeId id) const;
+    // True when `id` is nested inside another collection (not top-level).
+    bool   IsChildCollection(NodeId id) const;
     // True when the node is hidden by collection membership (any collection it
     // belongs to is invisible) — the Scene's collection filter.
     bool   HiddenByCollection(NodeId node) const;
