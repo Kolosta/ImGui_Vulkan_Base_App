@@ -12,6 +12,7 @@ add_library(UI STATIC
     src/Widgets/Panel.cpp
     src/Widgets/ScrollArea.cpp
     src/Widgets/SidePanel.cpp
+    src/Widgets/ToolPalette.cpp
     src/Tokens/TokenEditor.cpp
     src/Tokens/TokenValueWidgets.cpp
     src/Tokens/TokenGraphWindow.cpp

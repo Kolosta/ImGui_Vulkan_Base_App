@@ -17,6 +17,7 @@
 #include <UI/Tokens/TokenGraphWindow.h>
 #include <VectorGraphics/editors/IconEditorWindow.h>
 #include <Ink/Render/Renderer.h>   // the 2D vector engine (docs/Ink/)
+#include <UI/Widgets/ListRow.h>   // UI::ListRow (Outliner row geometry for DnD)
 #include "ZoneLayout.h"
 #include "Project.h"
 #include "SecondaryWindow.h"
@@ -241,6 +242,14 @@ private:
     void OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& out);
     // Draw one already-flattened row at the current cursor (a ListRow stripe).
     void OutlinerDrawRow(EditorState& st, const OutlinerRow& r, float rowStripeH);
+    // Vertical tree guide lines under every expanded container (legacy design:
+    // collection colour / border solid, parenting dotted). One pass, culled.
+    void OutlinerDrawGuideLines(EditorState& st, const std::vector<OutlinerRow>& rows,
+                                float startY, float stripeH);
+    // Collapsed container rows: inline type icons + count badges of the direct
+    // contents, selected-tinted when a summarised item is in the selection.
+    void OutlinerCollapsedSummary(const OutlinerRow& rrow, float x, float rowTopY,
+                                  float maxX);
     // Filter + selection helpers (legacy parity).
     bool OutlinerPassesFilter(Ink::NodeId id) const;   // kind + state + invert
     bool OutlinerSearchHit(Ink::NodeId id) const;      // own name matches search
@@ -260,8 +269,12 @@ private:
     // object→collection re-collections, collection→collection nests; Layers
     // view: object→object reorders in the stack, object→group moves into it.
     // The background (below the rows) un-parents / un-collections.
-    void OutlinerRowDragDrop(const OutlinerRow& row);
+    void OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow& lr);
     void OutlinerBackgroundDropTarget(ImVec2 rectMin, ImVec2 rectMax);
+    // True while the sync-picking gesture owns the mouse: every Outliner row is
+    // input-inert (no select, no eye toggle, no context menu, no drag) so the
+    // cancel click can never leak into the tree.
+    bool outlinerSuppressInput_ = false;
     // The dragged object set: the whole selection when the payload id is part
     // of it, else just that id (legacy multi-drag rule).
     std::vector<Ink::NodeId> OutlinerDraggedIds(Ink::NodeId trigger) const;
@@ -269,7 +282,8 @@ private:
     void OutlinerDropParentTo(const std::vector<Ink::NodeId>& ids, Ink::NodeId parent);
     void OutlinerDropToCollection(const std::vector<Ink::NodeId>& ids, Ink::NodeId coll);
     void OutlinerDropToRoot(const std::vector<Ink::NodeId>& ids);
-    void OutlinerDropReorder(const std::vector<Ink::NodeId>& ids, Ink::NodeId target);
+    void OutlinerDropReorder(const std::vector<Ink::NodeId>& ids, Ink::NodeId target,
+                             bool above);
     void OutlinerRemoveFromCollections(const std::vector<Ink::NodeId>& ids);
     void OutlinerUnparent(const std::vector<Ink::NodeId>& ids);
     // The collection-colour picker popup (Custom… in the Icon Colour submenu).

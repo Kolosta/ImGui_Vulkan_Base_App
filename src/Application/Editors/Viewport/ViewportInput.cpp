@@ -51,6 +51,10 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     if (!hovered) return;
     // A popup is up: don't also drive the canvas underneath it.
     if (addMenuOpen_ || viewportCtxOpen_ || handleMenuOpen_) return;
+    // The Outliner's "pick a viewport to synchronise" action owns the mouse:
+    // its own block confirms with LMB / cancels with RMB — the canvas tools
+    // and the context menu must stay inert for the whole gesture.
+    if (outlinerPickingState_) return;
 
     // Exclude the floating overlays (tool palette) from canvas interaction.
     // (These are LAST frame's rects — the palette draws after input — which is
@@ -72,15 +76,10 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     }
 
     // Right-click: ONLY open the context menu — never a canvas click, never a
-    // selection change (the menu acts on the current selection; the picked
-    // node is context for the menu's entries only).
+    // selection change. The menu is driven by the CURRENT SELECTION (Blender),
+    // not by what happens to be under the cursor.
     if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-        Ink::NodeId hit = Ink::kNullNode;
-        if (edit_.mode == EditorMode::Object && ink_) {
-            Ink::PickOptions opt; opt.tolerance = 4.0 / cam.zoom; opt.zoom = cam.zoom;
-            hit = ink_->PickAt(doc, opt);
-        }
-        viewportCtxNode_ = hit;
+        viewportCtxNode_ = edit_.active;
         viewportCtxPos_  = mp;
         viewportCtxRequested_ = true;   // Update() opens + renders it (root scope)
         return;
@@ -157,13 +156,14 @@ void Application::ToolMousePress(EditorState& st, const ViewCam& cam,
                 }
                 return;
             }
-            if (!shift) {
-                edit_.elemSel.clear();
-                canvasDrag_ = CanvasDrag{};
-                canvasDrag_.kind = CanvasDrag::Kind::BoxSelect;
-                canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
-                canvasDrag_.leaf = &st;
-            }
+            // Empty click → box-select over anchors. Shift EXTENDS the element
+            // selection (Blender), a plain drag replaces it.
+            if (!shift) edit_.elemSel.clear();
+            canvasDrag_ = CanvasDrag{};
+            canvasDrag_.kind = CanvasDrag::Kind::BoxSelect;
+            canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
+            canvasDrag_.leaf = &st;
+            canvasDrag_.extend = shift;
             return;
         }
 
@@ -179,8 +179,10 @@ void Application::ToolMousePress(EditorState& st, const ViewCam& cam,
             } else {
                 edit_.active = hit;
             }
-        } else if (!shift) {
-            edit_.Clear();   // click empty → deselect, then rubber-band
+        } else {
+            // Empty click → rubber-band. Shift EXTENDS the selection with the
+            // boxed objects (Blender); a plain drag replaces it.
+            if (!shift) edit_.Clear();
             canvasDrag_ = CanvasDrag{};
             canvasDrag_.kind = CanvasDrag::Kind::BoxSelect;
             canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
@@ -262,11 +264,12 @@ void Application::ToolMouseRelease(EditorState& st, const ViewCam& cam, Ink::DVe
             const Ink::DVec2 a = canvasDrag_.startDoc, b = canvasDrag_.curDoc;
             const double x0 = std::min(a.x, b.x), x1 = std::max(a.x, b.x);
             const double y0 = std::min(a.y, b.y), y1 = std::max(a.y, b.y);
-            edit_.elemSel.clear();
+            if (!canvasDrag_.extend) edit_.elemSel.clear();   // Shift extends
             for (int sp = 0; sp < (int)n->path.subpaths.size(); ++sp)
                 for (int an = 0; an < (int)n->path.subpaths[sp].anchors.size(); ++an) {
                     const Ink::DVec2 wp = w.Apply(n->path.subpaths[sp].anchors[an].pos);
-                    if (wp.x >= x0 && wp.x <= x1 && wp.y >= y0 && wp.y <= y1)
+                    if (wp.x >= x0 && wp.x <= x1 && wp.y >= y0 && wp.y <= y1 &&
+                        !edit_.ElemSelected(sp, an, EditContext::ElemPart::Point))
                         edit_.elemSel.push_back({ sp, an, EditContext::ElemPart::Point });
                 }
         }

@@ -164,6 +164,9 @@ public:
     // Re-nest a collection under `parent` (kNullNode = make it top-level).
     // Refused (no-op) on cycles / self.
     void   MoveCollection(NodeId coll, NodeId parent);
+    // Reorder a collection among its CURRENT siblings (its parent's children,
+    // or the top-level order) to absolute index `to` (clamped).
+    void   ReorderCollection(NodeId coll, int to);
     const std::vector<Collection>& Collections() const { return collections_; }
     const Collection* FindCollection(NodeId id) const;
     // True when `id` is nested inside another collection (not top-level).

@@ -46,7 +46,9 @@ struct OutlinerState {
     std::unordered_set<uint64_t> collapsed;
 
     // Inline rename in flight: the id being renamed + its edit buffer (0 = none).
+    // renameTakeFocus is true for the FIRST frame only (grabs the keyboard once).
     uint64_t renaming = 0;
+    bool     renameTakeFocus = false;
     char     renameBuf[128] = { 0 };
 
     // ── Per-frame scratch (rebuilt each frame at the top of RenderOutliner). ──

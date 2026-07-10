@@ -234,11 +234,10 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
         // speed — TransformOp.virtPx): it keeps pointing in the true transform
         // direction beyond the canvas edge, and coincides exactly with the
         // displayed cursor whenever that virtual point is inside the canvas
-        // (both derive from the same accumulation). No line in Move, none in
-        // Edit mode. The cursor GLYPH itself is the legacy icon, drawn by
-        // DrawTransformCursor (ViewportModal.cpp).
-        if (transformOp_.kind != TransformOp::Kind::Move &&
-            edit_.mode != EditorMode::Edit) {
+        // (both derive from the same accumulation). No line in Move; shown for
+        // Rotate/Scale in BOTH Object and Edit mode. The cursor GLYPH itself
+        // is the legacy icon, drawn by DrawTransformCursor (ViewportModal.cpp).
+        if (transformOp_.kind != TransformOp::Kind::Move) {
             const Ink::Vec2 virt{ (float)(transformOp_.virtPx.x - cam.canvasMin.x),
                                   (float)(transformOp_.virtPx.y - cam.canvasMin.y) };
             DashLine(ov, p, virt, subtleCol, 1.0f, 5.0f, 4.0f);

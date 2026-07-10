@@ -8,6 +8,7 @@
 #include <UI/Widgets/ButtonGroup.h>
 #include <UI/Widgets/DragValue.h>
 #include <UI/Widgets/PopupMenu.h>
+#include <UI/Widgets/ToolPalette.h>
 #include <imgui_internal.h>
 #include <string>
 #include <vector>
@@ -28,87 +29,40 @@ namespace { namespace DS = DesignSystem; using Tok = DesignSystem::Tok; }
 // ── Floating tool palette (left column of the canvas) ─────────────────────────
 
 void Application::RenderToolPalette(ImVec2 origin, EditorState& st) {
-    auto& ds      = DS::DesignSystem::Instance();
-    auto& iconMgr = VectorGraphics::IconManager::Instance();
-    auto& sm      = Shortcuts::ShortcutManager::Instance();
-    auto& tm      = Shortcuts::Tools::ToolManager::Instance();
+    auto& sm = Shortcuts::ShortcutManager::Instance();
+    auto& tm = Shortcuts::Tools::ToolManager::Instance();
 
-    const float gs   = ds.GetGlobalScale();
-    const float kBtn = 26.0f * gs;
-    const float kPad = 4.0f  * gs;
-
-    std::vector<const Shortcuts::Tools::ToolDef*> toolDefs = tm.GetAllTools();
+    // Build the item list from the ToolManager (data-driven — the palette
+    // never drifts from the shortcut system). Edit-only tools are hidden in
+    // Object Mode (legacy skip-logic).
     const std::string activeTool = tm.GetActiveTool();
-    const bool edit = (edit_.mode == EditorMode::Edit);
-    // Edit-only tools are hidden in Object Mode (mirrors the legacy skip-logic).
-    auto toolVisible = [&](const Shortcuts::Tools::ToolDef* t) {
-        if (t->id == "tool.extrude") return edit;
-        return true;
-    };
-    int rows = 0;
-    for (const auto* t : toolDefs) if (toolVisible(t)) ++rows;
-    if (rows == 0) return;
-    const float w = kBtn + kPad * 2.0f;
-    const float h = (float)rows * kBtn + (float)(rows + 1) * kPad;
-
-    // Publish the palette rect so canvas hit-testing excludes it.
-    st.overlayRects.push_back(ImVec4(origin.x + kPad, origin.y + kPad,
-                                     origin.x + kPad + w, origin.y + kPad + h));
-
-    ImGui::SetCursorScreenPos(ImVec2(origin.x + kPad, origin.y + kPad));
-    // Container chrome from the design tokens (border colour + control corner
-    // radius), so the palette matches the rest of the system.
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ds.GetColor(Tok::S_Color_Background_Layer1));
-    ImGui::PushStyleColor(ImGuiCol_Border,  ds.GetColor(Tok::S_Color_Border_Default));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kPad, kPad));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(0, kPad));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding,
-                        ds.GetFloat(Tok::S_CornerRadius_Control) * gs);
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize,
-                        ds.BordersEnabled() ? 1.0f : 0.0f);
-    ImGui::BeginChild("##InkTools", ImVec2(w, h), true,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    {
-        DS::DesignSystem::ZoneStyle zone("viewport/tools", "Viewport tools");
-        ImVec4 bg   = ds.GetColor(Tok::C_IconButton_Background);
-        ImVec4 hov  = ds.GetColor(Tok::C_IconButton_BackgroundHover);
-        ImVec4 acc  = ds.GetColor(Tok::S_Color_Accent_Default);
-        ImVec4 tint = ds.GetColor(Tok::S_Color_Text_Default);
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
-        ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
-        for (const auto* t : toolDefs) {
-            if (!toolVisible(t)) continue;
-            const bool seld = (activeTool == t->id);
-            ImGui::PushID(t->id.c_str());
-            ImGui::PushStyleColor(ImGuiCol_Button,        seld ? acc : bg);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, seld ? acc : hov);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive,  acc);
-            const bool clk = ImGui::Button("##b", ImVec2(kBtn, kBtn));
-            ImGui::PopStyleColor(3);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-                std::string tip = t->name;
-                if (!t->actionIds.empty()) {
-                    std::string s = sm.GetShortcutString(t->actionIds.front());
-                    if (!s.empty()) tip += "   (" + s + ")";
-                }
-                UI::DrawTooltip(tip.c_str(), ImGui::GetIO().MousePos);
-            }
-            const float isz = kBtn * 0.62f;
-            const ImVec2 bmin = ImGui::GetItemRectMin();
-            const ImVec2 ipos = { bmin.x + (kBtn - isz) * 0.5f,
-                                  bmin.y + (kBtn - isz) * 0.5f };
-            auto md = iconMgr.GetDefaultMetadata(t->iconId);
-            if (!md.colorZones.empty()) md.colorZones[0].customColor = tint;
-            iconMgr.RenderIcon(ImGui::GetWindowDrawList(), t->iconId, ipos, isz, md);
-            ImGui::PopID();
-            if (clk) Action_ActivateNamedTool(t->id);
-        }
-        ImGui::PopItemFlag();
-        ImGui::PopStyleVar();
+    const bool editMode = (edit_.mode == EditorMode::Edit);
+    std::vector<const Shortcuts::Tools::ToolDef*> defs;
+    for (const auto* t : tm.GetAllTools()) {
+        if (t->id == "tool.extrude" && !editMode) continue;
+        defs.push_back(t);
     }
-    ImGui::EndChild();
-    ImGui::PopStyleVar(4);
-    ImGui::PopStyleColor(2);   // ChildBg + Border
+    if (defs.empty()) return;
+
+    std::vector<UI::ToolPaletteItem> items;
+    items.reserve(defs.size());
+    for (const auto* t : defs) {
+        UI::ToolPaletteItem it;
+        it.icon = t->iconId;
+        it.selected = (activeTool == t->id);
+        it.tooltip = t->name;
+        if (!t->actionIds.empty()) {
+            const std::string s = sm.GetShortcutString(t->actionIds.front());
+            if (!s.empty()) it.tooltip += "   (" + s + ")";
+        }
+        items.push_back(std::move(it));
+    }
+
+    DS::DesignSystem::ZoneStyle zone("viewport/tools", "Viewport tools");
+    const UI::ToolPaletteResult r = UI::ToolPalette("##InkTools", origin, items);
+    // Publish the rect so canvas hit-testing excludes the palette.
+    st.overlayRects.push_back(ImVec4(r.rectMin.x, r.rectMin.y, r.rectMax.x, r.rectMax.y));
+    if (r.clicked >= 0) Action_ActivateNamedTool(defs[(size_t)r.clicked]->id);
 }
 
 // ── Default fill / stroke swatches (new-shape style) ──────────────────────────
@@ -450,8 +404,11 @@ void Application::RenderViewportContextMenu() {
     if (!doc) { viewportCtxOpen_ = false; return; }
 
     std::vector<UI::MenuEntry> entries;
-    const bool onObject = viewportCtxNode_ != Ink::kNullNode && doc->Find(viewportCtxNode_);
+    // The menu is driven by the SELECTION (Blender): an object menu whenever
+    // something is selected, the empty-canvas menu otherwise.
     const bool hasSel = !edit_.selection.empty();
+    const bool onObject = hasSel && edit_.active != Ink::kNullNode &&
+                          doc->Find(edit_.active);
     const bool editing = (edit_.mode == EditorMode::Edit);
     auto close = [this]{ viewportCtxOpen_ = false; };
     const char* title = editing ? "Vertex" : (onObject ? "Object" : "Viewport");
@@ -478,18 +435,14 @@ void Application::RenderViewportContextMenu() {
           e.onClick = [this, close]{ Action_ExitEditMode(); close(); };
           entries.push_back(std::move(e)); }
     } else if (onObject) {
-        const Ink::NodeId id = viewportCtxNode_;
+        // Acts on the SELECTION; `id` = the active object (its kind gates the
+        // path-only entries).
+        const Ink::NodeId id = edit_.active;
         const Ink::Node* n = doc->Find(id);
         const bool isPath = n->kind == Ink::NodeKind::Path;
         const bool inGroup = n->parent != Ink::kNullNode;
-        { UI::MenuEntry e; e.label = "Select"; e.enabled = !edit_.IsSelected(id);
-          e.onClick = [this, id, close]{ edit_.SelectOnly(id); close(); };
-          entries.push_back(std::move(e)); }
-        { UI::MenuEntry e; e.label = "Deselect"; e.enabled = edit_.IsSelected(id);
-          e.onClick = [this, id, close]{ edit_.Deselect(id); close(); };
-          entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Enter Edit Mode"; e.shortcut = "Tab"; e.enabled = isPath;
-          e.onClick = [this, id, close]{ edit_.SelectOnly(id); Action_EnterEditMode(); close(); };
+          e.onClick = [this, close]{ Action_EnterEditMode(); close(); };
           entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Duplicate"; e.shortcut = "Ctrl D"; e.enabled = hasSel;
           e.onClick = [this, close]{ Action_DuplicateSelection(); close(); };

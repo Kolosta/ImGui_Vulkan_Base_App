@@ -153,6 +153,34 @@ inline ImU32 LabelColor(bool searchHit, bool dim) {
         dim ? Tok::S_Color_Text_Disabled : Tok::C_Outliner_Text, ImVec4(0.85f,0.85f,0.85f,1)));
 }
 
+// Inline rename field (legacy style): a compact, borderless input sized to the
+// row band — darker fill, control corner radius, NO focus/nav ring — instead
+// of the stock ImGui frame. `takeFocus` grabs the keyboard on the first frame
+// only (so AutoSelectAll selects once, not every frame). Returns true when
+// committed with Enter; *deactivated is set when the field lost focus.
+inline bool RenameField(const char* id, char* buf, std::size_t bufSize,
+                        float x, float rowTopY, float width,
+                        bool takeFocus, bool* deactivated) {
+    const float rowH = RowH();
+    const float fieldH = ImGui::GetTextLineHeight() + 4.0f * Gs();
+    ImGui::SetCursorScreenPos(ImVec2(x, rowTopY + (rowH - fieldH) * 0.5f));
+    ImGui::SetNextItemWidth(std::max(40.0f, width));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4.0f * Gs(), 2.0f * Gs()));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,
+                        SafeFloat(Tok::S_CornerRadius_Control, 3.0f) * Gs() * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,
+        SafeColor(Tok::S_Color_Background_Layer2, ImVec4(0.13f, 0.13f, 0.15f, 1)));
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));   // no ring
+    if (takeFocus) ImGui::SetKeyboardFocusHere();
+    const bool committed = ImGui::InputText(id, buf, bufSize,
+        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    *deactivated = ImGui::IsItemDeactivated();
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar(3);
+    return committed;
+}
+
 // Case-insensitive substring test.
 inline bool ContainsCI(const std::string& hay, const std::string& needle) {
     if (needle.empty()) return true;

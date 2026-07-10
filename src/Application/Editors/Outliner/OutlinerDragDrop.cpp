@@ -24,6 +24,9 @@
 namespace App {
 
 namespace {
+namespace DS = DesignSystem;
+using Tok = DesignSystem::Tok;
+
 constexpr const char* kObjPayload  = "OUTLINER_OBJ";    // Ink::NodeId
 constexpr const char* kCollPayload = "OUTLINER_COLL";   // collection id
 
@@ -143,7 +146,7 @@ void Application::OutlinerDropToRoot(const std::vector<Ink::NodeId>& ids) {
 }
 
 void Application::OutlinerDropReorder(const std::vector<Ink::NodeId>& ids,
-                                      Ink::NodeId target) {
+                                      Ink::NodeId target, bool above) {
     if (!project_.document) return;
     Ink::Document& doc = *project_.document;
     const Ink::Node* tn = doc.Find(target);
@@ -160,10 +163,12 @@ void Application::OutlinerDropReorder(const std::vector<Ink::NodeId>& ids,
         before.push_back({ id, n->parent != Ink::kNullNode ? n->parent : n->page,
                            doc.IndexInParent(id), n->transform });
     }
-    // "Above the target in the stack" = just AFTER it in painter order.
+    // Rows list top-of-stack first, so "visually above the target" = just
+    // AFTER it in painter order; "below" = just before it.
     for (Ink::NodeId id : ids) {
         if (id == target) continue;
-        doc.MoveTo(id, destParent, doc.IndexInParent(target) + 1);
+        const int ti = doc.IndexInParent(target);
+        doc.MoveTo(id, destParent, above ? ti + 1 : ti);
     }
     std::vector<Order> after;
     for (Ink::NodeId id : ids) {
@@ -228,8 +233,51 @@ void Application::OutlinerUnparent(const std::vector<Ink::NodeId>& ids) {
 
 // ── Row source + target ───────────────────────────────────────────────────────
 
-void Application::OutlinerRowDragDrop(const OutlinerRow& row) {
-    if (!project_.document || !outlinerCur_) return;
+namespace {
+// Drop-zone split (Blender): the top / bottom quarters of a row are INSERT
+// zones (a grey line between the zebra rows shows where the item lands); the
+// middle is the INTO zone (the row's selection BAND — not the full stripe —
+// highlights with the notice-orange outline over a grey fill).
+enum class DropZone { Into, Above, Below };
+
+DropZone ZoneAt(const UI::ListRow& lr, bool edgesAllowed) {
+    if (!edgesAllowed) return DropZone::Into;
+    const float my = ImGui::GetIO().MousePos.y;
+    const float h = lr.StripeBottom() - lr.StripeTop();
+    if (my < lr.StripeTop() + h * 0.25f) return DropZone::Above;
+    if (my > lr.StripeBottom() - h * 0.25f) return DropZone::Below;
+    return DropZone::Into;
+}
+
+void DrawInsertLine(const UI::ListRow& lr, bool above) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float y = above ? lr.StripeTop() : lr.StripeBottom();
+    const ImVec4 grey = [] {
+        try { return DS::DesignSystem::Instance().GetColor(Tok::S_Color_Text_Subtle); }
+        catch (...) { return ImVec4(0.6f, 0.6f, 0.6f, 1); }
+    }();
+    dl->AddLine(ImVec2(lr.BandLeft(), y), ImVec2(lr.BandRight(), y),
+                ImGui::ColorConvertFloat4ToU32(grey), 2.0f);
+}
+
+void DrawIntoHighlight(const UI::ListRow& lr) {
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    auto& ds = DS::DesignSystem::Instance();
+    ImVec4 fill(0.5f, 0.5f, 0.5f, 0.20f);
+    ImVec4 line(0.95f, 0.55f, 0.15f, 1.0f);
+    try { fill = ds.GetColor(Tok::S_Color_Background_Layer2); fill.w = 0.55f; } catch (...) {}
+    try { line = ds.GetColor(Tok::S_Color_Notice_Default); } catch (...) {}
+    float rnd = 4.0f;
+    try { rnd = ds.GetFloat(Tok::S_CornerRadius_Control) * ds.GetGlobalScale(); } catch (...) {}
+    const ImVec2 a(lr.BandLeft(), lr.RowTop());
+    const ImVec2 b(lr.BandRight(), lr.RowTop() + lr.RowH());
+    dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(fill), rnd);
+    dl->AddRect(a, b, ImGui::ColorConvertFloat4ToU32(line), rnd, 0, 1.5f);
+}
+} // namespace
+
+void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow& lr) {
+    if (!project_.document || !outlinerCur_ || outlinerSuppressInput_) return;
     Ink::Document& doc = *project_.document;
     const bool collectionsMode =
         outlinerCur_->display == OutlinerDisplayMode::Collections;
@@ -251,36 +299,80 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row) {
         }
     }
 
-    // Target.
+    // Target. Edge (insert) zones exist only where order is MANUAL: object
+    // rows in Layers view (strict z-index) and collection headers (sibling
+    // order). Inside a collection objects are alphabetical → into-zones only.
     if (!ImGui::BeginDragDropTarget()) return;
+    constexpr ImGuiDragDropFlags kPeek =
+        ImGuiDragDropFlags_AcceptBeforeDelivery |
+        ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
+
     if (row.kind == OutlinerRow::Kind::Object) {
-        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kObjPayload)) {
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kObjPayload, kPeek)) {
             const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
-            const auto ids = OutlinerDraggedIds(dragged);
-            if (collectionsMode) OutlinerDropParentTo(ids, row.id);
-            else                 OutlinerDropReorder(ids, row.id);
-        }
-        // Layers view: dropping onto a GROUP row moves into the group.
-        if (!collectionsMode) {
-            const Ink::Node* n = doc.Find(row.id);
-            if (n && n->kind == Ink::NodeKind::Group)
-                if (const ImGuiPayload* p2 = ImGui::AcceptDragDropPayload(kObjPayload)) {
-                    const Ink::NodeId dragged = *(const Ink::NodeId*)p2->Data;
-                    for (Ink::NodeId id : OutlinerDraggedIds(dragged))
-                        doc.MoveTo(id, row.id, -1);
-                    LogInfoAction("Move into Group");
+            const DropZone z = ZoneAt(lr, /*edgesAllowed=*/!collectionsMode);
+            if (z == DropZone::Into) DrawIntoHighlight(lr);
+            else DrawInsertLine(lr, z == DropZone::Above);
+            if (p->IsDelivery()) {
+                const auto ids = OutlinerDraggedIds(dragged);
+                if (collectionsMode) {
+                    OutlinerDropParentTo(ids, row.id);
+                } else if (z == DropZone::Into) {
+                    const Ink::Node* n = doc.Find(row.id);
+                    if (n && n->kind == Ink::NodeKind::Group) {
+                        for (Ink::NodeId id : ids) doc.MoveTo(id, row.id, -1);
+                        LogInfoAction("Move into Group");
+                    } else {
+                        OutlinerDropReorder(ids, row.id, /*above=*/true);
+                    }
+                } else {
+                    // Rows list top-of-stack first: visually ABOVE the target =
+                    // AFTER it in painter order.
+                    OutlinerDropReorder(ids, row.id, z == DropZone::Above);
                 }
+            }
         }
     } else if (row.kind == OutlinerRow::Kind::CollectionHeader) {
-        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kObjPayload)) {
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kObjPayload, kPeek)) {
             const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
-            OutlinerDropToCollection(OutlinerDraggedIds(dragged), row.id);
+            DrawIntoHighlight(lr);   // objects always go INTO a collection
+            if (p->IsDelivery())
+                OutlinerDropToCollection(OutlinerDraggedIds(dragged), row.id);
         }
-        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kCollPayload)) {
+        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kCollPayload, kPeek)) {
             const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
-            if (dragged != row.id) {
-                project_.document->MoveCollection(dragged, row.id);
-                LogInfoAction("Nest Collection");
+            const DropZone z = ZoneAt(lr, /*edgesAllowed=*/true);
+            if (z == DropZone::Into) DrawIntoHighlight(lr);
+            else DrawInsertLine(lr, z == DropZone::Above);
+            if (p->IsDelivery() && dragged != row.id) {
+                if (z == DropZone::Into) {
+                    doc.MoveCollection(dragged, row.id);
+                    LogInfoAction("Nest Collection");
+                } else {
+                    // Insert as a SIBLING of the target, above or below it.
+                    // First match the target's parent, then take its slot.
+                    Ink::NodeId parent = Ink::kNullNode;
+                    for (const Ink::Collection& c : doc.Collections())
+                        if (std::find(c.childCollections.begin(), c.childCollections.end(),
+                                      row.id) != c.childCollections.end()) { parent = c.id; break; }
+                    doc.MoveCollection(dragged, parent);
+                    // Sibling index of the target within its parent / top level.
+                    int idx = 0;
+                    if (parent != Ink::kNullNode) {
+                        const Ink::Collection* pc = doc.FindCollection(parent);
+                        for (int i = 0; i < (int)pc->childCollections.size(); ++i)
+                            if (pc->childCollections[i] == row.id) { idx = i; break; }
+                    } else {
+                        int t = 0;
+                        for (const Ink::Collection& c : doc.Collections()) {
+                            if (doc.IsChildCollection(c.id)) continue;
+                            if (c.id == row.id) { idx = t; break; }
+                            ++t;
+                        }
+                    }
+                    doc.ReorderCollection(dragged, z == DropZone::Above ? idx : idx + 1);
+                    LogInfoAction("Reorder Collection");
+                }
             }
         }
     }

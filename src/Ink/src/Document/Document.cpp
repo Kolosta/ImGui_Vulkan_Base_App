@@ -523,6 +523,46 @@ void Document::MoveCollection(NodeId coll, NodeId parent) {
     Log(coll, ChangeKind::Hierarchy);
 }
 
+void Document::ReorderCollection(NodeId coll, int to) {
+    if (!FindCollection(coll)) return;
+    // Nested: reorder within the parent's childCollections vector.
+    for (Collection& p : collections_) {
+        auto& kids = p.childCollections;
+        auto it = std::find(kids.begin(), kids.end(), coll);
+        if (it == kids.end()) continue;
+        kids.erase(it);
+        to = std::clamp(to, 0, (int)kids.size());
+        kids.insert(kids.begin() + to, coll);
+        Log(coll, ChangeKind::Hierarchy);
+        return;
+    }
+    // Top-level: reorder among the top-level entries of collections_ by moving
+    // the element itself (the vector's relative order IS the top-level order).
+    int idx = -1;
+    std::vector<int> tops;   // indices of top-level collections in collections_
+    for (int i = 0; i < (int)collections_.size(); ++i) {
+        if (IsChildCollection(collections_[i].id)) continue;
+        if (collections_[i].id == coll) idx = (int)tops.size();
+        tops.push_back(i);
+    }
+    if (idx < 0) return;
+    to = std::clamp(to, 0, (int)tops.size() - 1);
+    if (to == idx) return;
+    Collection moved = std::move(collections_[tops[idx]]);
+    collections_.erase(collections_.begin() + tops[idx]);
+    // Insert BEFORE the element that must follow `moved` in the final order:
+    //   to < idx  → before the element at original top slot `to` (unshifted);
+    //   to > idx  → before original top slot `to+1`, shifted −1 by the erase
+    //               (or append when `to` is the last slot).
+    int destPos;
+    if (to < idx)                       destPos = tops[to];
+    else if (to + 1 < (int)tops.size()) destPos = tops[to + 1] - 1;
+    else                                destPos = (int)collections_.size();
+    destPos = std::clamp(destPos, 0, (int)collections_.size());
+    collections_.insert(collections_.begin() + destPos, std::move(moved));
+    Log(coll, ChangeKind::Hierarchy);
+}
+
 void Document::RemoveCollection(NodeId coll, bool deleteContents) {
     const Collection* c = FindCollection(coll);
     if (!c) return;

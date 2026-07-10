@@ -36,6 +36,10 @@ void Application::SetModalMouseCapture(bool on) {
     if (on == modalRelMode_) return;
     modalRelMode_ = on;
     modalRelAccum_ = ImVec2(0, 0);
+    // Relative mode reports RAW deltas by default (no OS pointer speed /
+    // acceleration) — the cursor would feel much faster than the user's
+    // Windows setting. This hint applies the system scale to relative motion.
+    SDL_SetHint(SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE, "1");
     if (window_) SDL_SetWindowRelativeMouseMode(window_, on);
 }
 
@@ -241,37 +245,73 @@ void Application::UpdateTransform(const ViewCam& cam) {
         if (transformOp_.axis == 0) fy = 1.0; else if (transformOp_.axis == 1) fx = 1.0;
     }
     const double rc = std::cos(ang), rs = std::sin(ang);
-    auto xf = [&](Ink::DVec2 wp) -> Ink::DVec2 {
+    // Apply the op to a world point about an arbitrary pivot.
+    auto xfAt = [&](Ink::DVec2 piv, Ink::DVec2 wp) -> Ink::DVec2 {
         if (transformOp_.kind == TransformOp::Kind::Move)
             return { wp.x + moveD.x, wp.y + moveD.y };
-        const Ink::DVec2 rel2{ wp.x - P.x, wp.y - P.y };
+        const Ink::DVec2 rel2{ wp.x - piv.x, wp.y - piv.y };
         if (transformOp_.kind == TransformOp::Kind::Rotate) {
             const Ink::DVec2 rr = vpm::Rotate(rel2, rc, rs);
-            return { P.x + rr.x, P.y + rr.y };
+            return { piv.x + rr.x, piv.y + rr.y };
         }
-        return { P.x + rel2.x * fx, P.y + rel2.y * fy };  // Scale
+        return { piv.x + rel2.x * fx, piv.y + rel2.y * fy };  // Scale
     };
+    auto xf = [&](Ink::DVec2 wp) { return xfAt(P, wp); };
 
     if (transformOp_.editVerts) {
-        // Transform the SELECTED ELEMENTS of the active path. Points move their
-        // anchor (handles ride along); handle elements move only that handle.
+        // Transform the SELECTED ELEMENTS of the active path (Blender rules):
+        //  • a selected POINT carries its anchor AND both handles through the
+        //    transform, so rotate/scale re-orient the tangents too;
+        //  • a selected HANDLE moves alone (its own element);
+        //  • Individual Origins: each element transforms about ITS OWN anchor —
+        //    the point stays put and only its handles rotate/scale around it.
         const Ink::Node* n = doc.Find(transformOp_.editNode);
         if (!n) return;
         const Ink::DMat23 w = doc.WorldTransform(transformOp_.editNode);
         const Ink::DMat23 wi = vpm::InvertAffine(w);
-        Ink::PathData p = transformOp_.origPath;
+        const Ink::PathData& orig = transformOp_.origPath;   // source of truth
+        const bool indiv = edit_.pivot == PivotMode::IndividualOrigins &&
+                           transformOp_.kind != TransformOp::Kind::Move;
+        Ink::PathData p = orig;
         for (const auto& e : edit_.elemSel) {
             if (e.sp >= (int)p.subpaths.size() ||
                 e.a  >= (int)p.subpaths[e.sp].anchors.size()) continue;
+            const Ink::Anchor& src = orig.subpaths[e.sp].anchors[e.a];
             Ink::Anchor& an = p.subpaths[e.sp].anchors[e.a];
+            const Ink::DVec2 anchorW = w.Apply(src.pos);
+            const Ink::DVec2 piv = indiv ? anchorW : P;
+
             if (e.part == EditContext::ElemPart::Point) {
-                an.pos = wi.Apply(xf(w.Apply(an.pos)));
-            } else if (e.part == EditContext::ElemPart::In && an.hasIn) {
-                const Ink::DVec2 nh = wi.Apply(xf(w.Apply({ an.pos.x+an.in.x, an.pos.y+an.in.y })));
-                an.in = { nh.x - an.pos.x, nh.y - an.pos.y };
-            } else if (e.part == EditContext::ElemPart::Out && an.hasOut) {
-                const Ink::DVec2 nh = wi.Apply(xf(w.Apply({ an.pos.x+an.out.x, an.pos.y+an.out.y })));
-                an.out = { nh.x - an.pos.x, nh.y - an.pos.y };
+                const Ink::DVec2 newPosW = xfAt(piv, anchorW);
+                an.pos = wi.Apply(newPosW);
+                // Handles follow the SAME transform (world), re-expressed
+                // relative to the new anchor — so rotate/scale bend them too.
+                if (src.hasIn) {
+                    const Ink::DVec2 hw = xfAt(piv,
+                        w.Apply({ src.pos.x + src.in.x, src.pos.y + src.in.y }));
+                    const Ink::DVec2 hl = wi.Apply(hw);
+                    an.in = { hl.x - an.pos.x, hl.y - an.pos.y };
+                }
+                if (src.hasOut) {
+                    const Ink::DVec2 hw = xfAt(piv,
+                        w.Apply({ src.pos.x + src.out.x, src.pos.y + src.out.y }));
+                    const Ink::DVec2 hl = wi.Apply(hw);
+                    an.out = { hl.x - an.pos.x, hl.y - an.pos.y };
+                }
+            } else if (e.part == EditContext::ElemPart::In && src.hasIn) {
+                if (edit_.ElemSelected(e.sp, e.a, EditContext::ElemPart::Point))
+                    continue;   // already carried by the point
+                const Ink::DVec2 hw = xfAt(piv,
+                    w.Apply({ src.pos.x + src.in.x, src.pos.y + src.in.y }));
+                const Ink::DVec2 hl = wi.Apply(hw);
+                an.in = { hl.x - an.pos.x, hl.y - an.pos.y };
+            } else if (e.part == EditContext::ElemPart::Out && src.hasOut) {
+                if (edit_.ElemSelected(e.sp, e.a, EditContext::ElemPart::Point))
+                    continue;
+                const Ink::DVec2 hw = xfAt(piv,
+                    w.Apply({ src.pos.x + src.out.x, src.pos.y + src.out.y }));
+                const Ink::DVec2 hl = wi.Apply(hw);
+                an.out = { hl.x - an.pos.x, hl.y - an.pos.y };
             }
         }
         doc.SetPath(transformOp_.editNode, p);

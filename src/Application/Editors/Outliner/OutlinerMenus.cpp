@@ -1,4 +1,4 @@
-#include "Application.h"
+﻿#include "Application.h"
 
 #include "OutlinerRowLayout.h"
 #include <DesignSystem/DesignSystem.h>
@@ -211,7 +211,7 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
         { UI::MenuEntry e; e.label = "Rename";
           e.onClick = [this, col, &st]() {
               if (const Ink::Collection* c = project_.document->FindCollection(col)) {
-                  st.outliner.renaming = col;
+                  st.outliner.renaming = col; st.outliner.renameTakeFocus = true;
                   std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf,
                                 "%s", c->name.c_str());
               }
@@ -322,7 +322,7 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
         { UI::MenuEntry e; e.label = "Rename"; e.enabled = edit_.active != Ink::kNullNode;
           e.onClick = [this, &st]() {
               if (const Ink::Node* n = project_.document->Find(edit_.active)) {
-                  st.outliner.renaming = edit_.active;
+                  st.outliner.renaming = edit_.active; st.outliner.renameTakeFocus = true;
                   std::snprintf(st.outliner.renameBuf, sizeof st.outliner.renameBuf,
                                 "%s", n->name.c_str());
               }

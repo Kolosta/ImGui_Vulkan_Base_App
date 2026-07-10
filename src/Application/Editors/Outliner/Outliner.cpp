@@ -1,4 +1,4 @@
-#include "Application.h"
+﻿#include "Application.h"
 
 #include "OutlinerRowLayout.h"
 #include <Ink/Geometry/Geometry.h>
@@ -43,6 +43,21 @@ const char* NodeIcon(const Ink::Node& n) {
 
 // Layers-view preview scale (rows this many ui-units tall). 1 = normal row.
 constexpr float kLayersRowScale = 2.4f;
+
+// Case-insensitive alphabetical sort by node name (Collections view rule: a
+// collection's contents are ALWAYS alphabetical — their order is never manual).
+void SortIdsByName(const Ink::Document& doc, std::vector<Ink::NodeId>& ids) {
+    auto lower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        return s;
+    };
+    std::sort(ids.begin(), ids.end(), [&](Ink::NodeId a, Ink::NodeId b) {
+        const Ink::Node* na = doc.Find(a);
+        const Ink::Node* nb = doc.Find(b);
+        return lower(na ? na->name : "") < lower(nb ? nb->name : "");
+    });
+}
 } // namespace
 
 // ── Filters / search ──────────────────────────────────────────────────────────
@@ -168,11 +183,12 @@ Application::OutlinerRowChildren(const Ink::Node& n) const {
                 doc.Find(cn->parentId)) continue;
             kids.push_back(c);
         }
-        // Plus the objects parented to this node.
+        // Plus the objects parented to this node; alphabetical in this view.
         auto it = outlinerParentKids_.find(n.id);
         if (it != outlinerParentKids_.end())
             for (Ink::NodeId c : it->second)
                 if (std::find(kids.begin(), kids.end(), c) == kids.end()) kids.push_back(c);
+        SortIdsByName(doc, kids);
         auto& slot = cache[n.id];
         slot = std::move(kids);
         return slot.empty() ? nullptr : &slot;
@@ -231,14 +247,19 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
                 for (Ink::NodeId cc : c.childCollections)
                     if (const Ink::Collection* child = doc.FindCollection(cc))
                         flattenColl(*child, depth + 1);
+                // Members are ALPHABETICAL (never manually ordered).
+                std::vector<Ink::NodeId> members;
                 for (Ink::NodeId m : c.members) {
                     const Ink::Node* mn = doc.Find(m);
                     if (!mn) continue;
                     if (mn->parentId != Ink::kNullNode &&
                         std::find(c.members.begin(), c.members.end(), mn->parentId)
                             != c.members.end()) continue;   // nests under parent
-                    OutlinerFlattenNode(m, depth + 1, out);
+                    members.push_back(m);
                 }
+                SortIdsByName(doc, members);
+                for (Ink::NodeId m : members)
+                    OutlinerFlattenNode(m, depth + 1, out);
             };
         if (o.showCollections)
             for (const Ink::Collection& c : doc.Collections())
@@ -340,6 +361,80 @@ void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
     (void)ds;
 }
 
+// ── Collapsed-contents summary (legacy design) ────────────────────────────────
+//  Next to a COLLAPSED container's name: one type icon per direct-content
+//  category (collection swatch / group / shape / instance) with a small count
+//  badge at its lower-right when more than one. When a summarised item is part
+//  of the viewport selection, the icon gets the row-selected colour behind it.
+
+void Application::OutlinerCollapsedSummary(const OutlinerRow& rrow, float x,
+                                           float rowTopY, float maxX) {
+    Ink::Document& doc = *project_.document;
+    auto& ds = DS::DesignSystem::Instance();
+
+    struct Cat { const char* icon; int count = 0; bool selected = false; };
+    Cat colls{ nullptr }, groups{ "folder" }, shapes{ "shape-category" },
+        instances{ "swap_horiz" };
+    auto tally = [&](Ink::NodeId id) {
+        const Ink::Node* n = doc.Find(id);
+        if (!n) return;
+        Cat& c = n->kind == Ink::NodeKind::Group    ? groups
+               : n->kind == Ink::NodeKind::Instance ? instances : shapes;
+        ++c.count;
+        if (edit_.IsSelected(id)) c.selected = true;
+    };
+    if (rrow.kind == OutlinerRow::Kind::CollectionHeader) {
+        const Ink::Collection* c = doc.FindCollection(rrow.id);
+        if (!c) return;
+        colls.count = (int)c->childCollections.size();
+        for (Ink::NodeId m : c->members) tally(m);
+    } else {
+        const Ink::Node* n = doc.Find(rrow.id);
+        if (!n) return;
+        if (const std::vector<Ink::NodeId>* kids = OutlinerRowChildren(*n))
+            for (Ink::NodeId k : *kids) tally(k);
+    }
+
+    const float gs = ol::Gs(), icon = ol::IconSize(), rowH = ol::RowH();
+    const ImVec4 tint = ol::SafeColor(Tok::S_Color_Text_Subtle, ImVec4(.6f,.6f,.6f,1));
+    const ImU32 selBg = ImGui::ColorConvertFloat4ToU32(
+        ol::SafeColor(Tok::C_Outliner_Row_Selected, ImVec4(0.2f, 0.4f, 0.7f, 1)));
+    const ImU32 badgeCol = ImGui::ColorConvertFloat4ToU32(
+        ol::SafeColor(Tok::S_Color_Text_Default, ImVec4(0.9f, 0.9f, 0.9f, 1)));
+    auto& im = VectorGraphics::IconManager::Instance();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+
+    auto drawCat = [&](const Cat& c, bool swatch) {
+        if (c.count <= 0) return;
+        x += 6.0f * gs;
+        if (x + icon > maxX) return;   // never run under the eye button
+        const float y = rowTopY + (rowH - icon) * 0.5f;
+        if (c.selected)
+            dl->AddRectFilled(ImVec2(x - 1.5f * gs, y - 1.5f * gs),
+                              ImVec2(x + icon + 1.5f * gs, y + icon + 1.5f * gs),
+                              selBg, 2.0f * gs);
+        if (swatch) {
+            dl->AddRectFilled(ImVec2(x, y), ImVec2(x + icon, y + icon),
+                ImGui::ColorConvertFloat4ToU32(tint), 2.0f * gs);
+        } else {
+            auto md = im.GetDefaultMetadata(c.icon);
+            for (auto& z : md.colorZones) z.customColor = tint;
+            im.RenderIcon(dl, c.icon, ImVec2(x, y), icon, md);
+        }
+        if (c.count > 1) {   // count badge, lower-right (legacy placement)
+            char b[8]; std::snprintf(b, sizeof b, "%d", c.count);
+            const ImVec2 ts = ImGui::CalcTextSize(b);
+            dl->AddText(ImVec2(x + icon - ts.x * 0.5f, y + icon - ts.y * 0.7f),
+                        badgeCol, b);
+        }
+        x += icon + (c.count > 1 ? 8.0f * gs : 0.0f);
+    };
+    drawCat(colls, /*swatch=*/true);
+    drawCat(groups, false);
+    drawCat(shapes, false);
+    drawCat(instances, false);
+}
+
 // ── Pass 2: draw one flattened row ────────────────────────────────────────────
 
 void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, float) {
@@ -367,7 +462,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         cfg.colors.hover    = ImGui::ColorConvertFloat4ToU32(ImVec4(selc.x, selc.y, selc.z, 0.55f));
         cfg.colors.selected = ImGui::ColorConvertFloat4ToU32(selc);
         UI::ListRow row(cfg);
-        OutlinerRowDragDrop(rrow);   // drag source + drop target on the row item
+        OutlinerRowDragDrop(rrow, row);   // drag source + drop target on the row item
         ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
         ImGui::PushID((int)rrow.id);
         ol::DotGutter();
@@ -376,22 +471,26 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ol::Chevron("##cch", open);
         if (open == o.IsCollapsed(rrow.id)) o.ToggleCollapsed(rrow.id);
         ol::SlotSwatch(ImVec4(c->colorTag.r, c->colorTag.g, c->colorTag.b, c->colorTag.a));
-        const float nameX = ImGui::GetCursorScreenPos().x;
+        const float nameX = ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs();
         const float eyeSlot = ol::RowH();
         const float eyeX = row.BandRight() - 6.0f * ol::Gs() - eyeSlot;
         if (o.renaming == rrow.id) {
-            ImGui::SetCursorScreenPos(ImVec2(nameX, row.RowTop() + (ol::RowH()-ImGui::GetTextLineHeight())*0.5f));
-            ImGui::SetNextItemWidth(std::max(40.0f, eyeX - nameX - 4.0f));
-            ImGui::SetKeyboardFocusHere();
-            if (ImGui::InputText("##crename", o.renameBuf, sizeof o.renameBuf,
-                    ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
+            bool deactivated = false;
+            if (ol::RenameField("##crename", o.renameBuf, sizeof o.renameBuf,
+                                nameX, row.RowTop(), eyeX - nameX - 4.0f,
+                                o.renameTakeFocus, &deactivated)) {
                 doc.SetCollectionName(rrow.id, o.renameBuf); o.renaming = 0;
             }
-            if (ImGui::IsItemDeactivated()) o.renaming = 0;
+            o.renameTakeFocus = false;
+            if (deactivated) o.renaming = 0;
         } else {
+            const char* label = c->name.empty() ? "(collection)" : c->name.c_str();
             ImGui::GetWindowDrawList()->AddText(
                 ImVec2(nameX, row.RowTop() + (ol::RowH()-ImGui::GetTextLineHeight())*0.5f),
-                ol::LabelColor(false, !c->visible), c->name.empty() ? "(collection)" : c->name.c_str());
+                ol::LabelColor(false, !c->visible), label);
+            if (rrow.hasChildren && o.IsCollapsed(rrow.id))
+                OutlinerCollapsedSummary(rrow, nameX + ImGui::CalcTextSize(label).x,
+                                         row.RowTop(), eyeX - 4.0f * ol::Gs());
         }
         row.SuppressInputIn(eyeX, eyeX + eyeSlot);
         {
@@ -406,13 +505,31 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
             if (!md.colorZones.empty()) md.colorZones[0].customColor = tint;
             im.RenderIcon(ImGui::GetWindowDrawList(), icon,
                 ImVec2(eyeX+(eyeSlot-isz)*0.5f, row.RowTop()+(ol::RowH()-isz)*0.5f), isz, md);
-            if (ehov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            if (ehov && !outlinerSuppressInput_ &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                 doc.SetCollectionVisible(rrow.id, !c->visible);
         }
         ImGui::PopID();
-        const UI::ListRowInput& in = row.Input();
-        if (in.doubleClicked) { o.renaming = rrow.id; std::snprintf(o.renameBuf, sizeof o.renameBuf, "%s", c->name.c_str()); }
-        if (in.rightClicked) { outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos; outlinerCtxNode_ = rrow.id; ImGui::OpenPopup("##outlinerCtx"); }
+        if (!outlinerSuppressInput_) {
+            const UI::ListRowInput& in = row.Input();
+            if (in.doubleClicked) {
+                o.renaming = rrow.id; o.renameTakeFocus = true;
+                std::snprintf(o.renameBuf, sizeof o.renameBuf, "%s", c->name.c_str());
+            } else if (in.clicked) {
+                // A collection is SELECTABLE (legacy): picking it clears the
+                // viewport object selection (synced) and selects the set here.
+                edit_.Clear();
+                o.sel.clear();
+                o.sel.push_back(rrow.id);
+                o.active = rrow.id;
+            }
+            // Right-click ONLY opens the menu — never selects (Blender rule).
+            if (in.rightClicked) {
+                outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+                outlinerCtxNode_ = rrow.id;
+                ImGui::OpenPopup("##outlinerCtx");
+            }
+        }
         return;
     }
 
@@ -461,7 +578,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         cfg.colors.idle = colf(Tok::C_Outliner_Search_Visual, Tok::C_Outliner_Search_Visual, 0.45f);
 
     UI::ListRow row(cfg);
-    OutlinerRowDragDrop(rrow);   // drag source + drop target on the row item
+    OutlinerRowDragDrop(rrow, row);   // drag source + drop target on the row item
     ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
     ImGui::PushID((int)rrow.id);
 
@@ -489,21 +606,24 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ol::SlotIcon(NodeIcon(*n), ds.GetColor(Tok::S_Color_Text_Default));
     }
 
-    const float nameX = ImGui::GetCursorScreenPos().x;
+    const float nameX = ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs();
     if (o.renaming == rrow.id) {
-        ImGui::SetCursorScreenPos(ImVec2(nameX, row.RowTop() + (row.RowH()-ImGui::GetTextLineHeight())*0.5f));
-        ImGui::SetNextItemWidth(std::max(40.0f, eyeX - nameX - 4.0f));
-        ImGui::SetKeyboardFocusHere();
-        if (ImGui::InputText("##rename", o.renameBuf, sizeof o.renameBuf,
-                ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll)) {
+        bool deactivated = false;
+        if (ol::RenameField("##rename", o.renameBuf, sizeof o.renameBuf,
+                            nameX, row.RowTop(), eyeX - nameX - 4.0f,
+                            o.renameTakeFocus, &deactivated)) {
             Action_RenameNode(rrow.id, o.renameBuf); o.renaming = 0;
         }
-        if (ImGui::IsItemDeactivated()) o.renaming = 0;
+        o.renameTakeFocus = false;
+        if (deactivated) o.renaming = 0;
     } else {
+        const char* label = n->name.empty() ? "(unnamed)" : n->name.c_str();
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(nameX, row.RowTop() + (row.RowH()-ImGui::GetTextLineHeight())*0.5f),
-            ol::LabelColor(selfHit && searching, !n->visible),
-            n->name.empty() ? "(unnamed)" : n->name.c_str());
+            ol::LabelColor(selfHit && searching, !n->visible), label);
+        if (rrow.hasChildren && o.IsCollapsed(rrow.id))
+            OutlinerCollapsedSummary(rrow, nameX + ImGui::CalcTextSize(label).x,
+                                     row.RowTop(), eyeX - 4.0f * ol::Gs());
     }
 
     if (active) {
@@ -524,23 +644,97 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         if (!md.colorZones.empty()) md.colorZones[0].customColor = tint;
         im.RenderIcon(ImGui::GetWindowDrawList(), icon,
             ImVec2(eyeX+(eyeSlot-isz)*0.5f, row.RowTop()+(ol::RowH()-isz)*0.5f), isz, md);
-        if (ehov && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+        if (ehov && !outlinerSuppressInput_ &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Left))
             Action_ToggleNodeVisible(rrow.id);
     }
     ImGui::PopID();
 
+    if (outlinerSuppressInput_) return;   // sync-picking owns the mouse
     const UI::ListRowInput& in = row.Input();
     if (in.doubleClicked) {
         o.renaming = rrow.id;
+        o.renameTakeFocus = true;
         std::snprintf(o.renameBuf, sizeof o.renameBuf, "%s", n->name.c_str());
     } else if (in.clicked) {
+        // An object click drops any collection-row selection.
+        o.sel.clear();
         OutlinerSelectClick(rrow.id, n->kind != Ink::NodeKind::Group);
     }
+    // Right-click ONLY opens the menu — never a selection change (Blender rule:
+    // the menu acts on the current selection; the row is context only).
     if (in.rightClicked) {
-        if (!OutlinerRowSelected(rrow.id)) OutlinerSelectClick(rrow.id, true);
-        outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos; outlinerCtxNode_ = rrow.id;
+        outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+        outlinerCtxNode_ = rrow.id;
         ImGui::OpenPopup("##outlinerCtx");
     }
+}
+
+// ── Tree guide lines (legacy design) ──────────────────────────────────────────
+//  A vertical line descends under the chevron of every EXPANDED container,
+//  spanning its visible descendants. Style encodes the container type:
+//    • collection      → its colour tag, solid
+//    • group / page    → border colour, solid
+//    • parented object → text-subtle, dotted (Collections view relation)
+//  Spans come from ONE stack pass over the flat row list, then are culled to
+//  the scroll window, so the cost stays O(rows) with tiny constants.
+
+void Application::OutlinerDrawGuideLines(EditorState& st,
+                                         const std::vector<OutlinerRow>& rows,
+                                         float startY, float stripeH) {
+    if (rows.empty() || !project_.document) return;
+    Ink::Document& doc = *project_.document;
+    OutlinerState& o = st.outliner;
+    const bool layers = (o.display == OutlinerDisplayMode::Layers);
+
+    const float winTop = ImGui::GetWindowPos().y;
+    const float scrollY = ImGui::GetScrollY();
+    const float viewTop = winTop, viewBot = winTop + ImGui::GetWindowHeight();
+    auto rowTopY = [&](std::size_t i) {
+        return winTop - scrollY + startY + (float)i * stripeH;
+    };
+    const float x0 = ol::RowLeft() + ol::BandMargin() + ol::DotGutterW();
+
+    const ImU32 solid = ImGui::ColorConvertFloat4ToU32(
+        ol::SafeColor(Tok::S_Color_Border_Default, ImVec4(0.4f, 0.4f, 0.4f, 1)));
+    const ImU32 dotted = ImGui::ColorConvertFloat4ToU32(
+        ol::SafeColor(Tok::S_Color_Text_Subtle, ImVec4(0.6f, 0.6f, 0.6f, 1)));
+
+    auto emit = [&](std::size_t parent, std::size_t last) {
+        if (last <= parent) return;
+        // From under the parent's chevron to the CENTRE of its last descendant.
+        const float ys = rowTopY(parent + 1);
+        const float ye = rowTopY(last) + stripeH * 0.5f;
+        if (ye < viewTop || ys > viewBot) return;   // fully off-screen
+        const float x = x0 + ((float)rows[parent].depth + 0.5f) * ol::ChevronSlotW();
+        ImU32 col = solid; bool dot = false;
+        switch (rows[parent].kind) {
+            case OutlinerRow::Kind::CollectionHeader:
+                if (const Ink::Collection* c = doc.FindCollection(rows[parent].id))
+                    col = ImGui::ColorConvertFloat4ToU32(ImVec4(
+                        c->colorTag.r, c->colorTag.g, c->colorTag.b, c->colorTag.a));
+                break;
+            case OutlinerRow::Kind::Object: {
+                const Ink::Node* n = doc.Find(rows[parent].id);
+                const bool group = n && n->kind == Ink::NodeKind::Group;
+                if (!layers && !group) { col = dotted; dot = true; }   // parenting
+                break;
+            }
+            case OutlinerRow::Kind::PageHeader: default: break;
+        }
+        ol::TreeLine(x, ys, ye, col, dot);
+    };
+
+    // One pass: push every row; when depth falls back, close the spans above it.
+    std::vector<std::size_t> stack;
+    for (std::size_t i = 1; i < rows.size(); ++i) {
+        while (!stack.empty() && rows[i].depth <= rows[stack.back()].depth) {
+            emit(stack.back(), i - 1);
+            stack.pop_back();
+        }
+        if (rows[i].depth > rows[i - 1].depth) stack.push_back(i - 1);
+    }
+    while (!stack.empty()) { emit(stack.back(), rows.size() - 1); stack.pop_back(); }
 }
 
 // ── Render entry ──────────────────────────────────────────────────────────────
@@ -566,6 +760,11 @@ void Application::RenderOutliner(EditorState& st) {
     edit_.Prune(*project_.document);
     st.outliner.rowOrder.clear();
     if (edit_.active != Ink::kNullNode) st.outliner.active = edit_.active;
+
+    // While the sync-picking gesture is (or was, this frame) active, every row
+    // is input-inert: the cancelling right-click / Esc must ONLY cancel the
+    // gesture, never select a row or open a menu underneath.
+    outlinerSuppressInput_ = (outlinerPickingState_ != nullptr);
 
     // Viewport-sync upkeep.
     if (st.outliner.syncTarget &&
@@ -632,9 +831,11 @@ void Application::RenderOutliner(EditorState& st) {
         ImGui::SetCursorPosY(startY + (float)rows.size() * stripeH);
         ImGui::Dummy(ImVec2(1.0f, 1.0f));
         UI::ListRowSetBandScale(1.0f);
+        OutlinerDrawGuideLines(st, rows, startY, stripeH);
 
         // Empty-space clicks (only when the pointer isn't over a row).
-        if (ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered()) {
+        if (!outlinerSuppressInput_ &&
+            ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered()) {
             const float my = ImGui::GetMousePos().y - ImGui::GetWindowPos().y + scrollY;
             const bool belowRows = my > startY + (float)rows.size() * stripeH;
             if (belowRows && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) edit_.Clear();
