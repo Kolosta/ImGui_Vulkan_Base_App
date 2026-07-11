@@ -1433,6 +1433,7 @@ enum class Tok : std::uint32_t {
     C_Editor_ContentInset,
     C_Cursor_Color,
     C_Menu_ItemPaddingX,
+    C_Menu_MaxHeight,               // menu height cap before the list scrolls (px)
     C_Menu_TitleText,
     C_Tooltip_Background,
     C_Tooltip_Text,
@@ -2982,6 +2983,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Editor_ContentInset: return "component.editor.content.inset.default";
         case Tok::C_Cursor_Color: return "component.cursor.icon.color.default";
         case Tok::C_Menu_ItemPaddingX: return "component.menu.item.padding.horizontal";
+        case Tok::C_Menu_MaxHeight: return "component.menu.max-height.default";
         case Tok::C_Menu_TitleText: return "component.menu.title.label.color.default";
         case Tok::C_Tooltip_Background: return "component.tooltip.background.color.default";
         case Tok::C_Tooltip_Text: return "component.tooltip.label.color.default";

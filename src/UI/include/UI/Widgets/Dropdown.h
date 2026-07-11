@@ -64,6 +64,11 @@ struct DropdownConfig {
     std::vector<DropdownItem> items;
     int selectedIndex = -1;                     // highlighted item, -1 = none
     DropdownStyle style = DropdownStyle::Default;
+    // Single-column lists: a search field at the top of the menu (keyboard
+    // focused on open) filters the items live. Long lists scroll inside the
+    // menu regardless (see component.menu.max-height.default) — searchable
+    // just forces the scrolling layout even when the list would fit.
+    bool searchable = false;
     // Buttons fused to the trigger (ButtonGroup look). Rendered left/right per side.
     std::vector<DropdownButton> buttons;
     // CUSTOM BODY: when set, the popup renders THIS instead of the item list (the

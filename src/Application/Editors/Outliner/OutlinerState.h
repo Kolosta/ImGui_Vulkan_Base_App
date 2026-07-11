@@ -48,6 +48,11 @@ struct OutlinerState {
 
     // Collapsed groups / collections / pages (ids). Absent = expanded.
     std::unordered_set<uint64_t> collapsed;
+    // Collections view OBJECT rows expand the other way round (Blender):
+    // collapsed by default, EXPANDED only when present here — the object's
+    // children (modifier stack, linked data, parented objects) unfold on
+    // demand and the collapsed row summarises them with icons + counts.
+    std::unordered_set<uint64_t> expandedObjects;
 
     // Inline rename in flight: the id being renamed + its edit buffer (0 = none).
     // renameTakeFocus is true for the FIRST frame only (grabs the keyboard once).
@@ -74,6 +79,10 @@ struct OutlinerState {
     bool RowSelected(uint64_t id) const {
         for (uint64_t s : sel) if (s == id) return true;
         return false;
+    }
+    bool ObjExpanded(uint64_t id) const { return expandedObjects.count(id) != 0; }
+    void ToggleObjExpanded(uint64_t id) {
+        if (!expandedObjects.erase(id)) expandedObjects.insert(id);
     }
 };
 

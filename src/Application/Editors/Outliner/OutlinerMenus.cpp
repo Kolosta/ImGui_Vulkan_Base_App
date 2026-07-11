@@ -196,7 +196,51 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
         for (Ink::NodeId id : edit_.selection) if (doc.Find(id)) ids.push_back(id);
         return ids;
     };
-    const char* title = ctxColl ? "Collection" : (onObject ? "Object" : "Outliner");
+    const char* title = outlinerCtxLinkedRef_ != Ink::kNullNode ? "Linked Data"
+                      : ctxColl ? "Collection"
+                      : (onObject ? "Object" : "Outliner");
+
+    if (outlinerCtxLinkedRef_ != Ink::kNullNode) {
+        // ── Linked-data row menu (the instance's shared data reference) ──
+        const Ink::NodeId ref = outlinerCtxLinkedRef_;
+        { UI::MenuEntry e; e.label = "Select Original";
+          e.tooltip = "Select the object this instance renders";
+          e.enabled = doc.Find(ref) != nullptr;
+          e.onClick = [this, ref]() { edit_.SelectOnly(ref); };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Select Linked";
+          e.tooltip = "Select the original and every instance sharing this data";
+          e.enabled = doc.Find(ref) != nullptr;
+          e.onClick = [this, ref]() {
+              Ink::Document& d = *project_.document;
+              edit_.Clear();
+              if (d.Find(ref)) edit_.SelectAdd(ref);
+              for (const Ink::Page& page : d.Pages()) {
+                  std::vector<Ink::NodeId> stack(page.children.begin(),
+                                                 page.children.end());
+                  while (!stack.empty()) {
+                      const Ink::NodeId id = stack.back(); stack.pop_back();
+                      const Ink::Node* n = d.Find(id);
+                      if (!n) continue;
+                      for (Ink::NodeId c : n->children) stack.push_back(c);
+                      if (n->kind == Ink::NodeKind::Instance &&
+                          n->targetRef == ref)
+                          edit_.SelectAdd(id);
+                  }
+              }
+              edit_.active = ref;
+              LogInfoAction("Select Linked");
+          };
+          entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Make Original Single";
+          e.tooltip = "Returns with the data/geometry sharing rework";
+          e.enabled = false;
+          entries.push_back(std::move(e)); }
+        const bool open =
+            UI::ContextMenu("##outlinerCtx", outlinerCtxPos_, entries, title);
+        if (!open) { outlinerCtxOpen_ = false; outlinerCtxLinkedRef_ = Ink::kNullNode; }
+        return;
+    }
 
     if (ctxColl) {
         // ── Collection menu (Collections view) ──

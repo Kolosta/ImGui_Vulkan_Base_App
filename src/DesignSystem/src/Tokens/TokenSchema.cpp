@@ -1486,6 +1486,7 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Editor_ContentInset, TokenLevel::Component, Tok::S_Spacing_EditorInset, "inset/padding around panel-editor content (Outliner/Properties/Timeline/Dev)"));
     put(Ref(Tok::C_Cursor_Color, TokenLevel::Component, Tok::S_Static_WhiteText, "custom mouse cursor icon tint (white, theme-invariant)"));
     put(Float(Tok::C_Menu_ItemPaddingX, TokenLevel::Component, 6.f, "menu item horizontal padding", CS::Range(0.0,24.0,"px")));
+    put(Float(Tok::C_Menu_MaxHeight, TokenLevel::Component, 420.f, "menu height cap before the item list scrolls", CS::Range(120.0,2000.0,"px")));
     put(Ref(Tok::C_Menu_TitleText, TokenLevel::Component, Tok::S_Color_Text_Subtle, "floating-menu title (header) text — a touch greyer than item text"));
     // ── Tabbed zones (Graphite-style) ──
     put(Color(Tok::P_Color_WhiteTransparent, TokenLevel::Primitive, HexA(0xFFFFFF2E), "white ~18% (drop preview)"));

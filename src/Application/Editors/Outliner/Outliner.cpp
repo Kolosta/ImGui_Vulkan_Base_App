@@ -163,10 +163,10 @@ void Application::OutlinerBuildParentIndex() {
     }
 }
 
-// The children a row shows in the CURRENT view. Layers: the layer-tree children.
-// Collections: the layer children (a group still contains its members) PLUS the
-// objects parented to this node (parentId, Lot 7) — deduplicated, so a parented
-// child appears exactly once, nested under its parent.
+// The children a row shows in the CURRENT view. Layers: the layer-tree
+// children (stacking is the point there). Collections: ONLY the objects
+// PARENTED to this node (parentId, Lot 7), alphabetical — the layer tree
+// (groups, z-order) is a Layers concept and never structures this view.
 const std::vector<Ink::NodeId>*
 Application::OutlinerRowChildren(const Ink::Node& n) const {
     if (outlinerCur_ && outlinerCur_->display == OutlinerDisplayMode::Collections) {
@@ -176,18 +176,8 @@ Application::OutlinerRowChildren(const Ink::Node& n) const {
             return cit->second.empty() ? nullptr : &cit->second;
         Ink::Document& doc = *project_.document;
         std::vector<Ink::NodeId> kids;
-        // Layer children, minus those parented to ANOTHER node (they nest there).
-        for (Ink::NodeId c : n.children) {
-            const Ink::Node* cn = doc.Find(c);
-            if (cn && cn->parentId != Ink::kNullNode && cn->parentId != n.id &&
-                doc.Find(cn->parentId)) continue;
-            kids.push_back(c);
-        }
-        // Plus the objects parented to this node; alphabetical in this view.
         auto it = outlinerParentKids_.find(n.id);
-        if (it != outlinerParentKids_.end())
-            for (Ink::NodeId c : it->second)
-                if (std::find(kids.begin(), kids.end(), c) == kids.end()) kids.push_back(c);
+        if (it != outlinerParentKids_.end()) kids = it->second;
         SortIdsByName(doc, kids);
         auto& slot = cache[n.id];
         slot = std::move(kids);
@@ -203,6 +193,7 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
     const Ink::Node* n = doc.Find(id);
     if (!n) return;
     OutlinerState& o = *outlinerCur_;
+    const bool collections = (o.display == OutlinerDisplayMode::Collections);
     const bool searching = o.search[0] != '\0';
 
     const bool passes = OutlinerPassesFilter(id);
@@ -210,20 +201,51 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
     const bool drawSelf = passes && searchOk;
     const std::vector<Ink::NodeId>* kids = OutlinerRowChildren(*n);
     const bool hasKids = kids && !kids->empty();
+    // Collections view: an object's children are its MODIFIER stack, the
+    // instance's linked data, and the objects parented to it.
+    const int  nMods = collections ? (int)n->modifiers.size() : 0;
+    const bool hasLinked = collections && n->kind == Ink::NodeKind::Instance &&
+                           doc.Find(n->targetRef) != nullptr;
+    const bool anyChild = hasKids || nMods > 0 || hasLinked;
 
+    const int myRow = (int)out.size();
     if (drawSelf) {
         OutlinerRow r; r.id = id; r.kind = OutlinerRow::Kind::Object;
-        r.depth = depth; r.hasChildren = hasKids;
+        r.depth = depth; r.hasChildren = anyChild;
         r.ownerColl = ownerColl; r.ownerRow = ownerRow;
         out.push_back(r);
         o.rowOrder.push_back(id);
     }
-    if (hasKids && !o.IsCollapsed(id)) {
-        const int childDepth = drawSelf ? depth + 1 : depth;
-        // Top-of-stack first (reverse painter order) for a layer-stack read.
-        // Children stay in the SAME enclosing collection as their parent row.
-        for (auto it = kids->rbegin(); it != kids->rend(); ++it)
-            OutlinerFlattenNode(*it, childDepth, out, ownerColl, ownerRow);
+    // Collections view expands the Blender way: collapsed by default,
+    // unfolded only while the object is in `expandedObjects`.
+    const bool expanded = collections ? o.ObjExpanded(id) : !o.IsCollapsed(id);
+    if (!anyChild || !expanded) return;
+    const int childDepth = drawSelf ? depth + 1 : depth;
+
+    if (drawSelf && collections) {
+        for (int mi = 0; mi < nMods; ++mi) {
+            OutlinerRow r; r.id = id; r.kind = OutlinerRow::Kind::Modifier;
+            r.depth = childDepth; r.modIndex = mi;
+            r.ownerColl = ownerColl; r.ownerRow = ownerRow; r.objRow = myRow;
+            out.push_back(r);
+        }
+        if (hasLinked) {
+            OutlinerRow r; r.id = id; r.kind = OutlinerRow::Kind::LinkedData;
+            r.depth = childDepth; r.refId = n->targetRef;
+            r.ownerColl = ownerColl; r.ownerRow = ownerRow; r.objRow = myRow;
+            out.push_back(r);
+        }
+    }
+    if (hasKids) {
+        // Layers: top-of-stack first (reverse painter order) for a stack
+        // read. Collections: the list is already alphabetical.
+        if (collections) {
+            for (Ink::NodeId c : *kids)
+                OutlinerFlattenNode(c, childDepth, out, ownerColl, ownerRow);
+        } else {
+            for (auto it = kids->rbegin(); it != kids->rend(); ++it)
+                OutlinerFlattenNode(*it, childDepth, out, ownerColl, ownerRow);
+        }
     }
 }
 
@@ -281,13 +303,26 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
             for (const Ink::Collection& c : doc.Collections())
                 if (!doc.IsChildCollection(c.id))   // top-level roots only
                     flattenColl(c, 1, Ink::kNullNode, 0);
-        // Page objects that are in no collection, top-level ones only (parented
-        // children nest under their parent through the parentId index). Their
-        // enclosing "collection" is the project root (row 0).
-        for (const Ink::Page& page : doc.Pages())
-            for (auto it = page.children.rbegin(); it != page.children.rend(); ++it)
-                if (!OutlinerInAnyCollection(*it) && !isParented(*it))
-                    OutlinerFlattenNode(*it, 1, out, Ink::kNullNode, 0);
+        // EVERY document object that is in no collection and not parented
+        // lands flat under the project root, ALPHABETICAL — the layer tree
+        // (group nesting, z-order) never structures this view, so a group's
+        // children list here too when no collection claims them.
+        std::vector<Ink::NodeId> loose;
+        for (const Ink::Page& page : doc.Pages()) {
+            std::vector<Ink::NodeId> stack(page.children.begin(),
+                                           page.children.end());
+            while (!stack.empty()) {
+                const Ink::NodeId id = stack.back(); stack.pop_back();
+                const Ink::Node* n = doc.Find(id);
+                if (!n) continue;
+                for (Ink::NodeId c : n->children) stack.push_back(c);
+                if (!OutlinerInAnyCollection(id) && !isParented(id))
+                    loose.push_back(id);
+            }
+        }
+        SortIdsByName(doc, loose);
+        for (Ink::NodeId id : loose)
+            OutlinerFlattenNode(id, 1, out, Ink::kNullNode, 0);
     } else {
         // Layers: page header + its layer tree, top of stack first.
         for (const Ink::Page& page : doc.Pages()) {
@@ -392,7 +427,7 @@ void Application::OutlinerCollapsedSummary(const OutlinerRow& rrow, float x,
 
     struct Cat { const char* icon; int count = 0; bool selected = false; };
     Cat colls{ nullptr }, groups{ "folder" }, shapes{ "shape-category" },
-        instances{ "swap_horiz" };
+        instances{ "swap_horiz" }, mods{ "settings" }, linked{ "swap_horiz" };
     auto tally = [&](Ink::NodeId id) {
         const Ink::Node* n = doc.Find(id);
         if (!n) return;
@@ -411,6 +446,14 @@ void Application::OutlinerCollapsedSummary(const OutlinerRow& rrow, float x,
         if (!n) return;
         if (const std::vector<Ink::NodeId>* kids = OutlinerRowChildren(*n))
             for (Ink::NodeId k : *kids) tally(k);
+        // Collections view: the folded object also summarises its modifier
+        // stack and (for an instance) the shared data reference.
+        if (outlinerCur_ &&
+            outlinerCur_->display == OutlinerDisplayMode::Collections) {
+            mods.count = (int)n->modifiers.size();
+            if (n->kind == Ink::NodeKind::Instance && doc.Find(n->targetRef))
+                linked.count = 1;
+        }
     }
 
     const float gs = ol::Gs(), icon = ol::IconSize(), rowH = ol::RowH();
@@ -451,6 +494,8 @@ void Application::OutlinerCollapsedSummary(const OutlinerRow& rrow, float x,
     drawCat(groups, false);
     drawCat(shapes, false);
     drawCat(instances, false);
+    drawCat(mods, false);
+    drawCat(linked, false);
 }
 
 // ── Pass 2: draw one flattened row ────────────────────────────────────────────
@@ -462,9 +507,12 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     const bool layers = (o.display == OutlinerDisplayMode::Layers);
     const bool preview = layers && rrow.kind == OutlinerRow::Kind::Object;
 
-    // Common ListRow config.
+    // Common ListRow config. The hit id mixes kind + modifier index so child
+    // rows sharing the object's document id stay unique ImGui items.
     UI::ListRowConfig cfg;
-    cfg.id = ImGui::GetID((void*)(uintptr_t)rrow.id);
+    cfg.id = ImGui::GetID((void*)(uintptr_t)
+        (rrow.id ^ ((uint64_t)rrow.kind << 48) ^
+         ((uint64_t)(rrow.modIndex + 1) << 56)));
     cfg.zebraOdd = (UI::ListRowZebraIndex() & 1);
     cfg.zebraColor = ImGui::ColorConvertFloat4ToU32(
         ol::SafeColor(Tok::S_Color_Background_Layer2, ImVec4(0.15f,0.15f,0.15f,1)));
@@ -568,6 +616,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
             if (in.rightClicked) {
                 outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
                 outlinerCtxNode_ = rrow.id;
+                outlinerCtxLinkedRef_ = Ink::kNullNode;
                 ImGui::OpenPopup("##outlinerCtx");
             }
         }
@@ -594,6 +643,67 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
             ImVec2(ImGui::GetCursorScreenPos().x, row.RowTop() + (ol::RowH()-ImGui::GetTextLineHeight())*0.5f),
             ol::LabelColor(false, false), label);
         ImGui::PopID();
+        return;
+    }
+
+    // ── Modifier / Linked-data child rows (Collections view) ──
+    if (rrow.kind == OutlinerRow::Kind::Modifier ||
+        rrow.kind == OutlinerRow::Kind::LinkedData) {
+        const Ink::Node* n = doc.Find(rrow.id);
+        if (!n) { UI::ListRow dummy(cfg); return; }
+        ImVec4 hov = ol::SafeColor(Tok::C_Outliner_Row_Hover,
+                                   ImVec4(0.3f, 0.5f, 0.9f, 1));
+        hov.w = 0.35f;
+        cfg.colors.hover = ImGui::ColorConvertFloat4ToU32(hov);
+        UI::ListRow row(cfg);
+        OutlinerRowDragDrop(rrow, row);   // modifier drag source / obj targets
+        ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
+        ImGui::PushID((int)cfg.id);
+        ol::DotGutter();
+        for (int d = 0; d < rrow.depth; ++d) ol::ChevronSpacer();
+        ol::ChevronSpacer();
+        if (rrow.kind == OutlinerRow::Kind::Modifier) {
+            const int mi = rrow.modIndex;
+            const Ink::Modifier* m =
+                mi >= 0 && mi < (int)n->modifiers.size() ? &n->modifiers[mi]
+                                                         : nullptr;
+            if (!m) { ImGui::PopID(); return; }
+            ol::SlotIcon("settings", ol::SafeColor(Tok::S_Color_Text_Subtle,
+                                                   ImVec4(.6f, .6f, .6f, 1)));
+            const char* label =
+                m->kind == Ink::ModifierKind::Array ? "Array"
+                : m->kind == Ink::ModifierKind::AlongPath ? "Along Path"
+                : "Boolean";
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs(),
+                       row.RowTop() + (ol::RowH() - ImGui::GetTextLineHeight()) * 0.5f),
+                ol::LabelColor(false, !m->enabled), label);
+        } else {
+            // The instance's SHARED DATA — a reference view, styled dimmed so
+            // it never reads as the real object (and it cannot be dragged).
+            const Ink::Node* target = doc.Find(rrow.refId);
+            ol::SlotIcon("swap_horiz", ol::SafeColor(Tok::S_Color_Text_Disabled,
+                                                     ImVec4(.5f, .5f, .5f, 1)));
+            char label[160];
+            std::snprintf(label, sizeof label, "%s  (data)",
+                          target && !target->name.empty() ? target->name.c_str()
+                                                          : "(missing)");
+            ImGui::GetWindowDrawList()->AddText(
+                ImVec2(ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs(),
+                       row.RowTop() + (ol::RowH() - ImGui::GetTextLineHeight()) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(ol::SafeColor(
+                    Tok::S_Color_Text_Subtle, ImVec4(.6f, .6f, .6f, 1))),
+                label);
+        }
+        ImGui::PopID();
+        if (!outlinerSuppressInput_ &&
+            rrow.kind == OutlinerRow::Kind::LinkedData &&
+            row.Input().rightClicked) {
+            outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+            outlinerCtxNode_ = rrow.id;
+            outlinerCtxLinkedRef_ = rrow.refId;
+            ImGui::OpenPopup("##outlinerCtx");
+        }
         return;
     }
 
@@ -626,9 +736,17 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     ol::DotGutter();
     for (int d = 0; d < rrow.depth; ++d) ol::ChevronSpacer();
     if (rrow.hasChildren) {
-        bool open = !o.IsCollapsed(rrow.id);
-        ol::Chevron("##ch", open);
-        if (open == o.IsCollapsed(rrow.id)) o.ToggleCollapsed(rrow.id);
+        // Collections view: Blender expansion (collapsed by default, present
+        // in expandedObjects = open). Layers keeps the collapsed-set default.
+        if (!layers) {
+            bool open = o.ObjExpanded(rrow.id);
+            ol::Chevron("##ch", open);
+            if (open != o.ObjExpanded(rrow.id)) o.ToggleObjExpanded(rrow.id);
+        } else {
+            bool open = !o.IsCollapsed(rrow.id);
+            ol::Chevron("##ch", open);
+            if (open == o.IsCollapsed(rrow.id)) o.ToggleCollapsed(rrow.id);
+        }
     } else {
         ol::ChevronSpacer();
     }
@@ -636,7 +754,9 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     const float eyeSlot = ol::RowH();
     const float eyeX = row.BandRight() - 6.0f * ol::Gs() - eyeSlot;
 
-    // Preview card (Layers view) or the flat type icon.
+    // Preview card (Layers view) or the flat type icon. In the Collections
+    // view a GROUP is just an object (no folder icon — the layer hierarchy is
+    // a Layers concept and does not exist here).
     if (preview) {
         const float sz = row.RowH() * 0.86f;
         const ImVec2 pmin(ImGui::GetCursorScreenPos().x, row.RowTop() + (row.RowH()-sz)*0.5f);
@@ -644,7 +764,9 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ImGui::Dummy(ImVec2(sz + 6.0f * ol::Gs(), row.RowH()));
         ImGui::SameLine(0.0f, 0.0f);
     } else {
-        ol::SlotIcon(NodeIcon(*n), ds.GetColor(Tok::S_Color_Text_Default));
+        const char* icon = (!layers && n->kind == Ink::NodeKind::Group)
+                               ? "shape-category" : NodeIcon(*n);
+        ol::SlotIcon(icon, ds.GetColor(Tok::S_Color_Text_Default));
     }
 
     const float nameX = ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs();
@@ -662,7 +784,9 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(nameX, row.RowTop() + (row.RowH()-ImGui::GetTextLineHeight())*0.5f),
             ol::LabelColor(selfHit && searching, !n->visible), label);
-        if (rrow.hasChildren && o.IsCollapsed(rrow.id))
+        const bool folded = layers ? o.IsCollapsed(rrow.id)
+                                   : !o.ObjExpanded(rrow.id);
+        if (rrow.hasChildren && folded)
             OutlinerCollapsedSummary(rrow, nameX + ImGui::CalcTextSize(label).x,
                                      row.RowTop(), eyeX - 4.0f * ol::Gs());
     }
@@ -707,6 +831,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     if (in.rightClicked) {
         outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
         outlinerCtxNode_ = rrow.id;
+        outlinerCtxLinkedRef_ = Ink::kNullNode;
         ImGui::OpenPopup("##outlinerCtx");
     }
 }
@@ -743,9 +868,10 @@ void Application::OutlinerDrawGuideLines(EditorState& st,
 
     auto emit = [&](std::size_t parent, std::size_t last) {
         if (last <= parent) return;
-        // From under the parent's chevron to the CENTRE of its last descendant.
+        // From under the parent's stripe to the BOTTOM of its last descendant
+        // (ol::TreeLine applies the same small inset at both ends).
         const float ys = rowTopY(parent + 1);
-        const float ye = rowTopY(last) + stripeH * 0.5f;
+        const float ye = rowTopY(last) + stripeH;
         if (ye < viewTop || ys > viewBot) return;   // fully off-screen
         const float x = x0 + ((float)rows[parent].depth + 0.5f) * ol::ChevronSlotW();
         ImU32 col = solid; bool dot = false;
@@ -801,6 +927,11 @@ void Application::RenderOutliner(EditorState& st) {
     edit_.Prune(*project_.document);
     st.outliner.rowOrder.clear();
     if (edit_.active != Ink::kNullNode) st.outliner.active = edit_.active;
+    // Object and collection selection are EXCLUSIVE: selecting objects
+    // anywhere (viewport click, Shift+click extend, box select) drops any
+    // selected collection rows — the two never read as selected together.
+    if (!edit_.selection.empty() && !st.outliner.sel.empty())
+        st.outliner.sel.clear();
 
     // While the sync-picking gesture is (or was, this frame) active, every row
     // is input-inert: the cancelling right-click / Esc must ONLY cancel the
@@ -889,6 +1020,7 @@ void Application::RenderOutliner(EditorState& st) {
             if (belowRows && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
                 outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
                 outlinerCtxNode_ = Ink::kNullNode;
+                outlinerCtxLinkedRef_ = Ink::kNullNode;
                 ImGui::OpenPopup("##outlinerCtx");
             }
         }

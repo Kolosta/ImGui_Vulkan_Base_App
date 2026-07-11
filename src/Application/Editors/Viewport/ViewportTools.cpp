@@ -304,6 +304,58 @@ void Application::Action_DuplicateSelection() {
     LogInfoAction("Duplicate");
 }
 
+// Blender's Alt+D: DUPLICATE LINKED — each copy is an Instance node sharing
+// the source's data (editing the original updates every copy; transform is
+// independent). The copies spawn under the cursor's grab: the move runs until
+// LMB confirms; Esc / RMB cancels the WHOLE action (the copies are removed).
+void Application::Action_DuplicateLinked() {
+    if (!project_.document || edit_.selection.empty() ||
+        edit_.mode == EditorMode::Edit)
+        return;
+    Ink::Document& doc = *project_.document;
+    std::vector<Ink::NodeId> prev(edit_.selection.begin(), edit_.selection.end());
+    std::vector<Ink::NodeId> created;
+    for (Ink::NodeId id : prev) {
+        const Ink::Node* n = doc.Find(id);
+        if (!n) continue;
+        // A linked duplicate of an instance shares the SAME data.
+        const Ink::NodeId target =
+            n->kind == Ink::NodeKind::Instance ? n->targetRef : id;
+        if (!doc.Find(target)) continue;
+        const Ink::NodeId parent =
+            n->parent != Ink::kNullNode ? n->parent : n->page;
+        const Ink::NodeId inst = doc.AddInstance(
+            parent, target,
+            (n->name.empty() ? std::string("Object") : n->name) + " linked");
+        if (inst == Ink::kNullNode) continue;
+        // Overlay the source exactly: an instance of a plain node renders the
+        // target WITH its own transform, so identity overlays it; an instance
+        // source hands its transform down.
+        if (n->kind == Ink::NodeKind::Instance) doc.SetTransform(inst, n->transform);
+        created.push_back(inst);
+    }
+    if (created.empty()) return;
+
+    edit_.Clear();
+    for (Ink::NodeId c : created) edit_.SelectAdd(c);
+    edit_.active = created.front();
+
+    // Grab the copies (Blender). If no viewport can host the modal op, the
+    // copies stay in place — commit the creation immediately instead.
+    Action_BeginMove();
+    if (transformOp_.Active()) {
+        transformOp_.spawned = created;
+        transformOp_.spawnedPrevSel = std::move(prev);
+    } else {
+        std::vector<Ink::Document::SubtreeSnapshot> snaps;
+        for (Ink::NodeId c : created) snaps.push_back(doc.CopySubtree(c));
+        PushDocCommand("Duplicate Linked",
+            [created](Ink::Document& d) { for (Ink::NodeId c : created) d.Remove(c); },
+            [snaps](Ink::Document& d) { for (const auto& s : snaps) d.RestoreSubtree(s); });
+    }
+    LogInfoAction("Duplicate Linked");
+}
+
 // ── Mode ───────────────────────────────────────────────────────────────────────
 
 void Application::Action_EnterEditMode() {

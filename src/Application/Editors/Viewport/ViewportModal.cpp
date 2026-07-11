@@ -342,6 +342,24 @@ void Application::ConfirmTransform() {
         PushDocCommand(label,
             [id, before](Ink::Document& d) { d.SetPath(id, before); },
             [id, after](Ink::Document& d)  { d.SetPath(id, after); });
+    } else if (!transformOp_.spawned.empty()) {
+        // Duplicate Linked: ONE command owns the creation AND the final
+        // placement (the snapshots carry the confirmed transforms).
+        std::vector<Ink::NodeId> ids;
+        std::vector<Ink::Document::SubtreeSnapshot> snaps;
+        for (Ink::NodeId id : transformOp_.spawned)
+            if (doc.Find(id)) {
+                ids.push_back(id);
+                snaps.push_back(doc.CopySubtree(id));
+            }
+        if (!ids.empty())
+            PushDocCommand("Duplicate Linked",
+                [ids](Ink::Document& d) {
+                    for (Ink::NodeId id : ids) d.Remove(id);
+                },
+                [snaps](Ink::Document& d) {
+                    for (const auto& s : snaps) d.RestoreSubtree(s);
+                });
     } else {
         std::vector<TransformOp::NodeOrig> before = transformOp_.nodes;
         std::vector<TransformOp::NodeOrig> after;
@@ -363,10 +381,21 @@ void Application::ConfirmTransform() {
 void Application::CancelTransform() {
     if (!transformOp_.Active() || !project_.document) return;
     Ink::Document& doc = *project_.document;
-    if (transformOp_.editVerts)
+    if (transformOp_.editVerts) {
         doc.SetPath(transformOp_.editNode, transformOp_.origPath);
-    else
+    } else if (!transformOp_.spawned.empty()) {
+        // Duplicate Linked cancelled: the copies never existed — remove them
+        // (no undo entry) and restore the previous selection.
+        for (Ink::NodeId id : transformOp_.spawned)
+            if (doc.Find(id)) doc.Remove(id);
+        edit_.Clear();
+        for (Ink::NodeId id : transformOp_.spawnedPrevSel)
+            if (doc.Find(id)) edit_.SelectAdd(id);
+        if (!transformOp_.spawnedPrevSel.empty())
+            edit_.active = transformOp_.spawnedPrevSel.front();
+    } else {
         for (const auto& o : transformOp_.nodes) doc.SetTransform(o.id, o.t);
+    }
     EndModalCapture();
     transformOp_ = TransformOp{};
 }

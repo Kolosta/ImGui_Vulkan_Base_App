@@ -235,6 +235,7 @@ inline bool NodePickerRow(const char* label, const Ink::Document& doc,
     Label(label);
     std::vector<Ink::NodeId> ids;
     UI::DropdownConfig cfg; cfg.id = "##npick";
+    cfg.searchable = true;   // document lists get long — filter + scroll
     int cur = -1;
     if (allowNone) {
         UI::DropdownItem it; it.label = "None"; cfg.items.push_back(it);

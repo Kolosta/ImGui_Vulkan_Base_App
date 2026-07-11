@@ -197,6 +197,7 @@ private:
     void   Action_OriginTo2DCursor();    // origin → 2D cursor
     void   Action_SelectGroup();         // select the active object's parent group
     void   Action_ParentToActive();      // Ctrl+P: parent selection to active
+    void   Action_DuplicateLinked();     // Alt+D: instance copies + grab
     // Create a shape at the 2D cursor / view centre and select it.
     Ink::NodeId SpawnShape(const char* kind);
     // Build the default Style (fill+stroke) from the EditContext swatches.
@@ -222,8 +223,12 @@ private:
     // instead of O(document), so a 100k-object document stays fluid).
     struct OutlinerRow {
         enum class Kind : uint8_t { Object, CollectionHeader, PageHeader,
-                                    ProjectRoot };
-        uint64_t id = 0;        // node / collection / page id (root: 0)
+                                    ProjectRoot,
+                                    // Collections view children of an object:
+                                    Modifier,     // one row per stack entry
+                                    LinkedData }; // an instance's shared data
+        uint64_t id = 0;        // node / collection / page id (root: 0);
+                                // Modifier/LinkedData: the OWNING object's id
         Kind     kind = Kind::Object;
         int      depth = 0;
         bool     hasChildren = false;
@@ -233,6 +238,9 @@ private:
         uint64_t ownerColl = 0;
         int      ownerRow  = -1;   // flat index of the owner's header (0 = root)
         int      flatIndex = 0;    // this row's own flat index
+        int      modIndex  = -1;   // Kind::Modifier: index into the stack
+        uint64_t refId     = 0;    // Kind::LinkedData: the referenced node
+        int      objRow    = -1;   // Modifier/LinkedData: owning object's row
     };
     // Append the visible rows of a node subtree (respecting collapse + filter +
     // search) to `out`. Pure computation, no drawing. In the Collections view
@@ -300,6 +308,10 @@ private:
     void OutlinerDropToRoot(const std::vector<Ink::NodeId>& ids);
     void OutlinerDropReorder(const std::vector<Ink::NodeId>& ids, Ink::NodeId target,
                              bool above);
+    // Modifier drag & drop: COPY the source object's stack entry onto a
+    // compatible (path) object, appended below its own modifiers. Undoable.
+    void OutlinerDropModifierCopy(Ink::NodeId srcObj, int modIndex,
+                                  Ink::NodeId dstObj);
     void OutlinerRemoveFromCollections(const std::vector<Ink::NodeId>& ids);
     void OutlinerUnparent(const std::vector<Ink::NodeId>& ids);
     // The collection-colour picker popup (Custom… in the Icon Colour submenu).
@@ -342,6 +354,9 @@ private:
     bool   outlinerCtxOpen_ = false;
     ImVec2 outlinerCtxPos_{};
     Ink::NodeId outlinerCtxNode_ = Ink::kNullNode;
+    // Non-null when the menu was opened on a LINKED-DATA row (the instance's
+    // shared data): the referenced node id — builds the linked-data menu.
+    Ink::NodeId outlinerCtxLinkedRef_ = Ink::kNullNode;
     // Selection anchor for Shift-range clicks in the Outliner (last plain click).
     Ink::NodeId outlinerRangeAnchor_ = Ink::kNullNode;
     // Live property editing: the style captured when a drag-edit began, so the

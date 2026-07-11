@@ -1,9 +1,13 @@
 #include <UI/Widgets/Dropdown.h>
 #include <UI/Widgets/PopupMenu.h>     // UI::DrawTooltip (shared, topmost, styled)
+#include <UI/Widgets/ScrollArea.h>    // custom-scrollbar list region
 #include <VectorGraphics/IconManager.h>
 #include <DesignSystem/DesignSystem.h>
 #include <imgui_internal.h>
 #include <algorithm>
+#include <cctype>
+#include <cstdio>
+#include <string>
 #include <unordered_map>
 
 namespace UI {
@@ -26,6 +30,19 @@ void DrawIcon(ImDrawList* dl, const char* icon, ImVec2 pos, float size,
     if (md.colorZones.empty()) return;
     for (auto& z : md.colorZones) z.customColor = tint;
     im.RenderIcon(dl, icon, pos, size, md);
+}
+
+// Live search text per dropdown id (searchable single-column menus). Cleared
+// when the menu opens.
+std::unordered_map<ImU32, std::string> g_menuSearch;
+
+bool ContainsCI(const std::string& hay, const std::string& needle) {
+    if (needle.empty()) return true;
+    auto it = std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
+        [](char a, char b) {
+            return std::tolower((unsigned char)a) == std::tolower((unsigned char)b);
+        });
+    return it != hay.end();
 }
 
 } // namespace
@@ -117,7 +134,11 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                            ImGuiButtonFlags_PressedOnClick);
     const bool clicked = ImGui::IsItemActivated();
     const bool hovered = ImGui::IsItemHovered();
-    if (clicked && !wasOpen) ImGui::OpenPopup(popupId);
+    const ImU32 menuKey = ImGui::GetID("##menukey");
+    if (clicked && !wasOpen) {
+        g_menuSearch[menuKey].clear();   // a fresh menu starts unfiltered
+        ImGui::OpenPopup(popupId);
+    }
     const bool isOpen = ImGui::IsPopupOpen(popupId);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -186,6 +207,25 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     const float wT = vp->WorkPos.y;
     const float wR = vp->WorkPos.x + vp->WorkSize.x;
     const float wB = vp->WorkPos.y + vp->WorkSize.y;
+
+    // ── Height cap (single-column lists): the menu never exceeds the token
+    //    cap nor the work area — beyond it the ITEM LIST scrolls inside the
+    //    menu (custom scrollbar), optionally under a search field. The flip
+    //    math below uses the CLAMPED height, so up/down placement always fits.
+    const bool  single  = !multiCol && !cfg.bodyDraw;
+    const float searchH = (single && cfg.searchable) ? rowH + itemGap : 0.0f;
+    float listH   = menuH - mPad.y * 2.0f;   // items-only extent
+    bool  scrolled = false;
+    if (single) {
+        const float cap = std::min(Flt(Tok::C_Menu_MaxHeight) * gs,
+                                   (wB - wT) - 24.0f * gs);
+        if (cfg.searchable || menuH + searchH > cap) {
+            scrolled = true;
+            listH = std::max(rowH * 2.0f,
+                             std::min(listH, cap - mPad.y * 2.0f - searchH));
+            menuH = mPad.y * 2.0f + searchH + listH;
+        }
+    }
 
     bool openUp   = (btnMax.y + menuH > wB) && (btnMin.y - menuH >= wT);
     bool openLeft = (btnMin.x + menuW > wR) && (btnMax.x - menuW >= wL);
@@ -385,61 +425,39 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
 
             ImGuiIO& io = ImGui::GetIO();
 
-            // Column left edges.
-            std::vector<float> colX((size_t)nCols, 0.0f);
-            float runX = m0.x + mPad.x;
-            for (int c = 0; c < nCols; ++c) {
-                colX[(size_t)c] = runX;
-                runX += colW[(size_t)c] + colGap;
-            }
-
-            // Column headers (inset by the row padding so they align with the
-            // item icons/labels below).
-            if (multiCol) {
-                for (int c = 0; c < nCols; ++c)
-                    mdl->AddText(ImVec2(colX[(size_t)c] + itemPadX, m0.y + mPad.y),
-                                 hdrCol, cfg.columnHeaders[(size_t)c].c_str());
-            }
-
-            // Per-column running Y for rows.
-            std::vector<float> rowY((size_t)nCols,
-                                    m0.y + mPad.y + headerH);
-
-            for (size_t i = 0; i < cfg.items.size(); ++i) {
+            // Draw one item row at (x, y) on `rdl`; commits on release.
+            bool closeMenu = false;
+            auto drawRow = [&](ImDrawList* rdl, size_t i, float x, float y,
+                               float width) {
                 const DropdownItem& it = cfg.items[i];
-                int c = multiCol ? std::clamp(it.columnGroup, 0, nCols - 1) : 0;
-                float x = colX[(size_t)c];
-                float y = rowY[(size_t)c];
-                rowY[(size_t)c] += rowH + itemGap;
-
                 ImVec2 r0(x, y);
-                ImVec2 r1(x + colW[(size_t)c], y + rowH);
+                ImVec2 r1(x + width, y + rowH);
                 bool rowHov = it.enabled &&
                     io.MousePos.x >= r0.x && io.MousePos.x <= r1.x &&
                     io.MousePos.y >= r0.y && io.MousePos.y <= r1.y;
 
                 if ((int)i == cfg.selectedIndex)
-                    mdl->AddRectFilled(r0, r1, selBg, 2.0f * gs);
+                    rdl->AddRectFilled(r0, r1, selBg, 2.0f * gs);
                 else if (rowHov)
-                    mdl->AddRectFilled(r0, r1, hovBg, 2.0f * gs);
+                    rdl->AddRectFilled(r0, r1, hovBg, 2.0f * gs);
 
                 const ImVec4 fgV = it.enabled ? dTextV
                     : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
                 const ImU32 fg = ImGui::ColorConvertFloat4ToU32(fgV);
 
                 float ix = x + itemPadX;     // inset content by the row padding
-                DrawIcon(mdl, it.icon,
+                DrawIcon(rdl, it.icon,
                          ImVec2(ix, y + (rowH - menuIcon) * 0.5f), menuIcon, fgV);
                 ix += menuIcon + gap;
                 ImVec2 lts = ImGui::CalcTextSize(it.label.c_str());
-                mdl->AddText(ImVec2(ix, y + (rowH - lts.y) * 0.5f), fg,
+                rdl->AddText(ImVec2(ix, y + (rowH - lts.y) * 0.5f), fg,
                              it.label.c_str());
 
                 if (!it.shortcut.empty()) {
                     ImVec2 sts = ImGui::CalcTextSize(it.shortcut.c_str());
                     ImU32 scCol = ImGui::ColorConvertFloat4ToU32(
                         Col(Tok::C_Menu_ColumnHeaderText));
-                    mdl->AddText(ImVec2(r1.x - itemPadX - sts.x,
+                    rdl->AddText(ImVec2(r1.x - itemPadX - sts.x,
                                         y + (rowH - sts.y) * 0.5f),
                                  scCol, it.shortcut.c_str());
                 }
@@ -465,9 +483,91 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                 if (rowHov && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
                     result.changed  = true;
                     result.selected = (int)i;
-                    ImGui::CloseCurrentPopup();
+                    closeMenu = true;
+                }
+            };
+
+            if (scrolled) {
+                // ── Scrolling single-column list, optional live search ──
+                std::string& search = g_menuSearch[menuKey];
+                float y0 = m0.y + mPad.y;
+                if (cfg.searchable) {
+                    ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
+                    ImGui::SetNextItemWidth(menuW - mPad.x * 2.0f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f * gs);
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg,
+                                          Col(Tok::C_Menu_ItemHoverBg));
+                    char buf[128];
+                    std::snprintf(buf, sizeof buf, "%s", search.c_str());
+                    if (ImGui::IsWindowAppearing())
+                        ImGui::SetKeyboardFocusHere();   // type-to-filter at once
+                    const bool commit = ImGui::InputTextWithHint(
+                        "##ddsearch", "Search\xE2\x80\xA6", buf, sizeof buf,
+                        ImGuiInputTextFlags_EnterReturnsTrue);
+                    search = buf;
+                    ImGui::PopStyleColor();
+                    ImGui::PopStyleVar();
+                    if (commit) {
+                        // Enter picks the FIRST match (fast keyboard path).
+                        for (size_t i = 0; i < cfg.items.size(); ++i)
+                            if (cfg.items[i].enabled &&
+                                ContainsCI(cfg.items[i].label, search)) {
+                                result.changed  = true;
+                                result.selected = (int)i;
+                                closeMenu = true;
+                                break;
+                            }
+                    }
+                    y0 += rowH + itemGap;
+                }
+
+                ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
+                if (UI::BeginScroll("##ddList",
+                                    ImVec2(menuW - mPad.x * 2.0f, listH))) {
+                    std::vector<size_t> vis;
+                    vis.reserve(cfg.items.size());
+                    for (size_t i = 0; i < cfg.items.size(); ++i)
+                        if (ContainsCI(cfg.items[i].label, search))
+                            vis.push_back(i);
+                    const ImVec2 base = ImGui::GetCursorScreenPos();
+                    const float rowW = ImGui::GetContentRegionAvail().x;
+                    // Reserve the full extent (drives the scrollbar), then
+                    // draw the rows on the CHILD's draw list (it clips).
+                    const float total = (float)vis.size() * rowH +
+                        (float)std::max<int>(0, (int)vis.size() - 1) * itemGap;
+                    ImGui::Dummy(ImVec2(rowW, std::max(total, 1.0f)));
+                    ImDrawList* cdl = ImGui::GetWindowDrawList();
+                    for (size_t k = 0; k < vis.size(); ++k)
+                        drawRow(cdl, vis[k], base.x,
+                                base.y + (float)k * (rowH + itemGap), rowW);
+                }
+                UI::EndScroll();
+            } else {
+                // ── Fixed layout (multi-column, or short single lists) ──
+                std::vector<float> colX((size_t)nCols, 0.0f);
+                float runX = m0.x + mPad.x;
+                for (int c = 0; c < nCols; ++c) {
+                    colX[(size_t)c] = runX;
+                    runX += colW[(size_t)c] + colGap;
+                }
+                // Column headers (inset by the row padding so they align with
+                // the item icons/labels below).
+                if (multiCol) {
+                    for (int c = 0; c < nCols; ++c)
+                        mdl->AddText(ImVec2(colX[(size_t)c] + itemPadX,
+                                            m0.y + mPad.y),
+                                     hdrCol, cfg.columnHeaders[(size_t)c].c_str());
+                }
+                std::vector<float> rowY((size_t)nCols, m0.y + mPad.y + headerH);
+                for (size_t i = 0; i < cfg.items.size(); ++i) {
+                    int c = multiCol
+                        ? std::clamp(cfg.items[i].columnGroup, 0, nCols - 1) : 0;
+                    const float y = rowY[(size_t)c];
+                    rowY[(size_t)c] += rowH + itemGap;
+                    drawRow(mdl, i, colX[(size_t)c], y, colW[(size_t)c]);
                 }
             }
+            if (closeMenu) ImGui::CloseCurrentPopup();
 
             ImGui::EndPopup();
         }

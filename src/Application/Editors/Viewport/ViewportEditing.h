@@ -152,6 +152,11 @@ struct TransformOp {
     std::vector<NodeOrig> nodes;         // Object Mode originals
     Ink::PathData origPath;              // Edit Mode: the before-path
     Ink::NodeId   editNode = Ink::kNullNode;
+    // Nodes CREATED by this op (Duplicate Linked's grab): confirming pushes
+    // ONE creation command (final placement included); cancelling REMOVES
+    // them and restores the previous selection.
+    std::vector<Ink::NodeId> spawned;
+    std::vector<Ink::NodeId> spawnedPrevSel;
 
     const void* leaf = nullptr;          // EditorState* owning the gesture
 

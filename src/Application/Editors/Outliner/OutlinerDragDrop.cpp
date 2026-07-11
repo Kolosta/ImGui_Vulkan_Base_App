@@ -32,6 +32,13 @@ using Tok = DesignSystem::Tok;
 
 constexpr const char* kObjPayload  = "OUTLINER_OBJ";    // Ink::NodeId
 constexpr const char* kCollPayload = "OUTLINER_COLL";   // collection id
+constexpr const char* kModPayload  = "OUTLINER_MOD";    // ModPayload
+
+// A dragged modifier row: the owning object + the stack index.
+struct ModPayload {
+    Ink::NodeId obj = Ink::kNullNode;
+    int         index = -1;
+};
 
 // Per-object membership + parenting snapshot for undo.
 struct ObjPlacement {
@@ -304,6 +311,23 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
             ImGui::TextUnformatted(c && !c->name.empty() ? c->name.c_str() : "Collection");
             ImGui::EndDragDropSource();
         }
+    } else if (row.kind == OutlinerRow::Kind::Modifier) {
+        // A modifier drags as a COPY payload — droppable only onto a
+        // compatible object (nothing else accepts it, so dropping anywhere
+        // else simply does nothing).
+        if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+            ModPayload mp{ row.id, row.modIndex };
+            ImGui::SetDragDropPayload(kModPayload, &mp, sizeof mp);
+            const Ink::Node* n = doc.Find(row.id);
+            const Ink::Modifier* m =
+                n && row.modIndex >= 0 && row.modIndex < (int)n->modifiers.size()
+                    ? &n->modifiers[row.modIndex] : nullptr;
+            ImGui::TextUnformatted(!m ? "Modifier"
+                : m->kind == Ink::ModifierKind::Array ? "Array"
+                : m->kind == Ink::ModifierKind::AlongPath ? "Along Path"
+                : "Boolean");
+            ImGui::EndDragDropSource();
+        }
     }
 
     // Target: an EXPLICIT full-stripe rect (edge to edge, tiling at the row
@@ -339,7 +363,9 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
             if (row.kind == OutlinerRow::Kind::CollectionHeader) {
                 targetColl = row.id;
                 headerRow = row.flatIndex;
-            } else if (row.kind == OutlinerRow::Kind::Object) {
+            } else if (row.kind == OutlinerRow::Kind::Object ||
+                       row.kind == OutlinerRow::Kind::Modifier ||
+                       row.kind == OutlinerRow::Kind::LinkedData) {
                 targetColl = row.ownerColl;
                 headerRow = row.ownerRow >= 0 ? row.ownerRow : 0;
             }
@@ -375,6 +401,34 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
                                         z != DropZone::Below);
                 }
             }
+        }
+    }
+
+    // A dragged MODIFIER: droppable only onto a compatible object — a PATH
+    // row, or anywhere inside an expanded object (its modifier / linked-data
+    // child rows), which highlights and targets that object. Dropping copies
+    // the modifier below the target's own stack. Everything else ignores the
+    // payload (the drop does nothing).
+    if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kModPayload, kPeek)) {
+        const ModPayload mp = *(const ModPayload*)p->Data;
+        Ink::NodeId targetObj = Ink::kNullNode;
+        int objRow = -1;
+        if (row.kind == OutlinerRow::Kind::Object) {
+            targetObj = row.id; objRow = row.flatIndex;
+        } else if (row.kind == OutlinerRow::Kind::Modifier ||
+                   row.kind == OutlinerRow::Kind::LinkedData) {
+            targetObj = row.id; objRow = row.objRow;
+        }
+        const Ink::Node* tn = doc.Find(targetObj);
+        if (tn && tn->kind == Ink::NodeKind::Path) {
+            if (outlinerRows_ && objRow >= 0) {
+                const ImRect r = bandRectOf(objRow);
+                DrawIntoHighlightRect(r.Min, r.Max);
+            } else {
+                DrawIntoHighlight(lr);
+            }
+            if (p->IsDelivery())
+                OutlinerDropModifierCopy(mp.obj, mp.index, targetObj);
         }
     }
 
@@ -424,7 +478,10 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
                 doc.MoveCollection(dragged, Ink::kNullNode);
                 LogInfoAction("Un-nest Collection");
             }
-        } else if (collectionsMode && row.kind == OutlinerRow::Kind::Object) {
+        } else if (collectionsMode &&
+                   (row.kind == OutlinerRow::Kind::Object ||
+                    row.kind == OutlinerRow::Kind::Modifier ||
+                    row.kind == OutlinerRow::Kind::LinkedData)) {
             // Anywhere inside a collection nests INTO that collection (same
             // rule as objects — no dead rows while dragging a collection).
             const Ink::NodeId targetColl = row.ownerColl;
@@ -445,6 +502,29 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
         }
     }
     ImGui::EndDragDropTarget();
+}
+
+void Application::OutlinerDropModifierCopy(Ink::NodeId srcObj, int modIndex,
+                                           Ink::NodeId dstObj) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* src = doc.Find(srcObj);
+    const Ink::Node* dst = doc.Find(dstObj);
+    if (!src || !dst || dst->kind != Ink::NodeKind::Path) return;
+    if (modIndex < 0 || modIndex >= (int)src->modifiers.size()) return;
+    Ink::Modifier copy = src->modifiers[(std::size_t)modIndex];
+    // An AlongPath copy landing on the same object it instances would
+    // self-reference — refuse that one combination.
+    if (copy.kind == Ink::ModifierKind::AlongPath && copy.motifRef == dstObj)
+        return;
+    const std::vector<Ink::Modifier> before = dst->modifiers;
+    std::vector<Ink::Modifier> after = before;
+    after.push_back(std::move(copy));
+    doc.SetModifiers(dstObj, after);
+    PushDocCommand("Copy Modifier",
+        [dstObj, before](Ink::Document& d) { d.SetModifiers(dstObj, before); },
+        [dstObj, after](Ink::Document& d)  { d.SetModifiers(dstObj, after); });
+    LogInfoAction("Copy Modifier");
 }
 
 // The empty area below the rows: dropping there pulls objects out of any

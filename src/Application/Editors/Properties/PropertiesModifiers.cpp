@@ -104,8 +104,12 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         structural = true; structLabel = "Array Step Space";
                     }
                 } else if (m.kind == Ink::ModifierKind::AlongPath) {
-                    if (pr::NodePickerRow("Path", doc, &m.pathRef, id)) {
-                        structural = true; structLabel = "Along Path Target";
+                    // The modifier lives on THIS path; it instances the picked
+                    // OBJECT along the path's own spine (Blender's rule).
+                    if (pr::NodePickerRow("Object", doc, &m.motifRef, id,
+                                          /*allowNone=*/true,
+                                          /*pathsOnly=*/false)) {
+                        structural = true; structLabel = "Along Path Object";
                     }
                     static const char* kDist[] = { "Count", "Spacing",
                                                    "Anchors" };
@@ -195,7 +199,8 @@ void Application::PropModifiersSection(Ink::NodeId id) {
             structural = true; structLabel = "Add Modifier";
         }
         ImGui::SameLine();
-        if (ImGui::SmallButton("+ Along Path")) {
+        // Along Path samples THIS node's own spine — path nodes only.
+        if (n->kind == Ink::NodeKind::Path && ImGui::SmallButton("+ Along Path")) {
             Ink::Modifier m; m.kind = Ink::ModifierKind::AlongPath;
             mods.push_back(m);
             structural = true; structLabel = "Add Modifier";

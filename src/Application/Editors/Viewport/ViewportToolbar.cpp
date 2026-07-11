@@ -447,6 +447,12 @@ void Application::RenderViewportContextMenu() {
         { UI::MenuEntry e; e.label = "Duplicate"; e.shortcut = "Ctrl D"; e.enabled = hasSel;
           e.onClick = [this, close]{ Action_DuplicateSelection(); close(); };
           entries.push_back(std::move(e)); }
+        { UI::MenuEntry e; e.label = "Duplicate Linked"; e.shortcut = "Alt D";
+          e.tooltip = "Instance the selection (shared data, independent transform) "
+                      "and grab the copies";
+          e.enabled = hasSel;
+          e.onClick = [this, close]{ Action_DuplicateLinked(); close(); };
+          entries.push_back(std::move(e)); }
         { UI::MenuEntry e; e.label = "Group"; e.shortcut = "Ctrl G"; e.enabled = hasSel;
           e.onClick = [this, close]{ Action_GroupSelection(); close(); };
           entries.push_back(std::move(e)); }
