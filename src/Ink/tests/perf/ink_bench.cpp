@@ -203,17 +203,18 @@ void BuildAlongPath(Ink::Document& doc) {
         for (int i = 0; i <= 40; ++i)
             sp.anchors.push_back({ { i * 95.0, y + std::sin(i * 0.5) * 40.0 } });
         wave.subpaths.push_back(sp);
-        const Ink::NodeId path = doc.AddPath(page, wave,
-            Ink::Style::Stroked({ 0.5f, 0.5f, 0.5f, 0.3f }, 1.0), "wave");
-        Ink::Modifier along;
-        along.kind = Ink::ModifierKind::AlongPath;
-        along.pathRef = path;
-        along.alongCount = 1000;
-        along.align = Ink::AlongAlign::Tangent;
         const Ink::NodeId tick = doc.AddPath(page,
             Ink::PathData::Polygon({ { 0, -6 }, { 3, 6 }, { -3, 6 } }),
             Ink::Style::Filled({ (float)rnd(), 0.5f, 0.3f, 1.0f }), "tick");
-        doc.SetModifiers(tick, { along });
+        doc.SetVisible(tick, false);   // instanced along the wave only
+        Ink::Modifier along;
+        along.kind = Ink::ModifierKind::AlongPath;
+        along.motifRef = tick;
+        along.alongCount = 1000;
+        along.align = Ink::AlongAlign::Tangent;
+        const Ink::NodeId path = doc.AddPath(page, wave,
+            Ink::Style::Stroked({ 0.5f, 0.5f, 0.5f, 0.3f }, 1.0), "wave");
+        doc.SetModifiers(path, { along });
     }
 }
 

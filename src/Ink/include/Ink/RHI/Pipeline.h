@@ -22,9 +22,12 @@ struct VertexAttribute {
 };
 
 // Stencil interaction of a pipeline (clip masks — docs/Ink/RENDER_GRAPH.md
-// §ClipPass). None: no stencil attachment. WriteMask: colour-write off, sets
-// stencil = 1 where the clip source covers. TestEqual: draws only where
-// stencil == 1 (inside the clip).
+// §ClipPass). None: stencil untouched (test off). WriteMask: colour-write
+// off, sets stencil = `stencilRef` where the geometry covers (ref 0 erases a
+// mask). TestEqual: draws only where stencil == `stencilRef`.
+// NOTE (dynamic rendering VUs): a pipeline used inside a pass that HAS a
+// stencil attachment must declare that format even when its mode is None —
+// set `stencilFormat` on every pipeline that renders into such a pass.
 enum class StencilMode { None, WriteMask, TestEqual };
 
 struct GraphicsPipelineDesc {
@@ -34,12 +37,13 @@ struct GraphicsPipelineDesc {
     std::uint32_t                vertexStride = 0;
     std::vector<VertexAttribute> attributes;
     VkFormat              colorFormat   = VK_FORMAT_UNDEFINED;
-    VkFormat              stencilFormat = VK_FORMAT_UNDEFINED;  // for stencil modes
+    VkFormat              stencilFormat = VK_FORMAT_UNDEFINED;  // pass has stencil
     VkSampleCountFlagBits samples       = VK_SAMPLE_COUNT_1_BIT;
     // Premultiplied-alpha "over" blending (src=ONE, dst=ONE_MINUS_SRC_ALPHA);
     // false = opaque overwrite (present pass).
-    bool        blendPremultiplied = true;
-    StencilMode stencil            = StencilMode::None;
+    bool          blendPremultiplied = true;
+    StencilMode   stencil            = StencilMode::None;
+    std::uint32_t stencilRef         = 1;   // WriteMask value / TestEqual ref
     VkPipelineLayout layout = VK_NULL_HANDLE;
 };
 

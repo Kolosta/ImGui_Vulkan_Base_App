@@ -71,130 +71,96 @@ DMat23 InvertAffine(const DMat23& m) {
     return r;
 }
 
-// The instancing transforms a modifier stack produces (docs/Ink/
+// The self-copy transforms a modifier stack produces (docs/Ink/
 // DOCUMENT_MODEL.md §6): starting from the identity ("one copy"), each
-// enabled modifier expands the current transform set. Local-space transforms
-// (composed onto the node's world before emit) — `hostWorld` is the node's
-// resolved world so path-anchored placements can cancel it out.
-std::vector<DMat23> ExpandModifiers(const Document& doc, const Node& host,
-                                    const DMat23& hostWorld) {
+// enabled Array multiplies the current transform set. Local-space transforms
+// (composed onto the node's world before emit). AlongPath does NOT expand the
+// node itself — it instances a motif OBJECT along the node's spine (emitted
+// by EmitNode after the node's own content).
+std::vector<DMat23> ExpandModifiers(const Node& host) {
     std::vector<DMat23> xf{ DMat23{} };   // identity = the original copy
     for (const Modifier& m : host.modifiers) {
-        if (!m.enabled) continue;
-
-        if (m.kind == ModifierKind::Array) {
-            const int count = m.count < 1 ? 1 : m.count;
-            DMat23 step = m.step.Matrix();
-            if (m.stepSpace == ArrayStepSpace::Parent) {
-                // The step is authored in the node's PARENT space (a 10-unit
-                // step is 10 document units whatever the node's scale). As a
-                // local factor that is L⁻¹ ∘ step ∘ L.
-                const DMat23 L = host.transform.Matrix();
-                step = InvertAffine(L).Compose(step).Compose(L);
-            }
-            std::vector<DMat23> out;
-            out.reserve(xf.size() * (std::size_t)count);
-            for (const DMat23& base : xf) {
-                DMat23 acc = base;
-                for (int i = 0; i < count; ++i) {
-                    out.push_back(acc);
-                    acc = acc.Compose(step);   // each copy offset from the last
-                }
-            }
-            xf.swap(out);
-        } else if (m.kind == ModifierKind::AlongPath) {
-            const Node* path = doc.Find(m.pathRef);
-            if (!path || path->kind != NodeKind::Path || path->path.Empty())
-                continue;
-            // Copies sit ON the referenced path: the placement CANCELS the
-            // node's world (its translation is irrelevant — Blender's
-            // instancing rule) and re-anchors on the path's world transform;
-            // the node's own rotation/scale still shape each copy. As a local
-            // factor: world⁻¹ ∘ pathWorld ∘ T(sample) ∘ R(tangent) ∘ RS(node).
-            const DMat23 toPath =
-                InvertAffine(hostWorld).Compose(doc.WorldTransform(m.pathRef));
-            Transform2D rsOnly = host.transform;
-            rsOnly.tx = rsOnly.ty = 0.0;
-            const DMat23 rs = rsOnly.Matrix();
-
-            // Sample positions + tangent angles in the PATH's local space.
-            std::vector<DVec2>  pos;
-            std::vector<double> ang;
-            if (m.distribute == AlongDistribute::AtAnchors) {
-                // One copy per anchor point; tangent from the neighbours.
-                for (const Subpath& sp : path->path.subpaths) {
-                    const std::size_t nA = sp.anchors.size();
-                    for (std::size_t i = 0; i < nA; ++i) {
-                        const DVec2 p = sp.anchors[i].pos;
-                        const DVec2 q = sp.anchors[(i + 1) % nA].pos;
-                        const DVec2 r = sp.anchors[(i + nA - 1) % nA].pos;
-                        DVec2 dir{ q.x - r.x, q.y - r.y };
-                        if (nA < 2) dir = { 1.0, 0.0 };
-                        else if (!sp.closed && i == 0)       dir = { q.x - p.x, q.y - p.y };
-                        else if (!sp.closed && i + 1 == nA)  dir = { p.x - r.x, p.y - r.y };
-                        pos.push_back(p);
-                        ang.push_back(std::atan2(dir.y, dir.x));
-                    }
-                }
-            } else {
-                const auto polys = geom::Flatten(path->path, 1.0);
-                if (polys.empty() || polys[0].points.size() < 2) continue;
-                const auto& pts = polys[0].points;
-                std::vector<double> arc(pts.size(), 0.0);
-                for (std::size_t i = 1; i < pts.size(); ++i) {
-                    const double dx = pts[i].x - pts[i-1].x,
-                                 dy = pts[i].y - pts[i-1].y;
-                    arc[i] = arc[i-1] + std::sqrt(dx*dx + dy*dy);
-                }
-                const double total = arc.back();
-                const double from = std::min(m.startTrim, total);
-                const double to   = std::max(from, total - m.endTrim);
-                const double span = to - from;
-                if (span <= 0.0) continue;
-
-                auto sampleAt = [&](double s, DVec2& p, double& tanAngle) {
-                    s = std::clamp(s, 0.0, total);
-                    std::size_t i = 1;
-                    while (i < pts.size() && arc[i] < s) ++i;
-                    if (i >= pts.size()) i = pts.size() - 1;
-                    const double segLen = arc[i] - arc[i-1];
-                    const double t = segLen > 1e-9 ? (s - arc[i-1]) / segLen : 0.0;
-                    p = { pts[i-1].x + (pts[i].x - pts[i-1].x) * t,
-                          pts[i-1].y + (pts[i].y - pts[i-1].y) * t };
-                    tanAngle = std::atan2(pts[i].y - pts[i-1].y,
-                                          pts[i].x - pts[i-1].x);
-                };
-                const int n = m.distribute == AlongDistribute::BySpacing
-                    ? (m.spacing > 1e-6 ? (int)(span / m.spacing) + 1 : 1)
-                    : std::max(1, m.alongCount);
-                for (int i = 0; i < n; ++i) {
-                    const double s = from +
-                        (n > 1 ? span * (double)i / (double)(n - 1) : 0.0);
-                    DVec2 p; double a = 0.0;
-                    sampleAt(s, p, a);
-                    pos.push_back(p);
-                    ang.push_back(a);
-                }
-            }
-            if (pos.empty()) continue;
-
-            std::vector<DMat23> out;
-            out.reserve(xf.size() * pos.size());
-            for (const DMat23& base : xf)
-                for (std::size_t i = 0; i < pos.size(); ++i) {
-                    DMat23 place = DMat23::Translation(pos[i].x, pos[i].y);
-                    if (m.align == AlongAlign::Tangent) {
-                        const double c = std::cos(ang[i]), sn = std::sin(ang[i]);
-                        DMat23 rot;
-                        rot.m[0] = c; rot.m[1] = -sn; rot.m[3] = sn; rot.m[4] = c;
-                        place = place.Compose(rot);
-                    }
-                    out.push_back(toPath.Compose(place).Compose(rs).Compose(base));
-                }
-            xf.swap(out);
+        if (!m.enabled || m.kind != ModifierKind::Array) continue;
+        const int count = m.count < 1 ? 1 : m.count;
+        DMat23 step = m.step.Matrix();
+        if (m.stepSpace == ArrayStepSpace::Parent) {
+            // The step is authored in the node's PARENT space (a 10-unit
+            // step is 10 document units whatever the node's scale). As a
+            // local factor that is L⁻¹ ∘ step ∘ L.
+            const DMat23 L = host.transform.Matrix();
+            step = InvertAffine(L).Compose(step).Compose(L);
         }
+        std::vector<DMat23> out;
+        out.reserve(xf.size() * (std::size_t)count);
+        for (const DMat23& base : xf) {
+            DMat23 acc = base;
+            for (int i = 0; i < count; ++i) {
+                out.push_back(acc);
+                acc = acc.Compose(step);   // each copy offset from the last
+            }
+        }
+        xf.swap(out);
     }
     return xf;
+}
+
+// Sample positions + tangent angles along a path's spine (path-local space)
+// for an AlongPath modifier: by count, by arc-length spacing, or one per
+// anchor point.
+void SampleAlongSpine(const PathData& path, const Modifier& m,
+                      std::vector<DVec2>& pos, std::vector<double>& ang) {
+    if (m.distribute == AlongDistribute::AtAnchors) {
+        for (const Subpath& sp : path.subpaths) {
+            const std::size_t nA = sp.anchors.size();
+            for (std::size_t i = 0; i < nA; ++i) {
+                const DVec2 p = sp.anchors[i].pos;
+                const DVec2 q = sp.anchors[(i + 1) % nA].pos;
+                const DVec2 r = sp.anchors[(i + nA - 1) % nA].pos;
+                DVec2 dir{ q.x - r.x, q.y - r.y };
+                if (nA < 2) dir = { 1.0, 0.0 };
+                else if (!sp.closed && i == 0)      dir = { q.x - p.x, q.y - p.y };
+                else if (!sp.closed && i + 1 == nA) dir = { p.x - r.x, p.y - r.y };
+                pos.push_back(p);
+                ang.push_back(std::atan2(dir.y, dir.x));
+            }
+        }
+        return;
+    }
+    const auto polys = geom::Flatten(path, 1.0);
+    if (polys.empty() || polys[0].points.size() < 2) return;
+    const auto& pts = polys[0].points;
+    std::vector<double> arc(pts.size(), 0.0);
+    for (std::size_t i = 1; i < pts.size(); ++i) {
+        const double dx = pts[i].x - pts[i-1].x, dy = pts[i].y - pts[i-1].y;
+        arc[i] = arc[i-1] + std::sqrt(dx*dx + dy*dy);
+    }
+    const double total = arc.back();
+    const double from = std::min(m.startTrim, total);
+    const double to   = std::max(from, total - m.endTrim);
+    const double span = to - from;
+    if (span <= 0.0) return;
+
+    auto sampleAt = [&](double s, DVec2& p, double& tanAngle) {
+        s = std::clamp(s, 0.0, total);
+        std::size_t i = 1;
+        while (i < pts.size() && arc[i] < s) ++i;
+        if (i >= pts.size()) i = pts.size() - 1;
+        const double segLen = arc[i] - arc[i-1];
+        const double t = segLen > 1e-9 ? (s - arc[i-1]) / segLen : 0.0;
+        p = { pts[i-1].x + (pts[i].x - pts[i-1].x) * t,
+              pts[i-1].y + (pts[i].y - pts[i-1].y) * t };
+        tanAngle = std::atan2(pts[i].y - pts[i-1].y, pts[i].x - pts[i-1].x);
+    };
+    const int n = m.distribute == AlongDistribute::BySpacing
+        ? (m.spacing > 1e-6 ? (int)(span / m.spacing) + 1 : 1)
+        : std::max(1, m.alongCount);
+    for (int i = 0; i < n; ++i) {
+        const double s = from + (n > 1 ? span * (double)i / (double)(n - 1) : 0.0);
+        DVec2 p; double a = 0.0;
+        sampleAt(s, p, a);
+        pos.push_back(p);
+        ang.push_back(a);
+    }
 }
 
 // ── Pattern-clip geometry helpers ────────────────────────────────────────────
@@ -240,67 +206,18 @@ double DistToRings(const std::vector<std::vector<DVec2>>& rings, DVec2 p) {
     return std::sqrt(best);
 }
 
-// Offset closed rings by `delta` (positive grows the shape) along averaged
-// vertex normals with a clamped miter — the same spine-offset idea as the
-// stroker's alignment (docs/Ink/GEOMETRY.md §2). v1: no self-intersection
-// clean-up (extreme offsets on spiky shapes may fold; acceptable for pattern
-// clipping at stroke-edge distances).
-std::vector<std::vector<DVec2>>
-OffsetRings(const std::vector<std::vector<DVec2>>& rings, double delta) {
-    std::vector<std::vector<DVec2>> out;
-    for (const auto& ring : rings) {
-        const std::size_t n = ring.size();
-        if (n < 3) continue;
-        auto areaOf = [](const std::vector<DVec2>& r) {
-            double a = 0.0;
-            for (std::size_t i = 0; i < r.size(); ++i) {
-                const DVec2& p = r[i];
-                const DVec2& q = r[(i + 1) % r.size()];
-                a += p.x * q.y - q.x * p.y;
-            }
-            return a * 0.5;
-        };
-        auto offsetBy = [&](double d) {
-            std::vector<DVec2> r(n);
-            for (std::size_t i = 0; i < n; ++i) {
-                const DVec2& prev = ring[(i + n - 1) % n];
-                const DVec2& cur  = ring[i];
-                const DVec2& next = ring[(i + 1) % n];
-                auto edgeN = [](DVec2 a, DVec2 b) {   // left normal of a→b
-                    const double ex = b.x - a.x, ey = b.y - a.y;
-                    const double l = std::sqrt(ex * ex + ey * ey);
-                    return l > 1e-12 ? DVec2{ -ey / l, ex / l } : DVec2{ 0, 0 };
-                };
-                const DVec2 n1 = edgeN(prev, cur), n2 = edgeN(cur, next);
-                DVec2 m{ n1.x + n2.x, n1.y + n2.y };
-                const double ml = std::sqrt(m.x * m.x + m.y * m.y);
-                if (ml > 1e-12) { m.x /= ml; m.y /= ml; }
-                // Miter scale = 1/cos(half angle), clamped.
-                const double cosHalf = std::max(0.25, (m.x * n1.x + m.y * n1.y));
-                const double k = d / cosHalf;
-                r[i] = { cur.x + m.x * k, cur.y + m.y * k };
-            }
-            return r;
-        };
-        std::vector<DVec2> r = offsetBy(delta);
-        // The left-normal convention grows or shrinks depending on the ring's
-        // winding; a positive delta must GROW — flip when it shrank.
-        if ((std::abs(areaOf(r)) < std::abs(areaOf(ring))) == (delta > 0.0))
-            r = offsetBy(-delta);
-        if (r.size() >= 3) out.push_back(std::move(r));
-    }
-    return out;
-}
-
 } // namespace
 
 void Scene::EmitNode(const Document& doc, const Node& n,
                      const DMat23& parentWorld, ScopeId scope, int instDepth,
-                     NodeId owner) {
+                     NodeId owner, bool forceVisible) {
     // Hidden by ANY route — layer visibility or an invisible collection it
     // belongs to (docs/Ink/DOCUMENT_MODEL.md §7). Culling a hidden node never
-    // affects the correctness of what IS drawn.
-    if (!n.visible || doc.HiddenByCollection(n.id)) return;
+    // affects the correctness of what IS drawn. `forceVisible` bypasses the
+    // node's OWN flag: an INSTANCE renders its target even when the original
+    // is hidden (Blender's linked-duplicate rule) — the target's children
+    // still honour their own flags.
+    if ((!n.visible && !forceVisible) || doc.HiddenByCollection(n.id)) return;
 
     // Object PARENTING overrides the layer-tree origin (docs/Ink/
     // DOCUMENT_MODEL.md §2): a parented node's world comes from its parentId
@@ -318,20 +235,53 @@ void Scene::EmitNode(const Document& doc, const Node& n,
     const ScopeId nodeScope =
         OpenScopeIfNeeded(doc, n, scope, scopes_[scope].depth + 1);
 
-    // Instancing modifiers expand the node into many copies at generated
+    // Array modifiers expand the node into many copies at generated
     // transforms; with no modifiers this is a single identity copy. The
     // expansion is LOGICAL — same content, many transforms → grouped drawables
     // that merge into one instanced draw downstream (docs/Ink/DOCUMENT_MODEL §5).
-    const bool hasMods = [&]{
-        for (const Modifier& m : n.modifiers) if (m.enabled) return true;
+    const bool hasArray = [&]{
+        for (const Modifier& m : n.modifiers)
+            if (m.enabled && m.kind == ModifierKind::Array) return true;
         return false;
     }();
-    if (!hasMods) {
+    if (!hasArray) {
         EmitContent(doc, n, world, nodeScope, instDepth, owner);
-        return;
+    } else {
+        for (const DMat23& local : ExpandModifiers(n))
+            EmitContent(doc, n, world.Compose(local), nodeScope, instDepth, owner);
     }
-    for (const DMat23& local : ExpandModifiers(doc, n, world))
-        EmitContent(doc, n, world.Compose(local), nodeScope, instDepth, owner);
+
+    // AlongPath modifiers ON A PATH instance a motif OBJECT along this node's
+    // own spine (Blender's rule: the modifier lives on the path, the object
+    // stays a plain, single object elsewhere). Copies render like pattern
+    // motifs: the motif's own translation is ignored (rotation/scale kept),
+    // its visibility is irrelevant, and the shared content hash keeps every
+    // copy in one instanced draw. Selection/bounds map to THIS node.
+    if (n.kind == NodeKind::Path && instDepth < kMaxInstanceDepth) {
+        for (const Modifier& m : n.modifiers) {
+            if (!m.enabled || m.kind != ModifierKind::AlongPath) continue;
+            const Node* motif = doc.Find(m.motifRef);
+            if (!motif || motif == &n || n.path.Empty()) continue;
+            std::vector<DVec2>  pos;
+            std::vector<double> ang;
+            SampleAlongSpine(n.path, m, pos, ang);
+            Transform2D rsOnly = motif->transform;
+            rsOnly.tx = rsOnly.ty = 0.0;
+            const DMat23 rs = rsOnly.Matrix();
+            for (std::size_t i = 0; i < pos.size(); ++i) {
+                DMat23 place = DMat23::Translation(pos[i].x, pos[i].y);
+                if (m.align == AlongAlign::Tangent) {
+                    const double c = std::cos(ang[i]), sn = std::sin(ang[i]);
+                    DMat23 rot;
+                    rot.m[0] = c; rot.m[1] = -sn; rot.m[3] = sn; rot.m[4] = c;
+                    place = place.Compose(rot);
+                }
+                EmitContent(doc, *motif, world.Compose(place).Compose(rs),
+                            nodeScope, instDepth + 1,
+                            owner != kNullNode ? owner : n.id);
+            }
+        }
+    }
 }
 
 void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
@@ -341,10 +291,11 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
         const Node* target = doc.Find(n.targetRef);
         if (!target || target == &n) return;   // missing / self-reference
         // Render the target's OWN content at this instance's world (the
-        // target's own transform is part of its identity — apply it).
+        // target's own transform is part of its identity — apply it), even
+        // when the ORIGINAL is hidden (linked duplicates stay visible).
         // Selection-wise the whole subtree belongs to the OUTERMOST instance.
         EmitNode(doc, *target, world, scope, instDepth + 1,
-                 owner != kNullNode ? owner : n.id);
+                 owner != kNullNode ? owner : n.id, /*forceVisible=*/true);
         return;
     }
 
@@ -494,7 +445,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         const Fill& f = n.style.fills[i];
         if (!f.enabled) continue;
         if (f.kind == FillKind::Pattern) {
-            EmitPattern(doc, f, n, world, scope, owner);
+            EmitPattern(doc, f, n, geo, pathHash, world, scope, owner);
             continue;
         }
         Drawable d;
@@ -520,14 +471,16 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
 }
 
 void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
+                        const PathData* geo, std::uint64_t geoHash,
                         const DMat23& world, ScopeId scope, NodeId owner) {
     const Node* motif = doc.Find(fill.pattern.motifRef);
     if (!motif || motif->kind != NodeKind::Path || motif->path.Empty()) return;
+    if (!geo || geo->Empty()) return;
     const PatternFill& pat = fill.pattern;
 
-    // Local bbox of the host path (the lattice extent).
+    // Local bbox of the host geometry (the lattice extent).
     DVec2 lo{ 1e300, 1e300 }, hi{ -1e300, -1e300 };
-    for (const Subpath& sp : host.path.subpaths)
+    for (const Subpath& sp : geo->subpaths)
         for (const Anchor& a : sp.anchors) {
             lo.x = std::min(lo.x, a.pos.x); lo.y = std::min(lo.y, a.pos.y);
             hi.x = std::max(hi.x, a.pos.x); hi.y = std::max(hi.y, a.pos.y);
@@ -546,7 +499,8 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                rs.m[3] = s * sc; rs.m[4] =  c * sc;
 
     // Conservative motif radius (local units, rotation-safe): the anchor/handle
-    // extent times the pattern scale. Classifies cells against the clip rings.
+    // extent times the pattern scale — used only to CULL cells that cannot
+    // touch the clip region (the exact cut is the stencil mask).
     double motifR = 0.0;
     for (const Subpath& sp : motif->path.subpaths)
         for (const Anchor& a : sp.anchors) {
@@ -560,39 +514,41 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
         }
     motifR *= std::abs(sc);
 
-    // The clip rings (HOST-LOCAL space): none for Bounds, the flattened host
-    // outline for Contour, offset to the widest stroke's inner/outer edge for
-    // the stroke-relative modes (the legacy Compositor "fill clip").
-    std::vector<std::vector<DVec2>> clipRings;
-    if (pat.clip != PatternClip::Bounds) {
-        for (auto& pl : geom::Flatten(host.path, 0.5))
-            if (pl.closed && pl.points.size() >= 3)
-                clipRings.push_back(std::move(pl.points));
-        if (clipRings.empty()) return;   // open path — nothing to fill against
-        if (pat.clip == PatternClip::StrokeInner ||
-            pat.clip == PatternClip::StrokeOuter) {
-            double inner = 0.0, outer = 0.0;
-            for (const Stroke& st : host.style.strokes) {
-                if (!st.enabled || st.width <= 0.0 ||
-                    st.widthSpace != WidthSpace::Document) continue;
-                const double w = st.width;
-                inner = std::min(inner,
-                    st.align == StrokeAlign::Center ? -w * 0.5
-                    : st.align == StrokeAlign::Inside ? -w : 0.0);
-                outer = std::max(outer,
-                    st.align == StrokeAlign::Center ? w * 0.5
-                    : st.align == StrokeAlign::Outside ? w : 0.0);
-            }
-            const double off = pat.clip == PatternClip::StrokeInner ? inner : outer;
-            if (off != 0.0) clipRings = OffsetRings(clipRings, off);
-            if (clipRings.empty()) return;
+    // The clipped modes cut the cells with a STENCIL MASK rendered from the
+    // host geometry at view tolerance — vector-exact at any zoom, and every
+    // cell stays a shared-mesh instance (no per-cell geometry). The widest
+    // Document-space stroke's mesh carves (StrokeInner) or extends
+    // (StrokeOuter) the mask to that stroke's edge. Coarse rings are kept
+    // CPU-side only to cull cells that cannot touch the region.
+    const bool useMask = pat.clip != PatternClip::Bounds;
+    const Stroke* edgeStroke = nullptr;
+    double outward = 0.0;   // cull margin for StrokeOuter
+    if (pat.clip == PatternClip::StrokeInner ||
+        pat.clip == PatternClip::StrokeOuter) {
+        double best = 0.0;
+        for (const Stroke& st : host.style.strokes) {
+            if (!st.enabled || st.width <= 0.0 ||
+                st.widthSpace != WidthSpace::Document) continue;
+            if (st.width > best) { best = st.width; edgeStroke = &st; }
         }
+        if (edgeStroke)
+            outward = edgeStroke->align == StrokeAlign::Center
+                          ? edgeStroke->width * 0.5
+                      : edgeStroke->align == StrokeAlign::Outside
+                          ? edgeStroke->width : 0.0;
+    }
+    std::vector<std::vector<DVec2>> cullRings;
+    if (useMask) {
+        for (auto& pl : geom::Flatten(*geo, 1.0))
+            if (pl.closed && pl.points.size() >= 3)
+                cullRings.push_back(std::move(pl.points));
+        if (cullRings.empty()) return;   // open path — nothing to fill against
     }
 
     // Lattice space: Object pins the lattice to the host's local origin (the
     // pattern follows the shape); Document pins it to the document origin (a
     // moving shape slides over a static field). Everything below iterates in
-    // LATTICE space and converts to host-local for the clip tests.
+    // LATTICE space and converts to host-local for the cull tests.
     const bool docAnchor = pat.anchor == PatternAnchor::Document;
     const DMat23 invWorld = InvertAffine(world);
     DVec2 llo = lo, lhi = hi;             // lattice-space bbox of the host
@@ -606,37 +562,60 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
             lhi.x = std::max(lhi.x, w.x); lhi.y = std::max(lhi.y, w.y);
         }
     }
-    // Conservative lattice-units motif radius for cell classification: in
-    // Document space the world scale applies to the local test radius.
+    // Conservative lattice-units motif radius for the cull test: in Document
+    // space the world scale applies to the local test radius.
     double invScale = 1.0;
     if (docAnchor) {
         const double r0 = std::hypot(invWorld.m[0], invWorld.m[3]);
         const double r1 = std::hypot(invWorld.m[1], invWorld.m[4]);
         invScale = std::max(r0, r1);
     }
-    const double testR = motifR * (docAnchor ? invScale : 1.0);
+    const double testR = (motifR + outward) * (docAnchor ? invScale : 1.0);
 
     // Guard against runaway lattices (a huge shape with tiny spacing).
     const double cols = (lhi.x - llo.x) / sx, rows = (lhi.y - llo.y) / sy;
     if (cols * rows > 2.0e5) return;
 
+    // ── The mask: host fill (± the stroke band) → stencil, before the cells ──
+    if (useMask) {
+        Drawable m;
+        m.node = host.id;  m.owner = owner;  m.world = world;
+        m.pathHash = geoHash;  m.path = geo;
+        m.isStroke = false;
+        m.rule = fill.rule;
+        m.scope = scope;
+        m.clip = ClipRole::MaskWrite;
+        m.isClipSource = true;
+        drawables_.push_back(m);
+        if (edgeStroke) {
+            Drawable b = m;
+            b.isStroke = true;
+            b.stroke = *edgeStroke;
+            // Inner: carve the stroke band out of the mask (the pattern stops
+            // at the stroke's inner edge). Outer: extend the mask to its
+            // outer edge.
+            b.clip = pat.clip == PatternClip::StrokeInner ? ClipRole::MaskClear
+                                                          : ClipRole::MaskWrite;
+            drawables_.push_back(std::move(b));
+        }
+    }
+
     // Index-aligned lattice: cells at phase + k·spacing so the phase is a
     // stable offset, starting one cell before the bbox so boundary motifs
-    // whose centre sits just outside still emit (they clip to the rim).
-    const double gx0 = std::floor((llo.x - pat.phaseX - motifR) / sx) * sx + pat.phaseX;
-    const double gy0 = std::floor((llo.y - pat.phaseY - motifR) / sy) * sy + pat.phaseY;
+    // whose centre sits just outside still emit (the mask cuts them).
+    const double margin = motifR + outward;
+    const double gx0 = std::floor((llo.x - pat.phaseX - margin) / sx) * sx + pat.phaseX;
+    const double gy0 = std::floor((llo.y - pat.phaseY - margin) / sy) * sy + pat.phaseY;
 
-    for (double gy = gy0; gy <= lhi.y + motifR; gy += sy)
-        for (double gx = gx0; gx <= lhi.x + motifR; gx += sx) {
-            // Cell centre in host-local space (for the clip classification).
+    for (double gy = gy0; gy <= lhi.y + margin; gy += sy)
+        for (double gx = gx0; gx <= lhi.x + margin; gx += sx) {
+            // Cell centre in host-local space (cull test only).
             const DVec2 cellLocal =
                 docAnchor ? invWorld.Apply({ gx, gy }) : DVec2{ gx, gy };
-            bool clipped = false;                      // boundary cell?
-            if (!clipRings.empty()) {
-                const bool inside = PointInRings(clipRings, cellLocal);
-                const double dist = DistToRings(clipRings, cellLocal);
-                if (!inside && dist > testR) continue; // fully outside
-                clipped = (dist <= testR);             // straddles the rim
+            if (useMask) {
+                if (!PointInRings(cullRings, cellLocal) &&
+                    DistToRings(cullRings, cellLocal) > testR)
+                    continue;                          // cannot touch the mask
             } else if (cellLocal.x < lo.x || cellLocal.x > hi.x ||
                        cellLocal.y < lo.y || cellLocal.y > hi.y) {
                 continue;                              // Bounds mode: bbox only
@@ -647,71 +626,51 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
             const DMat23 place = DMat23::Translation(gx, gy).Compose(rs);
             const DMat23 mw = docAnchor ? place : world.Compose(place);
 
-            if (!clipped) {
-                // Interior cell — shares the motif mesh (instanced draw), and
-                // carries the motif's strokes too so any shape renders fully.
-                Drawable d;
-                d.node = host.id;  d.owner = owner;  d.world = mw;
-                d.pathHash = motifHash;  d.path = &motif->path;
-                d.isStroke = false;
-                d.rule = FillRule::NonZero;
-                d.color = motifColor;
-                d.scope = scope;
-                drawables_.push_back(std::move(d));
-                for (std::size_t si = 0; si < motif->style.strokes.size(); ++si) {
-                    const Stroke& st = motif->style.strokes[si];
-                    if (!st.enabled || st.width <= 0.0) continue;
-                    Drawable sd;
-                    sd.node = host.id;  sd.owner = owner;  sd.world = mw;
-                    sd.pathHash = motifHash;  sd.path = &motif->path;
-                    sd.isStroke = true;  sd.pieceIndex = (std::uint8_t)si;
-                    sd.stroke = st;  sd.color = st.paint.color;
-                    sd.color.a *= fill.opacity;
-                    sd.scope = scope;
-                    drawables_.push_back(std::move(sd));
-                }
-                continue;
-            }
-
-            // Boundary cell — geometrically clipped against the rim (fills
-            // only, v1): motif outline ∩ clip rings → a derived path drawn in
-            // the CLIP space (host-local for Object, document for Document).
-            std::vector<std::vector<DVec2>> motifRings;
-            for (auto& pl : geom::Flatten(motif->path, 0.5)) {
-                if (!pl.closed || pl.points.size() < 3) continue;
-                for (DVec2& p : pl.points) p = place.Apply(p);
-                motifRings.push_back(std::move(pl.points));
-            }
-            if (motifRings.empty()) continue;
-            std::vector<std::vector<DVec2>> rim = clipRings;
-            if (docAnchor)                        // clip rings → document space
-                for (auto& ring : rim)
-                    for (DVec2& p : ring) p = world.Apply(p);
-            auto cut = geom::BooleanPolygons(motifRings, rim,
-                                             geom::BoolOp::Intersect);
-            if (cut.empty()) continue;
-            derivedPaths_.emplace_back();
-            PathData& dp = derivedPaths_.back();
-            for (const auto& ring : cut) {
-                Subpath sp; sp.closed = true;
-                for (const DVec2& p : ring) {
-                    Anchor a; a.pos = p; sp.anchors.push_back(a);
-                }
-                if (sp.anchors.size() >= 3) dp.subpaths.push_back(std::move(sp));
-            }
-            if (dp.Empty()) { derivedPaths_.pop_back(); continue; }
+            // Every cell shares the motif mesh (one instanced draw) and
+            // carries the motif's strokes too, cut by the mask when clipped.
+            const ClipRole role = useMask ? ClipRole::Clipped : ClipRole::None;
             Drawable d;
-            d.node = host.id;  d.owner = owner;
-            // The cut geometry is pre-placed in its lattice space: document
-            // space for a Document anchor (identity world), host-local else.
-            d.world = docAnchor ? DMat23{} : world;
-            d.pathHash = dp.Hash();  d.path = &dp;
+            d.node = host.id;  d.owner = owner;  d.world = mw;
+            d.pathHash = motifHash;  d.path = &motif->path;
             d.isStroke = false;
             d.rule = FillRule::NonZero;
             d.color = motifColor;
             d.scope = scope;
+            d.clip = role;
             drawables_.push_back(std::move(d));
+            for (std::size_t si = 0; si < motif->style.strokes.size(); ++si) {
+                const Stroke& st = motif->style.strokes[si];
+                if (!st.enabled || st.width <= 0.0) continue;
+                Drawable sd;
+                sd.node = host.id;  sd.owner = owner;  sd.world = mw;
+                sd.pathHash = motifHash;  sd.path = &motif->path;
+                sd.isStroke = true;  sd.pieceIndex = (std::uint8_t)si;
+                sd.stroke = st;  sd.color = st.paint.color;
+                sd.color.a *= fill.opacity;
+                sd.scope = scope;
+                sd.clip = role;
+                drawables_.push_back(std::move(sd));
+            }
         }
+
+    // Erase the mask so the next clipped region in this pass starts clean.
+    if (useMask) {
+        Drawable m;
+        m.node = host.id;  m.owner = owner;  m.world = world;
+        m.pathHash = geoHash;  m.path = geo;
+        m.isStroke = false;
+        m.rule = fill.rule;
+        m.scope = scope;
+        m.clip = ClipRole::MaskClear;
+        m.isClipSource = true;
+        drawables_.push_back(m);
+        if (edgeStroke && pat.clip == PatternClip::StrokeOuter) {
+            Drawable b = m;
+            b.isStroke = true;
+            b.stroke = *edgeStroke;
+            drawables_.push_back(std::move(b));
+        }
+    }
 }
 
 bool Scene::Compile(Document& doc, bool force) {
@@ -755,6 +714,18 @@ bool Scene::Compile(Document& doc, bool force) {
         for (NodeId c : page.children)
             if (const Node* child = doc.Find(c))
                 EmitNode(doc, *child, pageWorld, kRootScope, 0);
+    }
+
+    // Scope clip masks (SVG clip-path semantics): route each clip scope's
+    // content through the stencil — the clip source (emitted FIRST in its
+    // scope) writes the mask, the scope's own drawables draw only inside it,
+    // and the composite blends the masked result onto the parent. Pattern
+    // cells keep their own mask roles (a pattern inside a clip scope tests
+    // its pattern mask — the scope clip on those cells is a known v1 limit).
+    for (Drawable& d : drawables_) {
+        if (scopes_[d.scope].clipNode == kNullNode) continue;
+        if (d.clip != ClipRole::None) continue;
+        d.clip = d.isClipSource ? ClipRole::MaskWrite : ClipRole::Clipped;
     }
 
     version_  = doc.Version();

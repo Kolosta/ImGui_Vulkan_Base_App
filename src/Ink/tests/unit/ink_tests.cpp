@@ -383,25 +383,40 @@ void TestInstancing() {
         CHECK_NEAR(xs[4] - xs[0], 80.0, 1e-9);
     }
 
-    // AlongPath modifier: N copies placed along a straight path, tangent-aligned.
+    // AlongPath modifier: it lives ON the path and instances a motif object
+    // along its spine — N copies, owner = the path, motif's own translation
+    // ignored, and the copies survive hiding the motif (linked-instance rule).
     {
         Document doc;
         const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        const NodeId dot = doc.AddPath(page, PathData::Ellipse(0, 0, 3, 3),
+                                       Style::Filled({ 0, 1, 0, 1 }), "dot");
+        doc.SetTransform(dot, [] { Transform2D t; t.tx = 500; return t; }());
         const NodeId path = doc.AddPath(
             page, PathData::Polygon({ { 0, 0 }, { 100, 0 } }, false),
             Style::Stroked({ 0, 0, 0, 1 }, 1.0), "p");
         Modifier along;
         along.kind = ModifierKind::AlongPath;
-        along.pathRef = path;
+        along.motifRef = dot;
         along.alongCount = 6;
-        const NodeId dot = doc.AddPath(page, PathData::Ellipse(0, 0, 3, 3),
-                                       Style::Filled({ 0, 1, 0, 1 }), "dot");
-        doc.SetModifiers(dot, { along });
+        doc.SetModifiers(path, { along });
         Scene s; s.Compile(doc);
+        const std::uint64_t dotHash = PathData::Ellipse(0, 0, 3, 3).Hash();
         int copies = 0;
         for (const Drawable& d : s.Drawables())
-            if (d.node == dot) ++copies;
+            if (d.owner == path && d.pathHash == dotHash) {
+                ++copies;
+                // Copies sit ON the spine (0..100), not at the dot's x=500.
+                CHECK(d.world.m[2] <= 100.0 + 1e-9);
+            }
         CHECK(copies == 6);   // even spacing from 0..100
+        // Hiding the motif keeps every copy (only its OWN render vanishes).
+        doc.SetVisible(dot, false);
+        s.Compile(doc);
+        int hidden = 0;
+        for (const Drawable& d : s.Drawables())
+            if (d.owner == path && d.pathHash == dotHash) ++hidden;
+        CHECK(hidden == 6);
     }
 
     // Pattern fill: motif instances over the host bbox share the motif hash.

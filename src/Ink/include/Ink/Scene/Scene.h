@@ -42,6 +42,14 @@ struct CompositeScope {
     int       depth = 0;
 };
 
+// How a drawable interacts with the pass's stencil CLIP mask (docs/Ink/
+// RENDER_GRAPH.md §ClipPass). The mask value is always 1: MaskWrite rasterises
+// the mask (no colour), MaskClear erases it back to 0 (so sequential clipped
+// regions in one pass never leak into each other), Clipped draws colour only
+// where the mask is set. Clipping is resolved at VIEW tolerance by the normal
+// mesh pipeline — vector-exact at any zoom.
+enum class ClipRole : std::uint8_t { None = 0, MaskWrite, MaskClear, Clipped };
+
 struct Drawable {
     NodeId          node = kNullNode;
     // The node SELECTION maps to (picking, outlines): an instance's subtree
@@ -57,7 +65,8 @@ struct Drawable {
     Stroke          stroke;                     // stroke pieces (geometry params)
     Color           color;              // linear straight (premultiplied later)
     ScopeId         scope = kRootScope; // the composite scope this belongs to
-    bool            isClipSource = false;  // draws to the clip stencil, not color
+    ClipRole        clip = ClipRole::None;  // stencil interaction (see above)
+    bool            isClipSource = false;   // mask geometry — never picked/painted
 };
 
 class Scene {
@@ -92,8 +101,11 @@ private:
     // its modifier stack, composed onto `parentWorld`. `instDepth` guards
     // InstanceNode recursion (cycle/blow-up clamp). `owner` = the selection
     // owner to stamp on drawables (kNullNode → the node itself).
+    // `forceVisible` bypasses the node's own visible flag (instance targets —
+    // a linked duplicate stays visible when the original is hidden).
     void EmitNode(const Document& doc, const Node& n, const DMat23& parentWorld,
-                  ScopeId scope, int instDepth, NodeId owner = kNullNode);
+                  ScopeId scope, int instDepth, NodeId owner = kNullNode,
+                  bool forceVisible = false);
     // Emit the node's OWN content (a path's style pieces, a group's children,
     // an instance's target) at exactly `world` — the leaf of the modifier
     // expansion.
@@ -108,8 +120,10 @@ private:
     // content hash. `n` must be a path node.
     const PathData* ResolveGeometry(const Document& doc, const Node& n,
                                     std::uint64_t& hashOut);
-    // Expand a pattern fill: motif instances on a lattice over the fill bbox.
+    // Expand a pattern fill: motif instances on a lattice, cut by the host's
+    // stencil clip mask (`geo` = the host's resolved geometry + its hash).
     void EmitPattern(const Document& doc, const Fill& fill, const Node& host,
+                     const PathData* geo, std::uint64_t geoHash,
                      const DMat23& world, ScopeId scope, NodeId owner);
     // A group that composites as a unit opens a scope; returns its id (or the
     // parent scope when the group is a plain pass-through layer).

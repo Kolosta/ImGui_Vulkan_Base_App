@@ -59,7 +59,6 @@ std::uint32_t BuildScopePlan(const Scene& scene, ViewImpl& v) {
         content.scope       = s;
         content.level       = level[s];
         content.parentLevel = level[scopes[s].parent];
-        content.clip        = scopes[s].clipNode != kNullNode;
         v.scopeRuns.push_back(content);
         for (ScopeId c : childrenOf[s]) {
             emit(c);
@@ -123,14 +122,14 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
                 std::uint32_t overlayCount) {
     VkBuffer indirect = v.indirect[slot].buffer;
     const VkDescriptorSet sceneSet = v.sceneSet;
-    const std::uint32_t stride = (std::uint32_t)sizeof(VkDrawIndexedIndirectCommand);
 
     for (const ScopeRun& run : v.scopeRuns) {
         IsoTarget& iso = v.iso[run.level];
 
         if (run.phase == ScopePhase::Content) {
             const bool isRoot = (run.scope == kRootScope);
-            // ── Content of this scope → iso[level] (MSAA, resolved to Cur) ──
+            // ── Content of this scope → iso[level] (MSAA, resolved to Cur),
+            //    with the clip-mask stencil attached (cleared per pass) ──
             graph::RenderGraph::ColorTarget content{};
             content.image         = &iso.msaa;
             content.clear         = true;
@@ -141,17 +140,18 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
             content.clearColor[2] = isRoot ? v.background.b : 0.0f;
             content.clearColor[3] = isRoot ? v.background.a : 0.0f;
             content.resolveTo     = &iso.Cur();
+            content.stencil       = &iso.stencil;
+            content.clearStencil  = true;
 
             const PushCamera worldCam = world, pxCam = px;
-            const std::uint32_t firstByte = run.cmdOffset * stride;
-            const std::uint32_t nCmds     = run.cmdCount;
-            VkPipeline contentPipe = r.contentPipeline;
+            const CmdSegment* segs = v.segScratch.data() + run.segOffset;
+            const std::uint32_t nSegs = run.segCount;
             g.AddRenderPass("scope.content", content, {},
-                            [&r, worldCam, indirect, firstByte, nCmds, sceneSet,
-                             contentPipe, isRoot, pxCam, overlayBuffer,
+                            [&r, worldCam, indirect, segs, nSegs, sceneSet,
+                             isRoot, pxCam, overlayBuffer,
                              overlayCount](VkCommandBuffer cmd) {
-                RecordContentPass(r, cmd, worldCam, indirect, firstByte, nCmds,
-                                  sceneSet, contentPipe);
+                RecordContentPass(r, cmd, worldCam, indirect, segs, nSegs,
+                                  sceneSet);
                 // Editor overlays ride the root content pass (v1: a composite
                 // scope's pixels cover overlays where they overlap — the
                 // composite-segments follow-up lifts them above).

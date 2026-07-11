@@ -19,7 +19,7 @@ namespace Ink {
 
 enum class ModifierKind : std::uint8_t {
     Array = 0,     // count copies, each offset from the previous by `step`
-    AlongPath = 1, // copies distributed along a target path by arc length
+    AlongPath = 1, // instance a MOTIF object along THIS path's spine
     Boolean = 2,   // combine this node's geometry with an operand's (Lot 7)
 };
 
@@ -63,9 +63,12 @@ struct Modifier {
     ArrayStepSpace stepSpace = ArrayStepSpace::Local;
 
     // ── AlongPath ────────────────────────────────────────────────────────────
-    // Copies sit ON the referenced path (the node's own translation is
-    // ignored; its rotation/scale still apply to each copy).
-    NodeId          pathRef = kNullNode;   // path whose spine is sampled
+    // The modifier lives on the PATH being followed (Blender's rule): it
+    // instances the MOTIF object along this node's own spine. Copies sit ON
+    // the path — the motif's translation is ignored, its rotation/scale still
+    // shape each copy — and render like pattern motifs: technically instanced
+    // (shared mesh, merged draws) and independent of the motif's visibility.
+    NodeId          motifRef = kNullNode;  // node instanced along the spine
     AlongDistribute distribute = AlongDistribute::ByCount;
     double          spacing = 50.0;        // arc-length step (BySpacing)
     int             alongCount = 10;       // number of copies (ByCount)

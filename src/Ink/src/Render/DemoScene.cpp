@@ -260,9 +260,16 @@ void SeedDemoDocument(Document& doc) {
         doc.SetModifiers(star, { arr });
         doc.AddToCollection(cInst, star);
 
-        // Along-path modifier: ticks distributed along a wavy curve, aligned
-        // to its tangent. Copies sit ON the curve (the tick's own position is
-        // irrelevant — its rotation/scale still shape each copy).
+        // Along-path modifier ON THE PATH (Blender's rule): the wave carries
+        // the modifier and instances the tick object along its own spine.
+        // The tick stays a plain, single object — editing it is fluid (every
+        // copy shares its mesh) and hiding it never hides the copies.
+        const NodeId tick = doc.AddPath(page,
+            PathData::Polygon({ { 0, -8 }, { 4, 8 }, { -4, 8 } }),
+            Style::Filled(Srgb(0.20f, 0.62f, 0.62f, 1)), "along tick");
+        doc.SetTransform(tick, TRS(60, 640));
+        doc.AddToCollection(cInst, tick);
+
         PathData wave;
         {
             Subpath sp; sp.closed = false;
@@ -272,21 +279,17 @@ void SeedDemoDocument(Document& doc) {
             }
             wave.subpaths.push_back(sp);
         }
-        const NodeId wavePath = doc.AddPath(page, wave,
-            Style::Stroked(Srgb(0.5f, 0.5f, 0.55f, 0.5f), 2.0), "wave");
-        doc.SetTransform(wavePath, TRS(120, 700));
-        doc.AddToCollection(cInst, wavePath);
         Modifier along;
         along.kind = ModifierKind::AlongPath;
-        along.pathRef = wavePath;
+        along.motifRef = tick;
         along.distribute = AlongDistribute::ByCount;
         along.alongCount = 24;
         along.align = AlongAlign::Tangent;
-        const NodeId tick = doc.AddPath(page,
-            PathData::Polygon({ { 0, -8 }, { 4, 8 }, { -4, 8 } }),
-            Style::Filled(Srgb(0.20f, 0.62f, 0.62f, 1)), "along ticks");
-        doc.SetModifiers(tick, { along });
-        doc.AddToCollection(cInst, tick);
+        const NodeId wavePath = doc.AddPath(page, wave,
+            Style::Stroked(Srgb(0.5f, 0.5f, 0.55f, 0.5f), 2.0), "wave");
+        doc.SetTransform(wavePath, TRS(120, 700));
+        doc.SetModifiers(wavePath, { along });
+        doc.AddToCollection(cInst, wavePath);
 
         // Pattern fill: an ellipse filled with an instanced disc motif, cut
         // exactly at the INNER edge of its stroke (the legacy fill clip).

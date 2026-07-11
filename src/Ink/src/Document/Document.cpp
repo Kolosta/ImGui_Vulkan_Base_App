@@ -737,7 +737,7 @@ NodeId Document::DuplicateSubtree(NodeId src) {
         c.targetRef = mapped(c.targetRef);
         for (NodeId& ch : c.children) ch = mapped(ch);
         for (Modifier& m : c.modifiers) {
-            m.pathRef    = mapped(m.pathRef);
+            m.motifRef   = mapped(m.motifRef);
             m.operandRef = mapped(m.operandRef);
         }
         for (Fill& f : c.style.fills)

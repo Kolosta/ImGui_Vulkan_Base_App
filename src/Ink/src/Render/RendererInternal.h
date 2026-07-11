@@ -76,16 +76,22 @@ enum class ScopePhase : std::uint8_t {
     Composite = 1,   // blend iso[level] onto iso[parentLevel] (ping-pong)
 };
 
+// A contiguous slice of a content run sharing one stencil interaction: the
+// recorder binds the matching pipeline (plain / mask-write / mask-clear /
+// clip-test) per segment and issues one multi-draw indirect for it.
+struct CmdSegment {
+    std::uint32_t cmdOffset = 0;   // into ViewImpl::indirectScratch
+    std::uint32_t cmdCount  = 0;
+    ClipRole      role      = ClipRole::None;
+};
+
 struct ScopeRun {
     ScopePhase    phase       = ScopePhase::Content;
     ScopeId       scope       = kRootScope;
     std::uint32_t level       = 0;        // iso[] index it renders into
     std::uint32_t parentLevel = 0;        // iso[] index it composites onto
-    std::uint32_t cmdOffset   = 0;        // into ViewImpl::indirectScratch
-    std::uint32_t cmdCount    = 0;
-    std::uint32_t clipOffset  = 0;        // clip-source commands (stencil write)
-    std::uint32_t clipCount   = 0;
-    bool          clip        = false;
+    std::uint32_t segOffset   = 0;        // into ViewImpl::segScratch
+    std::uint32_t segCount    = 0;
     float         opacity     = 1.0f;
     std::uint32_t blend       = 0;
 };
@@ -120,6 +126,8 @@ struct ViewImpl {
     std::vector<VkDrawIndexedIndirectCommand> indirectScratch;
     // One entry per composite scope + clip run to play back this frame.
     std::vector<ScopeRun> scopeRuns;
+    // The content-run slices by stencil role (see CmdSegment).
+    std::vector<CmdSegment> segScratch;
 
     // Camera-relative precision (docs/Ink/GEOMETRY.md §6): this view's double
     // anchor (snapped so it moves rarely) and its anchor-rebased instance
@@ -177,9 +185,10 @@ struct RendererImpl {
     VkPipelineLayout overlayLayout   = VK_NULL_HANDLE;
     VkPipelineLayout presentLayout   = VK_NULL_HANDLE;
     VkPipelineLayout compositeLayout = VK_NULL_HANDLE;
-    VkPipeline contentPipeline     = VK_NULL_HANDLE;
-    VkPipeline contentClipPipeline = VK_NULL_HANDLE;  // stencil TestEqual
-    VkPipeline clipMaskPipeline    = VK_NULL_HANDLE;  // stencil WriteMask
+    VkPipeline contentPipeline     = VK_NULL_HANDLE;  // stencil ignored
+    VkPipeline contentClipPipeline = VK_NULL_HANDLE;  // stencil TestEqual 1
+    VkPipeline clipMaskPipeline    = VK_NULL_HANDLE;  // stencil WriteMask ← 1
+    VkPipeline clipClearPipeline   = VK_NULL_HANDLE;  // stencil WriteMask ← 0
     VkPipeline overlayPipeline     = VK_NULL_HANDLE;
     VkPipeline presentPipeline     = VK_NULL_HANDLE;
     VkPipeline compositePipeline   = VK_NULL_HANDLE;  // iso composite (blend)
@@ -213,12 +222,13 @@ struct RendererImpl {
 // Pass entry points (Passes/*.cpp). All record inside an open dynamic
 // rendering scope set up by the graph.
 //
-// Content: draws `commandCount` indirect commands starting at byte
-// `firstByte` in `indirect`, with `pipeline` (plain or stencil-test-equal).
+// Content: draws the run's segments in order; each segment binds the
+// pipeline matching its stencil role (plain / mask-write / mask-clear /
+// clip-test) and issues one multi-draw indirect.
 void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& worldToNdc, VkBuffer indirect,
-                       std::uint32_t firstByte, std::uint32_t commandCount,
-                       VkDescriptorSet sceneSet, VkPipeline pipeline);
+                       const CmdSegment* segments, std::uint32_t segmentCount,
+                       VkDescriptorSet sceneSet);
 void RecordOverlayPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& pxToNdc, VkBuffer vertexBuffer,
                        std::uint32_t vertexCount);

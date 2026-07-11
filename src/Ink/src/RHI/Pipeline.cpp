@@ -96,8 +96,10 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
     cb.attachmentCount = 1;
     cb.pAttachments    = &blend;
 
-    // Stencil (clip masks). WriteMask: always pass, replace stencil with 1.
-    // TestEqual: keep the buffer, draw only where stencil == 1.
+    // Stencil (clip masks). WriteMask: always pass, replace stencil with the
+    // pipeline's `stencilRef` (0 erases a mask). TestEqual: keep the buffer,
+    // draw only where stencil == `stencilRef`. Mode None with a declared
+    // stencilFormat = the pass has a stencil attachment this pipeline ignores.
     VkPipelineDepthStencilStateCreateInfo ds{};
     ds.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     if (desc.stencil != StencilMode::None) {
@@ -108,7 +110,7 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
             op.passOp      = VK_STENCIL_OP_REPLACE;
             op.failOp      = VK_STENCIL_OP_KEEP;
             op.depthFailOp = VK_STENCIL_OP_KEEP;
-            op.reference   = 1;
+            op.reference   = desc.stencilRef;
             op.writeMask   = 0xFF;
             op.compareMask = 0xFF;
         } else {   // TestEqual
@@ -116,7 +118,7 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
             op.passOp      = VK_STENCIL_OP_KEEP;
             op.failOp      = VK_STENCIL_OP_KEEP;
             op.depthFailOp = VK_STENCIL_OP_KEEP;
-            op.reference   = 1;
+            op.reference   = desc.stencilRef;
             op.writeMask   = 0x00;
             op.compareMask = 0xFF;
         }
@@ -135,7 +137,7 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
     rendering.sType                   = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
     rendering.colorAttachmentCount    = 1;
     rendering.pColorAttachmentFormats = &desc.colorFormat;
-    if (desc.stencil != StencilMode::None)
+    if (desc.stencilFormat != VK_FORMAT_UNDEFINED)
         rendering.stencilAttachmentFormat = desc.stencilFormat;
 
     VkGraphicsPipelineCreateInfo ci{};
@@ -151,7 +153,9 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
     ci.pColorBlendState    = &cb;
     ci.pDynamicState       = &dyn;
     ci.layout              = desc.layout;
-    if (desc.stencil != StencilMode::None)
+    // Required whenever the pass carries a stencil attachment, even if this
+    // pipeline's stencil test is disabled (dynamic-rendering VUs).
+    if (desc.stencilFormat != VK_FORMAT_UNDEFINED)
         ci.pDepthStencilState = &ds;
 
     VkPipeline pipeline = VK_NULL_HANDLE;

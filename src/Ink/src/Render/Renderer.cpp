@@ -147,26 +147,32 @@ bool CreatePipelines(RendererImpl& r) {
     for (VkShaderModule m : all) ok = ok && m != VK_NULL_HANDLE;
 
     if (ok) {
+        // Every pipeline used inside the content pass declares the stencil
+        // format — the pass always binds the clip-mask stencil attachment
+        // (dynamic-rendering VUs require matching formats even when a
+        // pipeline's own stencil test is off).
         rhi::GraphicsPipelineDesc d;
-        d.vert         = vecV;
-        d.frag         = vecF;
-        d.vertexStride = sizeof(ContentVertex);
-        d.attributes   = { { 0, VK_FORMAT_R32G32_SFLOAT, 0 } };
-        d.colorFormat  = kContentFormat;
-        d.samples      = r.device.colorSamples();
-        d.layout       = r.contentLayout;
-        r.contentPipeline = rhi::CreateGraphicsPipeline(r.device, d);
-        // Clip-masked content variant (stencil TestEqual) — wired for the
-        // clip follow-up (ROADMAP Lot 4 note); harmless if unused.
+        d.vert          = vecV;
+        d.frag          = vecF;
+        d.vertexStride  = sizeof(ContentVertex);
+        d.attributes    = { { 0, VK_FORMAT_R32G32_SFLOAT, 0 } };
+        d.colorFormat   = kContentFormat;
         d.stencilFormat = kStencilFormat;
-        d.stencil       = rhi::StencilMode::TestEqual;
+        d.samples       = r.device.colorSamples();
+        d.layout        = r.contentLayout;
+        r.contentPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        // Clip-masked content: draws only where the mask (stencil == 1) is.
+        d.stencil    = rhi::StencilMode::TestEqual;
+        d.stencilRef = 1;
         r.contentClipPipeline = rhi::CreateGraphicsPipeline(r.device, d);
-        // Clip-mask writer: same content vertex program, colour-write off,
-        // stencil = 1 where the clip source covers.
+        // Clip-mask writer / eraser: same content vertex program, colour off,
+        // stencil ← 1 (write) or ← 0 (clear, so sequential masks never leak).
         d.stencil = rhi::StencilMode::WriteMask;
         r.clipMaskPipeline = rhi::CreateGraphicsPipeline(r.device, d);
-        d.stencil       = rhi::StencilMode::None;
-        d.stencilFormat = VK_FORMAT_UNDEFINED;
+        d.stencilRef = 0;
+        r.clipClearPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        d.stencil    = rhi::StencilMode::None;
+        d.stencilRef = 1;
 
         d.vert         = primV;
         d.frag         = primF;
@@ -175,6 +181,7 @@ bool CreatePipelines(RendererImpl& r) {
                            { 1, VK_FORMAT_R32G32B32A32_SFLOAT, 8 } };
         d.layout       = r.overlayLayout;
         r.overlayPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        d.stencilFormat = VK_FORMAT_UNDEFINED;
 
         // Composite: fullscreen, writes the parent iso (×1) with the blend
         // result — its own maths, so fixed-function blending is OFF.
@@ -195,7 +202,8 @@ bool CreatePipelines(RendererImpl& r) {
         r.presentPipeline = rhi::CreateGraphicsPipeline(r.device, d);
 
         ok = r.contentPipeline && r.contentClipPipeline && r.clipMaskPipeline &&
-             r.overlayPipeline && r.compositePipeline && r.presentPipeline;
+             r.clipClearPipeline && r.overlayPipeline && r.compositePipeline &&
+             r.presentPipeline;
     }
     for (VkShaderModule m : all)
         if (m) vkDestroyShaderModule(r.device.vk(), m, nullptr);
@@ -499,6 +507,7 @@ void Renderer::Shutdown() {
         destroyPipeline(r.contentPipeline);
         destroyPipeline(r.contentClipPipeline);
         destroyPipeline(r.clipMaskPipeline);
+        destroyPipeline(r.clipClearPipeline);
         destroyPipeline(r.overlayPipeline);
         destroyPipeline(r.compositePipeline);
         destroyPipeline(r.presentPipeline);
@@ -697,13 +706,17 @@ void Renderer::EndFrame() {
         r.EnsureIsoLevels(v, (std::uint32_t)r.scene.MaxScopeDepth());
         BuildScopePlan(r.scene, v);
 
-        // Build one command run PER scope (only that scope's drawables). Each
-        // run merges consecutive same-mesh drawables; firstInstance is the
-        // GLOBAL drawable index (the instance table is global). Clip-source
-        // drawables of a scope are emitted as a separate leading run.
+        // Build one command run PER scope (only that scope's drawables), in
+        // painter order, sliced into SEGMENTS wherever the stencil role
+        // changes (mask writes / clears / clipped content — the clip pass).
+        // Each segment merges consecutive same-mesh drawables; firstInstance
+        // is the GLOBAL drawable index (the instance table is global).
         auto& cmds = v.indirectScratch;
+        auto& segs = v.segScratch;
         cmds.clear();
-        auto emitDrawable = [&](std::uint32_t i, MeshRange& last) {
+        segs.clear();
+        MeshRange last{};
+        auto emitDrawable = [&](std::uint32_t i) {
             const Drawable& d = drawables[i];
             std::uint64_t productKey = 0;
             const geom::Mesh* mesh =
@@ -715,7 +728,8 @@ void Renderer::EndFrame() {
             const MeshRange range =
                 r.gpu.EnsureResident(r.device, productKey, *mesh, r.cache, defer);
             if (range.indexCount == 0) return;
-            if (!cmds.empty() &&
+            if (!cmds.empty() && !segs.empty() &&
+                cmds.size() > segs.back().cmdOffset &&   // same segment
                 range.firstIndex == last.firstIndex &&
                 range.indexCount == last.indexCount &&
                 range.vertexOffset == last.vertexOffset &&
@@ -736,24 +750,29 @@ void Renderer::EndFrame() {
         for (ScopeRun& run : v.scopeRuns) {
             if (run.phase != detail::ScopePhase::Content)
                 continue;   // composites draw no scene commands
-            run.clipOffset = (std::uint32_t)cmds.size();
-            MeshRange lastClip{};
+            run.segOffset = (std::uint32_t)segs.size();
+            ClipRole cur = ClipRole::None;
+            bool open = false;
             for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
                 const Drawable& d = drawables[i];
-                if (d.scope != run.scope || !d.isClipSource) continue;
-                emitDrawable(i, lastClip);
+                if (d.scope != run.scope) continue;
+                // Mask geometry is never culled (its coverage defines the
+                // clip); ordinary content culls against the view rect.
+                if (d.clip == ClipRole::None && culled(d)) continue;
+                if (!open || d.clip != cur) {
+                    detail::CmdSegment seg;
+                    seg.cmdOffset = (std::uint32_t)cmds.size();
+                    seg.role      = d.clip;
+                    segs.push_back(seg);
+                    cur = d.clip;
+                    open = true;
+                    last = MeshRange{};   // never merge across segments
+                }
+                emitDrawable(i);
+                segs.back().cmdCount =
+                    (std::uint32_t)cmds.size() - segs.back().cmdOffset;
             }
-            run.clipCount = (std::uint32_t)cmds.size() - run.clipOffset;
-
-            run.cmdOffset = (std::uint32_t)cmds.size();
-            MeshRange last{};
-            for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
-                const Drawable& d = drawables[i];
-                if (d.scope != run.scope || d.isClipSource) continue;
-                if (culled(d)) continue;
-                emitDrawable(i, last);
-            }
-            run.cmdCount = (std::uint32_t)cmds.size() - run.cmdOffset;
+            run.segCount = (std::uint32_t)segs.size() - run.segOffset;
         }
         FillHostRingBuffer(r, v.indirect[r.slot], cmds.data(),
                            cmds.size() * sizeof(VkDrawIndexedIndirectCommand),
