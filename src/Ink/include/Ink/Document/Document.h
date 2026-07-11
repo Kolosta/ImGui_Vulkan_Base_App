@@ -114,6 +114,8 @@ public:
     void   SetStyle(NodeId node, Style style);
     // Replace a node's instancing modifier stack (Lot 5).
     void   SetModifiers(NodeId node, std::vector<Modifier> modifiers);
+    // Retarget an Instance node (kind must be Instance; self-ref refused).
+    void   SetInstanceTarget(NodeId inst, NodeId target);
     void   SetTransform(NodeId node, const Transform2D& t);
     void   SetVisible(NodeId node, bool visible);
     // Object parenting (docs/Ink/DOCUMENT_MODEL.md §2). `keepWorld` preserves

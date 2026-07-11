@@ -29,6 +29,19 @@ enum class AlongAlign : std::uint8_t {
     Tangent = 1,   // rotate to the path tangent at each sample
 };
 
+// How copies distribute along the target path.
+enum class AlongDistribute : std::uint8_t {
+    ByCount = 0,   // `alongCount` copies, evenly spaced by arc length
+    BySpacing = 1, // one copy every `spacing` arc-length units
+    AtAnchors = 2, // one copy on every anchor point (Blender's "on points")
+};
+
+// The space the Array step is expressed in. Local composes after the node's
+// own transform (the step inherits the node's rotation/scale); Parent applies
+// the step in the node's parent space (a 10-unit step is 10 document units
+// regardless of the node's scale — the predictable default for UI editing).
+enum class ArrayStepSpace : std::uint8_t { Local = 0, Parent = 1 };
+
 // Boolean geometry operation (docs/Ink/DOCUMENT_MODEL.md §6). Operates on the
 // flattened outlines of the host and the operand (v1: polygon-level, the
 // pragmatic standard; exact Bézier booleans are a later quality lot).
@@ -44,18 +57,21 @@ struct Modifier {
     bool         enabled = true;
 
     // ── Array ────────────────────────────────────────────────────────────────
-    int          count = 2;             // total copies (incl. the original)
-    Transform2D  step;                  // per-copy incremental transform
+    int            count = 2;           // total copies (incl. the original)
+    Transform2D    step;                // per-copy incremental transform
                                         // (translate/rotate/scale composed)
+    ArrayStepSpace stepSpace = ArrayStepSpace::Local;
 
     // ── AlongPath ────────────────────────────────────────────────────────────
-    NodeId       pathRef = kNullNode;   // path whose spine is sampled
-    bool         useSpacing = false;    // true: fixed spacing; false: fixed count
-    double       spacing = 50.0;        // arc-length step (useSpacing)
-    int          alongCount = 10;       // number of copies (!useSpacing)
-    AlongAlign   align = AlongAlign::Tangent;
-    double       startTrim = 0.0;       // skip this arc-length at the start
-    double       endTrim   = 0.0;       // and at the end
+    // Copies sit ON the referenced path (the node's own translation is
+    // ignored; its rotation/scale still apply to each copy).
+    NodeId          pathRef = kNullNode;   // path whose spine is sampled
+    AlongDistribute distribute = AlongDistribute::ByCount;
+    double          spacing = 50.0;        // arc-length step (BySpacing)
+    int             alongCount = 10;       // number of copies (ByCount)
+    AlongAlign      align = AlongAlign::Tangent;
+    double          startTrim = 0.0;       // skip this arc-length at the start
+    double          endTrim   = 0.0;       // and at the end
 
     // ── Boolean ──────────────────────────────────────────────────────────────
     BooleanOp    op = BooleanOp::Union;

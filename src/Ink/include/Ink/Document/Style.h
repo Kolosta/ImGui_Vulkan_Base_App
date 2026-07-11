@@ -27,12 +27,28 @@ struct Paint {
 enum class FillRule : std::uint8_t { NonZero = 0, EvenOdd = 1 };
 enum class FillKind : std::uint8_t { Solid = 0, Pattern = 1 };
 
+// Where a pattern fill is cut (the legacy Compositor "fill clip"): at the
+// host's bounding box (fast, no per-cell clipping), exactly at the path
+// contour, or at the inner/outer EDGE of the host's widest stroke so the
+// pattern meets the stroke cleanly. Interior motif cells stay instanced; only
+// the boundary cells are geometrically clipped.
+enum class PatternClip : std::uint8_t {
+    Bounds = 0,        // lattice over the local bbox (v1 behaviour)
+    Contour = 1,       // cut exactly at the path outline
+    StrokeInner = 2,   // cut at the inner edge of the widest stroke
+    StrokeOuter = 3,   // cut at the outer edge of the widest stroke
+};
+
+// What the lattice is pinned to (legacy "anchor"): the OBJECT keeps the motif
+// glued to the shape (it follows a move); the DOCUMENT pins the lattice to the
+// document origin so a moving shape slides over a static field.
+enum class PatternAnchor : std::uint8_t { Object = 0, Document = 1 };
+
 // A pattern fill (docs/Ink/DOCUMENT_MODEL.md §Paints): the region is covered by
 // INSTANCES of a motif node on a lattice — the same instancing machinery as
 // InstanceNode, so a dense pattern is one instanced draw, not N geometries.
-// The Scene expands it into grouped motif drawables over the fill's bounding
-// box (Lot 5 clips the lattice to the bbox; exact clip-to-shape rides on the
-// clip-mask follow-up).
+// The Scene expands it into grouped motif drawables; cells crossing the clip
+// boundary become derived clipped geometry (Scene::EmitPattern).
 struct PatternFill {
     NodeId motifRef = kNullNode;   // node whose geometry is the tile
     double spacingX = 40.0;        // lattice pitch (node-local units)
@@ -41,6 +57,8 @@ struct PatternFill {
     double phaseY   = 0.0;
     double rotation = 0.0;         // per-motif rotation (radians)
     double scale    = 1.0;         // per-motif uniform scale
+    PatternClip   clip   = PatternClip::Bounds;
+    PatternAnchor anchor = PatternAnchor::Object;
 };
 
 struct Fill {
@@ -48,6 +66,8 @@ struct Fill {
     Paint       paint;             // Solid
     PatternFill pattern;           // Pattern
     FillRule    rule    = FillRule::NonZero;
+    float       opacity = 1.0f;    // layer opacity (multiplies the paint /
+                                   // every motif colour of a pattern)
     bool        enabled = true;
 };
 

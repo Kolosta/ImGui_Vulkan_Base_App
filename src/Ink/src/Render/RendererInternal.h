@@ -65,12 +65,19 @@ struct IsoTarget {
     VkDescriptorSet  CurSet() const { return cur ? setB : setA; }
 };
 
-// One recorded scope in playback order (post-order: a child scope renders
-// and composites before its parent continues). A run draws its own content
-// commands into iso[level], optionally masked by a clip stencil, then (for
-// level > 0) composites iso[level].linear onto iso[parentLevel] with the
-// scope's opacity + blend.
+// One recorded scope EVENT. The plan interleaves two phases so painter order
+// holds: a scope's CONTENT renders into iso[level] before any of its children
+// (pre-order), and each child COMPOSITES onto its parent right after its own
+// subtree completed (post-order). Rendering a parent's content after its
+// children composited would clear/resolve over them — the plan order is what
+// keeps composite scopes visible.
+enum class ScopePhase : std::uint8_t {
+    Content = 0,     // draw the scope's own commands into iso[level]
+    Composite = 1,   // blend iso[level] onto iso[parentLevel] (ping-pong)
+};
+
 struct ScopeRun {
+    ScopePhase    phase       = ScopePhase::Content;
     ScopeId       scope       = kRootScope;
     std::uint32_t level       = 0;        // iso[] index it renders into
     std::uint32_t parentLevel = 0;        // iso[] index it composites onto
@@ -81,7 +88,6 @@ struct ScopeRun {
     bool          clip        = false;
     float         opacity     = 1.0f;
     std::uint32_t blend       = 0;
-    bool          composites  = false;    // level > 0 → a composite step follows
 };
 
 struct ViewImpl {

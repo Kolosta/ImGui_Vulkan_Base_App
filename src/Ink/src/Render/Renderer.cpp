@@ -734,6 +734,8 @@ void Renderer::EndFrame() {
             r.stats.triangles += range.indexCount / 3;
         };
         for (ScopeRun& run : v.scopeRuns) {
+            if (run.phase != detail::ScopePhase::Content)
+                continue;   // composites draw no scene commands
             run.clipOffset = (std::uint32_t)cmds.size();
             MeshRange lastClip{};
             for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {

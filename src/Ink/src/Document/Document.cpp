@@ -95,6 +95,13 @@ void Document::SetModifiers(NodeId node, std::vector<Modifier> modifiers) {
     }
 }
 
+void Document::SetInstanceTarget(NodeId inst, NodeId target) {
+    Node* n = FindMutable(inst);
+    if (!n || n->kind != NodeKind::Instance || target == inst) return;
+    n->targetRef = target;
+    Log(inst, ChangeKind::Geometry);       // changes the emitted drawable set
+}
+
 void Document::SetPath(NodeId node, PathData path) {
     if (Node* n = FindMutable(node); n && n->kind == NodeKind::Path) {
         n->path = std::move(path);
