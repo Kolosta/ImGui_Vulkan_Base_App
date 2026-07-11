@@ -512,4 +512,17 @@ void Application::Action_SelectGroup() {
     LogInfoAction("Select Group");
 }
 
+// Blender's Ctrl+P: parent every other selected object to the ACTIVE one
+// (world positions preserved). One undoable command via the shared drop op.
+void Application::Action_ParentToActive() {
+    if (!project_.document || edit_.active == Ink::kNullNode ||
+        edit_.selection.size() < 2)
+        return;
+    std::vector<Ink::NodeId> children;
+    for (Ink::NodeId id : edit_.selection)
+        if (id != edit_.active && project_.document->Find(id))
+            children.push_back(id);
+    if (!children.empty()) OutlinerDropParentTo(children, edit_.active);
+}
+
 } // namespace App

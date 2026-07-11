@@ -457,6 +457,29 @@ void Application::RenderViewportContextMenu() {
           e.tooltip = "Select the group this object belongs to";
           e.onClick = [this, close]{ Action_SelectGroup(); close(); };
           entries.push_back(std::move(e)); }
+        // Parent ▸ — object parenting lives HERE (and on shortcuts), never on
+        // the Outliner drag & drop (that is collection organisation only).
+        { UI::MenuEntry pa; pa.label = "Parent";
+          { UI::MenuEntry e; e.label = "Parent to Active"; e.shortcut = "Ctrl P";
+            e.tooltip = "Parent the other selected objects to the active one "
+                        "(world positions preserved)";
+            e.enabled = edit_.selection.size() >= 2;
+            e.onClick = [this, close]{ Action_ParentToActive(); close(); };
+            pa.submenu.push_back(std::move(e)); }
+          { UI::MenuEntry e; e.label = "Clear Parent"; e.shortcut = "Alt P";
+            e.tooltip = "Detach from the object parent (keeps the world position)";
+            bool anyParented = false;
+            for (Ink::NodeId sid : edit_.selection)
+                if (const Ink::Node* sn = doc->Find(sid);
+                    sn && sn->parentId != Ink::kNullNode) { anyParented = true; break; }
+            e.enabled = anyParented;
+            e.onClick = [this, close]{
+                OutlinerUnparent(std::vector<Ink::NodeId>(
+                    edit_.selection.begin(), edit_.selection.end()));
+                close();
+            };
+            pa.submenu.push_back(std::move(e)); }
+          entries.push_back(std::move(pa)); }
         // Set Origin ▸ (legacy parity)
         { UI::MenuEntry so; so.label = "Set Origin"; so.enabled = hasSel;
           { UI::MenuEntry e; e.label = "Origin to Geometry";

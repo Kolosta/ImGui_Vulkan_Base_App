@@ -196,6 +196,7 @@ private:
     void   Action_GeometryToOrigin();    // geometry re-centred on the origin
     void   Action_OriginTo2DCursor();    // origin → 2D cursor
     void   Action_SelectGroup();         // select the active object's parent group
+    void   Action_ParentToActive();      // Ctrl+P: parent selection to active
     // Create a shape at the 2D cursor / view centre and select it.
     Ink::NodeId SpawnShape(const char* kind);
     // Build the default Style (fill+stroke) from the EditContext swatches.
@@ -220,18 +221,33 @@ private:
     // the visible scroll window — the culling that keeps the editor O(visible)
     // instead of O(document), so a 100k-object document stays fluid).
     struct OutlinerRow {
-        enum class Kind : uint8_t { Object, CollectionHeader, PageHeader };
-        uint64_t id = 0;        // node / collection / page id
+        enum class Kind : uint8_t { Object, CollectionHeader, PageHeader,
+                                    ProjectRoot };
+        uint64_t id = 0;        // node / collection / page id (root: 0)
         Kind     kind = Kind::Object;
         int      depth = 0;
         bool     hasChildren = false;
+        // Collections view: the ENCLOSING collection of this row (kNullNode =
+        // project root) and its flat row index — the drop target a dragged
+        // object resolves to from anywhere inside that collection.
+        uint64_t ownerColl = 0;
+        int      ownerRow  = -1;   // flat index of the owner's header (0 = root)
+        int      flatIndex = 0;    // this row's own flat index
     };
     // Append the visible rows of a node subtree (respecting collapse + filter +
     // search) to `out`. Pure computation, no drawing. In the Collections view
     // the recursion follows OBJECT PARENTING (parentId, Lot 7) so parented
     // children nest under their parent; in Layers it follows the layer tree.
     void OutlinerFlattenNode(Ink::NodeId id, int depth,
-                             std::vector<OutlinerRow>& out);
+                             std::vector<OutlinerRow>& out,
+                             Ink::NodeId ownerColl = Ink::kNullNode,
+                             int ownerRow = -1);
+    // Per-frame draw context for the row list (set by RenderOutliner before
+    // the draw loop; consumed by the drag & drop to reach OTHER rows' geometry
+    // — e.g. highlighting the enclosing collection of the hovered row).
+    const std::vector<OutlinerRow>* outlinerRows_ = nullptr;
+    float outlinerRowsStartY_ = 0.0f;   // window-local Y of flat row 0
+    float outlinerStripeH_    = 0.0f;   // row pitch during the draw loop
     // parentId → children, rebuilt once per Outliner frame (Collections view),
     // plus a per-frame cache of each row's combined child list.
     std::unordered_map<Ink::NodeId, std::vector<Ink::NodeId>> outlinerParentKids_;
@@ -291,6 +307,7 @@ private:
     Ink::NodeId outlinerColorPickColl_ = Ink::kNullNode;
     bool        outlinerColorPickRequested_ = false;
     // Organisation commands (undoable), shared by the Outliner + shortcuts.
+    void Action_SetBlendMode(const std::vector<Ink::NodeId>& ids, Ink::BlendMode mode);
     void Action_GroupSelection();
     void Action_UngroupSelection();
     void Action_ToggleNodeVisible(Ink::NodeId id);
@@ -302,15 +319,25 @@ private:
     // The Outliner currently in "pick a viewport to sync" mode (or nullptr).
     OutlinerState* outlinerPickingState_ = nullptr;
 
-    // Active object's style/transform editor (multi-fill / multi-stroke) — Lot 9.
+    // Active object's full property editor (legacy Compositor layout) — every
+    // node property is visible and editable: transform, compositing, the
+    // unified paint stack (multi fills incl. patterns, multi strokes incl.
+    // hairlines), the modifier stack and instance targeting.
     void RenderProperties();
-    // Property sub-sections (Properties.cpp).
+    // Property sub-sections (Properties.cpp / PropertiesPaint.cpp /
+    // PropertiesModifiers.cpp).
     void PropTransformSection(Ink::NodeId id);
+    void PropCompositingSection(Ink::NodeId id);
     void PropFillsSection(Ink::NodeId id);
     void PropStrokesSection(Ink::NodeId id);
+    void PropModifiersSection(Ink::NodeId id);
+    void PropInstanceSection(Ink::NodeId id);
     // Commit a whole-style edit as one undoable command (captures before/after).
     void CommitStyleEdit(Ink::NodeId id, const Ink::Style& before,
                          const std::string& label);
+    // Same for a whole-modifier-stack edit.
+    void CommitModifiersEdit(Ink::NodeId id, const std::vector<Ink::Modifier>& before,
+                             const std::string& label);
     // The Outliner context-menu request (opened next frame at this position).
     bool   outlinerCtxOpen_ = false;
     ImVec2 outlinerCtxPos_{};
@@ -321,6 +348,7 @@ private:
     // whole drag folds into ONE undo command committed on release.
     Ink::Style      propEditBefore_;
     Ink::Transform2D transformBeforeScratch_;   // transform drag before-state
+    std::vector<Ink::Modifier> modifiersBeforeScratch_;   // modifier drag before
     Ink::NodeId     propEditNode_ = Ink::kNullNode;
     bool            propEditActive_ = false;
 

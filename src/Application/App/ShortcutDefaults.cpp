@@ -232,6 +232,16 @@ void Application::RegisterDefaultShortcuts() {
     viewportKey("edit.addMenu", "Add", "Open the Add menu at the cursor",
                 [this]{ Action_OpenAddMenu(); }, { sigKey(ImGuiKey_A, false, true) },
                 false, false, idle);
+    viewportKey("edit.parentToActive", "Parent to Active",
+                "Parent the other selected objects to the active one",
+                [this]{ Action_ParentToActive(); }, { sigKey(ImGuiKey_P, true) },
+                false, false, idle);
+    viewportKey("edit.clearParent", "Clear Parent",
+                "Detach the selection from its object parent (keeps world position)",
+                [this]{
+                    OutlinerUnparent(std::vector<Ink::NodeId>(
+                        edit_.selection.begin(), edit_.selection.end()));
+                }, { sigKey(ImGuiKey_P, false, false, true) }, false, false, idle);
 
     // Group / ungroup — global (fire from the Viewport OR the Outliner), gated
     // to the idle state so they never fire mid modal transform.

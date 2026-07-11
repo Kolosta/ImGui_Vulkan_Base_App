@@ -319,6 +319,25 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
         { UI::MenuEntry e; e.label = "Ungroup"; e.shortcut = "Ctrl Alt G"; e.enabled = hasSel;
           e.onClick = [this]() { Action_UngroupSelection(); };
           entries.push_back(std::move(e)); }
+        // Blend Mode ▸ — objects AND groups composite (the scene opens a
+        // scope for any node with a non-Normal blend). Acts on the target set.
+        { const Ink::Node* ctxN = doc.Find(outlinerCtxNode_);
+          UI::MenuEntry bm; bm.label = "Blend Mode";
+          bm.tooltip = "How this object composites over what is below it";
+          static const char* kBlend[] = {
+              "Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
+              "Color Dodge", "Color Burn", "Hard Light", "Soft Light",
+              "Difference", "Exclusion", "Erase" };
+          for (int bi = 0; bi < (int)(sizeof kBlend / sizeof kBlend[0]); ++bi) {
+              UI::MenuEntry e;
+              const bool cur = ctxN && (int)ctxN->blend == bi;
+              e.label = std::string(cur ? "\xE2\x80\xA2 " : "") + kBlend[bi];
+              e.onClick = [this, targetIds, bi]() {
+                  Action_SetBlendMode(targetIds(), (Ink::BlendMode)bi);
+              };
+              bm.submenu.push_back(std::move(e));
+          }
+          entries.push_back(std::move(bm)); }
         { UI::MenuEntry e; e.label = "Rename"; e.enabled = edit_.active != Ink::kNullNode;
           e.onClick = [this, &st]() {
               if (const Ink::Node* n = project_.document->Find(edit_.active)) {
@@ -379,6 +398,25 @@ void Application::RenderOutlinerColorPicker() {
 }
 
 // ── Organisation commands (undoable) ──────────────────────────────────────────
+
+void Application::Action_SetBlendMode(const std::vector<Ink::NodeId>& ids,
+                                      Ink::BlendMode mode) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    std::vector<std::pair<Ink::NodeId, Ink::BlendMode>> before;
+    for (Ink::NodeId id : ids)
+        if (const Ink::Node* n = doc.Find(id)) before.push_back({ id, n->blend });
+    if (before.empty()) return;
+    for (const auto& [id, unused] : before) doc.SetBlend(id, mode);
+    PushDocCommand("Blend Mode",
+        [before](Ink::Document& d) {
+            for (const auto& [id, b] : before) d.SetBlend(id, b);
+        },
+        [before, mode](Ink::Document& d) {
+            for (const auto& [id, b] : before) d.SetBlend(id, mode);
+        });
+    LogInfoAction("Blend Mode");
+}
 
 void Application::Action_ToggleNodeVisible(Ink::NodeId id) {
     if (!project_.document) return;

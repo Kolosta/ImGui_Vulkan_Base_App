@@ -1,5 +1,6 @@
 #include "Application.h"
 
+#include "OutlinerRowLayout.h"
 #include <DesignSystem/DesignSystem.h>
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -8,17 +9,19 @@
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Outliner drag & drop (legacy feature set, on the Ink model):
-//   • Collections view — drag an object ONTO an object to PARENT it (Lot 7
-//     object parenting, world position preserved); onto a COLLECTION header to
-//     move it into that collection (single-collection move semantics, and it
-//     un-parents — the object is pulled out to collection level); onto the
-//     BACKGROUND to un-parent + un-collection. Collections drag too: onto a
-//     collection to nest, onto the background to become top-level.
-//   • Layers view — drag an object onto an object to reorder it just above the
-//     target in the stack (same-parent) or move it next to it (cross-parent);
-//     onto a GROUP row to move into that group.
-//  Every drop is one undoable command. Multi-drag: dragging a row that is part
-//  of the selection drags the whole selection (legacy rule).
+//   • Collections view — organisation ONLY: an object drops INTO a collection
+//     (single-collection move + un-parent). The target resolves from ANYWHERE
+//     inside that collection — hovering a member row highlights + targets its
+//     ENCLOSING collection (object parenting is NOT a drop; it goes through
+//     the viewport menu / shortcuts). The project-root row (and the space
+//     below the rows) pulls objects out of any collection/parent. Collections
+//     drag too: edge zones reorder among siblings, the centre nests.
+//   • Layers view — drag an object between two rows (grey insert line) to
+//     reorder it in the stack; onto a GROUP row's centre to move into it.
+//  Drop targets cover the FULL zebra stripe (custom rects tiling at the row
+//  pitch — no dead gaps between rows). Every drop is one undoable command.
+//  Multi-drag: dragging a row that is part of the selection drags the whole
+//  selection (legacy rule).
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace App {
@@ -260,7 +263,8 @@ void DrawInsertLine(const UI::ListRow& lr, bool above) {
                 ImGui::ColorConvertFloat4ToU32(grey), 2.0f);
 }
 
-void DrawIntoHighlight(const UI::ListRow& lr) {
+// The band-rect "into" highlight (grey fill + notice-orange contour).
+void DrawIntoHighlightRect(ImVec2 a, ImVec2 b) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     auto& ds = DS::DesignSystem::Instance();
     ImVec4 fill(0.5f, 0.5f, 0.5f, 0.20f);
@@ -269,10 +273,13 @@ void DrawIntoHighlight(const UI::ListRow& lr) {
     try { line = ds.GetColor(Tok::S_Color_Notice_Default); } catch (...) {}
     float rnd = 4.0f;
     try { rnd = ds.GetFloat(Tok::S_CornerRadius_Control) * ds.GetGlobalScale(); } catch (...) {}
-    const ImVec2 a(lr.BandLeft(), lr.RowTop());
-    const ImVec2 b(lr.BandRight(), lr.RowTop() + lr.RowH());
     dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(fill), rnd);
     dl->AddRect(a, b, ImGui::ColorConvertFloat4ToU32(line), rnd, 0, 1.5f);
+}
+
+void DrawIntoHighlight(const UI::ListRow& lr) {
+    DrawIntoHighlightRect(ImVec2(lr.BandLeft(), lr.RowTop()),
+                          ImVec2(lr.BandRight(), lr.RowTop() + lr.RowH()));
 }
 } // namespace
 
@@ -299,48 +306,81 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
         }
     }
 
-    // Target. Edge (insert) zones exist only where order is MANUAL: object
-    // rows in Layers view (strict z-index) and collection headers (sibling
-    // order). Inside a collection objects are alphabetical → into-zones only.
-    if (!ImGui::BeginDragDropTarget()) return;
+    // Target: an EXPLICIT full-stripe rect (edge to edge, tiling at the row
+    // pitch) so consecutive rows leave no dead gap while dragging.
+    const ImRect stripe(ImVec2(ol::RowLeft(), lr.StripeTop()),
+                        ImVec2(ol::RowRight(), lr.StripeBottom()));
+    const ImGuiID targetId = ImGui::GetID((void*)(uintptr_t)
+        (row.id ^ ((std::uint64_t)row.kind << 56) ^ 0xD5A60000ull));
+    if (!ImGui::BeginDragDropTargetCustom(stripe, targetId)) return;
     constexpr ImGuiDragDropFlags kPeek =
         ImGuiDragDropFlags_AcceptBeforeDelivery |
         ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
 
-    if (row.kind == OutlinerRow::Kind::Object) {
-        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kObjPayload, kPeek)) {
-            const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
-            const DropZone z = ZoneAt(lr, /*edgesAllowed=*/!collectionsMode);
-            if (z == DropZone::Into) DrawIntoHighlight(lr);
+    // Band rect of ANOTHER flat row (the enclosing collection's header) from
+    // the draw-loop geometry published by RenderOutliner.
+    auto bandRectOf = [&](int flatIndex) {
+        const float top = ImGui::GetWindowPos().y - ImGui::GetScrollY() +
+                          outlinerRowsStartY_ +
+                          (float)flatIndex * outlinerStripeH_ + 1.0f;
+        return ImRect(ImVec2(lr.BandLeft(), top),
+                      ImVec2(lr.BandRight(), top + outlinerStripeH_ - 2.0f));
+    };
+
+    if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kObjPayload, kPeek)) {
+        const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
+        if (collectionsMode) {
+            // Collections view: an object drop is ALWAYS "into a collection".
+            // Hovering any row inside a collection targets that collection
+            // (its header row highlights); the root row / loose rows target
+            // the project root (pull out of every collection + parent).
+            Ink::NodeId targetColl = Ink::kNullNode;
+            int headerRow = 0;                       // root row by default
+            if (row.kind == OutlinerRow::Kind::CollectionHeader) {
+                targetColl = row.id;
+                headerRow = row.flatIndex;
+            } else if (row.kind == OutlinerRow::Kind::Object) {
+                targetColl = row.ownerColl;
+                headerRow = row.ownerRow >= 0 ? row.ownerRow : 0;
+            }
+            if (outlinerRows_) {
+                const ImRect r = bandRectOf(headerRow);
+                DrawIntoHighlightRect(r.Min, r.Max);
+            }
+            if (p->IsDelivery()) {
+                const auto ids = OutlinerDraggedIds(dragged);
+                if (targetColl != Ink::kNullNode)
+                    OutlinerDropToCollection(ids, targetColl);
+                else
+                    OutlinerDropToRoot(ids);
+            }
+        } else if (row.kind == OutlinerRow::Kind::Object) {
+            // Layers view: strict stacking — a grey line between two rows
+            // reorders; a GROUP row's centre moves into the group.
+            const Ink::Node* n = doc.Find(row.id);
+            const bool isGroup = n && n->kind == Ink::NodeKind::Group;
+            const DropZone z = ZoneAt(lr, /*edgesAllowed=*/true);
+            if (z == DropZone::Into && isGroup) DrawIntoHighlight(lr);
+            else if (z == DropZone::Into) DrawInsertLine(lr, /*above=*/true);
             else DrawInsertLine(lr, z == DropZone::Above);
             if (p->IsDelivery()) {
                 const auto ids = OutlinerDraggedIds(dragged);
-                if (collectionsMode) {
-                    OutlinerDropParentTo(ids, row.id);
-                } else if (z == DropZone::Into) {
-                    const Ink::Node* n = doc.Find(row.id);
-                    if (n && n->kind == Ink::NodeKind::Group) {
-                        for (Ink::NodeId id : ids) doc.MoveTo(id, row.id, -1);
-                        LogInfoAction("Move into Group");
-                    } else {
-                        OutlinerDropReorder(ids, row.id, /*above=*/true);
-                    }
+                if (z == DropZone::Into && isGroup) {
+                    for (Ink::NodeId id : ids) doc.MoveTo(id, row.id, -1);
+                    LogInfoAction("Move into Group");
                 } else {
-                    // Rows list top-of-stack first: visually ABOVE the target =
-                    // AFTER it in painter order.
-                    OutlinerDropReorder(ids, row.id, z == DropZone::Above);
+                    // Rows list top-of-stack first: visually ABOVE the target
+                    // = AFTER it in painter order.
+                    OutlinerDropReorder(ids, row.id,
+                                        z != DropZone::Below);
                 }
             }
         }
-    } else if (row.kind == OutlinerRow::Kind::CollectionHeader) {
-        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kObjPayload, kPeek)) {
-            const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
-            DrawIntoHighlight(lr);   // objects always go INTO a collection
-            if (p->IsDelivery())
-                OutlinerDropToCollection(OutlinerDraggedIds(dragged), row.id);
-        }
-        if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kCollPayload, kPeek)) {
-            const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
+    }
+
+    if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kCollPayload, kPeek)) {
+        const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
+        if (row.kind == OutlinerRow::Kind::CollectionHeader) {
             const DropZone z = ZoneAt(lr, /*edgesAllowed=*/true);
             if (z == DropZone::Into) DrawIntoHighlight(lr);
             else DrawInsertLine(lr, z == DropZone::Above);
@@ -353,8 +393,11 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
                     // First match the target's parent, then take its slot.
                     Ink::NodeId parent = Ink::kNullNode;
                     for (const Ink::Collection& c : doc.Collections())
-                        if (std::find(c.childCollections.begin(), c.childCollections.end(),
-                                      row.id) != c.childCollections.end()) { parent = c.id; break; }
+                        if (std::find(c.childCollections.begin(),
+                                      c.childCollections.end(),
+                                      row.id) != c.childCollections.end()) {
+                            parent = c.id; break;
+                        }
                     doc.MoveCollection(dragged, parent);
                     // Sibling index of the target within its parent / top level.
                     int idx = 0;
@@ -370,8 +413,33 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
                             ++t;
                         }
                     }
-                    doc.ReorderCollection(dragged, z == DropZone::Above ? idx : idx + 1);
+                    doc.ReorderCollection(dragged,
+                                          z == DropZone::Above ? idx : idx + 1);
                     LogInfoAction("Reorder Collection");
+                }
+            }
+        } else if (row.kind == OutlinerRow::Kind::ProjectRoot) {
+            DrawIntoHighlight(lr);   // un-nest to the top level
+            if (p->IsDelivery() && doc.IsChildCollection(dragged)) {
+                doc.MoveCollection(dragged, Ink::kNullNode);
+                LogInfoAction("Un-nest Collection");
+            }
+        } else if (collectionsMode && row.kind == OutlinerRow::Kind::Object) {
+            // Anywhere inside a collection nests INTO that collection (same
+            // rule as objects — no dead rows while dragging a collection).
+            const Ink::NodeId targetColl = row.ownerColl;
+            const int headerRow = row.ownerRow >= 0 ? row.ownerRow : 0;
+            if (outlinerRows_) {
+                const ImRect r = bandRectOf(headerRow);
+                DrawIntoHighlightRect(r.Min, r.Max);
+            }
+            if (p->IsDelivery() && dragged != targetColl) {
+                if (targetColl != Ink::kNullNode) {
+                    doc.MoveCollection(dragged, targetColl);
+                    LogInfoAction("Nest Collection");
+                } else if (doc.IsChildCollection(dragged)) {
+                    doc.MoveCollection(dragged, Ink::kNullNode);
+                    LogInfoAction("Un-nest Collection");
                 }
             }
         }

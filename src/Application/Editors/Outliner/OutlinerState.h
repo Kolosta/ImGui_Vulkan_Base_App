@@ -24,6 +24,10 @@ struct EditorState;   // forward decl (the viewport-sync target is a leaf)
 // Order matches the legacy dropdown (Collections first, then Layers).
 enum class OutlinerDisplayMode : uint8_t { Collections = 0, Layers };
 
+// Pseudo-id of the Collections-view "Project" root row — used for collapse
+// tracking only (never a document id; document ids are monotonic from 1).
+inline constexpr uint64_t kProjectRootRowId = ~0ull;
+
 // Object-state filter (legacy parity). Applied on top of the kind toggles.
 enum class ObjStateFilter : uint8_t { All, Visible, Selected, Active, Selectable };
 

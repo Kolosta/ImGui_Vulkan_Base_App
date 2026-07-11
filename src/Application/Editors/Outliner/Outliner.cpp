@@ -197,7 +197,8 @@ Application::OutlinerRowChildren(const Ink::Node& n) const {
 }
 
 void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
-                                      std::vector<OutlinerRow>& out) {
+                                      std::vector<OutlinerRow>& out,
+                                      Ink::NodeId ownerColl, int ownerRow) {
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(id);
     if (!n) return;
@@ -213,14 +214,16 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
     if (drawSelf) {
         OutlinerRow r; r.id = id; r.kind = OutlinerRow::Kind::Object;
         r.depth = depth; r.hasChildren = hasKids;
+        r.ownerColl = ownerColl; r.ownerRow = ownerRow;
         out.push_back(r);
         o.rowOrder.push_back(id);
     }
     if (hasKids && !o.IsCollapsed(id)) {
         const int childDepth = drawSelf ? depth + 1 : depth;
         // Top-of-stack first (reverse painter order) for a layer-stack read.
+        // Children stay in the SAME enclosing collection as their parent row.
         for (auto it = kids->rbegin(); it != kids->rend(); ++it)
-            OutlinerFlattenNode(*it, childDepth, out);
+            OutlinerFlattenNode(*it, childDepth, out, ownerColl, ownerRow);
     }
 }
 
@@ -230,6 +233,16 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
     OutlinerBuildParentIndex();
 
     if (o.display == OutlinerDisplayMode::Collections) {
+        // The whole tree hangs off the single "Project" ROOT row (legacy):
+        // the project title row; collections and loose objects nest under it.
+        {
+            OutlinerRow r; r.kind = OutlinerRow::Kind::ProjectRoot;
+            r.hasChildren = true;
+            out.push_back(r);
+        }
+        const bool rootOpen = !o.IsCollapsed(kProjectRootRowId);
+        if (!rootOpen) return;   // single root row; its flatIndex is already 0
+
         // A parented object is listed UNDER its parent, never at a top level.
         auto isParented = [&](Ink::NodeId id) {
             const Ink::Node* n = doc.Find(id);
@@ -237,16 +250,19 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
         };
         // Recursive collection flatten: header row, then CHILD collections,
         // then members (parented members nest under their in-collection parent).
-        std::function<void(const Ink::Collection&, int)> flattenColl =
-            [&](const Ink::Collection& c, int depth) {
+        std::function<void(const Ink::Collection&, int, Ink::NodeId, int)> flattenColl =
+            [&](const Ink::Collection& c, int depth, Ink::NodeId ownerColl,
+                int ownerRow) {
+                const int myRow = (int)out.size();
                 OutlinerRow r; r.id = c.id; r.kind = OutlinerRow::Kind::CollectionHeader;
                 r.depth = depth;
                 r.hasChildren = !c.members.empty() || !c.childCollections.empty();
+                r.ownerColl = ownerColl; r.ownerRow = ownerRow;
                 out.push_back(r);
                 if (o.IsCollapsed(c.id)) return;
                 for (Ink::NodeId cc : c.childCollections)
                     if (const Ink::Collection* child = doc.FindCollection(cc))
-                        flattenColl(*child, depth + 1);
+                        flattenColl(*child, depth + 1, c.id, myRow);
                 // Members are ALPHABETICAL (never manually ordered).
                 std::vector<Ink::NodeId> members;
                 for (Ink::NodeId m : c.members) {
@@ -259,18 +275,19 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
                 }
                 SortIdsByName(doc, members);
                 for (Ink::NodeId m : members)
-                    OutlinerFlattenNode(m, depth + 1, out);
+                    OutlinerFlattenNode(m, depth + 1, out, c.id, myRow);
             };
         if (o.showCollections)
             for (const Ink::Collection& c : doc.Collections())
                 if (!doc.IsChildCollection(c.id))   // top-level roots only
-                    flattenColl(c, 0);
+                    flattenColl(c, 1, Ink::kNullNode, 0);
         // Page objects that are in no collection, top-level ones only (parented
-        // children nest under their parent through the parentId index).
+        // children nest under their parent through the parentId index). Their
+        // enclosing "collection" is the project root (row 0).
         for (const Ink::Page& page : doc.Pages())
             for (auto it = page.children.rbegin(); it != page.children.rend(); ++it)
                 if (!OutlinerInAnyCollection(*it) && !isParented(*it))
-                    OutlinerFlattenNode(*it, 0, out);
+                    OutlinerFlattenNode(*it, 1, out, Ink::kNullNode, 0);
     } else {
         // Layers: page header + its layer tree, top of stack first.
         for (const Ink::Page& page : doc.Pages()) {
@@ -285,6 +302,7 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
                 OutlinerFlattenNode(*it, d, out);
         }
     }
+    for (std::size_t i = 0; i < out.size(); ++i) out[i].flatIndex = (int)i;
 }
 
 // ── Live lightweight vector preview (Layers view) ─────────────────────────────
@@ -452,6 +470,29 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ol::SafeColor(Tok::S_Color_Background_Layer2, ImVec4(0.15f,0.15f,0.15f,1)));
     cfg.bandMarginLeft = ol::BandMargin();
     cfg.cornerRadius = ol::SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * ol::Gs();
+
+    // ── Project root (Collections view; legacy design) ──
+    if (rrow.kind == OutlinerRow::Kind::ProjectRoot) {
+        UI::ListRow row(cfg);
+        OutlinerRowDragDrop(rrow, row);   // drop target: pull to project root
+        ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
+        ImGui::PushID("##prjroot");
+        ol::DotGutter();
+        bool open = !o.IsCollapsed(kProjectRootRowId);
+        ol::Chevron("##prch", open);
+        if (open == o.IsCollapsed(kProjectRootRowId))
+            o.ToggleCollapsed(kProjectRootRowId);
+        ol::SlotIcon("folder", ol::SafeColor(Tok::C_Outliner_Text,
+                                             ImVec4(0.85f, 0.85f, 0.85f, 1)));
+        const char* title = !project_.name.empty() ? project_.name.c_str()
+                                                   : "Project";
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs(),
+                   row.RowTop() + (ol::RowH() - ImGui::GetTextLineHeight()) * 0.5f),
+            ol::LabelColor(false, false), title);
+        ImGui::PopID();
+        return;
+    }
 
     // ── Collection header ──
     if (rrow.kind == OutlinerRow::Kind::CollectionHeader) {
@@ -800,6 +841,12 @@ void Application::RenderOutliner(EditorState& st) {
         const float viewBot = scrollY + ImGui::GetWindowHeight();
         const float startY = ImGui::GetCursorPosY();   // local Y of the first row
 
+        // Publish the flat list + geometry for the drag & drop (it draws the
+        // drop highlight on OTHER rows — e.g. the enclosing collection).
+        outlinerRows_       = &rows;
+        outlinerRowsStartY_ = startY;
+        outlinerStripeH_    = stripeH;
+
         // Numpad "." — frame the selection: scroll straight to the active row's
         // index. Computed from the FLAT row list, so it works even when that row
         // is culled (SetScrollHereY only fires for rows we actually draw).
@@ -862,6 +909,7 @@ void Application::RenderOutliner(EditorState& st) {
         // rendering must share that scope).
         RenderOutlinerContextMenu(st);
         RenderOutlinerColorPicker();
+        outlinerRows_ = nullptr;   // rows is loop-local; never dangle
     }
     UI::EndScroll();
     st.outliner.reqScrollToActive = false;

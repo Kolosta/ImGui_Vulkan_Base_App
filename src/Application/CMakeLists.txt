@@ -32,6 +32,8 @@ add_library(Application STATIC
     Editors/Outliner/OutlinerMenus.cpp
     Editors/Outliner/OutlinerDragDrop.cpp
     Editors/Properties/Properties.cpp
+    Editors/Properties/PropertiesPaint.cpp
+    Editors/Properties/PropertiesModifiers.cpp
     Editors/Info/InfoEditors.cpp
 
     # Layout: the Blender-style dynamic zone tree (split into clusters)
