@@ -151,6 +151,16 @@ void Application::PropCompositingSection(Ink::NodeId id) {
                 LogInfoAction(clip ? "Clip" : "Un-clip");
             }
         }
+        // A NESTED node (Affinity layer child) can act as a mask of its parent
+        // rather than a clipped child — the toggle here mirrors the Outliner
+        // drag-onto-preview gesture.
+        if (n->parent != Ink::kNullNode) {
+            bool mask = n->isMask;
+            if (pr::CheckRow("Mask", &mask)) {
+                doc.SetMask(id, mask);
+                LogInfoAction(mask ? "Mask Layer" : "Clip Layer");
+            }
+        }
     }
     UI::EndPanel();
 }

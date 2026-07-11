@@ -207,6 +207,10 @@ void Application::RegisterDefaultShortcuts() {
     viewportKey("edit.duplicate", "Duplicate", "Duplicate the selected objects",
                 [this]{ Action_DuplicateSelection(); }, { sigKey(ImGuiKey_D, true) },
                 false, false, idle);
+    viewportKey("edit.duplicateGrab", "Duplicate & Move",
+                "Duplicate the selection and grab the copies",
+                [this]{ Action_DuplicateGrab(); },
+                { sigKey(ImGuiKey_D, false, true) }, false, false, idle);
     viewportKey("edit.duplicateLinked", "Duplicate Linked",
                 "Instance the selected objects (shared data) and grab the copies",
                 [this]{ Action_DuplicateLinked(); },

@@ -304,6 +304,39 @@ void Application::Action_DuplicateSelection() {
     LogInfoAction("Duplicate");
 }
 
+// Blender's Shift+D: DUPLICATE then GRAB — a real deep copy of the selection
+// (fresh geometry, same collections + layer slot), selected and moved under
+// the cursor until LMB confirms (Esc / RMB cancels the whole action).
+void Application::Action_DuplicateGrab() {
+    if (!project_.document || edit_.selection.empty() ||
+        edit_.mode == EditorMode::Edit)
+        return;
+    Ink::Document& doc = *project_.document;
+    std::vector<Ink::NodeId> prev(edit_.selection.begin(), edit_.selection.end());
+    std::vector<Ink::NodeId> created;
+    for (Ink::NodeId id : prev)
+        if (Ink::NodeId c = doc.DuplicateSubtree(id); c != Ink::kNullNode)
+            created.push_back(c);
+    if (created.empty()) return;
+
+    edit_.Clear();
+    for (Ink::NodeId c : created) edit_.SelectAdd(c);
+    edit_.active = created.front();
+
+    Action_BeginMove();
+    if (transformOp_.Active()) {
+        transformOp_.spawned = created;
+        transformOp_.spawnedPrevSel = std::move(prev);
+    } else {
+        std::vector<Ink::Document::SubtreeSnapshot> snaps;
+        for (Ink::NodeId c : created) snaps.push_back(doc.CopySubtree(c));
+        PushDocCommand("Duplicate",
+            [created](Ink::Document& d) { for (Ink::NodeId c : created) d.Remove(c); },
+            [snaps](Ink::Document& d) { for (const auto& s : snaps) d.RestoreSubtree(s); });
+    }
+    LogInfoAction("Duplicate");
+}
+
 // Blender's Alt+D: DUPLICATE LINKED — each copy is an Instance node sharing
 // the source's data (editing the original updates every copy; transform is
 // independent). The copies spawn under the cursor's grab: the move runs until
@@ -332,6 +365,14 @@ void Application::Action_DuplicateLinked() {
         // target WITH its own transform, so identity overlays it; an instance
         // source hands its transform down.
         if (n->kind == Ink::NodeKind::Instance) doc.SetTransform(inst, n->transform);
+        // Land the copy RIGHT AFTER the source in the layer tree, and in the
+        // same collections (so it appears next to it in both Outliner views,
+        // not orphaned at the top/root).
+        doc.MoveTo(inst, parent, doc.IndexInParent(id) + 1);
+        for (const Ink::Collection& col : doc.Collections())
+            if (std::find(col.members.begin(), col.members.end(), id)
+                    != col.members.end())
+                doc.AddToCollection(col.id, inst);
         created.push_back(inst);
     }
     if (created.empty()) return;

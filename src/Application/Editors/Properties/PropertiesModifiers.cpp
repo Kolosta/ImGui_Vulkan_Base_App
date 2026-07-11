@@ -106,10 +106,23 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                 } else if (m.kind == Ink::ModifierKind::AlongPath) {
                     // The modifier lives on THIS path; it instances the picked
                     // OBJECT along the path's own spine (Blender's rule).
+                    bool pickReq = false;
                     if (pr::NodePickerRow("Object", doc, &m.motifRef, id,
                                           /*allowNone=*/true,
-                                          /*pathsOnly=*/false)) {
+                                          /*pathsOnly=*/false, &pickReq)) {
                         structural = true; structLabel = "Along Path Object";
+                    }
+                    if (pickReq) {
+                        const std::size_t mIdx = i;
+                        BeginObjectPick(nullptr, [this, id, mIdx](Ink::NodeId picked) {
+                            if (!project_.document) return;
+                            const Ink::Node* nn = project_.document->Find(id);
+                            if (!nn || mIdx >= nn->modifiers.size()) return;
+                            std::vector<Ink::Modifier> before = nn->modifiers, after = before;
+                            after[mIdx].motifRef = picked;
+                            project_.document->SetModifiers(id, after);
+                            CommitModifiersEdit(id, before, "Along Path Object");
+                        });
                     }
                     static const char* kDist[] = { "Count", "Spacing",
                                                    "Anchors" };
@@ -164,8 +177,23 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         m.op = (Ink::BooleanOp)op;
                         structural = true; structLabel = "Boolean Operation";
                     }
-                    if (pr::NodePickerRow("Operand", doc, &m.operandRef, id)) {
+                    bool pickOp = false;
+                    if (pr::NodePickerRow("Operand", doc, &m.operandRef, id,
+                                          /*allowNone=*/true, /*pathsOnly=*/true,
+                                          &pickOp)) {
                         structural = true; structLabel = "Boolean Operand";
+                    }
+                    if (pickOp) {
+                        const std::size_t mIdx = i;
+                        BeginObjectPick(nullptr, [this, id, mIdx](Ink::NodeId picked) {
+                            if (!project_.document) return;
+                            const Ink::Node* nn = project_.document->Find(id);
+                            if (!nn || mIdx >= nn->modifiers.size()) return;
+                            std::vector<Ink::Modifier> before = nn->modifiers, after = before;
+                            after[mIdx].operandRef = picked;
+                            project_.document->SetModifiers(id, after);
+                            CommitModifiersEdit(id, before, "Boolean Operand");
+                        });
                     }
                 }
 
@@ -233,15 +261,22 @@ void Application::PropInstanceSection(Ink::NodeId id) {
     if (UI::BeginPanel(pc).open) {
         Ink::NodeId target = n->targetRef;
         // Any node can be instanced (paths, groups, even other instances).
-        if (pr::NodePickerRow("Target", doc, &target, id,
-                              /*allowNone=*/false, /*pathsOnly=*/false)) {
-            const Ink::NodeId before = n->targetRef;
-            doc.SetInstanceTarget(id, target);
+        auto commitTarget = [this, id](Ink::NodeId picked) {
+            if (!project_.document) return;
+            const Ink::Node* nn = project_.document->Find(id);
+            if (!nn || picked == Ink::kNullNode) return;
+            const Ink::NodeId before = nn->targetRef;
+            project_.document->SetInstanceTarget(id, picked);
             PushDocCommand("Instance Target",
                 [id, before](Ink::Document& d) { d.SetInstanceTarget(id, before); },
-                [id, target](Ink::Document& d) { d.SetInstanceTarget(id, target); });
+                [id, picked](Ink::Document& d) { d.SetInstanceTarget(id, picked); });
             LogInfoAction("Instance Target");
-        }
+        };
+        bool pickTgt = false;
+        if (pr::NodePickerRow("Target", doc, &target, id,
+                              /*allowNone=*/false, /*pathsOnly=*/false, &pickTgt))
+            commitTarget(target);
+        if (pickTgt) BeginObjectPick(nullptr, commitTarget);
         if (const Ink::Node* t = doc.Find(n->targetRef)) {
             pr::Label("Renders");
             ImGui::TextUnformatted(t->name.empty() ? "(unnamed)"

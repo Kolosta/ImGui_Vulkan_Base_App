@@ -158,13 +158,16 @@ inline bool CheckRow(const char* label, bool* v) {
     return ch;
 }
 
-// An enum dropdown row. Returns true (and writes *value) on a pick.
+// An enum dropdown row. Returns true (and writes *value) on a pick. The
+// trigger fills the control column (label left, chevron pinned right) like
+// every other field.
 inline bool DropdownRow(const char* label, const char* const* items, int count,
                         int* value) {
-    Label(label);
+    const float w = Label(label);
     const int cur = std::clamp(*value, 0, count - 1);
     UI::DropdownConfig cfg; cfg.id = "##pdd";
     cfg.triggerLabel = count > 0 ? items[cur] : "";
+    cfg.triggerWidth = w;
     for (int i = 0; i < count; ++i) {
         UI::DropdownItem it; it.label = items[i]; cfg.items.push_back(it);
     }
@@ -226,16 +229,22 @@ inline bool ColorRow(const char* label, Ink::Color* col, bool withAlpha = true,
     return ch;
 }
 
-// A node-reference picker row: a dropdown listing the document's PATH nodes
-// by name (the referenced inputs of patterns/modifiers/instances). Writes the
-// picked id into *ref; `allowNone` prepends a "None" entry. Excludes `self`.
+// A node-reference picker row: an OBJECT-PICKER dropdown (object icon left,
+// eyedropper / clear cross right) listing the document's nodes by name. Writes
+// the picked id into *ref; `allowNone` prepends a "None" entry. Excludes
+// `self`. `*pickReq` is set when the eyedropper button is clicked (the caller
+// arms the viewport/outliner pick to write *ref); returns true on a list pick.
 inline bool NodePickerRow(const char* label, const Ink::Document& doc,
                           Ink::NodeId* ref, Ink::NodeId self,
-                          bool allowNone = true, bool pathsOnly = true) {
-    Label(label);
+                          bool allowNone = true, bool pathsOnly = true,
+                          bool* pickReq = nullptr) {
+    const float w = Label(label);
     std::vector<Ink::NodeId> ids;
     UI::DropdownConfig cfg; cfg.id = "##npick";
     cfg.searchable = true;   // document lists get long — filter + scroll
+    cfg.triggerWidth = w;
+    cfg.objectPicker = true;
+    cfg.objectPickerHasValue = (*ref != Ink::kNullNode);
     int cur = -1;
     if (allowNone) {
         UI::DropdownItem it; it.label = "None"; cfg.items.push_back(it);
@@ -264,6 +273,8 @@ inline bool NodePickerRow(const char* label, const Ink::Document& doc,
     ImGui::PushID(label);
     UI::DropdownResult r = UI::Dropdown(cfg);
     ImGui::PopID();
+    if (pickReq) *pickReq = r.pickRequested;
+    if (r.cleared && allowNone) { *ref = Ink::kNullNode; return true; }
     if (r.changed && r.selected >= 0 && r.selected < (int)ids.size() &&
         ids[(std::size_t)r.selected] != *ref) {
         *ref = ids[(std::size_t)r.selected];

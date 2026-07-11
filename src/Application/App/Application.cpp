@@ -188,6 +188,18 @@ void Application::Update() {
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
+    // While a modal transform grabs the mouse (SDL relative mode), the OS
+    // still reports an absolute position that walks off the canvas — ImGui
+    // would then hover the Outliner / other editors under a cursor that has
+    // VISUALLY wrapped back inside the viewport. Pin ImGui's mouse to the
+    // displayed (wrapped) position so hover/hit-testing matches what the user
+    // sees. Done right after NewFrame, before any widget reads io.MousePos.
+    if (transformOp_.Active() && modalRelMode_) {
+        const ImVec2 wrapped = WrapPointInCanvas(
+            ImVec2((float)transformOp_.virtPx.x, (float)transformOp_.virtPx.y));
+        ImGui::GetIO().MousePos = wrapped;
+    }
+
     // Shortcut pipeline:
     //   1. drain ImGui IO into normalised events
     //   2. reset per-frame context (BeginFrame); panels then call
@@ -245,6 +257,26 @@ void Application::Update() {
     // per-frame cursor update).
     if (osCursorHidden_ && transformOp_.Active())
         ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+
+    // Object eyedropper: draw the eyedropper glyph at the cursor (foreground)
+    // and cancel the pick if the user clicks anywhere that ISN'T an object
+    // (a viewport / outliner click that missed already cancelled inside those
+    // editors, so a click that reaches HERE was on some other widget).
+    if (ObjectPickActive()) {
+        auto& im = VectorGraphics::IconManager::Instance();
+        if (im.HasIcon("eyedropper")) {
+            const float sz = 22.0f * DesignSystem::DesignSystem::Instance().GetGlobalScale();
+            const ImVec2 mp = ImGui::GetIO().MousePos;
+            auto md = im.GetDefaultMetadata("eyedropper");
+            for (auto& z : md.colorZones)
+                z.customColor = DesignSystem::DesignSystem::Instance()
+                                    .GetColor(DesignSystem::Tok::S_Color_Accent_Default);
+            im.RenderIcon(ImGui::GetForegroundDrawList(), "eyedropper",
+                          ImVec2(mp.x, mp.y - sz), sz, md);
+        }
+        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) CancelObjectPick();
+    }
 
     // With every floating window now submitted, register the ones overlapping the
     // title bar as hit-test blockers so clicking them grabs the floating window,

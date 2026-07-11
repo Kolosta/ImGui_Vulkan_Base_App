@@ -80,8 +80,25 @@ void Application::PropFillsSection(Ink::NodeId id) {
                     }
                 } else {
                     // ── Pattern fill (legacy fill-layer feature set) ──
-                    if (pr::NodePickerRow("Motif", doc, &f.pattern.motifRef, id)) {
+                    bool pickReq = false;
+                    if (pr::NodePickerRow("Motif", doc, &f.pattern.motifRef, id,
+                                          /*allowNone=*/true, /*pathsOnly=*/false,
+                                          &pickReq)) {
                         structural = true; structLabel = "Pattern Motif";
+                    }
+                    if (pickReq) {
+                        // Eyedropper: pick a node in the viewport/outliner; the
+                        // commit re-fetches the style so the write survives.
+                        const std::size_t fi = i;
+                        BeginObjectPick(nullptr, [this, id, fi](Ink::NodeId picked) {
+                            if (!project_.document) return;
+                            const Ink::Node* nn = project_.document->Find(id);
+                            if (!nn || fi >= nn->style.fills.size()) return;
+                            Ink::Style before = nn->style, after = before;
+                            after.fills[fi].pattern.motifRef = picked;
+                            project_.document->SetStyle(id, after);
+                            CommitStyleEdit(id, before, "Pattern Motif");
+                        });
                     }
                     float sp[2] = { (float)f.pattern.spacingX,
                                     (float)f.pattern.spacingY };

@@ -381,24 +381,54 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
                     OutlinerDropToRoot(ids);
             }
         } else if (row.kind == OutlinerRow::Kind::Object) {
-            // Layers view: strict stacking — a grey line between two rows
-            // reorders; a GROUP row's centre moves into the group.
-            const Ink::Node* n = doc.Find(row.id);
-            const bool isGroup = n && n->kind == Ink::NodeKind::Group;
-            const DropZone z = ZoneAt(lr, /*edgesAllowed=*/true);
-            if (z == DropZone::Into && isGroup) DrawIntoHighlight(lr);
-            else if (z == DropZone::Into) DrawInsertLine(lr, /*above=*/true);
-            else DrawInsertLine(lr, z == DropZone::Above);
-            if (p->IsDelivery()) {
+            // Layers view (Affinity semantics): drop the dragged node(s)
+            //   • onto this row's PREVIEW SQUARE → MASK child (masks this
+            //     node's content); highlight only the preview square.
+            //   • onto the row's CENTRE → CLIP child (nested INSIDE, clipped
+            //     to this node — any node, not only groups).
+            //   • onto an EDGE → reorder among siblings (grey insert line).
+            // Preview-square rect, computed from the row geometry (matches the
+            // Layers-view layout: dot gutter + depth indents + chevron slot).
+            const float sq = lr.RowH() * 0.86f;
+            const float sqX0 = lr.ContentX() + ol::DotGutterW() +
+                               (float)(row.depth + 1) * ol::ChevronSlotW();
+            const float sqY0 = lr.RowTop() + (lr.RowH() - sq) * 0.5f;
+            outlinerLayerPreviewMin_ = ImVec2(sqX0, sqY0);
+            outlinerLayerPreviewMax_ = ImVec2(sqX0 + sq, sqY0 + sq);
+            outlinerLayerPreviewValid_ = true;
+            const bool onSquare =
+                ImGui::GetIO().MousePos.x >= outlinerLayerPreviewMin_.x &&
+                ImGui::GetIO().MousePos.x <= outlinerLayerPreviewMax_.x &&
+                ImGui::GetIO().MousePos.y >= lr.StripeTop() &&
+                ImGui::GetIO().MousePos.y <= lr.StripeBottom();
+            const DropZone z = ZoneAt(lr, /*edgesAllowed=*/!onSquare);
+            const bool self = (dragged == row.id);
+            if (onSquare && !self) {
+                DrawIntoHighlightRect(outlinerLayerPreviewMin_,
+                                      outlinerLayerPreviewMax_);
+            } else if (z == DropZone::Into && !self) {
+                DrawIntoHighlight(lr);
+            } else {
+                DrawInsertLine(lr, z != DropZone::Below);
+            }
+            if (p->IsDelivery() && !self) {
                 const auto ids = OutlinerDraggedIds(dragged);
-                if (z == DropZone::Into && isGroup) {
-                    for (Ink::NodeId id : ids) doc.MoveTo(id, row.id, -1);
-                    LogInfoAction("Move into Group");
+                if (onSquare) {
+                    for (Ink::NodeId id : ids) {
+                        doc.MoveTo(id, row.id, -1);
+                        doc.SetMask(id, true);
+                    }
+                    LogInfoAction("Mask Layer");
+                } else if (z == DropZone::Into) {
+                    for (Ink::NodeId id : ids) {
+                        doc.MoveTo(id, row.id, -1);
+                        doc.SetMask(id, false);
+                    }
+                    LogInfoAction("Clip Layer");
                 } else {
                     // Rows list top-of-stack first: visually ABOVE the target
                     // = AFTER it in painter order.
-                    OutlinerDropReorder(ids, row.id,
-                                        z != DropZone::Below);
+                    OutlinerDropReorder(ids, row.id, z != DropZone::Below);
                 }
             }
         }

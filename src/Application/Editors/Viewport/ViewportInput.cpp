@@ -66,6 +66,22 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     const Ink::DVec2 doc = cam.ScreenToDoc(mp.x, mp.y);
     const bool shift = io.KeyShift;
 
+    // Object eyedropper active (a Properties node picker): the next LEFT click
+    // delivers the object under the cursor to the picker; a right click / Esc
+    // cancels. Clicking empty canvas also cancels (no object). No selection
+    // change happens either way.
+    if (ObjectPickActive()) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            Ink::PickOptions opt; opt.tolerance = 6.0 / cam.zoom; opt.zoom = cam.zoom;
+            const Ink::NodeId hit = ink_ ? ink_->PickAt(doc, opt) : Ink::kNullNode;
+            if (hit != Ink::kNullNode) DeliverObjectPick(hit);
+            else CancelObjectPick();
+        } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            CancelObjectPick();
+        }
+        return;
+    }
+
     // Shift+RMB (press or drag): place the 2D cursor — the legacy gesture.
     // Checked BEFORE the context menu so the two never fight over the button.
     if (shift && (ImGui::IsMouseClicked(ImGuiMouseButton_Right) ||

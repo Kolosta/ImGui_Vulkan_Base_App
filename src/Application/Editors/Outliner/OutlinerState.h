@@ -38,6 +38,7 @@ struct OutlinerState {
     // shared EditContext; these rows have no document-selection home. ──
     std::vector<uint64_t> sel;         // selected collection / page ids
     uint64_t              active = 0;  // last-clicked row (any kind)
+    int  activeModifier = -1;          // modifier row picked (Properties focus)
 
     // ── Filters (which kinds + which object states are shown). ──
     bool showObjects = true, showPages = true, showCollections = true;

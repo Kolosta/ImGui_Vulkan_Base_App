@@ -36,6 +36,13 @@ void DrawIcon(ImDrawList* dl, const char* icon, ImVec2 pos, float size,
 // when the menu opens.
 std::unordered_map<ImU32, std::string> g_menuSearch;
 
+// True once the mouse button has been RELEASED at least once since the menu
+// opened. A menu opened on PRESS that flips UPWARD would otherwise place a row
+// directly under the still-held cursor, so the release of the SAME click
+// commits an item the user never chose. We only accept a release-to-commit
+// after the opening click has ended (standard menu behaviour).
+std::unordered_map<ImU32, bool> g_menuArmed;
+
 bool ContainsCI(const std::string& hay, const std::string& needle) {
     if (needle.empty()) return true;
     auto it = std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
@@ -89,13 +96,19 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
 
     // ── Trigger geometry ────────────────────────────────────────────────────
     const char* label = cfg.triggerLabel.c_str();
-    const bool  hasIcon = cfg.triggerIcon && *cfg.triggerIcon;
+    // The object picker forces a leading object icon and a trailing action
+    // slot (eyedropper / clear cross) inside the trigger.
+    const bool  objPick = cfg.objectPicker;
+    const bool  hasIcon = objPick || (cfg.triggerIcon && *cfg.triggerIcon);
+    const char* leadIcon = objPick ? "shape-category" : cfg.triggerIcon;
     ImVec2 ts = ImGui::CalcTextSize(label);
 
     float btnW = pad.x;
     if (hasIcon) btnW += iconSz + gap;
     btnW += ts.x + pad.x;
     if (showChevron) btnW += gap + chevSz;
+    if (objPick)     btnW += gap + iconSz;   // trailing action slot
+    if (cfg.triggerWidth > 0.0f) btnW = std::max(btnW, cfg.triggerWidth);
 
     ImGui::PushID(cfg.id);
 
@@ -129,17 +142,28 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     const bool wasOpen = ImGui::IsPopupOpen(popupId);
 
     // Open on PRESS (not release): PressedOnClick fires the instant the button
-    // goes down, so the menu opens immediately under the cursor.
-    ImGui::InvisibleButton("##trigger", ImVec2(btnW, controlH),
+    // goes down, so the menu opens immediately under the cursor. The object
+    // picker's trailing action slot is excluded from the trigger so clicking
+    // the eyedropper / clear cross never opens the menu.
+    const float triggerHitW =
+        objPick ? std::max(1.0f, btnW - (gap + iconSz) - (showChevron ? 0.0f : 0.0f))
+                : btnW;
+    ImGui::InvisibleButton("##trigger", ImVec2(triggerHitW, controlH),
                            ImGuiButtonFlags_PressedOnClick);
     const bool clicked = ImGui::IsItemActivated();
     const bool hovered = ImGui::IsItemHovered();
     const ImU32 menuKey = ImGui::GetID("##menukey");
     if (clicked && !wasOpen) {
         g_menuSearch[menuKey].clear();   // a fresh menu starts unfiltered
+        g_menuArmed[menuKey] = false;    // wait for the opening click to end
         ImGui::OpenPopup(popupId);
     }
     const bool isOpen = ImGui::IsPopupOpen(popupId);
+    // Arm the menu once the mouse button is up (so the opening click cannot
+    // commit a row when the menu flipped upward under the cursor).
+    if (isOpen && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
+        g_menuArmed[menuKey] = true;
+    const bool menuArmed = g_menuArmed[menuKey];
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
     ImVec2 btnMax(btnMin.x + btnW, btnMin.y + controlH);
@@ -176,6 +200,14 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
             colW[(size_t)c] = std::max(colW[(size_t)c],
                 ImGui::CalcTextSize(cfg.columnHeaders[(size_t)c].c_str()).x
                 + itemPadX * 2.0f);
+    }
+    // A single-column list never reads narrower than the trigger, and a
+    // searchable one gets a comfortable minimum so short object names don't
+    // collapse it.
+    if (!multiCol) {
+        float minW = btnW;
+        if (cfg.searchable) minW = std::max(minW, 180.0f * gs);
+        colW[0] = std::max(colW[0], minW - mPad.x * 2.0f);
     }
 
     int maxRows = 0;
@@ -280,21 +312,45 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                         borderW);
     }
 
-    // ── Trigger content: icon + label + chevron, vertically centred ──────────
+    // ── Trigger content: icon + label + (action) + chevron, centred ──────────
     float cx = btnMin.x + pad.x;
     if (hasIcon) {
-        DrawIcon(dl, cfg.triggerIcon,
+        DrawIcon(dl, leadIcon,
                  ImVec2(cx, btnMin.y + (controlH - iconSz) * 0.5f), iconSz,
                  dIconV);
         cx += iconSz + gap;
     }
     dl->AddText(ImVec2(cx, btnMin.y + (controlH - ts.y) * 0.5f), dText, label);
+    float rightX = btnMax.x - pad.x;
     if (showChevron) {
         const char* chev = openUp ? "chevron-up" : "chevron-down";
         DrawIcon(dl, chev,
-                 ImVec2(btnMax.x - pad.x - chevSz,
+                 ImVec2(rightX - chevSz,
                         btnMin.y + (controlH - chevSz) * 0.5f),
                  chevSz, dIconV);
+        rightX -= chevSz + gap;
+    }
+    // Object-picker trailing action: an eyedropper (start a pick) when empty,
+    // a clear cross when a value is set. It sits just left of the chevron and
+    // consumes its own click (never opens the menu).
+    if (objPick) {
+        const float ax0 = rightX - iconSz;
+        const ImRect actRect(ImVec2(ax0, btnMin.y),
+                             ImVec2(rightX, btnMax.y));
+        const bool actHov = actRect.Contains(ImGui::GetIO().MousePos);
+        const char* icon = cfg.objectPickerHasValue ? "close" : "eyedropper";
+        ImVec4 tint = actHov ? Col(Tok::S_Color_Accent_Default) : dIconV;
+        DrawIcon(dl, icon,
+                 ImVec2(ax0, btnMin.y + (controlH - iconSz) * 0.5f), iconSz, tint);
+        // A dedicated hit button over the action slot (drawn AFTER the trigger
+        // button so it wins the click; the trigger only opens elsewhere).
+        ImGui::SetCursorScreenPos(actRect.Min);
+        ImGui::PushID("##ddact");
+        if (ImGui::InvisibleButton("##a", ImVec2(iconSz, controlH))) {
+            if (cfg.objectPickerHasValue) result.cleared = true;
+            else                          result.pickRequested = true;
+        }
+        ImGui::PopID();
     }
 
     // ── Render the fused linked buttons (left, then right of the trigger) ─────
@@ -477,10 +533,11 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                 }
 
                 // Activate on RELEASE over the row (menu convention): a press
-                // anywhere followed by a release on the item commits it. This
-                // covers both click-then-click and press-trigger-drag-release —
-                // the trigger itself still OPENS the menu on press (see above).
-                if (rowHov && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+                // anywhere followed by a release on the item commits it —
+                // BUT only once the opening click has ended (menuArmed), so a
+                // menu flipped upward under the held cursor doesn't self-pick.
+                if (rowHov && menuArmed &&
+                    ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
                     result.changed  = true;
                     result.selected = (int)i;
                     closeMenu = true;
@@ -489,14 +546,20 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
 
             if (scrolled) {
                 // ── Scrolling single-column list, optional live search ──
+                // The search field reads on the MENU background (no separate
+                // grey fill) with just a thin baseline, matching the editors'
+                // search bars; the list below scrolls with the overlay
+                // scrollbar tucked into the menu's right padding (no extra
+                // margin, no background change) exactly like the editors.
                 std::string& search = g_menuSearch[menuKey];
                 float y0 = m0.y + mPad.y;
                 if (cfg.searchable) {
-                    ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
-                    ImGui::SetNextItemWidth(menuW - mPad.x * 2.0f);
-                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 2.0f * gs);
-                    ImGui::PushStyleColor(ImGuiCol_FrameBg,
-                                          Col(Tok::C_Menu_ItemHoverBg));
+                    const float fieldX = m0.x + mPad.x + itemPadX;
+                    ImGui::SetCursorScreenPos(ImVec2(fieldX, y0));
+                    ImGui::SetNextItemWidth(menuW - mPad.x * 2.0f - itemPadX * 2.0f);
+                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0, 0, 0, 0));
+                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0, 0, 0, 0));
                     char buf[128];
                     std::snprintf(buf, sizeof buf, "%s", search.c_str());
                     if (ImGui::IsWindowAppearing())
@@ -505,10 +568,12 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                         "##ddsearch", "Search\xE2\x80\xA6", buf, sizeof buf,
                         ImGuiInputTextFlags_EnterReturnsTrue);
                     search = buf;
-                    ImGui::PopStyleColor();
-                    ImGui::PopStyleVar();
+                    ImGui::PopStyleColor(3);
+                    // Thin baseline separator under the field.
+                    mdl->AddLine(ImVec2(m0.x + mPad.x, y0 + rowH),
+                                 ImVec2(m0.x + menuW - mPad.x, y0 + rowH),
+                                 ImGui::ColorConvertFloat4ToU32(borderV), 1.0f);
                     if (commit) {
-                        // Enter picks the FIRST match (fast keyboard path).
                         for (size_t i = 0; i < cfg.items.size(); ++i)
                             if (cfg.items[i].enabled &&
                                 ContainsCI(cfg.items[i].label, search)) {
@@ -522,8 +587,12 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                 }
 
                 ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
+                // A transparent child so the menu background shows through; the
+                // scrollbar overlays the right padding (BeginScroll draws it).
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
                 if (UI::BeginScroll("##ddList",
-                                    ImVec2(menuW - mPad.x * 2.0f, listH))) {
+                                    ImVec2(menuW - mPad.x * 2.0f,
+                                           m0.y + menuH - mPad.y - y0))) {
                     std::vector<size_t> vis;
                     vis.reserve(cfg.items.size());
                     for (size_t i = 0; i < cfg.items.size(); ++i)
@@ -531,8 +600,6 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                             vis.push_back(i);
                     const ImVec2 base = ImGui::GetCursorScreenPos();
                     const float rowW = ImGui::GetContentRegionAvail().x;
-                    // Reserve the full extent (drives the scrollbar), then
-                    // draw the rows on the CHILD's draw list (it clips).
                     const float total = (float)vis.size() * rowH +
                         (float)std::max<int>(0, (int)vis.size() - 1) * itemGap;
                     ImGui::Dummy(ImVec2(rowW, std::max(total, 1.0f)));
@@ -542,6 +609,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                                 base.y + (float)k * (rowH + itemGap), rowW);
                 }
                 UI::EndScroll();
+                ImGui::PopStyleColor();
             } else {
                 // ── Fixed layout (multi-column, or short single lists) ──
                 std::vector<float> colX((size_t)nCols, 0.0f);

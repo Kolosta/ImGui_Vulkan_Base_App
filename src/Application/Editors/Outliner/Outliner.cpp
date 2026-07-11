@@ -353,33 +353,62 @@ void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
     dl->AddRect(mn, mx, ImGui::ColorConvertFloat4ToU32(
         ol::SafeColor(Tok::S_Color_Border_Default, ImVec4(0.4f,0.4f,0.4f,1))), rad);
 
-    // Collect the paths of this node's subtree in WORLD space and their bbox.
-    struct Seg { std::vector<Ink::DVec2> pts; bool closed; Ink::Color fill; bool hasFill; Ink::Color stroke; bool hasStroke; };
-    std::vector<Seg> segs;
+    // Collect the node's subtree geometry in WORLD space: the TRIANGULATED
+    // fill mesh (handles concave shapes like stars — AddConvexPolyFilled did
+    // not, which is why fills overflowed) at a FINE tolerance (smooth curves),
+    // plus the outline ONLY for paths that actually have a stroke (no fake
+    // grey outline on fill-only shapes).
+    struct Tri { ImVec2 a, b, c; ImU32 col; };     // filled in AFTER the fit
+    struct FillPart { std::vector<Ink::DVec2> verts; std::vector<std::uint32_t> idx; ImU32 col; };
+    struct StrokePart { std::vector<Ink::DVec2> pts; bool closed; ImU32 col; };
+    std::vector<FillPart>   fills;
+    std::vector<StrokePart> strokes;
     Ink::DRect bb;
+    auto col = [](const Ink::Color& c) {
+        auto s = [](float u){ return u <= 0.0031308f ? u*12.92f : 1.055f*std::pow(u,1/2.4f)-0.055f; };
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(s(c.r), s(c.g), s(c.b), c.a));
+    };
+    int budget = 4000;
     std::function<void(Ink::NodeId)> collect = [&](Ink::NodeId nid) {
+        if (budget <= 0) return;
         const Ink::Node* n = doc.Find(nid);
         if (!n || !n->visible) return;
         if (n->kind == Ink::NodeKind::Path && !n->path.Empty()) {
             const Ink::DMat23 w = doc.WorldTransform(nid);
-            auto polys = Ink::geom::Flatten(n->path, 2.0);
-            const bool hasFill = !n->style.fills.empty() && n->style.fills.front().enabled;
-            const bool hasStroke = !n->style.strokes.empty() && n->style.strokes.front().enabled;
-            for (auto& pl : polys) {
-                Seg s; s.closed = pl.closed; s.hasFill = hasFill; s.hasStroke = hasStroke;
-                if (hasFill)   s.fill   = n->style.fills.front().paint.color;
-                if (hasStroke) s.stroke = n->style.strokes.front().paint.color;
-                s.pts.reserve(pl.points.size());
-                for (auto& p : pl.points) { Ink::DVec2 wp = w.Apply(p); s.pts.push_back(wp); bb.Grow(wp); }
-                segs.push_back(std::move(s));
+            const auto polys = Ink::geom::Flatten(n->path, 0.35);
+            if (!n->style.fills.empty() && n->style.fills.front().enabled &&
+                n->style.fills.front().kind == Ink::FillKind::Solid) {
+                const Ink::geom::Mesh m = Ink::geom::TriangulateFill(
+                    polys, n->style.fills.front().rule);
+                if (!m.Empty()) {
+                    FillPart fp; fp.col = col(n->style.fills.front().paint.color);
+                    fp.verts.reserve(m.VertexCount());
+                    for (std::uint32_t i = 0; i < m.VertexCount(); ++i) {
+                        Ink::DVec2 lp{ m.positions[i*2], m.positions[i*2+1] };
+                        Ink::DVec2 wp = w.Apply(lp);
+                        fp.verts.push_back(wp); bb.Grow(wp);
+                    }
+                    fp.idx = m.indices;
+                    budget -= (int)m.indices.size();
+                    fills.push_back(std::move(fp));
+                }
+            }
+            if (!n->style.strokes.empty() && n->style.strokes.front().enabled) {
+                for (const auto& pl : polys) {
+                    StrokePart sp; sp.closed = pl.closed;
+                    sp.col = col(n->style.strokes.front().paint.color);
+                    for (const auto& p : pl.points) {
+                        Ink::DVec2 wp = w.Apply(p); sp.pts.push_back(wp); bb.Grow(wp);
+                    }
+                    strokes.push_back(std::move(sp));
+                    budget -= (int)pl.points.size();
+                }
             }
         }
         for (Ink::NodeId c : n->children) collect(c);
-        // Cap the work: a deep/huge subtree preview is not worth stalling on.
-        if (segs.size() > 400) return;
     };
     collect(id);
-    if (!bb.valid || segs.empty()) return;
+    if (!bb.valid || (fills.empty() && strokes.empty())) return;
 
     // Fit the bbox into the card with padding (aspect-preserving).
     const float padF = 0.12f;
@@ -393,22 +422,18 @@ void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
         return ImVec2(ox + (float)((p.x - bb.min.x) * sc),
                       oy + (float)((p.y - bb.min.y) * sc));
     };
-    auto col = [](const Ink::Color& c) {
-        // linear → sRGB for display.
-        auto s = [](float u){ return u <= 0.0031308f ? u*12.92f : 1.055f*std::pow(u,1/2.4f)-0.055f; };
-        return ImGui::ColorConvertFloat4ToU32(ImVec4(s(c.r), s(c.g), s(c.b), c.a));
-    };
     dl->PushClipRect(mn, mx, true);
-    for (const Seg& s : segs) {
-        if (s.pts.size() < 2) continue;
+    for (const FillPart& fp : fills)
+        for (std::size_t i = 0; i + 2 < fp.idx.size(); i += 3)
+            dl->AddTriangleFilled(map(fp.verts[fp.idx[i]]),
+                                  map(fp.verts[fp.idx[i+1]]),
+                                  map(fp.verts[fp.idx[i+2]]), fp.col);
+    for (const StrokePart& sp : strokes) {
+        if (sp.pts.size() < 2) continue;
         static std::vector<ImVec2> poly; poly.clear();
-        for (auto& p : s.pts) poly.push_back(map(p));
-        if (s.hasFill && s.closed && poly.size() >= 3)
-            dl->AddConvexPolyFilled(poly.data(), (int)poly.size(), col(s.fill));
-        const ImU32 lc = s.hasStroke ? col(s.stroke)
-            : ImGui::ColorConvertFloat4ToU32(ol::SafeColor(Tok::S_Color_Text_Subtle, ImVec4(.5f,.5f,.5f,1)));
-        dl->AddPolyline(poly.data(), (int)poly.size(),
-                        lc, s.closed ? ImDrawFlags_Closed : 0, 1.0f);
+        for (const auto& p : sp.pts) poly.push_back(map(p));
+        dl->AddPolyline(poly.data(), (int)poly.size(), sp.col,
+                        sp.closed ? ImDrawFlags_Closed : 0, 1.0f);
     }
     dl->PopClipRect();
     (void)ds;
@@ -682,8 +707,8 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
             // The instance's SHARED DATA — a reference view, styled dimmed so
             // it never reads as the real object (and it cannot be dragged).
             const Ink::Node* target = doc.Find(rrow.refId);
-            ol::SlotIcon("swap_horiz", ol::SafeColor(Tok::S_Color_Text_Disabled,
-                                                     ImVec4(.5f, .5f, .5f, 1)));
+            ol::SlotIcon("three_balls", ol::SafeColor(Tok::S_Color_Text_Disabled,
+                                                      ImVec4(.5f, .5f, .5f, 1)));
             char label[160];
             std::snprintf(label, sizeof label, "%s  (data)",
                           target && !target->name.empty() ? target->name.c_str()
@@ -696,13 +721,29 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
                 label);
         }
         ImGui::PopID();
-        if (!outlinerSuppressInput_ &&
-            rrow.kind == OutlinerRow::Kind::LinkedData &&
-            row.Input().rightClicked) {
-            outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
-            outlinerCtxNode_ = rrow.id;
-            outlinerCtxLinkedRef_ = rrow.refId;
-            ImGui::OpenPopup("##outlinerCtx");
+        if (!outlinerSuppressInput_) {
+            const UI::ListRowInput& in = row.Input();
+            // Child rows are SELECTABLE: a modifier row selects its object
+            // (and marks that modifier active in the Properties editor); the
+            // linked-data row selects the referenced original.
+            if (in.clicked) {
+                if (rrow.kind == OutlinerRow::Kind::Modifier) {
+                    o.sel.clear();
+                    OutlinerSelectClick(rrow.id, true);
+                    o.activeModifier = rrow.modIndex;
+                } else if (doc.Find(rrow.refId)) {
+                    o.sel.clear();
+                    OutlinerSelectClick(rrow.refId, true);
+                }
+            }
+            if (in.rightClicked) {
+                outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+                outlinerCtxNode_ = rrow.id;
+                outlinerCtxLinkedRef_ =
+                    rrow.kind == OutlinerRow::Kind::LinkedData ? rrow.refId
+                                                              : Ink::kNullNode;
+                ImGui::OpenPopup("##outlinerCtx");
+            }
         }
         return;
     }
@@ -769,6 +810,29 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ol::SlotIcon(icon, ds.GetColor(Tok::S_Color_Text_Default));
     }
 
+    // Affinity clip/mask badge (Layers view): a MASK child shows a mask glyph,
+    // a clipped child a clip glyph, drawn just left of the name. A row with a
+    // chevron stacks the badge ABOVE the chevron (rows are tall enough).
+    if (layers && n->parent != Ink::kNullNode) {
+        const bool isMaskChild = n->isMask;
+        const char* badge = isMaskChild ? "contrast-square" : "crop-free";
+        const float bsz = ol::IconSize() * 0.82f;
+        auto& im = VectorGraphics::IconManager::Instance();
+        if (im.HasIcon(badge)) {
+            auto md = im.GetDefaultMetadata(badge);
+            const ImVec4 tint = ol::SafeColor(
+                isMaskChild ? Tok::S_Color_Accent_Default : Tok::S_Color_Text_Subtle,
+                ImVec4(.6f, .6f, .6f, 1));
+            for (auto& z : md.colorZones) z.customColor = tint;
+            const float bx = ImGui::GetCursorScreenPos().x;
+            const float by = row.RowTop() + (row.RowH() - bsz) * 0.5f;
+            im.RenderIcon(ImGui::GetWindowDrawList(), badge,
+                          ImVec2(bx, by), bsz, md);
+            ImGui::Dummy(ImVec2(bsz + 3.0f * ol::Gs(), row.RowH()));
+            ImGui::SameLine(0.0f, 0.0f);
+        }
+    }
+
     const float nameX = ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs();
     if (o.renaming == rrow.id) {
         bool deactivated = false;
@@ -822,9 +886,14 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         o.renameTakeFocus = true;
         std::snprintf(o.renameBuf, sizeof o.renameBuf, "%s", n->name.c_str());
     } else if (in.clicked) {
-        // An object click drops any collection-row selection.
-        o.sel.clear();
-        OutlinerSelectClick(rrow.id, n->kind != Ink::NodeKind::Group);
+        // Object eyedropper active: deliver this node to the picker instead of
+        // selecting it.
+        if (ObjectPickActive()) { DeliverObjectPick(rrow.id); }
+        else {
+            // An object click drops any collection-row selection.
+            o.sel.clear();
+            OutlinerSelectClick(rrow.id, n->kind != Ink::NodeKind::Group);
+        }
     }
     // Right-click ONLY opens the menu — never a selection change (Blender rule:
     // the menu acts on the current selection; the row is context only).

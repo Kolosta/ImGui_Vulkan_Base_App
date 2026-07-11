@@ -4,6 +4,7 @@
 #include <SDL3/SDL.h>
 #include <vulkan/vulkan.h>
 #include <imgui_impl_vulkan.h>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -198,6 +199,7 @@ private:
     void   Action_SelectGroup();         // select the active object's parent group
     void   Action_ParentToActive();      // Ctrl+P: parent selection to active
     void   Action_DuplicateLinked();     // Alt+D: instance copies + grab
+    void   Action_DuplicateGrab();       // Shift+D: deep copy + grab
     // Create a shape at the 2D cursor / view centre and select it.
     Ink::NodeId SpawnShape(const char* kind);
     // Build the default Style (fill+stroke) from the EditContext swatches.
@@ -256,6 +258,11 @@ private:
     const std::vector<OutlinerRow>* outlinerRows_ = nullptr;
     float outlinerRowsStartY_ = 0.0f;   // window-local Y of flat row 0
     float outlinerStripeH_    = 0.0f;   // row pitch during the draw loop
+    // The Layers-view preview-square rect of the row CURRENTLY being drawn —
+    // read by the drag & drop to detect a mask drop onto the square.
+    ImVec2 outlinerLayerPreviewMin_{};
+    ImVec2 outlinerLayerPreviewMax_{};
+    bool   outlinerLayerPreviewValid_ = false;
     // parentId → children, rebuilt once per Outliner frame (Collections view),
     // plus a per-frame cache of each row's combined child list.
     std::unordered_map<Ink::NodeId, std::vector<Ink::NodeId>> outlinerParentKids_;
@@ -330,6 +337,30 @@ private:
     OutlinerState* outlinerCur_ = nullptr;
     // The Outliner currently in "pick a viewport to sync" mode (or nullptr).
     OutlinerState* outlinerPickingState_ = nullptr;
+
+    // ── Object eyedropper (Properties node pickers) ─────────────────────────
+    // When active, the cursor becomes an eyedropper and the next object click
+    // (in a viewport OR an outliner) writes that node id into *objPickTarget_
+    // (undoable via the fold callback). Clicking anything that is NOT an
+    // object just cancels the pick. `objPickField_` disambiguates concurrent
+    // pickers (only the armed one accepts).
+    Ink::NodeId* objPickTarget_ = nullptr;
+    std::function<void(Ink::NodeId)> objPickCommit_;
+    bool ObjectPickActive() const { return objPickTarget_ != nullptr; }
+    void BeginObjectPick(Ink::NodeId* target, std::function<void(Ink::NodeId)> commit) {
+        objPickTarget_ = target; objPickCommit_ = std::move(commit);
+    }
+    void CancelObjectPick() { objPickTarget_ = nullptr; objPickCommit_ = nullptr; }
+    // Deliver a picked node to the armed eyedropper (returns true if consumed).
+    bool DeliverObjectPick(Ink::NodeId id) {
+        if (!objPickTarget_) return false;
+        if (id != Ink::kNullNode) {
+            if (objPickCommit_) objPickCommit_(id);
+            else *objPickTarget_ = id;
+        }
+        CancelObjectPick();
+        return true;
+    }
 
     // Active object's full property editor (legacy Compositor layout) — every
     // node property is visible and editable: transform, compositing, the

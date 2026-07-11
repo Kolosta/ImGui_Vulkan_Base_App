@@ -69,6 +69,16 @@ struct DropdownConfig {
     // menu regardless (see component.menu.max-height.default) — searchable
     // just forces the scrolling layout even when the list would fit.
     bool searchable = false;
+    // When > 0 the trigger stretches to this pixel width (the label stays
+    // left-aligned, the chevron pinned to the right) — used by the Properties
+    // rows so every dropdown fills its control column like the other fields.
+    float triggerWidth = 0.0f;
+    // Object-picker chrome: an object icon left of the label, and a trailing
+    // action button in the trigger — an EYEDROPPER (pick a node in a
+    // viewport/outliner) when empty, a CLEAR cross when a node is set. The
+    // owner reads DropdownResult::pickRequested / cleared to drive it.
+    bool objectPicker = false;
+    bool objectPickerHasValue = false;
     // Buttons fused to the trigger (ButtonGroup look). Rendered left/right per side.
     std::vector<DropdownButton> buttons;
     // CUSTOM BODY: when set, the popup renders THIS instead of the item list (the
@@ -84,6 +94,10 @@ struct DropdownResult {
     int  selected = -1;          // index of the clicked item (valid if changed)
     // Index into cfg.buttons of a fused button clicked this frame, or -1.
     int  buttonClicked = -1;
+    // Object-picker trailing button: the eyedropper was clicked (start a pick)
+    // or the clear cross was clicked (empty the field), respectively.
+    bool pickRequested = false;
+    bool cleared       = false;
 };
 
 // Draw the trigger at the current cursor position and, if open, its menu.
