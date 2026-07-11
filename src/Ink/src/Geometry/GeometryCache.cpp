@@ -39,18 +39,23 @@ double GeometryCache::EffectiveWidth(const Stroke& stroke, int tier) {
 
 const std::vector<geom::Polyline>&
 GeometryCache::GetFlattened(const PathData& path, std::uint64_t pathHash,
-                            int tier) {
+                            int tier, const geom::BoolProgram* prog) {
     const std::uint64_t key = FlattenKey(pathHash, tier);
     auto it = flattened_.find(key);
-    if (it == flattened_.end())
+    if (it == flattened_.end()) {
+        // A boolean program re-evaluates its ops at THIS tier's tolerance so
+        // the derived outline stays vector-smooth at any zoom.
         it = flattened_.emplace(key,
-                 geom::Flatten(path, ToleranceForTier(tier))).first;
+                 prog ? geom::EvaluateBoolean(*prog, ToleranceForTier(tier))
+                      : geom::Flatten(path, ToleranceForTier(tier))).first;
+    }
     return it->second;
 }
 
 const geom::Mesh* GeometryCache::GetFill(const PathData& path,
                                          std::uint64_t pathHash, int tier,
-                                         FillRule rule, std::uint64_t& keyOut) {
+                                         FillRule rule, std::uint64_t& keyOut,
+                                         const geom::BoolProgram* prog) {
     std::uint64_t key = FlattenKey(pathHash, tier);
     const std::uint8_t tag[2] = { 0xF1, (std::uint8_t)rule };
     key = HashBytes(tag, sizeof tag, key);
@@ -58,7 +63,7 @@ const geom::Mesh* GeometryCache::GetFill(const PathData& path,
     auto it = meshes_.find(key);
     if (it == meshes_.end())
         it = meshes_.emplace(key,
-                 geom::TriangulateFill(GetFlattened(path, pathHash, tier),
+                 geom::TriangulateFill(GetFlattened(path, pathHash, tier, prog),
                                        rule)).first;
     return it->second.Empty() ? nullptr : &it->second;
 }
@@ -66,7 +71,8 @@ const geom::Mesh* GeometryCache::GetFill(const PathData& path,
 const geom::Mesh* GeometryCache::GetStroke(const PathData& path,
                                            std::uint64_t pathHash, int tier,
                                            const Stroke& stroke,
-                                           std::uint64_t& keyOut) {
+                                           std::uint64_t& keyOut,
+                                           const geom::BoolProgram* prog) {
     std::uint64_t key = FlattenKey(pathHash, tier);
     const std::uint8_t tag = 0x57;
     key = HashBytes(&tag, 1, key);
@@ -80,7 +86,7 @@ const geom::Mesh* GeometryCache::GetStroke(const PathData& path,
         Stroke eff = stroke;
         eff.width = EffectiveWidth(stroke, tier);
         it = meshes_.emplace(key,
-                 geom::TessellateStroke(GetFlattened(path, pathHash, tier),
+                 geom::TessellateStroke(GetFlattened(path, pathHash, tier, prog),
                                         eff, ToleranceForTier(tier))).first;
     }
     return it->second.Empty() ? nullptr : &it->second;
@@ -88,12 +94,13 @@ const geom::Mesh* GeometryCache::GetStroke(const PathData& path,
 
 const geom::LocalBounds&
 GeometryCache::GetLocalBounds(const PathData& path, std::uint64_t pathHash,
-                              int tier) {
+                              int tier, const geom::BoolProgram* prog) {
     const std::uint64_t key = FlattenKey(pathHash, tier);
     auto it = bounds_.find(key);
     if (it == bounds_.end())
         it = bounds_.emplace(key,
-                 geom::PolylineBounds(GetFlattened(path, pathHash, tier))).first;
+                 geom::PolylineBounds(GetFlattened(path, pathHash, tier,
+                                                   prog))).first;
     return it->second;
 }
 

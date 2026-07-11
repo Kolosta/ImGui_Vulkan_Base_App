@@ -225,13 +225,12 @@ void SeedDemoDocument(Document& doc) {
         discGroup(1560, 560, BlendMode::Multiply, 1.00f, "multiply");
         discGroup(1560, 760, BlendMode::Screen,   1.00f, "screen");
 
-        // A clip group: a big ellipse mask over a dense grid of dots (the mask
-        // is the group's first path child).
+        // A clip group: a big ellipse clips a dense grid of dots (the mask is
+        // the group's first path child — SVG clip-path style).
         const NodeId clipG = doc.AddGroup(page, "clip group");
         doc.SetTransform(clipG, TRS(360, 300));
-        const NodeId mask = doc.AddPath(clipG, PathData::Ellipse(0, 0, 90, 60),
-                                        Style::Filled(Srgb(0, 0, 0, 1)), "mask");
-        (void)mask;
+        doc.AddPath(clipG, PathData::Ellipse(0, 0, 90, 60),
+                    Style::Filled(Srgb(0, 0, 0, 1)), "clip shape");
         for (int gy = -3; gy <= 3; ++gy)
             for (int gx = -4; gx <= 4; ++gx) {
                 const NodeId dot = doc.AddPath(
@@ -241,6 +240,30 @@ void SeedDemoDocument(Document& doc) {
             }
         doc.SetClip(clipG, true);
         doc.AddToCollection(cComp, clipG);
+
+        // Affinity CLIPPING LAYER: a filled rounded rect with a star nested
+        // INSIDE it — the star is clipped to the rect's coverage (Layers-view
+        // drag-into-item). Moving/scaling the parent reshapes the clip.
+        const NodeId clipHost = doc.AddPath(page,
+            PathData::Rect(-70, -55, 140, 110),
+            Style::Filled(Srgb(0.24f, 0.34f, 0.52f, 1)), "clip layer");
+        doc.SetTransform(clipHost, TRS(1150, 320));
+        const NodeId clipStar = doc.AddPath(clipHost, Star(1.0, 0.45, 5),
+            Style::Filled(Srgb(0.95f, 0.78f, 0.25f, 1)), "clipped star");
+        doc.SetTransform(clipStar, TRS(20, 10, 70.0, 0.3));
+        doc.AddToCollection(cComp, clipHost);
+
+        // Affinity MASK LAYER: a photo-ish gradient-less filled rect masked by
+        // an ellipse child (drop onto the item's PREVIEW square in Layers).
+        const NodeId maskHost = doc.AddPath(page,
+            PathData::Rect(-80, -60, 160, 120),
+            Style::Filled(Srgb(0.85f, 0.35f, 0.20f, 1)), "masked layer");
+        doc.SetTransform(maskHost, TRS(1150, 560));
+        const NodeId maskEllipse = doc.AddPath(maskHost,
+            PathData::Ellipse(0, 0, 72, 52),
+            Style::Filled(Srgb(0, 0, 0, 1)), "mask");
+        doc.SetMask(maskEllipse, true);
+        doc.AddToCollection(cComp, maskHost);
     }
 
     // Instancing showcase.

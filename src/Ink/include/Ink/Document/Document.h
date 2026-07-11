@@ -48,6 +48,11 @@ struct Node {
     // kind == Group: clip the subtree by the group's first path child
     // (docs/Ink/RENDER_GRAPH.md §ClipPass). Ignored on a path node.
     bool        clip    = false;
+    // Affinity layer semantics (docs/Ink/DOCUMENT_MODEL.md §Layers): a node
+    // nested under a PARENT path node is CLIPPED to that parent's fill
+    // coverage. When it is instead a MASK child (`isMask`), it does not paint —
+    // its coverage MASKS its parent's content. Children are bottom→top.
+    bool        isMask  = false;
 
     // kind == Path
     PathData path;
@@ -130,6 +135,9 @@ public:
     void   SetBlend(NodeId group, BlendMode blend);
     void   SetIsolate(NodeId group, bool isolate);
     void   SetClip(NodeId group, bool clip);
+    // Affinity mask flag: mark a child node as a MASK of its parent (it stops
+    // painting and masks the parent's content) or back to a clipped child.
+    void   SetMask(NodeId node, bool isMask);
     void   Remove(NodeId node);      // node or page (subtree included)
     void   Clear();                  // everything (fresh document)
 

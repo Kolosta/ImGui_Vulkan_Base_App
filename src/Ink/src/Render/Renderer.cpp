@@ -681,7 +681,7 @@ void Renderer::EndFrame() {
         const double vy1 = v.panY + (double)v.height / v.zoom;
         auto culled = [&](const Drawable& d) {
             const geom::LocalBounds& lb =
-                r.cache.GetLocalBounds(*d.path, d.pathHash, tier);
+                r.cache.GetLocalBounds(*d.path, d.pathHash, tier, d.boolProg);
             if (!lb.valid) return true;
             double inflate = 0.0;
             if (d.isStroke) {
@@ -721,9 +721,9 @@ void Renderer::EndFrame() {
             std::uint64_t productKey = 0;
             const geom::Mesh* mesh =
                 d.isStroke ? r.cache.GetStroke(*d.path, d.pathHash, tier,
-                                               d.stroke, productKey)
+                                               d.stroke, productKey, d.boolProg)
                            : r.cache.GetFill(*d.path, d.pathHash, tier, d.rule,
-                                             productKey);
+                                             productKey, d.boolProg);
             if (!mesh) return;
             const MeshRange range =
                 r.gpu.EnsureResident(r.device, productKey, *mesh, r.cache, defer);

@@ -167,6 +167,10 @@ void Document::SetClip(NodeId group, bool clip) {
     if (Node* n = FindMutable(group)) { n->clip = clip; Log(group, ChangeKind::Hierarchy); }
 }
 
+void Document::SetMask(NodeId node, bool isMask) {
+    if (Node* n = FindMutable(node)) { n->isMask = isMask; Log(node, ChangeKind::Hierarchy); }
+}
+
 void Document::DetachFromParent(const Node& n) {
     std::vector<NodeId>* siblings = nullptr;
     if (n.parent != kNullNode) {
@@ -381,11 +385,12 @@ bool Document::MoveTo(NodeId node, NodeId newParent, int index) {
     Node* n = FindMutable(node);
     if (!n || node == newParent) return false;
 
-    // Resolve the destination sibling list + page.
+    // Resolve the destination sibling list + page. ANY node nests children
+    // (Affinity layer semantics: a path's children are clipped inside it, a
+    // group's compose through it) — only self/descendant cycles are refused.
     std::vector<NodeId>* dst = nullptr;
     NodeId dstParent = kNullNode, dstPage = kNullNode;
     if (Node* pg = FindMutable(newParent)) {
-        if (pg->kind != NodeKind::Group) return false;      // only groups nest
         if (InSubtree(*this, node, newParent)) return false; // no self/descendant
         dst = &pg->children; dstParent = newParent; dstPage = pg->page;
     } else if (Page* pp = const_cast<Page*>(FindPage(newParent))) {
@@ -760,6 +765,12 @@ NodeId Document::DuplicateSubtree(NodeId src) {
         siblings->insert(it == siblings->end() ? siblings->end() : it + 1,
                          copyRoot);
     }
+    // The copy joins the SAME collections as the source (so it lands next to
+    // it in the Collections view too, not orphaned at the project root).
+    for (Collection& col : collections_)
+        if (std::find(col.members.begin(), col.members.end(), src)
+                != col.members.end())
+            col.members.push_back(copyRoot);
     return copyRoot;
 }
 

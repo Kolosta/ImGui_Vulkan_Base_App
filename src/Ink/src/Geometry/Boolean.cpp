@@ -90,6 +90,11 @@ std::vector<Edge> SplitEdges(const Polys& src, const Polys& other) {
 }
 
 // Chain kept directed edges into closed rings by matching heads to tails.
+// At a junction where several kept edges start (two boundaries crossing at an
+// intersection vertex), prefer the edge that CONTINUES most straight ahead
+// (smallest turn) — following the same boundary across the junction keeps the
+// rings simple and avoids hopping onto the other polygon, which is what
+// produced the "straight cut across a disc" artefacts.
 Polys ChainEdges(std::vector<Edge> edges) {
     Polys rings;
     std::vector<bool> used(edges.size(), false);
@@ -102,10 +107,26 @@ Polys ChainEdges(std::vector<Edge> edges) {
             used[cur] = true;
             ring.push_back(edges[cur].a);
             const DVec2 tail = edges[cur].b;
-            // Find an unused edge starting at `tail`.
+            const DVec2 din{ edges[cur].b.x - edges[cur].a.x,
+                             edges[cur].b.y - edges[cur].a.y };
+            const double dinLen = std::sqrt(din.x * din.x + din.y * din.y);
+            // Prefer the continuation with the SMALLEST absolute turn.
             std::size_t nxt = (std::size_t)-1;
-            for (std::size_t j = 0; j < edges.size(); ++j)
-                if (!used[j] && NearlyEqual(edges[j].a, tail)) { nxt = j; break; }
+            double bestAbsTurn = 1e300;
+            for (std::size_t j = 0; j < edges.size(); ++j) {
+                if (used[j] || !NearlyEqual(edges[j].a, tail)) continue;
+                const DVec2 dout{ edges[j].b.x - edges[j].a.x,
+                                  edges[j].b.y - edges[j].a.y };
+                const double outLen = std::sqrt(dout.x*dout.x + dout.y*dout.y);
+                double turn = 0.0;
+                if (dinLen > 1e-18 && outLen > 1e-18)
+                    turn = std::abs(std::atan2(
+                        din.x * dout.y - din.y * dout.x,
+                        din.x * dout.x + din.y * dout.y));
+                if (nxt == (std::size_t)-1 || turn < bestAbsTurn) {
+                    bestAbsTurn = turn; nxt = j;
+                }
+            }
             cur = nxt;
             if (nxt == (std::size_t)-1 && NearlyEqual(tail, edges[start].a))
                 break;   // closed
@@ -159,7 +180,48 @@ BooleanPolygons(const std::vector<std::vector<DVec2>>& subject,
                 const std::vector<std::vector<DVec2>>& clip, BoolOp op) {
     if (subject.empty()) return op == BoolOp::Intersect ? Polys{} : clip;
     if (clip.empty())    return op == BoolOp::Intersect ? Polys{} : subject;
-    return BuildOp(subject, clip, op);
+    // Break exact vertex-on-edge coincidences (a disc tangent to a rectangle
+    // edge, snapped grids…) with a sub-visible deterministic nudge of the
+    // clip set — the classic cure for the split/classify degeneracies. The
+    // offset is far below any flattening tolerance AND below the tests'
+    // area epsilon, so exact non-degenerate cases stay exact.
+    Polys nudged = clip;
+    constexpr double kNudgeX = 1.180339887e-9, kNudgeY = 0.7071067811e-9;
+    for (Poly& ring : nudged)
+        for (DVec2& p : ring) { p.x += kNudgeX; p.y += kNudgeY; }
+    return BuildOp(subject, nudged, op);
+}
+
+std::vector<Polyline> EvaluateBoolean(const BoolProgram& prog,
+                                      double tolerance) {
+    std::vector<Polyline> out;
+    if (!prog.host) return out;
+    auto toRings = [](const std::vector<Polyline>& polys) {
+        Polys rings;
+        for (const Polyline& pl : polys)
+            if (pl.closed && pl.points.size() >= 3) rings.push_back(pl.points);
+        return rings;
+    };
+    Polys acc = toRings(Flatten(*prog.host, tolerance));
+    for (const BoolStep& s : prog.steps) {
+        if (!s.operand) continue;
+        Polys rings;
+        for (Polyline& pl : Flatten(*s.operand, tolerance)) {
+            if (!pl.closed || pl.points.size() < 3) continue;
+            for (DVec2& p : pl.points) p = s.rel.Apply(p);
+            rings.push_back(std::move(pl.points));
+        }
+        acc = BooleanPolygons(acc, rings, s.op);
+        if (acc.empty()) break;
+    }
+    out.reserve(acc.size());
+    for (auto& ring : acc) {
+        Polyline pl;
+        pl.points = std::move(ring);
+        pl.closed = true;
+        out.push_back(std::move(pl));
+    }
+    return out;
 }
 
 } // namespace Ink::geom

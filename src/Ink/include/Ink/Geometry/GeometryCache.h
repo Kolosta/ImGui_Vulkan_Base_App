@@ -32,21 +32,28 @@ public:
     static constexpr double kTolerancePx = 0.25;
 
     // Get-or-build. `keyOut` is the stable product key (GPU residency key).
+    // `prog`, when set, is a boolean pipeline: the flatten product is the
+    // ops re-evaluated at THIS tier's tolerance (vector-exact at any zoom) —
+    // `pathHash` must then be the program hash.
     const geom::Mesh* GetFill(const PathData& path, std::uint64_t pathHash,
-                              int tier, FillRule rule, std::uint64_t& keyOut);
+                              int tier, FillRule rule, std::uint64_t& keyOut,
+                              const geom::BoolProgram* prog = nullptr);
     const geom::Mesh* GetStroke(const PathData& path, std::uint64_t pathHash,
                                 int tier, const Stroke& stroke,
-                                std::uint64_t& keyOut);
+                                std::uint64_t& keyOut,
+                                const geom::BoolProgram* prog = nullptr);
     // Lookup only (GpuScene pool re-upload after growth).
     const geom::Mesh* Find(std::uint64_t key) const;
 
     const std::vector<geom::Polyline>&
-    GetFlattened(const PathData& path, std::uint64_t pathHash, int tier);
+    GetFlattened(const PathData& path, std::uint64_t pathHash, int tier,
+                 const geom::BoolProgram* prog = nullptr);
 
     // Style-independent AABB of the flattened path (culling input; the caller
     // inflates by its stroke band).
     const geom::LocalBounds&
-    GetLocalBounds(const PathData& path, std::uint64_t pathHash, int tier);
+    GetLocalBounds(const PathData& path, std::uint64_t pathHash, int tier,
+                   const geom::BoolProgram* prog = nullptr);
 
     // The tessellation width of `stroke` at `tier` (WidthSpace resolution:
     // Viewport widths convert at the tier's nominal zoom).

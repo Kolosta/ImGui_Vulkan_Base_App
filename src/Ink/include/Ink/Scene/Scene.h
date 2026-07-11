@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Ink/Document/Document.h"
+#include "Ink/Geometry/Geometry.h"
 
 #include <deque>
 #include <unordered_map>
@@ -67,6 +68,10 @@ struct Drawable {
     ScopeId         scope = kRootScope; // the composite scope this belongs to
     ClipRole        clip = ClipRole::None;  // stencil interaction (see above)
     bool            isClipSource = false;   // mask geometry — never picked/painted
+    // Boolean-modified nodes: the ops re-run at each zoom tier's tolerance in
+    // the GeometryCache (vector-exact at any zoom). `path`/`pathHash` then
+    // hold the Scene's coarse evaluation (picking) / the PROGRAM hash.
+    const geom::BoolProgram* boolProg = nullptr;
 };
 
 class Scene {
@@ -121,9 +126,11 @@ private:
     const PathData* ResolveGeometry(const Document& doc, const Node& n,
                                     std::uint64_t& hashOut);
     // Expand a pattern fill: motif instances on a lattice, cut by the host's
-    // stencil clip mask (`geo` = the host's resolved geometry + its hash).
+    // stencil clip mask (`geo`/`geoHash`/`geoProg` = the host's resolved
+    // geometry, its render hash and its boolean program when modified).
     void EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                      const PathData* geo, std::uint64_t geoHash,
+                     const geom::BoolProgram* geoProg,
                      const DMat23& world, ScopeId scope, NodeId owner);
     // A group that composites as a unit opens a scope; returns its id (or the
     // parent scope when the group is a plain pass-through layer).
@@ -134,9 +141,13 @@ private:
     std::vector<Drawable>       drawables_;
     std::vector<CompositeScope> scopes_;
     std::vector<PathData>       pageRects_;   // stable storage for page substrates
-    // Boolean-modifier results (stable addresses; drawables borrow them).
+    // Boolean-modifier results (stable addresses; drawables borrow them):
+    // one COARSE evaluation for picking/bounds + the per-tier PROGRAM the
+    // render path re-evaluates.
     std::deque<PathData>        derivedPaths_;
     std::unordered_map<NodeId, PathData*> derivedByNode_;
+    std::deque<geom::BoolProgram>                boolPrograms_;
+    std::unordered_map<NodeId, geom::BoolProgram*> progByNode_;
     // Per-owner rendered bounds (selection outlines, box select, fit-selection).
     std::unordered_map<NodeId, DRect> nodeBounds_;
     int           maxDepth_ = 0;

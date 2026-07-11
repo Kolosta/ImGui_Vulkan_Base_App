@@ -34,9 +34,14 @@ ScopeId Scene::OpenScopeIfNeeded(const Document& doc, const Node& group,
                 if (ch->kind == NodeKind::Path) { clip = c; break; }
         }
     }
+    // A PATH with children clips them to its OWN fill (Affinity layer rule) —
+    // it opens a scope even without opacity/blend so the child clip runs;
+    // masks among the children make it composite too.
+    const bool pathParent =
+        group.kind == NodeKind::Path && !group.children.empty();
     const bool composites = group.opacity < 0.999f ||
                             group.blend != BlendMode::Normal ||
-                            group.isolate || clip != kNullNode;
+                            group.isolate || clip != kNullNode || pathParent;
     if (!composites) return parent;
 
     CompositeScope s;
@@ -329,9 +334,61 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
         return;
     }
 
-    // Path.
-    if (n.path.Empty()) return;
-    EmitPath(doc, n, world, scope, owner != kNullNode ? owner : n.id);
+    // Path. An empty-geometry path with children is a pure LAYER (a container
+    // holding clipped children — the Affinity "add layer" case): no paint of
+    // its own, but its children still clip to the page (no mask).
+    const bool hasChildren = !n.children.empty();
+    if (n.path.Empty() && !hasChildren) return;
+    if (!n.path.Empty())
+        EmitPath(doc, n, world, scope, owner != kNullNode ? owner : n.id);
+
+    // Affinity layer children: clipped to THIS path's coverage. A child marked
+    // isMask REPLACES that mask with its own coverage (a mask layer — the
+    // masked siblings show through the mask shape instead of the parent's
+    // fill). The mask itself does not paint. Selection/ownership stay per node.
+    if (hasChildren && scopes_[scope].node == n.id) {
+        // The clip source = the first MASK child if any, else the path's fill.
+        const Node* maskChild = nullptr;
+        for (NodeId c : n.children)
+            if (const Node* ch = doc.Find(c); ch && ch->isMask &&
+                ch->kind == NodeKind::Path && !ch->path.Empty()) {
+                maskChild = ch; break;
+            }
+        if (maskChild) {
+            const DMat23 cw = world.Compose(maskChild->transform.Matrix());
+            std::uint64_t h = 0;
+            const PathData* g = ResolveGeometry(doc, *maskChild, h);
+            Drawable d;
+            d.node = maskChild->id;
+            d.owner = owner != kNullNode ? owner : maskChild->id;
+            d.world = cw;  d.pathHash = h;  d.path = g;
+            d.rule = maskChild->style.fills.empty() ? FillRule::NonZero
+                     : maskChild->style.fills.front().rule;
+            d.scope = scope;  d.isClipSource = true;
+            drawables_.push_back(std::move(d));
+        } else if (!n.path.Empty()) {
+            std::uint64_t hostHash = 0;
+            const PathData* hostGeo = ResolveGeometry(doc, n, hostHash);
+            const geom::BoolProgram* hostProg = nullptr;
+            if (auto it = progByNode_.find(n.id); it != progByNode_.end()) {
+                hostProg = it->second; hostHash = hostProg->hash;
+            }
+            Drawable d;
+            d.node = n.id;  d.owner = owner != kNullNode ? owner : n.id;
+            d.world = world;  d.pathHash = hostHash;  d.path = hostGeo;
+            d.boolProg = hostProg;
+            d.rule = n.style.fills.empty() ? FillRule::NonZero
+                                           : n.style.fills.front().rule;
+            d.scope = scope;  d.isClipSource = true;
+            drawables_.push_back(std::move(d));
+        }
+        // Emit the non-mask children clipped to the scope's mask.
+        for (NodeId c : n.children) {
+            const Node* child = doc.Find(c);
+            if (!child || child->isMask) continue;   // mask child never paints
+            EmitNode(doc, *child, world, scope, instDepth, owner);
+        }
+    }
 }
 
 const PathData* Scene::ResolveGeometry(const Document& doc, const Node& n,
@@ -347,7 +404,14 @@ const PathData* Scene::ResolveGeometry(const Document& doc, const Node& n,
         if (m.enabled && m.kind == ModifierKind::Boolean) { hasBool = true; break; }
     if (!hasBool) { hashOut = n.path.Hash(); return &n.path; }
 
-    // Flatten the host outline (node-local) into closed rings.
+    // Build the boolean PROGRAM (the render path re-runs it per zoom tier so
+    // the outline stays vector-smooth) while evaluating one COARSE result for
+    // picking and bounds.
+    boolPrograms_.emplace_back();
+    geom::BoolProgram& prog = boolPrograms_.back();
+    prog.host = &n.path;
+    prog.hash = n.path.Hash();
+
     auto toRings = [](const std::vector<geom::Polyline>& polys) {
         std::vector<std::vector<DVec2>> rings;
         for (const geom::Polyline& pl : polys)
@@ -367,13 +431,6 @@ const PathData* Scene::ResolveGeometry(const Document& doc, const Node& n,
         // Both share the page; compose operand's transform relative to host's.
         const DMat23 rel = InvertAffine(n.transform.Matrix())
                                .Compose(operand->transform.Matrix());
-        auto opPolys = geom::Flatten(operand->path, 0.5);
-        std::vector<std::vector<DVec2>> clip;
-        for (geom::Polyline& pl : opPolys) {
-            if (!pl.closed || pl.points.size() < 3) continue;
-            for (DVec2& p : pl.points) p = rel.Apply(p);
-            clip.push_back(pl.points);
-        }
         geom::BoolOp op = geom::BoolOp::Union;
         switch (m.op) {
             case BooleanOp::Union:     op = geom::BoolOp::Union; break;
@@ -381,11 +438,25 @@ const PathData* Scene::ResolveGeometry(const Document& doc, const Node& n,
             case BooleanOp::Intersect: op = geom::BoolOp::Intersect; break;
             case BooleanOp::Xor:       op = geom::BoolOp::Xor; break;
         }
+        prog.steps.push_back({ op, &operand->path, rel });
+        const std::uint64_t opHash = operand->path.Hash();
+        prog.hash = HashBytes(&op, sizeof op, prog.hash);
+        prog.hash = HashBytes(&opHash, sizeof opHash, prog.hash);
+        prog.hash = HashBytes(rel.m, sizeof rel.m, prog.hash);
+
+        auto opPolys = geom::Flatten(operand->path, 0.5);
+        std::vector<std::vector<DVec2>> clip;
+        for (geom::Polyline& pl : opPolys) {
+            if (!pl.closed || pl.points.size() < 3) continue;
+            for (DVec2& p : pl.points) p = rel.Apply(p);
+            clip.push_back(pl.points);
+        }
         acc = geom::BooleanPolygons(acc, clip, op);
         if (acc.empty()) break;
     }
+    progByNode_[n.id] = &prog;
 
-    // Build a polygonal PathData from the result rings.
+    // Build a polygonal PathData from the coarse result rings.
     derivedPaths_.emplace_back();
     PathData& out = derivedPaths_.back();
     for (const auto& ring : acc) {
@@ -403,6 +474,14 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
     std::uint64_t pathHash = 0;
     const PathData* geo = ResolveGeometry(doc, n, pathHash);
     if (!geo || geo->Empty()) return;
+    // Boolean-modified nodes render through their PROGRAM (re-evaluated per
+    // zoom tier); the drawables keep the coarse `geo` for picking but hash
+    // and tessellate the program.
+    const geom::BoolProgram* prog = nullptr;
+    if (auto it = progByNode_.find(n.id); it != progByNode_.end()) {
+        prog = it->second;
+        pathHash = prog->hash;
+    }
 
     // Bounds: the Bézier control-point hull (a cubic lies inside the convex
     // hull of its control points, so anchor+handle points give a CONSERVATIVE
@@ -445,12 +524,12 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         const Fill& f = n.style.fills[i];
         if (!f.enabled) continue;
         if (f.kind == FillKind::Pattern) {
-            EmitPattern(doc, f, n, geo, pathHash, world, scope, owner);
+            EmitPattern(doc, f, n, geo, pathHash, prog, world, scope, owner);
             continue;
         }
         Drawable d;
         d.node = n.id;  d.owner = owner;  d.world = world;
-        d.pathHash = pathHash;  d.path = geo;
+        d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
         d.isStroke = false;  d.pieceIndex = (std::uint8_t)i;
         d.rule = f.rule;  d.color = f.paint.color;
         d.color.a *= f.opacity;             // layer opacity
@@ -462,7 +541,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         if (!s.enabled || s.width <= 0.0) continue;
         Drawable d;
         d.node = n.id;  d.owner = owner;  d.world = world;
-        d.pathHash = pathHash;  d.path = geo;
+        d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
         d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
         d.stroke = s;  d.color = s.paint.color;
         d.scope = scope;
@@ -472,6 +551,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
 
 void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                         const PathData* geo, std::uint64_t geoHash,
+                        const geom::BoolProgram* geoProg,
                         const DMat23& world, ScopeId scope, NodeId owner) {
     const Node* motif = doc.Find(fill.pattern.motifRef);
     if (!motif || motif->kind != NodeKind::Path || motif->path.Empty()) return;
@@ -493,10 +573,15 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                            ? Color{ 0, 0, 0, 1 }
                            : motif->style.fills.front().paint.color;
     motifColor.a *= fill.opacity;
+    // The angle rotates the whole LATTICE (motifs ride it — Affinity
+    // semantics), the scale applies per motif.
     const double c = std::cos(pat.rotation), s = std::sin(pat.rotation);
     const double sc = pat.scale;
-    DMat23 rs; rs.m[0] = c * sc; rs.m[1] = -s * sc;
-               rs.m[3] = s * sc; rs.m[4] =  c * sc;
+    DMat23 latt;  latt.m[0] = c;  latt.m[1] = -s;   // lattice → anchor space
+                  latt.m[3] = s;  latt.m[4] =  c;
+    DMat23 lattInv; lattInv.m[0] = c;  lattInv.m[1] = s;
+                    lattInv.m[3] = -s; lattInv.m[4] = c;
+    DMat23 sca; sca.m[0] = sc; sca.m[4] = sc;
 
     // Conservative motif radius (local units, rotation-safe): the anchor/handle
     // extent times the pattern scale — used only to CULL cells that cannot
@@ -548,18 +633,20 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
     // Lattice space: Object pins the lattice to the host's local origin (the
     // pattern follows the shape); Document pins it to the document origin (a
     // moving shape slides over a static field). Everything below iterates in
-    // LATTICE space and converts to host-local for the cull tests.
+    // the ROTATED lattice frame and converts to host-local for the cull tests.
     const bool docAnchor = pat.anchor == PatternAnchor::Document;
     const DMat23 invWorld = InvertAffine(world);
-    DVec2 llo = lo, lhi = hi;             // lattice-space bbox of the host
-    if (docAnchor) {
+    DVec2 llo{ 1e300, 1e300 }, lhi{ -1e300, -1e300 };
+    {
+        // Host bbox corners → anchor space (host local or document) → the
+        // rotated lattice frame.
         const DVec2 corners[4] = { { lo.x, lo.y }, { hi.x, lo.y },
                                    { hi.x, hi.y }, { lo.x, hi.y } };
-        llo = { 1e300, 1e300 }; lhi = { -1e300, -1e300 };
         for (const DVec2& q : corners) {
-            const DVec2 w = world.Apply(q);
-            llo.x = std::min(llo.x, w.x); llo.y = std::min(llo.y, w.y);
-            lhi.x = std::max(lhi.x, w.x); lhi.y = std::max(lhi.y, w.y);
+            const DVec2 a = docAnchor ? world.Apply(q) : q;
+            const DVec2 l = lattInv.Apply(a);
+            llo.x = std::min(llo.x, l.x); llo.y = std::min(llo.y, l.y);
+            lhi.x = std::max(lhi.x, l.x); lhi.y = std::max(lhi.y, l.y);
         }
     }
     // Conservative lattice-units motif radius for the cull test: in Document
@@ -580,7 +667,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
     if (useMask) {
         Drawable m;
         m.node = host.id;  m.owner = owner;  m.world = world;
-        m.pathHash = geoHash;  m.path = geo;
+        m.pathHash = geoHash;  m.path = geo;  m.boolProg = geoProg;
         m.isStroke = false;
         m.rule = fill.rule;
         m.scope = scope;
@@ -610,20 +697,23 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
     for (double gy = gy0; gy <= lhi.y + margin; gy += sy)
         for (double gx = gx0; gx <= lhi.x + margin; gx += sx) {
             // Cell centre in host-local space (cull test only).
+            const DVec2 cellAnchor = latt.Apply({ gx, gy });
             const DVec2 cellLocal =
-                docAnchor ? invWorld.Apply({ gx, gy }) : DVec2{ gx, gy };
+                docAnchor ? invWorld.Apply(cellAnchor) : cellAnchor;
             if (useMask) {
                 if (!PointInRings(cullRings, cellLocal) &&
                     DistToRings(cullRings, cellLocal) > testR)
                     continue;                          // cannot touch the mask
-            } else if (cellLocal.x < lo.x || cellLocal.x > hi.x ||
-                       cellLocal.y < lo.y || cellLocal.y > hi.y) {
+            } else if (cellLocal.x < lo.x - motifR || cellLocal.x > hi.x + motifR ||
+                       cellLocal.y < lo.y - motifR || cellLocal.y > hi.y + motifR) {
                 continue;                              // Bounds mode: bbox only
             }
 
-            // Motif placement: lattice translate ∘ rot·scale, under the host
-            // world for Object anchor, in document space for Document anchor.
-            const DMat23 place = DMat23::Translation(gx, gy).Compose(rs);
+            // Motif placement: rotated lattice ∘ cell translate ∘ scale,
+            // under the host world for Object anchor, in document space for
+            // Document anchor.
+            const DMat23 place =
+                latt.Compose(DMat23::Translation(gx, gy)).Compose(sca);
             const DMat23 mw = docAnchor ? place : world.Compose(place);
 
             // Every cell shares the motif mesh (one instanced draw) and
@@ -657,7 +747,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
     if (useMask) {
         Drawable m;
         m.node = host.id;  m.owner = owner;  m.world = world;
-        m.pathHash = geoHash;  m.path = geo;
+        m.pathHash = geoHash;  m.path = geo;  m.boolProg = geoProg;
         m.isStroke = false;
         m.rule = fill.rule;
         m.scope = scope;
@@ -684,6 +774,8 @@ bool Scene::Compile(Document& doc, bool force) {
     pageRects_.clear();
     derivedPaths_.clear();
     derivedByNode_.clear();
+    boolPrograms_.clear();
+    progByNode_.clear();
     nodeBounds_.clear();
     scopes_.clear();
     maxDepth_ = 0;

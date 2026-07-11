@@ -123,6 +123,18 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
     VkBuffer indirect = v.indirect[slot].buffer;
     const VkDescriptorSet sceneSet = v.sceneSet;
 
+    // Editor overlays are CONSTRUCTION graphics (contours, origins, guides…)
+    // — never part of the document compositing. With no composite scopes they
+    // ride the root content pass for free; when scopes exist they get their
+    // OWN pass at the very end (into the already-reserved iso[1] target) and
+    // a plain Normal composite, so no blend mode ever touches them and they
+    // sit above everything.
+    bool anyComposite = false;
+    for (const ScopeRun& run : v.scopeRuns)
+        if (run.phase == ScopePhase::Composite) { anyComposite = true; break; }
+    const bool overlayOnTop =
+        anyComposite && overlayCount > 0 && v.isoLevels >= 1;
+
     for (const ScopeRun& run : v.scopeRuns) {
         IsoTarget& iso = v.iso[run.level];
 
@@ -146,16 +158,14 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
             const PushCamera worldCam = world, pxCam = px;
             const CmdSegment* segs = v.segScratch.data() + run.segOffset;
             const std::uint32_t nSegs = run.segCount;
+            const bool overlayHere = isRoot && !overlayOnTop;
             g.AddRenderPass("scope.content", content, {},
                             [&r, worldCam, indirect, segs, nSegs, sceneSet,
-                             isRoot, pxCam, overlayBuffer,
+                             overlayHere, pxCam, overlayBuffer,
                              overlayCount](VkCommandBuffer cmd) {
                 RecordContentPass(r, cmd, worldCam, indirect, segs, nSegs,
                                   sceneSet);
-                // Editor overlays ride the root content pass (v1: a composite
-                // scope's pixels cover overlays where they overlap — the
-                // composite-segments follow-up lifts them above).
-                if (isRoot)
+                if (overlayHere)
                     RecordOverlayPass(r, cmd, pxCam, overlayBuffer, overlayCount);
             });
             continue;
@@ -177,6 +187,38 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
             RecordCompositePass(r, cmd, compSet, pc);
         });
         parent.cur ^= 1;              // Other() is now current
+    }
+
+    // ── Overlays on top of everything (see the note above): render them into
+    //    iso[1] alone, then a plain Normal composite onto the final iso[0].
+    if (overlayOnTop) {
+        IsoTarget& ov = v.iso[1];
+        graph::RenderGraph::ColorTarget content{};
+        content.image         = &ov.msaa;
+        content.clear         = true;              // transparent
+        content.resolveTo     = &ov.Cur();
+        content.stencil       = &ov.stencil;
+        content.clearStencil  = true;
+        const PushCamera pxCam = px;
+        g.AddRenderPass("overlay.top", content, {},
+                        [&r, pxCam, overlayBuffer,
+                         overlayCount](VkCommandBuffer cmd) {
+            RecordOverlayPass(r, cmd, pxCam, overlayBuffer, overlayCount);
+        });
+
+        IsoTarget& root = v.iso[0];
+        VkDescriptorSet compSet =
+            MakeCompositeSet(r, ov.Cur().view, root.Cur().view);
+        graph::RenderGraph::ColorTarget comp{};
+        comp.image = &root.Other();
+        comp.clear = true;
+        PushComposite pc{ 1.0f, 0 /* Normal */ };
+        g.AddRenderPass("overlay.composite", comp,
+                        { &ov.Cur(), &root.Cur() },
+                        [&r, compSet, pc](VkCommandBuffer cmd) {
+            RecordCompositePass(r, cmd, compSet, pc);
+        });
+        root.cur ^= 1;
     }
 }
 

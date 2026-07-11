@@ -74,4 +74,21 @@ std::vector<std::vector<DVec2>>
 BooleanPolygons(const std::vector<std::vector<DVec2>>& subject,
                 const std::vector<std::vector<DVec2>>& clip, BoolOp op);
 
+// A non-destructive boolean PIPELINE evaluated at view tolerance: the render
+// path re-runs the ops per zoom tier so the result stays vector-smooth at any
+// zoom (the Scene keeps one coarse evaluation for picking/bounds only). The
+// host and operands flatten at the SAME tolerance; each operand is expressed
+// in host-local space via `rel`.
+struct BoolStep {
+    BoolOp          op = BoolOp::Union;
+    const PathData* operand = nullptr;   // borrowed; valid until next compile
+    DMat23          rel;                 // operand-local → host-local
+};
+struct BoolProgram {
+    const PathData*       host = nullptr;
+    std::vector<BoolStep> steps;
+    std::uint64_t         hash = 0;      // host + operands + ops + rels
+};
+std::vector<Polyline> EvaluateBoolean(const BoolProgram& prog, double tolerance);
+
 } // namespace Ink::geom
