@@ -358,47 +358,63 @@ void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
     dl->AddRectFilled(mn, mx, ImGui::ColorConvertFloat4ToU32(ImVec4(1, 1, 1, 1)), rad);
     dl->AddRect(mn, mx, ImGui::ColorConvertFloat4ToU32(
         ol::SafeColor(Tok::S_Color_Border_Default, ImVec4(0.4f,0.4f,0.4f,1))), rad);
-    if (!ink_) return;
+    if (!ink_ || !project_.document) return;
 
-    // Pull the node's RESOLVED render pieces straight from the compiled Scene
-    // (patterns, instances, array / along-path copies and boolean outlines are
-    // all included — the same geometry the canvas draws). We fit the covered
-    // bbox into the card, so we flatten at a tolerance loose enough to be cheap
-    // but fine enough that the fit-down keeps curves smooth (the box is small).
-    static std::vector<Ink::Renderer::PreviewPiece> pieces;
-    const Ink::DRect bb = ink_->PreviewPieces(id, /*tolerance=*/1.0, pieces);
-    if (!bb.valid || pieces.empty()) { (void)ds; return; }
+    // The thumbnail is rendered by the REAL Ink pipeline into its own tiny
+    // off-screen View, so strokes (dash/cap/align/width), transparency,
+    // patterns, instances, arrays and booleans all come out EXACTLY as on the
+    // canvas, MSAA and all. The View filters the scene to this node's own
+    // subtree (owner ∈ subtree), fit to the node's rendered bounds. Views are
+    // cached per node id by the engine and evicted when unused, so only the
+    // handful of visible Layers rows cost anything.
+    Ink::DRect bb;
+    if (!ink_->NodeBounds(id, bb) || !bb.valid) { (void)ds; return; }
 
-    // Fit the bbox into the card with padding (aspect-preserving).
-    const float padF = 0.12f;
-    const float cw = (mx.x - mn.x) * (1 - 2 * padF), chh = (mx.y - mn.y) * (1 - 2 * padF);
+    const float gs = ol::Gs();
+    const std::uint32_t pxW = (std::uint32_t)std::max(8.0f, (mx.x - mn.x) - 2.0f * gs);
+    const std::uint32_t pxH = (std::uint32_t)std::max(8.0f, (mx.y - mn.y) - 2.0f * gs);
+
+    // Fit the node's bbox into the pixel area with a small padding (aspect
+    // preserving). The camera maps screen_px = (doc - pan) · zoom.
     const double bw = std::max(1e-6, bb.max.x - bb.min.x);
     const double bh = std::max(1e-6, bb.max.y - bb.min.y);
-    const double sc = std::min(cw / bw, chh / bh);
-    const float ox = mn.x + (mx.x - mn.x - (float)(bw * sc)) * 0.5f;
-    const float oy = mn.y + (mx.y - mn.y - (float)(bh * sc)) * 0.5f;
-    auto map = [&](Ink::DVec2 p) {
-        return ImVec2(ox + (float)((p.x - bb.min.x) * sc),
-                      oy + (float)((p.y - bb.min.y) * sc));
-    };
-    auto col = [](const Ink::Color& c) {
-        auto s = [](float u){ return u <= 0.0031308f ? u*12.92f : 1.055f*std::pow(u,1/2.4f)-0.055f; };
-        return ImGui::ColorConvertFloat4ToU32(ImVec4(s(c.r), s(c.g), s(c.b), c.a));
-    };
+    const double padF = 0.14;
+    const double zoom = std::min((double)pxW * (1 - 2*padF) / bw,
+                                 (double)pxH * (1 - 2*padF) / bh);
+    const double cx = (bb.min.x + bb.max.x) * 0.5, cyd = (bb.min.y + bb.max.y) * 0.5;
+    const double panX = cx - (double)pxW * 0.5 / zoom;
+    const double panY = cyd - (double)pxH * 0.5 / zoom;
+
+    // A stable per-node view key (bit-tagged so it never collides with the
+    // viewport zone keys, which are EditorState pointers).
+    const void* key = (const void*)(std::uintptr_t)((id << 1) | 1u);
+    Ink::View* view = ink_->AcquireView(key);
+    view->SetViewport(pxW, pxH);
+    view->SetCamera(panX, panY, zoom);
+    view->SetBackground(Ink::SrgbToLinearPremultiplied(1, 1, 1, 1));   // white card
+
+    // Owner filter = the node's LAYER subtree (its own drawables + descendants;
+    // instanced copies of OTHER nodes stamp their own owner, so they are
+    // excluded — an along-path tick shows only itself, not the copies along
+    // the path, while an array keeps its own copies since they share its
+    // owner).
+    std::vector<std::uint64_t> owners;
+    {
+        std::vector<Ink::NodeId> stack{ id };
+        while (!stack.empty()) {
+            const Ink::NodeId c = stack.back(); stack.pop_back();
+            owners.push_back(c);
+            if (const Ink::Node* n = project_.document->Find(c))
+                for (Ink::NodeId k : n->children) stack.push_back(k);
+        }
+    }
+    view->SetPreviewFilter(owners);
+
     dl->PushClipRect(mn, mx, true);
-    std::vector<ImVec2> poly;
-    for (const auto& p : pieces) {
-        if (p.pts.size() < 2) continue;
-        poly.clear();
-        for (const auto& q : p.pts) poly.push_back(map(q));
-        const ImU32 c = col(p.color);
-        // Painter order is preserved from the scene, so overlaps composite
-        // correctly. Fills use ImGui's anti-aliased concave polygon fill.
-        if (!p.isStroke && p.closed && poly.size() >= 3)
-            dl->AddConcavePolyFilled(poly.data(), (int)poly.size(), c);
-        else
-            dl->AddPolyline(poly.data(), (int)poly.size(), c,
-                            p.closed ? ImDrawFlags_Closed : 0, 1.0f);
+    if (auto tex = view->Texture()) {
+        const ImVec2 imn(mn.x + gs, mn.y + gs);
+        dl->AddImage((ImTextureID)tex, imn,
+                     ImVec2(imn.x + (float)pxW, imn.y + (float)pxH));
     }
     dl->PopClipRect();
     (void)ds;

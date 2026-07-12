@@ -47,6 +47,10 @@ std::unordered_map<ImU32, bool> g_menuArmed;
 // while typing in the search field). -1 = none.
 std::unordered_map<ImU32, int> g_menuKbSel;
 
+// Last frame's list scroll offset per menu — decides the top/bottom scroll
+// gutters (so items never scroll under the indicators).
+std::unordered_map<ImU32, float> g_menuScroll;
+
 bool ContainsCI(const std::string& hay, const std::string& needle) {
     if (needle.empty()) return true;
     auto it = std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
@@ -154,17 +158,20 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
         : btnMax.x;
 
     // Open on PRESS over the WHOLE trigger (label AND chevron both open the
-    // menu). Drawn FIRST at full width; the action button below is drawn AFTER
-    // so it wins its own sub-rect (clicking the eyedropper / cross never opens
-    // the menu). The visual hover uses this full-width button, so hovering the
-    // chevron / action zone keeps the trigger highlighted.
+    // menu). It ALLOWS OVERLAP so the action button (submitted right after, on
+    // top) wins its own sub-rect: clicking the eyedropper / cross runs the
+    // action and never opens the menu, while hovering anywhere on the trigger
+    // — including the action / chevron zone — keeps the chrome highlighted.
+    ImGui::SetNextItemAllowOverlap();
     ImGui::InvisibleButton("##trigger", ImVec2(btnW, controlH),
                            ImGuiButtonFlags_PressedOnClick);
     bool clicked = ImGui::IsItemActivated();
-    bool hovered = ImGui::IsItemHovered();
+    // Hover uses the geometric rect (the overlapping action button would
+    // otherwise steal IsItemHovered from the trigger over its sub-rect).
+    bool hovered = ImGui::IsMouseHoveringRect(btnMin, btnMax);
 
-    // The action button (drawn AFTER the trigger → wins the overlap). It also
-    // keeps the trigger reading as hovered while the cursor is over it.
+    // The action button, on TOP of the trigger over its slot (AllowOverlap
+    // above lets it take priority for the click there).
     if (objPick) {
         const ImRect actRect(ImVec2(actionSlotX, btnMin.y),
                              ImVec2(actionSlotX + iconSz, btnMax.y));
@@ -175,9 +182,9 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
             if (cfg.objectPickerHasValue) result.cleared = true;
             else                          result.pickRequested = true;
         }
-        const bool actHov = ImGui::IsItemHovered();
-        objPickActHovered = actHov;
-        if (actHov) { hovered = true; clicked = false; }  // never opens the menu
+        objPickActHovered = ImGui::IsItemHovered();
+        // A press that landed on the action must NOT also open the menu.
+        if (objPickActHovered && ImGui::IsItemActivated()) clicked = false;
         ImGui::PopID();
         ImGui::SetCursorScreenPos(btnMin);   // restore layout cursor
     }
@@ -473,7 +480,11 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding,  0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 0.0f);
-        ImGui::PushStyleColor(ImGuiCol_PopupBg, ImVec4(0, 0, 0, 0));
+        // The rounded/merged menu background is drawn manually on the popup's
+        // draw list below; the WINDOW background must still be OPAQUE (not
+        // transparent) or widgets BEHIND the popup — the panel's Up/Down/Remove
+        // buttons — show THROUGH it and read as being on top.
+        ImGui::PushStyleColor(ImGuiCol_PopupBg, Col(Tok::C_Menu_Background));
 
         if (ImGui::BeginPopup(popupId,
                               ImGuiWindowFlags_NoMove |
@@ -637,11 +648,27 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                     y0 += rowH + itemGap;
                 }
 
-                ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
-                // A transparent child so the menu background shows through; the
-                // scrollbar overlays the right padding (BeginScroll draws it).
-                const float listH = m0.y + menuH - mPad.y - y0;
-                const ImVec4 listClip(m0.x, y0, m0.x + menuW, m0.y + menuH - mPad.y);
+                // Reserve a small GUTTER above / below the list for the scroll
+                // indicators, so items never scroll UNDER them. The gutters
+                // appear only when there is something off-view in that
+                // direction — measured from last frame's scroll (a 1-frame
+                // gutter latency on the very first open is imperceptible).
+                float& lastScroll = g_menuScroll[menuKey];
+                const float gutter = 9.0f * gs;
+                const float pitch  = rowH + itemGap;
+                const float total  = (float)vis.size() * pitch -
+                                     (vis.empty() ? 0.0f : itemGap);
+                const float availH = m0.y + menuH - mPad.y - y0;
+                const bool  gutTop = lastScroll > 1.0f;
+                const float listTop = y0 + (gutTop ? gutter : 0.0f);
+                float listH = availH - (gutTop ? gutter : 0.0f);
+                const bool overflowBelow =
+                    total - lastScroll > (availH - (gutTop ? gutter : 0.0f)) + 1.0f;
+                if (overflowBelow) listH -= gutter;
+                listH = std::max(pitch, listH);
+
+                ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, listTop));
+                const ImVec4 listClip(m0.x, listTop, m0.x + menuW, listTop + listH);
                 clip = &listClip;   // bounds the hit-test to the visible list
                 bool moreAbove = false, moreBelow = false;
                 ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
@@ -649,9 +676,6 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                                     ImVec2(menuW - mPad.x * 2.0f, listH))) {
                     const ImVec2 base = ImGui::GetCursorScreenPos();
                     const float rowW = ImGui::GetContentRegionAvail().x;
-                    const float pitch = rowH + itemGap;
-                    const float total = (float)vis.size() * pitch -
-                        (vis.empty() ? 0.0f : itemGap);
                     ImGui::Dummy(ImVec2(rowW, std::max(total, 1.0f)));
                     // Blender-style: the view stays PUT while the highlight
                     // moves within it, and only scrolls by ONE row when the
@@ -665,6 +689,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                         else if (rowBot > sy + listH)  ImGui::SetScrollY(rowBot - listH);
                     }
                     const float sy = ImGui::GetScrollY();
+                    lastScroll = sy;
                     moreAbove = sy > 1.0f;
                     moreBelow = sy + listH < total - 1.0f;
                     ImDrawList* cdl = ImGui::GetWindowDrawList();
@@ -674,22 +699,24 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                 }
                 UI::EndScroll();
                 ImGui::PopStyleColor();
-                // Up / down chevron indicators when items sit off-view.
+                // Up / down chevron indicators, drawn INSIDE the reserved
+                // gutters (above / below the list) so items never overlap them.
                 {
                     const ImU32 icol = ImGui::ColorConvertFloat4ToU32(
                         Col(Tok::C_Menu_ColumnHeaderText));
                     const float cxm = m0.x + menuW * 0.5f;
                     if (moreAbove) {
-                        const float ty = y0 + 1.0f * gs;
-                        mdl->AddTriangleFilled(ImVec2(cxm - 4*gs, ty + 3*gs),
-                                               ImVec2(cxm + 4*gs, ty + 3*gs),
+                        const float ty = y0 + (gutter - 4.0f * gs) * 0.5f;
+                        mdl->AddTriangleFilled(ImVec2(cxm - 4*gs, ty + 4*gs),
+                                               ImVec2(cxm + 4*gs, ty + 4*gs),
                                                ImVec2(cxm, ty), icol);
                     }
                     if (moreBelow) {
-                        const float ty = m0.y + menuH - mPad.y - 4.0f * gs;
+                        const float ty = listTop + listH +
+                                         (gutter - 4.0f * gs) * 0.5f;
                         mdl->AddTriangleFilled(ImVec2(cxm - 4*gs, ty),
                                                ImVec2(cxm + 4*gs, ty),
-                                               ImVec2(cxm, ty + 3*gs), icol);
+                                               ImVec2(cxm, ty + 4*gs), icol);
                     }
                 }
             } else {
