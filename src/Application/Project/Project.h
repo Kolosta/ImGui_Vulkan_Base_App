@@ -32,14 +32,15 @@ struct Project {
     std::unique_ptr<Ink::Document> document;
 
     // Reset to a brand-new empty project: fresh document with one default
-    // page. (The caller re-hands the new document to the engine.)
-    void Reset() {
+    // page (size overridable — a module supplies its own via DefaultPageSize).
+    // The caller re-hands the new document to the engine.
+    void Reset(double pageW = 1920.0, double pageH = 1080.0) {
         name.clear();
         path.clear();
         moduleId.clear();
         dirty = false;
         document = std::make_unique<Ink::Document>();
-        document->AddPage("Page 1", { 0, 0 }, { 1920, 1080 });
+        document->AddPage("Page 1", { 0, 0 }, { pageW, pageH });
     }
 
     // Title shown in the title bar.

@@ -205,9 +205,10 @@ private:
     // Build the default Style (fill+stroke) from the EditContext swatches.
     Ink::Style DefaultStyle() const;
     // Push an already-applied reversible command onto the doc undo stack.
+    // Also a Modules::ModuleHost service (module edits undo like core ones).
     void PushDocCommand(const std::string& label,
                         std::function<void(Ink::Document&)> undo,
-                        std::function<void(Ink::Document&)> redo);
+                        std::function<void(Ink::Document&)> redo) override;
     // Recompute the selection's basis (orientation) and pivot (doc space).
     void ComputeTransformFrame(Ink::DVec2& pivot, Ink::DVec2& bx, Ink::DVec2& by) const;
     // Selection bbox in document space (Object Mode; false when empty).
@@ -405,7 +406,7 @@ private:
     // ── Info log (Blender-style action feed) + Dev data editor ───────────────
     struct InfoEntry { uint64_t frame; std::string text; std::string detail; };
     std::vector<InfoEntry> infoLog_;
-    void LogInfoAction(const std::string& text);
+    void LogInfoAction(const std::string& text) override;   // ModuleHost service
     void LogInfoAction(const std::string& text, const std::string& detail);
     static std::string FormatActionDetail(
         const std::vector<std::pair<std::string, std::string>>& kv);
@@ -448,9 +449,12 @@ private:
     void RequestNewFile(LayoutPreset preset);
     void DoNewFile(LayoutPreset preset, bool applyLayout);
     void RenderUnsavedDialog();   // the modal; called each frame from Update()
-    // Fresh document into project_ + hand it to the Ink engine. Transitional:
-    // also seeds the demo content (until the drawing tools land, Lot 8).
-    void ResetDocument();
+    // Fresh document into project_ + hand it to the Ink engine. `seedDemo`
+    // seeds the transitional Classic demo content (module projects skip it —
+    // the module seeds its own via OnDocumentCreated); `pageW/pageH` size the
+    // default page (modules override via DefaultPageSize).
+    void ResetDocument(bool seedDemo = true,
+                       double pageW = 1920.0, double pageH = 1080.0);
 
     // ── Modules ──────────────────────────────────────────────────────────────
     void RegisterModules();
@@ -458,9 +462,11 @@ private:
     void DoOpenModule(const std::string& moduleId);
     // nullptr = Classic mode. rebuildLayout=false keeps the current zone tree.
     void ActivateModule(Modules::IModule* mod, bool rebuildLayout = true);
-    // Modules::ModuleHost — the app services a module may drive. The document
-    // services return with Ink (ROADMAP Lot 11).
+    // Modules::ModuleHost — the app services a module may drive (the Ink
+    // document services landed with Lot 11; PushDocCommand / LogInfoAction
+    // above are also host services).
     void MarkDirty() override;
+    Ink::Document* Document() override { return project_.document.get(); }
     // Commit the pending new-file/open-module intent (preset vs module).
     void CommitPendingNew();
     Modules::IModule*     activeModule_ = nullptr;     // nullptr = Classic

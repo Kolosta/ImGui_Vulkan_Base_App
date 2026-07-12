@@ -2,6 +2,7 @@
 
 #include "AcuFile.h"
 #include "PngWrite.h"
+#include "ModuleRegistry.h"
 
 #include <SDL3/SDL_dialog.h>
 
@@ -156,7 +157,6 @@ void Application::LoadProjectFromFile(const std::string& path) {
     project_.name  = data.projectName.empty() ? PathDisplayName(path)
                                               : data.projectName;
     project_.path  = path;
-    project_.moduleId = data.moduleId;   // module re-entry applies it in Lot 11
     project_.dirty = false;
 
     // Fresh editing state for the restored document (mirrors ResetDocument,
@@ -176,6 +176,20 @@ void Application::LoadProjectFromFile(const std::string& path) {
     viewportCtxOpen_ = false;
     osCursorHidden_  = false;
     if (ink_) ink_->SetDocument(project_.document.get());
+
+    // Restore the module the file was made with (Lot 11): activate it WITHOUT
+    // rebuilding the layout (the file's LAY blob is authoritative, applied
+    // below) and WITHOUT reseeding (the loaded content is the document).
+    // A moduleId whose module is not installed falls back to Classic but is
+    // KEPT on the project so a later save preserves it.
+    {
+        Modules::IModule* mod =
+            data.moduleId.empty()
+                ? nullptr
+                : Modules::ModuleRegistry::Instance().Get(data.moduleId);
+        if (mod || activeModule_) ActivateModule(mod, /*rebuildLayout=*/false);
+        project_.moduleId = data.moduleId;
+    }
 
     // The stored zone arrangement (tabs, cameras) — best-effort: a malformed
     // blob leaves the current layout in place.

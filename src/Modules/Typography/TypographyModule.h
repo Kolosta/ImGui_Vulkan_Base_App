@@ -20,6 +20,10 @@ public:
     LayoutSpec BuildLayout() const override;
     void       ConfigureCapabilities(Capabilities& caps) const override;
     std::vector<std::string> AllowedEditors() const override;
+    // Ink document hooks (Lot 11): a square em canvas seeded with the glyph
+    // working guides (em square, baseline) built through the typed ops.
+    std::pair<float, float> DefaultPageSize() const override;
+    void OnDocumentCreated(Ink::Document& doc) override;
 };
 
 }  // namespace App::Modules::Typography

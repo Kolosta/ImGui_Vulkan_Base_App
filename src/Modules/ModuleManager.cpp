@@ -46,10 +46,19 @@ void Application::CommitPendingNew() {
 
 void Application::DoOpenModule(const std::string& moduleId) {
     Modules::IModule* mod = Modules::ModuleRegistry::Instance().Get(moduleId);
-    // Fresh blank project, no preset layout yet — the module supplies its own
-    // arrangement via ActivateModule. (Honouring the module's DefaultPageSize()
-    // returns with the module document services — docs/Ink/ROADMAP.md Lot 11.)
-    ResetDocument();
+    // Fresh blank project sized to the module's default page; the Classic demo
+    // seed stays OUT of module projects — the module builds its own starter
+    // content through the typed document ops (OnDocumentCreated, Lot 11).
+    double pageW = 1920.0, pageH = 1080.0;
+    if (mod) {
+        const auto [w, h] = mod->DefaultPageSize();
+        if (w > 0.0f && h > 0.0f) { pageW = w; pageH = h; }
+    }
+    ResetDocument(/*seedDemo=*/mod == nullptr, pageW, pageH);
+    if (mod && project_.document) {
+        mod->BindHost(this);            // host services live before OnActivate
+        mod->OnDocumentCreated(*project_.document);
+    }
     ActivateModule(mod);
 }
 

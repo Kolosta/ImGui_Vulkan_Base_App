@@ -464,11 +464,11 @@ void Application::Action_NewFile() {
     DoNewFile(LayoutPreset::General, /*applyLayout=*/activeModule_ != nullptr);
 }
 
-// Fresh document into the project + hand it to the Ink engine. Transitional:
-// seeds the demo content so the Viewport shows something until the drawing
-// tools land (docs/Ink/ROADMAP.md Lot 8).
-void Application::ResetDocument() {
-    project_.Reset();
+// Fresh document into the project + hand it to the Ink engine. Classic
+// projects seed the transitional demo content; module projects pass
+// seedDemo=false and seed their own via IModule::OnDocumentCreated (Lot 11).
+void Application::ResetDocument(bool seedDemo, double pageW, double pageH) {
+    project_.Reset(pageW, pageH);
     // Fresh editing state for the new document (Lot 8).
     edit_.Clear();
     edit_.mode = EditorMode::Object;
@@ -485,7 +485,7 @@ void Application::ResetDocument() {
     viewportCtxOpen_ = false;
     osCursorHidden_ = false;   // (cursor visibility is driven from Update)
     if (ink_) {
-        Ink::SeedDemoDocument(*project_.document);
+        if (seedDemo) Ink::SeedDemoDocument(*project_.document);
         ink_->SetDocument(project_.document.get());
     }
 }

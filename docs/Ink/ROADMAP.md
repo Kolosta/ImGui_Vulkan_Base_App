@@ -130,6 +130,17 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   through the same dialog; recent files re-enabled.)*
 - [ ] **Lot 11 — Modules re-entry**: ModuleAPI regains document hooks (typed,
   Ink-based); IofMapping and Typography rebuilt on Ink where they belong.
+  *(Contract layer delivered 2026-07-13, ABI v2: ModuleHost exposes the Ink
+  document services — `Document()`, `PushDocCommand` (module edits land on the
+  shared undo stack), `LogInfoAction` — and IModule gained
+  `OnDocumentCreated(Ink::Document&)`; opening a module now sizes the default
+  page per `DefaultPageSize()` and seeds via the module's typed ops instead of
+  the Classic demo; opening an .acu re-activates the module recorded in its
+  META (keeping the file's layout; an uninstalled module falls back to Classic
+  without losing the id). Typography rides the hooks (1000-unit em canvas +
+  Guides collection: em square, baseline, x-height, cap height as viewport-px
+  hairlines). REMAINING: the IofMapping rebuild on Ink — symbol set, print
+  layers, symbol viewer, map settings — which completes this lot.)*
 - [ ] **Lot 6 (deferred) — Images**: run here, after modules. Import
   (decode app-side), bindless texture table, image paints & ImageNode;
   `images` bench.
