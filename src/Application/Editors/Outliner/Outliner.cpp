@@ -350,7 +350,6 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
 // ── Live lightweight vector preview (Layers view) ─────────────────────────────
 
 void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
-    Ink::Document& doc = *project_.document;
     auto& ds = DS::DesignSystem::Instance();
     ImDrawList* dl = ImGui::GetWindowDrawList();
 
@@ -359,54 +358,16 @@ void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
     dl->AddRectFilled(mn, mx, ImGui::ColorConvertFloat4ToU32(ImVec4(1, 1, 1, 1)), rad);
     dl->AddRect(mn, mx, ImGui::ColorConvertFloat4ToU32(
         ol::SafeColor(Tok::S_Color_Border_Default, ImVec4(0.4f,0.4f,0.4f,1))), rad);
+    if (!ink_) return;
 
-    // Collect the node's subtree geometry in WORLD space as flattened SUBPATHS
-    // (fine tolerance → smooth curves). Each closed subpath is filled with
-    // ImGui's ANTI-ALIASED concave polygon fill (no manual triangulation, so
-    // no seams / colour bleeding, and concave shapes like stars are exact);
-    // the outline is drawn only for paths that actually carry a stroke.
-    struct Part {
-        std::vector<Ink::DVec2> pts;
-        bool  closed;
-        bool  hasFill;   ImU32 fill;
-        bool  hasStroke; ImU32 stroke;
-    };
-    std::vector<Part> parts;
-    Ink::DRect bb;
-    auto col = [](const Ink::Color& c) {
-        auto s = [](float u){ return u <= 0.0031308f ? u*12.92f : 1.055f*std::pow(u,1/2.4f)-0.055f; };
-        return ImGui::ColorConvertFloat4ToU32(ImVec4(s(c.r), s(c.g), s(c.b), c.a));
-    };
-    int budget = 6000;
-    std::function<void(Ink::NodeId)> collect = [&](Ink::NodeId nid) {
-        if (budget <= 0) return;
-        const Ink::Node* n = doc.Find(nid);
-        if (!n || !n->visible) return;
-        if (n->kind == Ink::NodeKind::Path && !n->path.Empty()) {
-            const Ink::DMat23 w = doc.WorldTransform(nid);
-            const bool hasFill = !n->style.fills.empty() &&
-                n->style.fills.front().enabled &&
-                n->style.fills.front().kind == Ink::FillKind::Solid;
-            const bool hasStroke = !n->style.strokes.empty() &&
-                n->style.strokes.front().enabled;
-            const ImU32 fillCol = hasFill ? col(n->style.fills.front().paint.color) : 0;
-            const ImU32 strokeCol = hasStroke ? col(n->style.strokes.front().paint.color) : 0;
-            for (const auto& pl : Ink::geom::Flatten(n->path, 0.3)) {
-                Part p; p.closed = pl.closed;
-                p.hasFill = hasFill && pl.closed; p.fill = fillCol;
-                p.hasStroke = hasStroke; p.stroke = strokeCol;
-                p.pts.reserve(pl.points.size());
-                for (const auto& q : pl.points) {
-                    Ink::DVec2 wp = w.Apply(q); p.pts.push_back(wp); bb.Grow(wp);
-                }
-                budget -= (int)pl.points.size();
-                parts.push_back(std::move(p));
-            }
-        }
-        for (Ink::NodeId c : n->children) collect(c);
-    };
-    collect(id);
-    if (!bb.valid || parts.empty()) return;
+    // Pull the node's RESOLVED render pieces straight from the compiled Scene
+    // (patterns, instances, array / along-path copies and boolean outlines are
+    // all included — the same geometry the canvas draws). We fit the covered
+    // bbox into the card, so we flatten at a tolerance loose enough to be cheap
+    // but fine enough that the fit-down keeps curves smooth (the box is small).
+    static std::vector<Ink::Renderer::PreviewPiece> pieces;
+    const Ink::DRect bb = ink_->PreviewPieces(id, /*tolerance=*/1.0, pieces);
+    if (!bb.valid || pieces.empty()) { (void)ds; return; }
 
     // Fit the bbox into the card with padding (aspect-preserving).
     const float padF = 0.12f;
@@ -420,16 +381,23 @@ void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
         return ImVec2(ox + (float)((p.x - bb.min.x) * sc),
                       oy + (float)((p.y - bb.min.y) * sc));
     };
+    auto col = [](const Ink::Color& c) {
+        auto s = [](float u){ return u <= 0.0031308f ? u*12.92f : 1.055f*std::pow(u,1/2.4f)-0.055f; };
+        return ImGui::ColorConvertFloat4ToU32(ImVec4(s(c.r), s(c.g), s(c.b), c.a));
+    };
     dl->PushClipRect(mn, mx, true);
     std::vector<ImVec2> poly;
-    for (const Part& p : parts) {
+    for (const auto& p : pieces) {
         if (p.pts.size() < 2) continue;
         poly.clear();
         for (const auto& q : p.pts) poly.push_back(map(q));
-        if (p.hasFill && poly.size() >= 3)
-            dl->AddConcavePolyFilled(poly.data(), (int)poly.size(), p.fill);
-        if (p.hasStroke)
-            dl->AddPolyline(poly.data(), (int)poly.size(), p.stroke,
+        const ImU32 c = col(p.color);
+        // Painter order is preserved from the scene, so overlaps composite
+        // correctly. Fills use ImGui's anti-aliased concave polygon fill.
+        if (!p.isStroke && p.closed && poly.size() >= 3)
+            dl->AddConcavePolyFilled(poly.data(), (int)poly.size(), c);
+        else
+            dl->AddPolyline(poly.data(), (int)poly.size(), c,
                             p.closed ? ImDrawFlags_Closed : 0, 1.0f);
     }
     dl->PopClipRect();
@@ -828,22 +796,27 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
 
     ol::DotGutter();
     for (int d = 0; d < rrow.depth; ++d) ol::ChevronSpacer();
+    // A badge shares the CHEVRON slot for a clip/mask CHILD (crop-free = clip,
+    // contrast-square = mask) OR a CLIP GROUP (crop-free — the group is masked
+    // by its first child).
+    const bool clipMaskChild =
+        layers && (n->parent != Ink::kNullNode ||
+                   (n->kind == Ink::NodeKind::Group && n->clip));
+    const bool badgeIsMask = n->isMask;   // group-clip → crop-free
     if (rrow.hasChildren) {
         // Collections view: Blender expansion (collapsed by default, present
         // in expandedObjects = open). Layers keeps the collapsed-set default.
-        // Affinity clip/mask child: its badge shares the CHEVRON slot. When a
-        // chevron is also needed the badge stacks ABOVE it (rows are tall);
-        // when there is no chevron the badge takes the whole slot.
-        const bool clipMaskChild = layers && n->parent != Ink::kNullNode;
+        // When a chevron is also needed the badge stacks ABOVE it; otherwise
+        // it takes the whole slot.
         if (clipMaskChild) {
             const ImVec2 slot0 = ImGui::GetCursorScreenPos();
-            const char* badge = n->isMask ? "contrast-square" : "crop-free";
+            const char* badge = badgeIsMask ? "contrast-square" : "crop-free";
             const float bsz = ol::IconSize() * 0.78f;
             auto& im = VectorGraphics::IconManager::Instance();
             if (im.HasIcon(badge)) {
                 auto md = im.GetDefaultMetadata(badge);
                 const ImVec4 tint = ol::SafeColor(
-                    n->isMask ? Tok::S_Color_Accent_Default : Tok::S_Color_Text_Subtle,
+                    badgeIsMask ? Tok::S_Color_Accent_Default : Tok::S_Color_Text_Subtle,
                     ImVec4(.6f, .6f, .6f, 1));
                 for (auto& z : md.colorZones) z.customColor = tint;
                 const float bx = slot0.x + (ol::ChevronSlotW() - bsz) * 0.5f;
@@ -867,17 +840,17 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
             ol::Chevron("##ch", open, chevY);
             if (open == o.IsCollapsed(rrow.id)) o.ToggleCollapsed(rrow.id);
         }
-    } else if (layers && n->parent != Ink::kNullNode) {
-        // Clip/mask child with NO own children: the badge takes the chevron
-        // slot alone.
-        const char* badge = n->isMask ? "contrast-square" : "crop-free";
+    } else if (clipMaskChild) {
+        // Clip/mask child (or clip group) with NO own children: the badge
+        // takes the chevron slot alone.
+        const char* badge = badgeIsMask ? "contrast-square" : "crop-free";
         const float bsz = ol::IconSize() * 0.82f;
         auto& im = VectorGraphics::IconManager::Instance();
         const ImVec2 slot0 = ImGui::GetCursorScreenPos();
         if (im.HasIcon(badge)) {
             auto md = im.GetDefaultMetadata(badge);
             const ImVec4 tint = ol::SafeColor(
-                n->isMask ? Tok::S_Color_Accent_Default : Tok::S_Color_Text_Subtle,
+                badgeIsMask ? Tok::S_Color_Accent_Default : Tok::S_Color_Text_Subtle,
                 ImVec4(.6f, .6f, .6f, 1));
             for (auto& z : md.colorZones) z.customColor = tint;
             im.RenderIcon(ImGui::GetWindowDrawList(), badge,

@@ -507,6 +507,10 @@ private:
 
     // Core
     SDL_Window* window_      = nullptr;
+    // A real OS crosshair cursor, set while the object eyedropper is active
+    // (a drawn glyph lags the hardware cursor by a frame — the OS cursor is
+    // instant, like the transform-cursor swap). Lazily created, freed at exit.
+    SDL_Cursor* pickCursor_  = nullptr;
     bool        running_     = true;
     // True once ImGui + Vulkan backends are fully initialized. The SDL event
     // watch (live-resize) must NOT render before this.

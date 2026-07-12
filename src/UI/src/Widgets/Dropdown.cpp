@@ -148,37 +148,39 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     bool objPickActHovered = false;
 
     // The object picker's trailing ACTION slot (eyedropper / clear cross) sits
-    // just left of the chevron: its click must NEVER open the menu, so the
-    // trigger hit-button stops before it AND the action button is drawn FIRST
-    // (below) so it wins the overlap. Compute the action slot's left edge.
+    // just left of the chevron. Left edge of that slot:
     const float actionSlotX = objPick
         ? (btnMax.x - pad.x - (showChevron ? (chevSz + gap) : 0.0f) - iconSz)
         : btnMax.x;
 
-    // The action button — placed first so it takes priority for the click.
+    // Open on PRESS over the WHOLE trigger (label AND chevron both open the
+    // menu). Drawn FIRST at full width; the action button below is drawn AFTER
+    // so it wins its own sub-rect (clicking the eyedropper / cross never opens
+    // the menu). The visual hover uses this full-width button, so hovering the
+    // chevron / action zone keeps the trigger highlighted.
+    ImGui::InvisibleButton("##trigger", ImVec2(btnW, controlH),
+                           ImGuiButtonFlags_PressedOnClick);
+    bool clicked = ImGui::IsItemActivated();
+    bool hovered = ImGui::IsItemHovered();
+
+    // The action button (drawn AFTER the trigger → wins the overlap). It also
+    // keeps the trigger reading as hovered while the cursor is over it.
     if (objPick) {
         const ImRect actRect(ImVec2(actionSlotX, btnMin.y),
                              ImVec2(actionSlotX + iconSz, btnMax.y));
         ImGui::SetCursorScreenPos(actRect.Min);
         ImGui::PushID("##ddact");
-        if (ImGui::InvisibleButton("##a", ImVec2(iconSz, controlH))) {
+        if (ImGui::InvisibleButton("##a", ImVec2(iconSz, controlH),
+                                   ImGuiButtonFlags_PressedOnClick)) {
             if (cfg.objectPickerHasValue) result.cleared = true;
             else                          result.pickRequested = true;
         }
-        objPickActHovered = ImGui::IsItemHovered();
+        const bool actHov = ImGui::IsItemHovered();
+        objPickActHovered = actHov;
+        if (actHov) { hovered = true; clicked = false; }  // never opens the menu
         ImGui::PopID();
-        ImGui::SetCursorScreenPos(btnMin);   // restore for the trigger below
+        ImGui::SetCursorScreenPos(btnMin);   // restore layout cursor
     }
-
-    // Open on PRESS (not release): PressedOnClick fires the instant the button
-    // goes down, so the menu opens immediately under the cursor. The trigger
-    // hit-button stops before the action slot so the cross/eyedropper works.
-    const float triggerHitW =
-        objPick ? std::max(1.0f, actionSlotX - btnMin.x) : btnW;
-    ImGui::InvisibleButton("##trigger", ImVec2(triggerHitW, controlH),
-                           ImGuiButtonFlags_PressedOnClick);
-    const bool clicked = ImGui::IsItemActivated();
-    const bool hovered = ImGui::IsItemHovered();
     const ImU32 menuKey = ImGui::GetID("##menukey");
     if (clicked && !wasOpen) {
         g_menuSearch[menuKey].clear();   // a fresh menu starts unfiltered
@@ -638,39 +640,58 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                 ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
                 // A transparent child so the menu background shows through; the
                 // scrollbar overlays the right padding (BeginScroll draws it).
-                const ImVec4 listClip(m0.x, y0, m0.x + menuW,
-                                      m0.y + menuH - mPad.y);
+                const float listH = m0.y + menuH - mPad.y - y0;
+                const ImVec4 listClip(m0.x, y0, m0.x + menuW, m0.y + menuH - mPad.y);
                 clip = &listClip;   // bounds the hit-test to the visible list
+                bool moreAbove = false, moreBelow = false;
                 ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
                 if (UI::BeginScroll("##ddList",
-                                    ImVec2(menuW - mPad.x * 2.0f,
-                                           m0.y + menuH - mPad.y - y0))) {
+                                    ImVec2(menuW - mPad.x * 2.0f, listH))) {
                     const ImVec2 base = ImGui::GetCursorScreenPos();
                     const float rowW = ImGui::GetContentRegionAvail().x;
-                    const float total = (float)vis.size() * rowH +
-                        (float)std::max<int>(0, (int)vis.size() - 1) * itemGap;
+                    const float pitch = rowH + itemGap;
+                    const float total = (float)vis.size() * pitch -
+                        (vis.empty() ? 0.0f : itemGap);
                     ImGui::Dummy(ImVec2(rowW, std::max(total, 1.0f)));
-                    // Keep the keyboard-highlighted row in view — ONLY on the
-                    // frame the arrow key moved it (never every frame, which
-                    // would fight the mouse wheel / recentre in a loop).
+                    // Blender-style: the view stays PUT while the highlight
+                    // moves within it, and only scrolls by ONE row when the
+                    // highlight would leave the top or bottom edge. Done ONLY
+                    // on the frame an arrow moved it, so the wheel is free.
                     if (kbChanged != 0 && kbSel >= 0 && kbSel < (int)vis.size()) {
-                        const float rowTop = (float)kbSel * (rowH + itemGap);
+                        const float rowTop = (float)kbSel * pitch;
                         const float rowBot = rowTop + rowH;
                         const float sy = ImGui::GetScrollY();
-                        const float viewH = ImGui::GetContentRegionAvail().y > 0
-                            ? ImGui::GetWindowHeight() : rowH;
-                        if (rowTop < sy) ImGui::SetScrollY(rowTop);
-                        else if (rowBot > sy + viewH)
-                            ImGui::SetScrollY(rowBot - viewH);
+                        if (rowTop < sy)               ImGui::SetScrollY(rowTop);
+                        else if (rowBot > sy + listH)  ImGui::SetScrollY(rowBot - listH);
                     }
+                    const float sy = ImGui::GetScrollY();
+                    moreAbove = sy > 1.0f;
+                    moreBelow = sy + listH < total - 1.0f;
                     ImDrawList* cdl = ImGui::GetWindowDrawList();
                     for (size_t k = 0; k < vis.size(); ++k)
                         drawRow(cdl, vis[k], base.x,
-                                base.y + (float)k * (rowH + itemGap), rowW,
-                                (int)k == kbSel);
+                                base.y + (float)k * pitch, rowW, (int)k == kbSel);
                 }
                 UI::EndScroll();
                 ImGui::PopStyleColor();
+                // Up / down chevron indicators when items sit off-view.
+                {
+                    const ImU32 icol = ImGui::ColorConvertFloat4ToU32(
+                        Col(Tok::C_Menu_ColumnHeaderText));
+                    const float cxm = m0.x + menuW * 0.5f;
+                    if (moreAbove) {
+                        const float ty = y0 + 1.0f * gs;
+                        mdl->AddTriangleFilled(ImVec2(cxm - 4*gs, ty + 3*gs),
+                                               ImVec2(cxm + 4*gs, ty + 3*gs),
+                                               ImVec2(cxm, ty), icol);
+                    }
+                    if (moreBelow) {
+                        const float ty = m0.y + menuH - mPad.y - 4.0f * gs;
+                        mdl->AddTriangleFilled(ImVec2(cxm - 4*gs, ty),
+                                               ImVec2(cxm + 4*gs, ty),
+                                               ImVec2(cxm, ty + 3*gs), icol);
+                    }
+                }
             } else {
                 // ── Fixed layout (multi-column, or short single lists) ──
                 std::vector<float> colX((size_t)nCols, 0.0f);

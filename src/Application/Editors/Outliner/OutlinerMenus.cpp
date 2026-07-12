@@ -382,6 +382,31 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
               bm.submenu.push_back(std::move(e));
           }
           entries.push_back(std::move(bm)); }
+        // Clip to first child (clip GROUP): a group masks its whole subtree by
+        // its FIRST path child. Distinct from per-object clip/mask layers (a
+        // nested object clips to its parent). Group nodes only.
+        { const Ink::Node* ctxN = doc.Find(outlinerCtxNode_);
+          if (ctxN && ctxN->kind == Ink::NodeKind::Group) {
+              UI::MenuEntry e;
+              e.label = std::string(ctxN->clip ? "\xE2\x80\xA2 " : "") +
+                        "Clip to First Child";
+              e.tooltip = "Mask the whole group by its first shape "
+                          "(the topmost child in the list)";
+              const Ink::NodeId gid = outlinerCtxNode_;
+              const bool now = !ctxN->clip;
+              e.onClick = [this, gid, now]() {
+                  if (!project_.document) return;
+                  const Ink::Node* g = project_.document->Find(gid);
+                  const bool before = g ? g->clip : false;
+                  project_.document->SetClip(gid, now);
+                  PushDocCommand("Clip Group",
+                      [gid, before](Ink::Document& d) { d.SetClip(gid, before); },
+                      [gid, now](Ink::Document& d)     { d.SetClip(gid, now); });
+                  LogInfoAction(now ? "Clip Group" : "Un-clip Group");
+              };
+              entries.push_back(std::move(e));
+          }
+        }
         { UI::MenuEntry e; e.label = "Rename"; e.enabled = edit_.active != Ink::kNullNode;
           e.onClick = [this, &st]() {
               if (const Ink::Node* n = project_.document->Find(edit_.active)) {

@@ -258,24 +258,19 @@ void Application::Update() {
     if (osCursorHidden_ && transformOp_.Active())
         ImGui::SetMouseCursor(ImGuiMouseCursor_None);
 
-    // Object eyedropper: draw the eyedropper glyph at the cursor (foreground)
-    // and cancel the pick if the user clicks anywhere that ISN'T an object
-    // (a viewport / outliner click that missed already cancelled inside those
-    // editors, so a click that reaches HERE was on some other widget).
+    // Object eyedropper: swap the REAL OS cursor to a crosshair (instant, no
+    // frame lag — like the transform-cursor swap) rather than drawing a glyph.
+    // Esc cancels; a click that reaches here (not consumed by a viewport /
+    // outliner object hit) was on some other widget — cancel there too.
     if (ObjectPickActive()) {
-        auto& im = VectorGraphics::IconManager::Instance();
-        if (im.HasIcon("colorize")) {
-            const float sz = 22.0f * DesignSystem::DesignSystem::Instance().GetGlobalScale();
-            const ImVec2 mp = ImGui::GetIO().MousePos;
-            auto md = im.GetDefaultMetadata("colorize");
-            for (auto& z : md.colorZones)
-                z.customColor = DesignSystem::DesignSystem::Instance()
-                                    .GetColor(DesignSystem::Tok::S_Color_Accent_Default);
-            im.RenderIcon(ImGui::GetForegroundDrawList(), "colorize",
-                          ImVec2(mp.x, mp.y - sz), sz, md);
-        }
-        ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (!pickCursor_) pickCursor_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
+        if (pickCursor_) SDL_SetCursor(pickCursor_);
+        // Stop ImGui's per-frame cursor update from overriding ours.
+        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) CancelObjectPick();
+    } else {
+        // Restore ImGui's cursor management the frame the pick ends.
+        ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
     }
 
     // With every floating window now submitted, register the ones overlapping the
