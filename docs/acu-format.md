@@ -1,34 +1,44 @@
-# The `.acu` project format
+# The `.acu` project format (v2)
 
 `.acu` is Carto's proprietary project file: a **single binary file** that
-encapsulates an entire project — the vector document **and** the application
-state (zone layout, open tabs, per-view cameras) — so reopening it restores the
-editor exactly as it was left.
+encapsulates an entire project — the Ink vector document **and** the
+application state (zone layout, open tabs, per-view cameras) — so reopening it
+restores the editor exactly as it was left.
 
-Design goals: **compact and fast** (binary, length-prefixed, no text parsing),
-and **versioned with migration** — opening an older `.acu` succeeds and is
-upgraded to the current model (like Blender opening an old `.blend`), never
-rejected for being old.
+Design goals: **compact and fast** (binary, length-prefixed, no text parsing)
+and **versioned** — unknown *sections* are skipped (forward compatibility) and
+the document payload carries its own version so fields can be added without
+touching the container.
 
-Implemented by [`ProjectFile`](../src/Application/Project/ProjectFile.h)
-(`Save`/`Load`) with the layout blob produced/consumed by
-[`ZoneLayout::Serialize/Deserialize`](../src/Application/Layout/ZoneLayout.h).
+Implemented by [`AcuFile`](../src/Application/Project/AcuFile.h)
+(`Save`/`Load`, app-side — the Ink model does no file I/O; a parsed file is
+committed through `Ink::Document::Restore`). The save/open flow, the async
+dialogs and the thumbnail render live in
+[`ProjectIO.cpp`](../src/Application/App/ProjectIO.cpp).
+
+> **v2 is a clean break.** Container version 1 carried the previous engine's
+> document model, which is quarantined under `src/_legacy/` with that engine.
+> v1 files are refused with a clear message — never half-loaded. The container
+> FRAME, however, is unchanged, so the Windows shell thumbnail provider
+> (`src/Shell/thumbprovider/`) reads v1 and v2 files alike.
 
 ## Encoding primitives
 
 All integers are **little-endian**. Strings are `u32 length` + raw UTF-8 bytes
-(no terminator). Floats are IEEE-754 32-bit. There is no padding/alignment.
+(no terminator). `f32`/`f64` are IEEE-754. No padding/alignment. Everything
+spatial is `f64` (the document is double-precision end-to-end — unbounded
+canvas, docs/Ink/README req. 9).
 
 ## Container layout
 
 ```
 [ MAGIC   : u32 = 'A''C''U''1' (0x31554341 LE) ]
-[ version : u32 = container version (CURRENT_VERSION) ]
+[ version : u32 = 2 ]
 [ section ]*                       // until EOF
 ```
 
 Each **section** is tag + length + payload, so unknown sections (written by a
-newer app) are skipped cleanly — forward compatibility:
+newer app) are skipped cleanly:
 
 ```
 [ tag        : u32 ]
@@ -38,101 +48,138 @@ newer app) are skipped cleanly — forward compatibility:
 
 | Tag    | u32          | Contents |
 |--------|--------------|----------|
-| `META` | `0x4154454D` | App name (string), project display name (string) |
-| `DOC`  | `0x00434F44` | The vector document (see below) |
-| `LAY`  | `0x0059414C` | The zone-tree blob from `ZoneLayout::Serialize` |
-| `THMB` | `0x424D4854` | Page thumbnail: `[pngLen:u32][PNG bytes][artboard:u32][rmin.x,rmin.y][rsz.x,rsz.y : f32]` |
+| `META` | `0x4154454D` | App name (string), project display name (string), module id (string; "" = Classic) |
+| `DOC`  | `0x00434F44` | The Ink document (see below) |
+| `LAY`  | `0x0059414C` | The zone-tree blob from `ZoneLayout::Serialize` (opaque, self-versioned) |
+| `THMB` | `0x424D4854` | Page thumbnail: `[pngLen:u32][PNG bytes][pageId:u64][x,y,w,h : f32]` |
 
-`DOC` is required to load; `META`/`LAY`/`THMB` are best-effort. `THMB` holds a
-PNG preview of a chosen page/region (default Page 1), written LAST so a Windows
-shell thumbnail provider can locate it by walking the tag/length sections without
-parsing the document. Decoding happens into temporaries and is committed only
-once `DOC` parses, so a corrupt file never half-replaces the live project.
+`DOC` is required to load; `META`/`LAY`/`THMB` are best-effort. `THMB` is
+written **LAST** so the shell thumbnail provider locates it by walking the
+tag/length sections without parsing the document; its leading
+`[pngLen][PNG]` frame is identical to v1 (the provider reads only that). The
+PNG is a **real Ink render** of page 1 (strokes, patterns, blends, MSAA),
+captured through an off-screen view + `Renderer::ReadViewPixels` at save time.
+Decoding happens into temporaries and is committed only once `DOC` parses and
+`Document::Restore` validates it, so a corrupt file never half-replaces the
+live project.
 
-## DOCUMENT section
+## DOC section
 
-Carries its own internal version (`DOC_VERSION`, current = **11**) so the document
-model can evolve independently of the container; the decoder understands every
-version ≤ current and migrates older ones. The authoritative, per-version field
-list lives in the `DOC_VERSION` comment block at the top of
-`src/Application/Project/ProjectFile.cpp` (v3 multi-part objects, v4–v8 part
-type/spline, v9 collection colour, v10 page visibility, v11 unified Project-root
-tree with page↔collection nesting). The layout below describes the v2 baseline;
-later fields are appended per that comment block.
+Carries its own version (`kDocVersion`, current = **1** — a fresh counter for
+the Ink model). Decoders must read every version ≤ current and default new
+fields. Enums are stored as `u8` and clamped to their valid range on read.
 
-**v2 layout:**
 ```
-[ docVersion : u32 = 2 ]
-[ nextId     : u64 ]                // id allocator high-water mark
-[ cursor.x, cursor.y : f32 ]        // the 2D cursor (doc-units)
-[ collectionCount : u32 ]
-collection* {
-    [ id : u64 ][ name : string ][ parentId : u64 ]
-    [ childCount : u32 ] ( [ childCollectionId : u64 ] )*
-}
-[ artboardCount : u32 ]
-artboard* {
+[ docVersion : u32 = 1 ]
+[ nextId     : u64 ]                 // id-allocator high-water mark
+[ pageCount : u32 ]
+page* {
     [ id : u64 ][ name : string ]
-    [ pos.x, pos.y : f32 ][ size.x, size.y : f32 ]
-    [ shapeCount : u32 ]
-    shape* {
-        [ id : u64 ][ kind : u32 ][ name : string ][ visible : u8 ]
-        [ collectionId : u64 ]
-        [ pos.x, pos.y : f32 ][ size.x, size.y : f32 ]   // parametric params
-        [ origin.x, origin.y : f32 ]
-        transform { [ tx,ty : f32 ][ rotate : f32 ][ sx,sy : f32 ] }
-        [ nodeCount : u32 ]
-        node* {
-            [ pos.x,pos.y : f32 ][ hIn.x,hIn.y : f32 ][ hOut.x,hOut.y : f32 ]
-            [ flags : u8 ]   // bit0 = hasIn, bit1 = hasOut
-            [ mode  : u8 ]   // 0 Free, 1 Aligned, 2 Mirrored, 3 Vector
+    [ pos.x, pos.y : f64 ][ size.x, size.y : f64 ]
+    [ background : r,g,b,a f32 ]     // display substrate, not a layer
+    [ childCount : u32 ] ( [ childNodeId : u64 ] )*   // painter order
+}
+[ nodeCount : u32 ]
+node* {                              // written PRE-ORDER per page
+    [ id : u64 ][ kind : u8 ]        // 0 Group, 1 Path, 2 Instance
+    [ name : string ]
+    [ parent : u64 ][ page : u64 ]   // layer-tree owner + owning page
+    [ parentId : u64 ]               // object parenting (transform relation)
+    transform { tx,ty,sx,sy,rotation : f64 }
+    [ flags : u8 ]    // bit0 visible, bit1 locked, bit2 isolate,
+                      // bit3 clip (group), bit4 isMask
+    [ opacity : f32 ][ blend : u8 ]
+    [ childCount : u32 ] ( [ childNodeId : u64 ] )*
+    [ targetRef : u64 ]              // Instance target (0 = none)
+    path {
+        [ subpathCount : u32 ]
+        subpath* {
+            [ closed : u8 ][ anchorCount : u32 ]
+            anchor* { pos.x,y : f64; in.x,y : f64; out.x,y : f64
+                      [ flags : u8 ] }   // bit0 hasIn, bit1 hasOut,
+                                         // bits2-3 kind (Corner/Smooth/Symmetric)
         }
-        [ closed : u8 ]
-        fill   { [enabled:u8][r,g,b,a : f32] }
-        stroke { [enabled:u8][r,g,b,a : f32][width : f32] }
+    }
+    style {
+        [ fillCount : u32 ]
+        fill* {
+            [ kind : u8 ][ enabled : u8 ][ rule : u8 ][ opacity : f32 ]
+            paint { r,g,b,a : f32 }              // linear-light, straight alpha
+            pattern { [ motifRef : u64 ]
+                      [ spacingX, spacingY, phaseX, phaseY : f64 ]
+                      [ rotation, motifRotation, scale : f64 ]
+                      [ clip : u8 ][ anchor : u8 ] }
+        }
+        [ strokeCount : u32 ]
+        stroke* {
+            [ enabled : u8 ] paint { r,g,b,a : f32 }
+            [ width : f64 ][ align : u8 ][ cap : u8 ][ join : u8 ]
+            [ miterLimit : f64 ][ widthSpace : u8 ]
+            [ dashCount : u32 ] ( [ dash : f64 ] )* [ dashOffset : f64 ]
+        }
+    }
+    [ modifierCount : u32 ]
+    modifier* {                      // fixed layout: every field, every kind
+        [ kind : u8 ][ enabled : u8 ]
+        [ count : u32 ] step { tx,ty,sx,sy,rotation : f64 } [ stepSpace : u8 ]
+        [ motifRef : u64 ][ distribute : u8 ][ spacing : f64 ]
+        [ alongCount : u32 ][ align : u8 ][ startTrim : f64 ][ endTrim : f64 ]
+        [ op : u8 ][ operandRef : u64 ]
     }
 }
+[ collectionCount : u32 ]
+collection* {
+    [ id : u64 ][ name : string ][ colorTag : r,g,b,a f32 ][ visible : u8 ]
+    [ memberCount : u32 ] ( [ nodeId : u64 ] )*
+    [ childCount : u32 ]  ( [ collectionId : u64 ] )*
+}
 ```
 
-`kind` ∈ { 0 Rectangle, 1 Ellipse, 2 Triangle, 3 Polyline, 4 Curve, 5 Path }.
-Rectangle/Ellipse stay parametric (pos/size) until edited; other kinds carry the
-editable `node[]`. Shape colours are **user data** (not design-system tokens).
-
-**v1 → v2 migration:** the v1 shape stored parallel `points[]` + `segments[]`
-(Line|CubicBezier) and no transform/origin/collection. The v1 decoder reads that
-form and converts the path into `node[]` (cubic controls → node handles, mode
-Free), defaulting transform to identity, origin to (0,0), collection to root.
-Rectangle/Ellipse keep their parametric pos/size.
+Colors are **user data in linear light** (straight alpha), exactly as the
+model stores them — not design-system tokens.
 
 ## LAYOUT section
 
-An opaque blob owned by `ZoneLayout` (its own internal version). It encodes the
-binary split tree:
+An opaque blob owned by `ZoneLayout` (its own internal version — currently
+v7). It encodes the binary split tree: splits (orientation + absolute sizes)
+and leaves (tabs = editor ids + per-view double cameras + per-editor state).
+See `ZoneLayout::Serialize/Deserialize`.
 
-```
-[ blobVersion : u32 ]
-node:
-    [ nodeKind : u8 ]                       // 0 leaf, 1 split, 2 null
-    leaf  → [ activeTab : u32 ][ tabCount : u32 ]
-            tab* { [ editorKind : u32 ][ pan.x, pan.y : f32 ][ zoom : f32 ][ docUnit : u32 ] }
-    split → [ vertical : u8 ][ firstPx : f32 ][ initRatio : f32 ][ lastUsable : f32 ]
-            node (child a)  node (child b)
-```
+## Load/validate pipeline
 
-## Versioning & migration
+1. `AcuFile::Load` parses the container into `AcuData` **temporaries**
+   (bounds-checked reader — any overrun fails the load).
+2. `Ink::Document::Restore` validates STRUCTURE (id uniqueness, bidirectional
+   page/parent ↔ children consistency) — a malformed file is refused whole.
+   Non-structural references (parentId, instance targets, modifier refs,
+   collection members) pointing at missing nodes are sanitised to null /
+   dropped, so a file that lost a referenced node still opens.
+3. Only then does the app commit: document swap, editing-state reset,
+   `SetDocument` to the engine, layout blob applied, recent-files updated.
 
-- **Container**: `ProjectFile::CURRENT_VERSION`. `Load` rejects only a *newer*
-  container it cannot understand (`version > CURRENT_VERSION`); older versions
-  are read and upgraded.
-- **Section-local**: `DOC` and `LAY` each carry their own version, so a change
-  to one section bumps only that version. Each decoder keeps reading every prior
-  version and fills new fields with sensible defaults.
-- **Adding a field**: bump the relevant section version; in the decoder, read
-  the new field only when `version >= N`, defaulting it otherwise. Unknown whole
-  *sections* need no version bump — they are skipped via the tag/length frame.
+## Save pipeline (two-phase, one frame)
+
+A save request only **arms** the path. Right before `ink_->EndFrame()` the app
+sets up an off-screen view fit to page 1; EndFrame renders it through the
+normal pipeline; right after, `Renderer::ReadViewPixels` copies it back,
+`PngWrite.h` encodes it, and the file is written. The chained intent from the
+"Unsaved changes" dialog (new file / open module / open file) commits only
+after the write succeeds.
+
+## Versioning rules
+
+- **Container**: `AcuFile::kContainerVersion` (= 2). `Load` refuses
+  `version != 2`: older is the dead v1 model (clean break), newer is a file
+  from a future build.
+- **Section-local**: `DOC` carries `kDocVersion`; a decoder reads every prior
+  version and defaults new fields. Adding a field = bump `kDocVersion`, gate
+  the read on `version >= N`.
+- Unknown whole *sections* need no version bump — the tag/length frame skips
+  them.
 
 ## Not stored here
 
-Runtime/UI preferences that are global (not per-project) live in their own files:
-`design_system.bin`, `shortcuts.dat`, `imgui.ini`. The `.acu` file is purely the
-project document + its window/zone arrangement.
+Runtime/UI preferences that are global (not per-project) live in their own
+files: `design_system.bin`, `shortcuts.dat`, `imgui.ini`. Recent files live in
+the OS user-prefs folder (`SDL_GetPrefPath` → `recent.txt`). The `.acu` file
+is purely the project document + its window/zone arrangement.

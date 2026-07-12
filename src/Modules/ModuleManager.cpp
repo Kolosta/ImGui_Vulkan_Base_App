@@ -18,6 +18,7 @@ void Application::RegisterModules() {
 // activate the module immediately.
 void Application::RequestOpenModule(const std::string& moduleId) {
     pendingModuleId_ = moduleId;
+    pendingOpenPath_.clear();               // a module open, not a held file open
     if (project_.dirty) {
         unsavedDialogOpen_ = true;
     } else {
@@ -25,11 +26,16 @@ void Application::RequestOpenModule(const std::string& moduleId) {
     }
 }
 
-// Resolve the pending new-file intent: a module open (pendingModuleId_ set) or a
-// plain preset. Shared by the direct path, the unsaved dialog, and the post-save
+// Resolve the pending intent: an .acu open (pendingOpenPath_ set — held while
+// the unsaved dialog ran), a module open (pendingModuleId_), or a plain new-file
+// preset. Shared by the direct path, the unsaved dialog, and the post-save
 // continuation (newFileAfterSave_).
 void Application::CommitPendingNew() {
-    if (!pendingModuleId_.empty()) {
+    if (!pendingOpenPath_.empty()) {
+        const std::string path = pendingOpenPath_;
+        pendingOpenPath_.clear();
+        LoadProjectFromFile(path);
+    } else if (!pendingModuleId_.empty()) {
         std::string id = pendingModuleId_;
         pendingModuleId_.clear();
         DoOpenModule(id);

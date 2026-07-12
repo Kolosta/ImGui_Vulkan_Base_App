@@ -462,9 +462,22 @@ private:
     Modules::IModule*     activeModule_ = nullptr;     // nullptr = Classic
     Modules::Capabilities activeCapabilities_{};       // gates core features
 
+    // ── Project persistence — .acu v2 (ProjectIO.cpp, docs/Ink/ROADMAP Lot 10) ─
     // Apply a pending open/save resolved from the (async) file dialog. Called
-    // from ProcessEvents, OUTSIDE the ImGui frame. (Currently: logs only.)
+    // from RenderFrame, OUTSIDE the ImGui frame. An open with unsaved changes
+    // routes through the "Unsaved changes" dialog (pendingOpenPath_); a save is
+    // ARMED here and committed at the end of the frame (FinishSavePass) so the
+    // page-1 thumbnail can render through the normal Ink frame first.
     void ProcessPendingFileOp();
+    // Load `path`, replacing the document, editing state and zone layout.
+    void LoadProjectFromFile(const std::string& path);
+    // Around ink_->EndFrame(): set up the thumbnail view / read it back and
+    // write the armed .acu (both no-ops while no save is pending).
+    void PrepareSavePass();
+    void FinishSavePass();
+    // Async SDL dialog callbacks (any thread): stash into pendingFile_ only.
+    static void DialogOpenChosen(void* user, const char* const* files, int filter);
+    static void DialogSaveChosen(void* user, const char* const* files, int filter);
 
     // Recent files (most-recent first), shown on the splash and persisted in the
     // OS user-prefs folder (SDL_GetPrefPath) — NOT the working dir.
@@ -567,8 +580,16 @@ private:
     LayoutPreset pendingNewPreset_  = LayoutPreset::General;
     // When non-empty, the pending new-file intent targets a MODULE.
     std::string  pendingModuleId_;
-    // Set when the unsaved dialog chose "Save" but the project has no path yet.
+    // Set when the unsaved dialog chose "Save": the pending new/open intent
+    // commits only after the save actually writes (FinishSavePass).
     bool         newFileAfterSave_  = false;
+    // Open intent held while the "Unsaved changes" dialog resolves.
+    std::string  pendingOpenPath_;
+    // Armed save: the path to write at the END of this frame, after the
+    // thumbnail view rendered through ink_->EndFrame() (ProjectIO.cpp).
+    std::string  pendingSavePath_;
+    // Address = the Ink view key of the off-screen page-thumbnail view.
+    int          thumbViewKey_ = 0;
     // Window op requested by a system button, DEFERRED to the next frame's
     // ProcessEvents (SDL window calls mid-frame re-enter RenderFrame).
     enum class WindowOp { None, Minimize, ToggleMaximize, ToggleFullscreen, Close };

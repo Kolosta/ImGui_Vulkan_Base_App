@@ -16,14 +16,15 @@ namespace App {
 //  Ink engine, and editors mutate it through its typed operations (which feed
 //  the engine's change-driven recompiles).
 //
-//  Persistence (.acu v2) returns in docs/Ink/ROADMAP.md Lot 10.
+//  Persistence: .acu v2 (docs/acu-format.md) — AcuFile.h is the codec,
+//  App/ProjectIO.cpp the save/open flow.
 // ─────────────────────────────────────────────────────────────────────────────
 struct Project {
     std::string name;           // empty until saved (display name)
     std::string path;           // .acu file path; empty until saved
     bool        dirty = false;  // unsaved changes pending
-    // Module the project was created with ("" = Classic). Will be persisted in
-    // the .acu v2 META so reopening a file restores its module.
+    // Module the project was created with ("" = Classic). Persisted in the
+    // .acu META; applying it on open returns with module re-entry (Lot 11).
     std::string moduleId;
 
     // The document. Always valid after Reset(); recreated (never reused) for

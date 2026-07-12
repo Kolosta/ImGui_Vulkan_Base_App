@@ -12,6 +12,7 @@ add_library(Application STATIC
     App/Actions.cpp
     App/PrefsUndo.cpp
     App/ApplicationInit.cpp
+    App/ProjectIO.cpp
     App/ShortcutDefaults.cpp
     App/SecondaryWindow.cpp
 
@@ -35,6 +36,9 @@ add_library(Application STATIC
     Editors/Properties/PropertiesPaint.cpp
     Editors/Properties/PropertiesModifiers.cpp
     Editors/Info/InfoEditors.cpp
+
+    # Project: the .acu v2 persistence codec (docs/acu-format.md, Lot 10)
+    Project/AcuFile.cpp
 
     # Layout: the Blender-style dynamic zone tree (split into clusters)
     Layout/EditorRegistry.cpp

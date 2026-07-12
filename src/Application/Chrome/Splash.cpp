@@ -352,18 +352,16 @@ void Application::RenderUnsavedDialog() {
     if (ImGui::BeginPopupModal("Unsaved changes", nullptr,
                                ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::TextUnformatted("The current project has unsaved changes.");
-        ImGui::TextUnformatted("Save before creating a new file?");
+        ImGui::TextUnformatted("Save them first?");
         ImGui::Spacing();
         if (ImGui::Button("Save", ImVec2(110, 0))) {
-            if (project_.path.empty()) {
-                // No path yet → Save-As is async; finish the pending new/open
-                // after it commits (handled in ProcessPendingFileOp).
-                newFileAfterSave_ = true;
-                Action_SaveFileAs();
-            } else {
-                Action_SaveFile();
-                CommitPendingNew();   // preset OR module open
-            }
+            // The save commits at the end of the frame (thumbnail render +
+            // write — ProjectIO.cpp); the pending new/open/module intent runs
+            // only AFTER the file is actually on disk (or is dropped if the
+            // save-as dialog is cancelled / the write fails).
+            newFileAfterSave_ = true;
+            if (project_.path.empty()) Action_SaveFileAs();
+            else                       Action_SaveFile();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
@@ -374,6 +372,7 @@ void Application::RenderUnsavedDialog() {
         ImGui::SameLine();
         if (ImGui::Button("Cancel", ImVec2(110, 0))) {
             pendingModuleId_.clear();       // drop the pending intent
+            pendingOpenPath_.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::EndPopup();

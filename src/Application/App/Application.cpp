@@ -286,10 +286,17 @@ void Application::Update() {
     // not the native title bar.
     PublishOverlayTitleBarBlockers();
 
+    // An armed .acu save renders its page thumbnail through THIS frame: the
+    // off-screen view is set up here, recorded by EndFrame, read back and
+    // written to disk right after (ProjectIO.cpp).
+    PrepareSavePass();
+
     // Close the Ink frame: record every dirty view through the render graph
     // and submit. Same queue as the main pass — the graph's final barriers
     // order the canvas writes before ImGui's sampling, no semaphore needed.
     if (ink_) ink_->EndFrame();
+
+    FinishSavePass();
 
     // Dispatch happens after panels have set the context for this frame so
     // editor/region/tool match the user's current hover. Gate global actions on
@@ -446,15 +453,9 @@ void Application::Present() {
 }
 
 // ── File actions: the .acu project lifecycle ──────────────────────────────────
-// DISABLED during the Ink rework (Lot 0): the .acu v1 codec is quarantined
-// under src/_legacy/ and the v2 format arrives with the new document model
-// (docs/Ink/ROADMAP.md Lot 10). The actions stay registered so menus, splash
-// and shortcuts keep working; they log an Info entry instead of touching disk.
-
-namespace {
-constexpr const char* kFileOpsDisabledMsg =
-    "File save/open is disabled during the engine rework (see docs/Ink/ROADMAP.md)";
-} // namespace
+// Open/save/save-as and the two-phase save pass live in ProjectIO.cpp
+// (.acu v2 — docs/acu-format.md, docs/Ink/ROADMAP.md Lot 10). Here: the
+// project/document creation flows they chain into.
 
 void Application::Action_NewFile() {
     // Menu "New" = a fresh Classic project with no module. If a module is active,
@@ -509,36 +510,12 @@ void Application::DoNewFile(LayoutPreset preset, bool applyLayout) {
 void Application::RequestNewFile(LayoutPreset preset) {
     pendingNewPreset_ = preset;
     pendingModuleId_.clear();               // preset path (not a module open)
+    pendingOpenPath_.clear();               // and not a held file open
     if (project_.dirty) {
         unsavedDialogOpen_ = true;          // RenderUnsavedDialog() opens the modal
     } else {
         CommitPendingNew();
     }
-}
-
-void Application::Action_OpenFile()   { LogInfoAction("Open File", kFileOpsDisabledMsg); }
-void Application::Action_SaveFile()   { LogInfoAction("Save File", kFileOpsDisabledMsg); }
-void Application::Action_SaveFileAs() { LogInfoAction("Save File As", kFileOpsDisabledMsg); }
-
-void Application::ProcessPendingFileOp() {
-    // Drain any path stashed by an async dialog / a splash recent-file click and
-    // report that file I/O is offline. The plumbing (pendingFile_) is kept so the
-    // .acu v2 load/save (Lot 10) reconnects here without touching the callers.
-    int kind = 0; std::string path;
-    {
-        std::lock_guard<std::mutex> lk(pendingFile_.mtx);
-        kind = pendingFile_.kind; path = pendingFile_.path;
-        pendingFile_.kind = 0; pendingFile_.path.clear();
-    }
-    if (kind == 0) return;
-    LogInfoAction(kind == 1 ? "Open File" : "Save File", kFileOpsDisabledMsg);
-    // A "Save" armed from the unsaved-changes dialog can never commit while file
-    // I/O is offline — resolve the pending intent anyway so the flow completes.
-    if (kind == 2 && newFileAfterSave_) {
-        newFileAfterSave_ = false;
-        CommitPendingNew();
-    }
-    (void)path;
 }
 
 // ── Recent files (splash start screen) ────────────────────────────────────────
