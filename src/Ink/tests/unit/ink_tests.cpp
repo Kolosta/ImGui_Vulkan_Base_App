@@ -623,6 +623,111 @@ void TestSubtreeRoundtrip() {
     CHECK(da->parent == dup);   // intra-subtree parent remapped
 }
 
+// Document::Restore — the .acu load path (Lot 10): verbatim-id bulk install,
+// structural validation, dangling-reference sanitising.
+void TestRestore() {
+    // A document exercising every persisted feature.
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 5, 6 }, { 400, 300 });
+    const NodeId g = doc.AddGroup(page, "G");
+    doc.SetOpacity(g, 0.5f);
+    doc.SetBlend(g, BlendMode::Multiply);
+    doc.SetClip(g, true);
+    Style st = Style::Filled({ 1, 0, 0, 1 });
+    st.WithStroke({ 0, 0, 1, 1 }, 3.0);
+    st.strokes[0].align = StrokeAlign::Inside;
+    st.strokes[0].dashPattern = { 4.0, 2.0 };
+    const NodeId a = doc.AddPath(g, PathData::Ellipse(20, 20, 10, 8), st, "a");
+    const NodeId b = doc.AddPath(page, PathData::Rect(50, 0, 10, 10),
+                                 Style::Filled({ 0, 1, 0, 1 }), "b");
+    std::vector<Modifier> mods(1);
+    mods[0].kind = ModifierKind::Boolean;
+    mods[0].op = BooleanOp::Subtract;
+    mods[0].operandRef = b;
+    doc.SetModifiers(a, mods);
+    const NodeId inst = doc.AddInstance(page, g, "inst");
+    CHECK(doc.SetParent(b, inst));                 // object parenting relation
+    const NodeId coll = doc.AddCollection("C");
+    doc.AddToCollection(coll, a);
+    doc.SetCollectionColor(coll, { 0.1f, 0.2f, 0.3f, 1.0f });
+    const NodeId sub = doc.AddCollection("S", coll);
+
+    // Extract the plain containers, exactly like the .acu writer (pre-order).
+    std::vector<Page> pages(doc.Pages().begin(), doc.Pages().end());
+    std::vector<Node> nodes;
+    auto walk = [&](auto&& self, NodeId id) -> void {
+        const Node* n = doc.Find(id);
+        if (!n) return;
+        nodes.push_back(*n);
+        for (NodeId c : n->children) self(self, c);
+    };
+    for (const Page& p : pages)
+        for (NodeId c : p.children) walk(walk, c);
+    std::vector<Collection> colls(doc.Collections().begin(),
+                                  doc.Collections().end());
+    const NodeId nid = doc.PeekNextId();
+
+    // Round-trip into a FRESH document.
+    Document r;
+    CHECK(r.Restore(pages, nodes, colls, nid));
+    CHECK(r.NodeCount() == doc.NodeCount());
+    const Node* ra = r.Find(a);
+    CHECK(ra && ra->parent == g && ra->page == page);
+    CHECK(ra->path.Hash() == doc.Find(a)->path.Hash());
+    CHECK(ra->style.strokes.size() == 1);
+    CHECK(ra->style.strokes[0].align == StrokeAlign::Inside);
+    CHECK(ra->style.strokes[0].dashPattern.size() == 2);
+    CHECK(ra->modifiers.size() == 1 && ra->modifiers[0].operandRef == b);
+    const Node* rg = r.Find(g);
+    CHECK(rg && rg->clip && rg->blend == BlendMode::Multiply);
+    CHECK_NEAR(rg->opacity, 0.5f, 1e-6);
+    CHECK(r.Find(inst) && r.Find(inst)->targetRef == g);
+    CHECK(r.Find(b)->parentId == inst);
+    const Collection* rc = r.FindCollection(coll);
+    CHECK(rc && rc->members.size() == 1 && rc->members[0] == a);
+    CHECK_NEAR(rc->colorTag.r, 0.1f, 1e-6);
+    CHECK(r.IsChildCollection(sub));
+    // World transforms agree; the allocator keeps producing unique ids.
+    const DMat23 wa = doc.WorldTransform(b), wb = r.WorldTransform(b);
+    for (int i = 0; i < 6; ++i) CHECK_NEAR(wa.m[i], wb.m[i], 1e-12);
+    const NodeId fresh = r.AddPath(page, PathData::Rect(0, 0, 1, 1),
+                                   Style::Filled({ 0, 0, 0, 1 }), "fresh");
+    CHECK(fresh != kNullNode && fresh >= nid && !doc.Find(fresh));
+
+    // Malformed input is refused whole: duplicate id.
+    {
+        std::vector<Node> bad = nodes;
+        bad.push_back(bad.front());
+        Document d2;
+        CHECK(!d2.Restore(pages, bad, colls, nid));
+        CHECK(d2.NodeCount() == 0);
+    }
+    // Broken back-pointer (child listed under the page but claiming another
+    // parent) is refused.
+    {
+        std::vector<Node> bad = nodes;
+        for (Node& n : bad)
+            if (n.id == b) n.parent = a;
+        Document d2;
+        CHECK(!d2.Restore(pages, bad, colls, nid));
+    }
+    // A DANGLING non-structural reference is sanitised, not fatal.
+    {
+        std::vector<Node> loose = nodes;
+        for (Node& n : loose)
+            if (n.id == a) n.modifiers[0].operandRef = 999999;
+        Document d2;
+        CHECK(d2.Restore(pages, loose, colls, nid));
+        CHECK(d2.Find(a)->modifiers[0].operandRef == kNullNode);
+    }
+    // A stale allocator mark is raised past the highest installed id.
+    {
+        Document d2;
+        CHECK(d2.Restore(pages, nodes, colls, 1));
+        CHECK(d2.PeekNextId() > inst);
+    }
+}
+
 void TestOrganisation() {
     Document doc;
     const NodeId page = doc.AddPage("P", { 0, 0 }, { 400, 300 });
@@ -851,6 +956,7 @@ int main() {
     TestPicking();
     TestApplyScale();
     TestSubtreeRoundtrip();
+    TestRestore();
     TestSceneCompile();
 
     if (g_failures == 0) {

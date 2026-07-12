@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 namespace Ink {
 
@@ -216,6 +217,111 @@ void Document::Clear() {
     collections_.clear();
     changes_.clear();
     Log(kNullNode, ChangeKind::Removed);   // one "everything changed" marker
+}
+
+// ── Persistence (Lot 10) ─────────────────────────────────────────────────────
+
+bool Document::Restore(std::vector<Page> pages, std::vector<Node> nodes,
+                       std::vector<Collection> collections, NodeId nextId) {
+    // ── Validate STRUCTURE first (nothing installed on failure) ──────────────
+    // Id uniqueness across pages + nodes + collections (one allocator pool).
+    std::unordered_set<NodeId> ids;
+    NodeId maxId = 0;
+    auto claim = [&](NodeId id) {
+        if (id == kNullNode || !ids.insert(id).second) return false;
+        maxId = std::max(maxId, id);
+        return true;
+    };
+    for (const Page& p : pages)
+        if (!claim(p.id)) return false;
+    std::unordered_set<NodeId> nodeIds;
+    for (const Node& n : nodes) {
+        if (!claim(n.id)) return false;
+        nodeIds.insert(n.id);
+    }
+    for (const Collection& c : collections)
+        if (!claim(c.id)) return false;
+
+    // Bidirectional layer-tree consistency: every child list entry exists and
+    // points back; every node is reachable through exactly its declared owner.
+    std::unordered_map<NodeId, const Node*> nodeIdx;
+    nodeIdx.reserve(nodes.size());
+    for (const Node& n : nodes) nodeIdx.emplace(n.id, &n);
+    std::unordered_map<NodeId, const Page*> pageIdx;
+    pageIdx.reserve(pages.size());
+    for (const Page& p : pages) pageIdx.emplace(p.id, &p);
+    auto nodeAt = [&](NodeId id) -> const Node* {
+        auto it = nodeIdx.find(id);
+        return it == nodeIdx.end() ? nullptr : it->second;
+    };
+    auto pageAt = [&](NodeId id) -> const Page* {
+        auto it = pageIdx.find(id);
+        return it == pageIdx.end() ? nullptr : it->second;
+    };
+    auto listed = [](const std::vector<NodeId>& v, NodeId id) {
+        return std::find(v.begin(), v.end(), id) != v.end();
+    };
+    for (const Page& p : pages)
+        for (NodeId c : p.children) {
+            const Node* n = nodeAt(c);
+            if (!n || n->parent != kNullNode || n->page != p.id) return false;
+        }
+    for (const Node& n : nodes) {
+        for (NodeId c : n.children) {
+            const Node* ch = nodeAt(c);
+            if (!ch || ch->parent != n.id || ch->page != n.page) return false;
+        }
+        if (n.parent != kNullNode) {
+            const Node* pg = nodeAt(n.parent);
+            if (!pg || !listed(pg->children, n.id)) return false;
+        } else {
+            const Page* pp = pageAt(n.page);
+            if (!pp || !listed(pp->children, n.id)) return false;
+        }
+    }
+
+    // ── Sanitise NON-structural references (missing target → null/dropped) ──
+    for (Node& n : nodes) {
+        if (n.parentId != kNullNode &&
+            (n.parentId == n.id || !nodeIds.count(n.parentId)))
+            n.parentId = kNullNode;
+        if (n.targetRef != kNullNode &&
+            (n.targetRef == n.id || !nodeIds.count(n.targetRef)))
+            n.targetRef = kNullNode;
+        for (Modifier& m : n.modifiers) {
+            if (m.motifRef != kNullNode && !nodeIds.count(m.motifRef))
+                m.motifRef = kNullNode;
+            if (m.operandRef != kNullNode && !nodeIds.count(m.operandRef))
+                m.operandRef = kNullNode;
+        }
+    }
+    std::unordered_set<NodeId> collIds;
+    for (const Collection& c : collections) collIds.insert(c.id);
+    for (Collection& c : collections) {
+        c.members.erase(std::remove_if(c.members.begin(), c.members.end(),
+                            [&](NodeId id) { return !nodeIds.count(id); }),
+                        c.members.end());
+        c.childCollections.erase(
+            std::remove_if(c.childCollections.begin(), c.childCollections.end(),
+                           [&](NodeId id) {
+                               return id == c.id || !collIds.count(id);
+                           }),
+            c.childCollections.end());
+    }
+
+    // ── Install ──────────────────────────────────────────────────────────────
+    nodes_.clear();
+    for (Node& n : nodes) {
+        const NodeId id = n.id;
+        nodes_.emplace(id, std::move(n));
+    }
+    pages_       = std::move(pages);
+    collections_ = std::move(collections);
+    nextId_      = std::max(nextId, maxId + 1);
+    changes_.clear();
+    Log(kNullNode, ChangeKind::Removed);   // "everything changed" marker
+    for (const Page& p : pages_) Log(p.id, ChangeKind::Added);
+    return true;
 }
 
 // ── Queries ──────────────────────────────────────────────────────────────────

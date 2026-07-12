@@ -114,8 +114,20 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   drag-and-drop reordering in the tree is a follow-up — reorder/reparent are
   exposed as ops and used by grouping; collection delete is not yet on the
   undo stack.)*
-- [ ] **Lot 10 — Persistence**: `.acu` v2 (clean break), save/open/recent
+- [x] **Lot 10 — Persistence**: `.acu` v2 (clean break), save/open/recent
   re-enabled, thumbnails re-enabled through headless Ink render.
+  *(Delivered 2026-07-12. App-side codec `AcuFile` (docs/acu-format.md):
+  same container frame as v1 — magic/sections, so the shell thumbnail DLL
+  needs no update — with container version 2 and a fresh Ink DOC payload
+  (pages, full nodes, styles, modifiers, collections, f64 throughout); v1
+  files are refused with a clear message. Ink gained `Document::Restore`
+  (bulk verbatim-id install, structural validation, dangling-ref
+  sanitising) and `Renderer::ReadViewPixels` (synchronous display
+  readback). Saves are two-phase inside one frame: the page-1 thumbnail
+  renders through the REAL pipeline in an off-screen view, is read back
+  and PNG-encoded, then the file writes; the unsaved-changes dialog's
+  chained intent commits only after the write. Open guards dirty projects
+  through the same dialog; recent files re-enabled.)*
 - [ ] **Lot 11 — Modules re-entry**: ModuleAPI regains document hooks (typed,
   Ink-based); IofMapping and Typography rebuilt on Ink where they belong.
 - [ ] **Lot 6 (deferred) — Images**: run here, after modules. Import

@@ -29,6 +29,7 @@ add_library(Ink STATIC
 
     # Render — engine root, GPU residency/tables, the passes
     src/Render/Renderer.cpp
+    src/Render/Readback.cpp
     src/Render/GpuScene.cpp
     src/Render/DemoScene.cpp
     src/Render/Passes/ContentPass.cpp

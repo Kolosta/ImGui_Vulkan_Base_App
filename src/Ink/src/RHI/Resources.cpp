@@ -39,6 +39,33 @@ Buffer CreateHostBuffer(Device& dev, VkDeviceSize size, VkBufferUsageFlags usage
     return b;
 }
 
+Buffer CreateReadbackBuffer(Device& dev, VkDeviceSize size, VkBufferUsageFlags usage) {
+    Buffer b;
+    b.size = size;
+    VkBufferCreateInfo bi{};
+    bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bi.size  = size;
+    bi.usage = usage;
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO;
+    // RANDOM host access → the allocation lands in CACHED memory the CPU can
+    // read at full speed (SEQUENTIAL_WRITE may map write-combined memory,
+    // where reads are pathologically slow).
+    ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+               VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VmaAllocationInfo info{};
+    if (vmaCreateBuffer(dev.allocator(), &bi, &ai, &b.buffer, &b.allocation,
+                        &info) != VK_SUCCESS)
+        return {};
+    b.mapped = info.pMappedData;
+    return b;
+}
+
+void InvalidateBuffer(Device& dev, Buffer& b) {
+    if (b.allocation)
+        vmaInvalidateAllocation(dev.allocator(), b.allocation, 0, VK_WHOLE_SIZE);
+}
+
 void DestroyBuffer(Device& dev, Buffer& b) {
     if (b.buffer)
         vmaDestroyBuffer(dev.allocator(), b.buffer, b.allocation);

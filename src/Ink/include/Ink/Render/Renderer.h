@@ -107,6 +107,15 @@ public:
     DRect PreviewPieces(NodeId id, double tolerance,
                         std::vector<PreviewPiece>& out) const;
 
+    // ── Synchronous canvas readback (docs/Ink/ROADMAP.md Lot 10) ──────────
+    // Copy a view's presented canvas back to the CPU: `rgba` receives
+    // width×height×4 bytes, RGBA8, sRGB-encoded, top-left origin — exactly
+    // what the UI samples, PNG-ready. BLOCKS until the GPU is idle (a save /
+    // export operation, never a per-frame path). False when the view has not
+    // rendered yet.
+    bool ReadViewPixels(View* view, std::vector<std::uint8_t>& rgba,
+                        std::uint32_t& width, std::uint32_t& height);
+
 private:
     std::unique_ptr<detail::RendererImpl> impl_;
 };

@@ -185,6 +185,24 @@ public:
     // belongs to is invisible) — the Scene's collection filter.
     bool   HiddenByCollection(NodeId node) const;
 
+    // ── Persistence support (Lot 10) ─────────────────────────────────────────
+    // Wholesale-install a document read back from disk. The .acu codec lives
+    // APP-SIDE (this model does no file I/O); it parses the file into these
+    // plain containers and commits them here in one step. Ids install VERBATIM
+    // (ids are never reused, so restored ids are the same logical entities).
+    // Structural invariants (page/parent ↔ children consistency, id
+    // uniqueness) are validated FIRST — malformed input leaves the document
+    // untouched and returns false. Non-structural references (parentId,
+    // instance targets, modifier refs, collection members) pointing at missing
+    // nodes are sanitised to null / dropped instead of failing, so a file that
+    // lost a referenced node still opens. `nextId` is raised to clear every
+    // installed id if the stored allocator mark is stale.
+    bool Restore(std::vector<Page> pages, std::vector<Node> nodes,
+                 std::vector<Collection> collections, NodeId nextId);
+    // The id-allocator high-water mark (persisted so restored documents keep
+    // allocating unique ids).
+    NodeId PeekNextId() const { return nextId_; }
+
     // ── Editing / undo support (Lot 8) ───────────────────────────────────────
     // A detached copy of a node subtree with its placement — the currency of
     // command-based undo (Remove ↔ Restore round-trips exactly).

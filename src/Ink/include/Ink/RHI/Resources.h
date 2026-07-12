@@ -29,6 +29,13 @@ struct Buffer {
 Buffer CreateDeviceBuffer(Device& dev, VkDeviceSize size, VkBufferUsageFlags usage);
 // Host-visible, persistently-mapped buffer (per-frame data: overlay vertices).
 Buffer CreateHostBuffer(Device& dev, VkDeviceSize size, VkBufferUsageFlags usage);
+// Host-visible, persistently-mapped buffer the CPU READS back from (random
+// host access → cached memory, unlike the write-combined CreateHostBuffer).
+// Used by the synchronous thumbnail readback (Lot 10).
+Buffer CreateReadbackBuffer(Device& dev, VkDeviceSize size, VkBufferUsageFlags usage);
+// Make GPU writes to a mapped buffer visible to the CPU (no-op on coherent
+// memory). Call before reading a readback buffer.
+void   InvalidateBuffer(Device& dev, Buffer& b);
 void   DestroyBuffer(Device& dev, Buffer& b);
 
 struct Image {
