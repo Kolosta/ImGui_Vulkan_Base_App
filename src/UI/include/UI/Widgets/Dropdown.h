@@ -79,6 +79,9 @@ struct DropdownConfig {
     // owner reads DropdownResult::pickRequested / cleared to drive it.
     bool objectPicker = false;
     bool objectPickerHasValue = false;
+    // When set and the trigger label is empty, draw `placeholder` in the
+    // subtle/disabled text colour instead of the normal label.
+    std::string placeholder;
     // Buttons fused to the trigger (ButtonGroup look). Rendered left/right per side.
     std::vector<DropdownButton> buttons;
     // CUSTOM BODY: when set, the popup renders THIS instead of the item list (the

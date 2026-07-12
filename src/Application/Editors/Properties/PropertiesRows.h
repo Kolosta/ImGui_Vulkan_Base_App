@@ -245,12 +245,9 @@ inline bool NodePickerRow(const char* label, const Ink::Document& doc,
     cfg.triggerWidth = w;
     cfg.objectPicker = true;
     cfg.objectPickerHasValue = (*ref != Ink::kNullNode);
+    cfg.placeholder = "Object";   // grey placeholder when empty (no "None" row)
+    (void)allowNone;              // clearing is the trailing cross, not a row
     int cur = -1;
-    if (allowNone) {
-        UI::DropdownItem it; it.label = "None"; cfg.items.push_back(it);
-        ids.push_back(Ink::kNullNode);
-        if (*ref == Ink::kNullNode) cur = 0;
-    }
     for (const Ink::Page& page : doc.Pages()) {
         std::vector<Ink::NodeId> stack(page.children.begin(), page.children.end());
         while (!stack.empty()) {
@@ -269,12 +266,12 @@ inline bool NodePickerRow(const char* label, const Ink::Document& doc,
     }
     cfg.selectedIndex = cur;
     cfg.triggerLabel = cur >= 0 ? cfg.items[(std::size_t)cur].label
-                                : std::string("Pick\xE2\x80\xA6");
+                                : std::string();   // empty → grey placeholder
     ImGui::PushID(label);
     UI::DropdownResult r = UI::Dropdown(cfg);
     ImGui::PopID();
     if (pickReq) *pickReq = r.pickRequested;
-    if (r.cleared && allowNone) { *ref = Ink::kNullNode; return true; }
+    if (r.cleared) { *ref = Ink::kNullNode; return true; }
     if (r.changed && r.selected >= 0 && r.selected < (int)ids.size() &&
         ids[(std::size_t)r.selected] != *ref) {
         *ref = ids[(std::size_t)r.selected];

@@ -132,6 +132,16 @@ void Application::PropFillsSection(Ink::NodeId id) {
                     if (ImGui::IsItemDeactivatedAfterEdit())
                         liveApply("Pattern Angle", true);
 
+                    float motifDeg =
+                        (float)(f.pattern.motifRotation * 180.0 / 3.14159265358979);
+                    if (pr::DragFloat("Motif angle", &motifDeg, 0.5f, -360.0f,
+                                      360.0f, 1, "\xC2\xB0")) {
+                        f.pattern.motifRotation = motifDeg * 3.14159265358979 / 180.0;
+                        liveApply("Motif Angle", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Motif Angle", true);
+
                     float sc = (float)f.pattern.scale;
                     if (pr::DragFloat("Scale", &sc, 0.01f, 0.01f, 100.0f, 2)) {
                         f.pattern.scale = sc;

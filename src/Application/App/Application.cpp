@@ -264,14 +264,14 @@ void Application::Update() {
     // editors, so a click that reaches HERE was on some other widget).
     if (ObjectPickActive()) {
         auto& im = VectorGraphics::IconManager::Instance();
-        if (im.HasIcon("eyedropper")) {
+        if (im.HasIcon("colorize")) {
             const float sz = 22.0f * DesignSystem::DesignSystem::Instance().GetGlobalScale();
             const ImVec2 mp = ImGui::GetIO().MousePos;
-            auto md = im.GetDefaultMetadata("eyedropper");
+            auto md = im.GetDefaultMetadata("colorize");
             for (auto& z : md.colorZones)
                 z.customColor = DesignSystem::DesignSystem::Instance()
                                     .GetColor(DesignSystem::Tok::S_Color_Accent_Default);
-            im.RenderIcon(ImGui::GetForegroundDrawList(), "eyedropper",
+            im.RenderIcon(ImGui::GetForegroundDrawList(), "colorize",
                           ImVec2(mp.x, mp.y - sz), sz, md);
         }
         ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);

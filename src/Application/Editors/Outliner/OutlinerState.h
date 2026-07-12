@@ -40,6 +40,14 @@ struct OutlinerState {
     uint64_t              active = 0;  // last-clicked row (any kind)
     int  activeModifier = -1;          // modifier row picked (Properties focus)
 
+    // ── Selected CHILD row (Collections view): a modifier or linked-data row
+    // reads as SELECTED here even though the document selection is its owning
+    // object. selChildObj = the owning object id; selChildMod = the modifier
+    // index (or -1 for a linked-data row). ──
+    uint64_t selChildObj = 0;
+    int      selChildMod = -1;         // ≥0 modifier row; -1 & obj set = data row
+    void ClearChildSel() { selChildObj = 0; selChildMod = -1; }
+
     // ── Filters (which kinds + which object states are shown). ──
     bool showObjects = true, showPages = true, showCollections = true;
     bool showGroups  = true;   // layer groups (Ink Node groups)

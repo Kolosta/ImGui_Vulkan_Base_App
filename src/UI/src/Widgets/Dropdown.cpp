@@ -43,6 +43,10 @@ std::unordered_map<ImU32, std::string> g_menuSearch;
 // after the opening click has ended (standard menu behaviour).
 std::unordered_map<ImU32, bool> g_menuArmed;
 
+// Keyboard-navigation selection index into the FILTERED list (arrow up/down
+// while typing in the search field). -1 = none.
+std::unordered_map<ImU32, int> g_menuKbSel;
+
 bool ContainsCI(const std::string& hay, const std::string& needle) {
     if (needle.empty()) return true;
     auto it = std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
@@ -138,16 +142,39 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     // Reserve the trigger's screen rect: it sits AFTER the left buttons.
     ImGui::SetCursorScreenPos(ImVec2(groupMin.x + leftW, groupMin.y));
     ImVec2 btnMin = ImGui::GetCursorScreenPos();
+    ImVec2 btnMax(btnMin.x + btnW, btnMin.y + controlH);
     const char* popupId = "##menu";
     const bool wasOpen = ImGui::IsPopupOpen(popupId);
+    bool objPickActHovered = false;
+
+    // The object picker's trailing ACTION slot (eyedropper / clear cross) sits
+    // just left of the chevron: its click must NEVER open the menu, so the
+    // trigger hit-button stops before it AND the action button is drawn FIRST
+    // (below) so it wins the overlap. Compute the action slot's left edge.
+    const float actionSlotX = objPick
+        ? (btnMax.x - pad.x - (showChevron ? (chevSz + gap) : 0.0f) - iconSz)
+        : btnMax.x;
+
+    // The action button — placed first so it takes priority for the click.
+    if (objPick) {
+        const ImRect actRect(ImVec2(actionSlotX, btnMin.y),
+                             ImVec2(actionSlotX + iconSz, btnMax.y));
+        ImGui::SetCursorScreenPos(actRect.Min);
+        ImGui::PushID("##ddact");
+        if (ImGui::InvisibleButton("##a", ImVec2(iconSz, controlH))) {
+            if (cfg.objectPickerHasValue) result.cleared = true;
+            else                          result.pickRequested = true;
+        }
+        objPickActHovered = ImGui::IsItemHovered();
+        ImGui::PopID();
+        ImGui::SetCursorScreenPos(btnMin);   // restore for the trigger below
+    }
 
     // Open on PRESS (not release): PressedOnClick fires the instant the button
-    // goes down, so the menu opens immediately under the cursor. The object
-    // picker's trailing action slot is excluded from the trigger so clicking
-    // the eyedropper / clear cross never opens the menu.
+    // goes down, so the menu opens immediately under the cursor. The trigger
+    // hit-button stops before the action slot so the cross/eyedropper works.
     const float triggerHitW =
-        objPick ? std::max(1.0f, btnW - (gap + iconSz) - (showChevron ? 0.0f : 0.0f))
-                : btnW;
+        objPick ? std::max(1.0f, actionSlotX - btnMin.x) : btnW;
     ImGui::InvisibleButton("##trigger", ImVec2(triggerHitW, controlH),
                            ImGuiButtonFlags_PressedOnClick);
     const bool clicked = ImGui::IsItemActivated();
@@ -166,7 +193,6 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     const bool menuArmed = g_menuArmed[menuKey];
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 btnMax(btnMin.x + btnW, btnMin.y + controlH);
 
     // ── Pre-measure the menu so we can place it before BeginPopup ────────────
     const bool multiCol = !cfg.columnHeaders.empty();
@@ -320,7 +346,15 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                  dIconV);
         cx += iconSz + gap;
     }
-    dl->AddText(ImVec2(cx, btnMin.y + (controlH - ts.y) * 0.5f), dText, label);
+    // Empty + a placeholder given → draw the placeholder in the subtle text
+    // colour; otherwise the real label in the normal colour.
+    if (cfg.triggerLabel.empty() && !cfg.placeholder.empty()) {
+        const ImU32 phCol = ImGui::ColorConvertFloat4ToU32(Col(Tok::S_Color_Text_Subtle));
+        dl->AddText(ImVec2(cx, btnMin.y + (controlH - ts.y) * 0.5f), phCol,
+                    cfg.placeholder.c_str());
+    } else {
+        dl->AddText(ImVec2(cx, btnMin.y + (controlH - ts.y) * 0.5f), dText, label);
+    }
     float rightX = btnMax.x - pad.x;
     if (showChevron) {
         const char* chev = openUp ? "chevron-up" : "chevron-down";
@@ -330,27 +364,17 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                  chevSz, dIconV);
         rightX -= chevSz + gap;
     }
-    // Object-picker trailing action: an eyedropper (start a pick) when empty,
-    // a clear cross when a value is set. It sits just left of the chevron and
-    // consumes its own click (never opens the menu).
+    // Object-picker trailing action GLYPH: an eyedropper (start a pick) when
+    // empty, a clear cross when a value is set. The clickable button was drawn
+    // earlier (before the trigger) so it wins the click; here we only draw the
+    // icon, greyed at rest and WHITE on hover so the user sees it is live.
     if (objPick) {
-        const float ax0 = rightX - iconSz;
-        const ImRect actRect(ImVec2(ax0, btnMin.y),
-                             ImVec2(rightX, btnMax.y));
-        const bool actHov = actRect.Contains(ImGui::GetIO().MousePos);
-        const char* icon = cfg.objectPickerHasValue ? "close" : "eyedropper";
-        ImVec4 tint = actHov ? Col(Tok::S_Color_Accent_Default) : dIconV;
+        const char* icon = cfg.objectPickerHasValue ? "close" : "colorize";
+        const ImVec4 rest  = Col(Tok::S_Color_Text_Subtle);
+        const ImVec4 hovC  = Col(Tok::S_Color_Text_Default);
         DrawIcon(dl, icon,
-                 ImVec2(ax0, btnMin.y + (controlH - iconSz) * 0.5f), iconSz, tint);
-        // A dedicated hit button over the action slot (drawn AFTER the trigger
-        // button so it wins the click; the trigger only opens elsewhere).
-        ImGui::SetCursorScreenPos(actRect.Min);
-        ImGui::PushID("##ddact");
-        if (ImGui::InvisibleButton("##a", ImVec2(iconSz, controlH))) {
-            if (cfg.objectPickerHasValue) result.cleared = true;
-            else                          result.pickRequested = true;
-        }
-        ImGui::PopID();
+                 ImVec2(actionSlotX, btnMin.y + (controlH - iconSz) * 0.5f),
+                 iconSz, objPickActHovered ? hovC : rest);
     }
 
     // ── Render the fused linked buttons (left, then right of the trigger) ─────
@@ -480,21 +504,31 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                              menuRadius, menuRound, menuBorderW);
 
             ImGuiIO& io = ImGui::GetIO();
+            // Keyboard-navigation highlight (arrow up/down over the FILTERED
+            // list). -1 = none; set by the scrolled path each frame.
+            int& kbSel = g_menuKbSel[menuKey];
 
-            // Draw one item row at (x, y) on `rdl`; commits on release.
+            // Draw one item row at (x, y) on `rdl`; commits on release. `clip`
+            // (if set) bounds the mouse hit-test to the visible list area, so a
+            // row scrolled OUT of view (menu opened upward) can never receive a
+            // hover/release — the cause of the upward-open self-pick. `kbHi`
+            // draws the keyboard-navigation highlight.
             bool closeMenu = false;
+            const ImVec4* clip = nullptr;
             auto drawRow = [&](ImDrawList* rdl, size_t i, float x, float y,
-                               float width) {
+                               float width, bool kbHi) {
                 const DropdownItem& it = cfg.items[i];
                 ImVec2 r0(x, y);
                 ImVec2 r1(x + width, y + rowH);
                 bool rowHov = it.enabled &&
                     io.MousePos.x >= r0.x && io.MousePos.x <= r1.x &&
-                    io.MousePos.y >= r0.y && io.MousePos.y <= r1.y;
+                    io.MousePos.y >= r0.y && io.MousePos.y <= r1.y &&
+                    (!clip || (io.MousePos.x >= clip->x && io.MousePos.y >= clip->y &&
+                               io.MousePos.x <= clip->z && io.MousePos.y <= clip->w));
 
                 if ((int)i == cfg.selectedIndex)
                     rdl->AddRectFilled(r0, r1, selBg, 2.0f * gs);
-                else if (rowHov)
+                else if (rowHov || kbHi)
                     rdl->AddRectFilled(r0, r1, hovBg, 2.0f * gs);
 
                 const ImVec4 fgV = it.enabled ? dTextV
@@ -545,43 +579,61 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
             };
 
             if (scrolled) {
-                // ── Scrolling single-column list, optional live search ──
-                // The search field reads on the MENU background (no separate
-                // grey fill) with just a thin baseline, matching the editors'
-                // search bars; the list below scrolls with the overlay
-                // scrollbar tucked into the menu's right padding (no extra
-                // margin, no background change) exactly like the editors.
+                // ── Scrolling single-column list with a live search field ──
                 std::string& search = g_menuSearch[menuKey];
                 float y0 = m0.y + mPad.y;
+
+                // Build the FILTERED index list first (drives search commit +
+                // keyboard navigation).
+                std::vector<size_t> vis;
+                vis.reserve(cfg.items.size());
+                for (size_t i = 0; i < cfg.items.size(); ++i)
+                    if (ContainsCI(cfg.items[i].label, search)) vis.push_back(i);
+
                 if (cfg.searchable) {
-                    const float fieldX = m0.x + mPad.x + itemPadX;
-                    ImGui::SetCursorScreenPos(ImVec2(fieldX, y0));
-                    ImGui::SetNextItemWidth(menuW - mPad.x * 2.0f - itemPadX * 2.0f);
-                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0, 0, 0, 0));
-                    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, ImVec4(0, 0, 0, 0));
+                    // Search field styled like the editors' search bars: the
+                    // theme frame background + the field vertically centred on
+                    // one row; a thin baseline separates it from the list.
+                    const float padY = std::max(0.0f, (rowH - lineH) * 0.5f);
+                    ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
+                    ImGui::SetNextItemWidth(menuW - mPad.x * 2.0f);
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                                        ImVec2(ImGui::GetStyle().FramePadding.x, padY));
+                    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,
+                                        Flt(Tok::S_CornerRadius_Control) * gs * 0.5f);
                     char buf[128];
                     std::snprintf(buf, sizeof buf, "%s", search.c_str());
-                    if (ImGui::IsWindowAppearing())
+                    if (ImGui::IsWindowAppearing()) {
                         ImGui::SetKeyboardFocusHere();   // type-to-filter at once
+                        kbSel = -1;
+                    }
+                    // Arrow keys navigate the list even while the field is
+                    // focused; they must NOT move the text caret (steal them).
+                    const int nVis = (int)vis.size();
+                    if (nVis > 0) {
+                        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
+                            kbSel = (kbSel < 0) ? 0 : std::min(kbSel + 1, nVis - 1);
+                            io.AddKeyEvent(ImGuiKey_DownArrow, false);
+                        }
+                        if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
+                            kbSel = (kbSel <= 0) ? 0 : kbSel - 1;
+                            io.AddKeyEvent(ImGuiKey_UpArrow, false);
+                        }
+                    }
                     const bool commit = ImGui::InputTextWithHint(
                         "##ddsearch", "Search\xE2\x80\xA6", buf, sizeof buf,
                         ImGuiInputTextFlags_EnterReturnsTrue);
-                    search = buf;
-                    ImGui::PopStyleColor(3);
-                    // Thin baseline separator under the field.
+                    ImGui::PopStyleVar(2);
+                    if (std::string(buf) != search) { search = buf; kbSel = -1; }
                     mdl->AddLine(ImVec2(m0.x + mPad.x, y0 + rowH),
                                  ImVec2(m0.x + menuW - mPad.x, y0 + rowH),
                                  ImGui::ColorConvertFloat4ToU32(borderV), 1.0f);
-                    if (commit) {
-                        for (size_t i = 0; i < cfg.items.size(); ++i)
-                            if (cfg.items[i].enabled &&
-                                ContainsCI(cfg.items[i].label, search)) {
-                                result.changed  = true;
-                                result.selected = (int)i;
-                                closeMenu = true;
-                                break;
-                            }
+                    if (commit && !vis.empty()) {
+                        // Enter picks the keyboard-highlighted row, else first.
+                        const int pick = (kbSel >= 0 && kbSel < nVis) ? kbSel : 0;
+                        result.changed  = true;
+                        result.selected = (int)vis[(size_t)pick];
+                        closeMenu = true;
                     }
                     y0 += rowH + itemGap;
                 }
@@ -589,24 +641,30 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                 ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
                 // A transparent child so the menu background shows through; the
                 // scrollbar overlays the right padding (BeginScroll draws it).
+                const ImVec4 listClip(m0.x, y0, m0.x + menuW,
+                                      m0.y + menuH - mPad.y);
+                clip = &listClip;   // bounds the hit-test to the visible list
                 ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
                 if (UI::BeginScroll("##ddList",
                                     ImVec2(menuW - mPad.x * 2.0f,
                                            m0.y + menuH - mPad.y - y0))) {
-                    std::vector<size_t> vis;
-                    vis.reserve(cfg.items.size());
-                    for (size_t i = 0; i < cfg.items.size(); ++i)
-                        if (ContainsCI(cfg.items[i].label, search))
-                            vis.push_back(i);
                     const ImVec2 base = ImGui::GetCursorScreenPos();
                     const float rowW = ImGui::GetContentRegionAvail().x;
                     const float total = (float)vis.size() * rowH +
                         (float)std::max<int>(0, (int)vis.size() - 1) * itemGap;
                     ImGui::Dummy(ImVec2(rowW, std::max(total, 1.0f)));
+                    // Keep the keyboard-highlighted row in view.
+                    if (kbSel >= 0 && kbSel < (int)vis.size()) {
+                        const float ry = (float)kbSel * (rowH + itemGap);
+                        ImGui::SetScrollFromPosY(
+                            ImGui::GetCursorStartPos().y + ry - ImGui::GetScrollY()
+                            + rowH * 0.5f, 0.5f);
+                    }
                     ImDrawList* cdl = ImGui::GetWindowDrawList();
                     for (size_t k = 0; k < vis.size(); ++k)
                         drawRow(cdl, vis[k], base.x,
-                                base.y + (float)k * (rowH + itemGap), rowW);
+                                base.y + (float)k * (rowH + itemGap), rowW,
+                                (int)k == kbSel);
                 }
                 UI::EndScroll();
                 ImGui::PopStyleColor();
@@ -632,7 +690,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                         ? std::clamp(cfg.items[i].columnGroup, 0, nCols - 1) : 0;
                     const float y = rowY[(size_t)c];
                     rowY[(size_t)c] += rowH + itemGap;
-                    drawRow(mdl, i, colX[(size_t)c], y, colW[(size_t)c]);
+                    drawRow(mdl, i, colX[(size_t)c], y, colW[(size_t)c], false);
                 }
             }
             if (closeMenu) ImGui::CloseCurrentPopup();
