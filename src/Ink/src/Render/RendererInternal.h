@@ -20,6 +20,7 @@
 #include <functional>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace Ink::detail {
@@ -104,6 +105,12 @@ struct ViewImpl {
     double panX = 0.0, panY = 0.0, zoom = 1.0;
     Color  background{ 0.1f, 0.1f, 0.1f, 1.0f };
     OverlayList overlay;
+    // PREVIEW filter (Outliner thumbnails): when non-empty, only drawables
+    // whose OWNER is in this set are drawn — a node rendered in isolation
+    // through the real pipeline (same strokes / patterns / transparency /
+    // MSAA as the viewport). Empty = the whole scene (a normal viewport).
+    std::unordered_set<NodeId> previewOwners;
+    std::uint64_t              previewFilterGen = 0;   // bumped on filter change
 
     // Target chain. iso[0] is the main content; iso[1..isoLevels] are the
     // reserved composite-isolation levels (sized to the scene's max depth).

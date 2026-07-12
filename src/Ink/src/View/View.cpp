@@ -27,6 +27,19 @@ void View::SetBackground(const Color& linearPremultiplied) {
 
 OverlayList& View::Overlay() { return impl_->overlay; }
 
+void View::SetPreviewFilter(const std::vector<std::uint64_t>& owners) {
+    detail::ViewImpl& v = *impl_;
+    // Detect a real change so the view only re-records when the filter moves.
+    bool changed = owners.size() != v.previewOwners.size();
+    if (!changed)
+        for (std::uint64_t o : owners)
+            if (v.previewOwners.find(o) == v.previewOwners.end()) { changed = true; break; }
+    if (!changed) return;
+    v.previewOwners.clear();
+    for (std::uint64_t o : owners) v.previewOwners.insert(o);
+    ++v.previewFilterGen;
+}
+
 std::uint64_t View::Texture() const { return impl_->texture; }
 
 } // namespace Ink

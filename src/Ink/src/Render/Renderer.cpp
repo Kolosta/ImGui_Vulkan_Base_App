@@ -289,10 +289,11 @@ std::uint64_t ViewSignature(const ViewImpl& v, std::uint64_t sceneVersion,
         double panX, panY, zoom, anchorX, anchorY;
         Color bg;
         std::uint64_t scene;
+        std::uint64_t previewFilter;
         int tier;
         int pad_;
     } key{ v.width, v.height, v.panX, v.panY, v.zoom, v.anchorX, v.anchorY,
-           v.background, sceneVersion, tier, 0 };
+           v.background, sceneVersion, v.previewFilterGen, tier, 0 };
     std::uint64_t h = HashBytes(&key, sizeof key);
     const auto& ov = v.overlay.Vertices();
     if (!ov.empty())
@@ -754,9 +755,16 @@ void Renderer::EndFrame() {
             run.segOffset = (std::uint32_t)segs.size();
             ClipRole cur = ClipRole::None;
             bool open = false;
+            const bool preview = !v.previewOwners.empty();
             for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
                 const Drawable& d = drawables[i];
                 if (d.scope != run.scope) continue;
+                // Preview filter: keep only the node's own subtree. Mask
+                // geometry is kept whenever its owner is in the set (so a
+                // clip/mask on an in-set node still applies).
+                if (preview && v.previewOwners.find(d.owner) ==
+                                   v.previewOwners.end())
+                    continue;
                 // Mask geometry is never culled (its coverage defines the
                 // clip); ordinary content culls against the view rect.
                 if (d.clip == ClipRole::None && culled(d)) continue;
