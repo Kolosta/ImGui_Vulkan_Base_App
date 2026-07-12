@@ -39,6 +39,10 @@ struct CompositeScope {
     // Clip: the scope's contents are masked by the clip source geometry (the
     // group's first path child, Lot 4). kNullNode = no clip.
     NodeId    clipNode = kNullNode;
+    // The scope carries a stencil CLIP MASK: a group clip OR a path-parent
+    // (Affinity layer, whose children clip to the path's / mask child's
+    // coverage). Drives the Compile post-pass that tags scope drawables.
+    bool      hasClipMask = false;
     // Filled by the Renderer while playing the scope tree (transient).
     int       depth = 0;
 };
@@ -67,6 +71,8 @@ struct Drawable {
     Color           color;              // linear straight (premultiplied later)
     ScopeId         scope = kRootScope; // the composite scope this belongs to
     ClipRole        clip = ClipRole::None;  // stencil interaction (see above)
+    bool            clipPinned = false;     // clip role already decided; the
+                                            // Compile post-pass must NOT reroute
     bool            isClipSource = false;   // mask geometry — never picked/painted
     // Boolean-modified nodes: the ops re-run at each zoom tier's tolerance in
     // the GeometryCache (vector-exact at any zoom). `path`/`pathHash` then
@@ -117,9 +123,14 @@ private:
     void EmitContent(const Document& doc, const Node& n, const DMat23& world,
                      ScopeId scope, int instDepth, NodeId owner = kNullNode);
     // Emit the style pieces (fills incl. pattern expansion, then strokes) of a
-    // path node at `world`.
+    // path node at `world`. `forceClip` PINS the drawables' clip role so the
+    // Compile post-pass leaves them alone (used for the Affinity layer host:
+    // Unclipped for a clip layer, Clipped for a mask layer). `AutoRoute` keeps
+    // the default (the post-pass decides).
+    enum class HostClip { AutoRoute, Unclipped, Clipped };
     void EmitPath(const Document& doc, const Node& n, const DMat23& world,
-                  ScopeId scope, NodeId owner);
+                  ScopeId scope, NodeId owner,
+                  HostClip forceClip = HostClip::AutoRoute);
     // The node's effective geometry: its own PathData, or a Boolean-modifier
     // derived path (stored stably in derivedPaths_). Returns the path + its
     // content hash. `n` must be a path node.

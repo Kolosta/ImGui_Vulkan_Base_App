@@ -350,6 +350,54 @@ void TestCompositeScopes() {
         }
     }
     CHECK(sawClipSource && sawClipped);
+
+    // Affinity CLIP layer: a path with a nested child. The host paints
+    // UNCLIPPED (its own fill is the mask), the mask writes the stencil, the
+    // child is CLIPPED.
+    {
+        Document doc2;
+        const NodeId pg = doc2.AddPage("P", { 0, 0 }, { 100, 100 });
+        const NodeId host = doc2.AddPath(pg, PathData::Rect(0, 0, 40, 40),
+                                         Style::Filled({ 0.2f, 0.3f, 0.5f, 1 }), "host");
+        const NodeId child = doc2.AddPath(pg, PathData::Rect(0, 0, 20, 20),
+                                          Style::Filled({ 1, 1, 0, 1 }), "child");
+        doc2.MoveTo(child, host, -1);
+        Scene sc; sc.Compile(doc2);
+        bool hostUnclipped = false, maskWrite = false, childClipped = false;
+        for (const Drawable& d : sc.Drawables()) {
+            if (d.node == host && !d.isClipSource && !d.isStroke &&
+                d.clip == ClipRole::None) hostUnclipped = true;
+            if (d.isClipSource && d.clip == ClipRole::MaskWrite) maskWrite = true;
+            if (d.node == child && d.clip == ClipRole::Clipped) childClipped = true;
+        }
+        CHECK(hostUnclipped);
+        CHECK(maskWrite);
+        CHECK(childClipped);
+    }
+
+    // Affinity MASK layer: the mask child masks the host — the host is
+    // CLIPPED to the mask, the mask writes, and it does not paint.
+    {
+        Document doc3;
+        const NodeId pg = doc3.AddPage("P", { 0, 0 }, { 100, 100 });
+        const NodeId host = doc3.AddPath(pg, PathData::Rect(0, 0, 40, 40),
+                                         Style::Filled({ 0.8f, 0.3f, 0.2f, 1 }), "host");
+        const NodeId mask = doc3.AddPath(pg, PathData::Ellipse(0, 0, 15, 15),
+                                         Style::Filled({ 0, 0, 0, 1 }), "mask");
+        doc3.MoveTo(mask, host, -1);
+        doc3.SetMask(mask, true);
+        Scene sm; sm.Compile(doc3);
+        bool hostClipped = false, maskWrite = false, maskPaints = false;
+        for (const Drawable& d : sm.Drawables()) {
+            if (d.node == host && !d.isStroke && d.clip == ClipRole::Clipped)
+                hostClipped = true;
+            if (d.node == mask && d.isClipSource) maskWrite = true;
+            if (d.node == mask && !d.isClipSource) maskPaints = true;
+        }
+        CHECK(hostClipped);
+        CHECK(maskWrite);
+        CHECK(!maskPaints);   // the mask never paints
+    }
 }
 
 void TestInstancing() {

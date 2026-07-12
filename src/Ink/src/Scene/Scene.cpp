@@ -51,6 +51,9 @@ ScopeId Scene::OpenScopeIfNeeded(const Document& doc, const Node& group,
     s.blend   = group.blend;
     s.isolate = group.isolate;
     s.clipNode = clip;
+    // A group clip OR a path-parent both mask their contents through the
+    // stencil (the mask geometry is emitted as an isClipSource drawable).
+    s.hasClipMask = (clip != kNullNode) || pathParent;
     s.depth   = depth;
     scopes_.push_back(s);
     if (depth > maxDepth_) maxDepth_ = depth;
@@ -334,39 +337,61 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
         return;
     }
 
-    // Path. An empty-geometry path with children is a pure LAYER (a container
-    // holding clipped children — the Affinity "add layer" case): no paint of
-    // its own, but its children still clip to the page (no mask).
+    // Path. A path with children is an Affinity LAYER; the children are
+    // CLIPPED or MASKED against it (docs/Ink/DOCUMENT_MODEL.md §Layers).
     const bool hasChildren = !n.children.empty();
     if (n.path.Empty() && !hasChildren) return;
-    if (!n.path.Empty())
-        EmitPath(doc, n, world, scope, owner != kNullNode ? owner : n.id);
+    const bool layerParent = hasChildren && scopes_[scope].node == n.id;
 
-    // Affinity layer children: clipped to THIS path's coverage. A child marked
-    // isMask REPLACES that mask with its own coverage (a mask layer — the
-    // masked siblings show through the mask shape instead of the parent's
-    // fill). The mask itself does not paint. Selection/ownership stay per node.
-    if (hasChildren && scopes_[scope].node == n.id) {
-        // The clip source = the first MASK child if any, else the path's fill.
-        const Node* maskChild = nullptr;
+    // The first MASK child, if any (a mask layer masks the parent's content).
+    const Node* maskChild = nullptr;
+    if (layerParent)
         for (NodeId c : n.children)
             if (const Node* ch = doc.Find(c); ch && ch->isMask &&
                 ch->kind == NodeKind::Path && !ch->path.Empty()) {
                 maskChild = ch; break;
             }
-        if (maskChild) {
-            const DMat23 cw = world.Compose(maskChild->transform.Matrix());
-            std::uint64_t h = 0;
-            const PathData* g = ResolveGeometry(doc, *maskChild, h);
-            Drawable d;
-            d.node = maskChild->id;
-            d.owner = owner != kNullNode ? owner : maskChild->id;
-            d.world = cw;  d.pathHash = h;  d.path = g;
-            d.rule = maskChild->style.fills.empty() ? FillRule::NonZero
-                     : maskChild->style.fills.front().rule;
-            d.scope = scope;  d.isClipSource = true;
-            drawables_.push_back(std::move(d));
-        } else if (!n.path.Empty()) {
+
+    // ── MASK layer ────────────────────────────────────────────────────────
+    // The MASK child defines the coverage first (MaskWrite, no colour); the
+    // host AND its non-mask children then paint CLIPPED to it, so everything
+    // shows only through the mask shape.
+    if (layerParent && maskChild) {
+        const DMat23 cw = world.Compose(maskChild->transform.Matrix());
+        std::uint64_t h = 0;
+        const PathData* g = ResolveGeometry(doc, *maskChild, h);
+        Drawable d;
+        d.node = maskChild->id;
+        d.owner = owner != kNullNode ? owner : maskChild->id;
+        d.world = cw;  d.pathHash = h;  d.path = g;
+        d.rule = maskChild->style.fills.empty() ? FillRule::NonZero
+                 : maskChild->style.fills.front().rule;
+        d.scope = scope;  d.isClipSource = true;  d.clip = ClipRole::MaskWrite;
+        drawables_.push_back(std::move(d));
+
+        if (!n.path.Empty())
+            EmitPath(doc, n, world, scope, owner != kNullNode ? owner : n.id,
+                     HostClip::Clipped);          // host shows through the mask
+        for (NodeId c : n.children) {
+            const Node* child = doc.Find(c);
+            if (!child || child->isMask) continue;
+            EmitNode(doc, *child, world, scope, instDepth, owner);
+        }
+        // The scope's non-mask drawables that this branch did NOT explicitly
+        // tag are routed Clipped by the Compile post-pass.
+        return;
+    }
+
+    // ── CLIP layer (or plain path) ────────────────────────────────────────
+    // The host paints UNCLIPPED and its own fill also serves as the clip mask
+    // for the children. Emit the host, then the mask (MaskWrite, no colour),
+    // then the children (clipped).
+    if (!n.path.Empty())
+        EmitPath(doc, n, world, scope, owner != kNullNode ? owner : n.id,
+                 layerParent ? HostClip::Unclipped : HostClip::AutoRoute);
+
+    if (layerParent) {
+        if (!n.path.Empty()) {
             std::uint64_t hostHash = 0;
             const PathData* hostGeo = ResolveGeometry(doc, n, hostHash);
             const geom::BoolProgram* hostProg = nullptr;
@@ -379,13 +404,14 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
             d.boolProg = hostProg;
             d.rule = n.style.fills.empty() ? FillRule::NonZero
                                            : n.style.fills.front().rule;
-            d.scope = scope;  d.isClipSource = true;
+            d.scope = scope;  d.isClipSource = true;  d.clip = ClipRole::MaskWrite;
             drawables_.push_back(std::move(d));
         }
-        // Emit the non-mask children clipped to the scope's mask.
+        // An empty-geometry layer (a pure container) has no mask → children
+        // clip to the page (nothing) — still emitted, just unclipped.
         for (NodeId c : n.children) {
             const Node* child = doc.Find(c);
-            if (!child || child->isMask) continue;   // mask child never paints
+            if (!child || child->isMask) continue;
             EmitNode(doc, *child, world, scope, instDepth, owner);
         }
     }
@@ -470,10 +496,15 @@ const PathData* Scene::ResolveGeometry(const Document& doc, const Node& n,
 }
 
 void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
-                     ScopeId scope, NodeId owner) {
+                     ScopeId scope, NodeId owner, HostClip forceClip) {
     std::uint64_t pathHash = 0;
     const PathData* geo = ResolveGeometry(doc, n, pathHash);
     if (!geo || geo->Empty()) return;
+    // Affinity layer host: pin the clip role so the post-pass leaves it alone
+    // (None = never clipped for a clip layer, Clipped for a mask layer).
+    const bool pinClip = forceClip != HostClip::AutoRoute;
+    const ClipRole pinnedRole = forceClip == HostClip::Clipped
+                                    ? ClipRole::Clipped : ClipRole::None;
     // Boolean-modified nodes render through their PROGRAM (re-evaluated per
     // zoom tier); the drawables keep the coarse `geo` for picking but hash
     // and tessellate the program.
@@ -534,6 +565,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         d.rule = f.rule;  d.color = f.paint.color;
         d.color.a *= f.opacity;             // layer opacity
         d.scope = scope;
+        if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
         drawables_.push_back(std::move(d));
     }
     for (std::size_t i = 0; i < n.style.strokes.size(); ++i) {
@@ -545,6 +577,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
         d.stroke = s;  d.color = s.paint.color;
         d.scope = scope;
+        if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
         drawables_.push_back(std::move(d));
     }
 }
@@ -820,8 +853,9 @@ bool Scene::Compile(Document& doc, bool force) {
     // cells keep their own mask roles (a pattern inside a clip scope tests
     // its pattern mask — the scope clip on those cells is a known v1 limit).
     for (Drawable& d : drawables_) {
-        if (scopes_[d.scope].clipNode == kNullNode) continue;
-        if (d.clip != ClipRole::None) continue;
+        if (!scopes_[d.scope].hasClipMask) continue;
+        if (d.clipPinned) continue;              // Affinity layer host — decided
+        if (d.clip != ClipRole::None) continue;  // pattern cells, mask writers
         d.clip = d.isClipSource ? ClipRole::MaskWrite : ClipRole::Clipped;
     }
 
