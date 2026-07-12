@@ -756,24 +756,41 @@ void Renderer::EndFrame() {
             ClipRole cur = ClipRole::None;
             bool open = false;
             const bool preview = !v.previewOwners.empty();
+            auto inPreview = [&](NodeId id) {
+                return v.previewOwners.find(id) != v.previewOwners.end();
+            };
             for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
                 const Drawable& d = drawables[i];
                 if (d.scope != run.scope) continue;
-                // Preview filter: keep only the node's own subtree. Mask
-                // geometry is kept whenever its owner is in the set (so a
-                // clip/mask on an in-set node still applies).
-                if (preview && v.previewOwners.find(d.owner) ==
-                                   v.previewOwners.end())
-                    continue;
+                ClipRole role = d.clip;
+                if (preview) {
+                    // A node's thumbnail shows its OWN subtree in isolation.
+                    // A clip / mask is honoured ONLY when the scope that owns
+                    // it is itself inside the preview set (so a clip-group or
+                    // clip/mask-layer thumbnail keeps its own clipping); a clip
+                    // INHERITED from an ancestor outside the set is dropped, so
+                    // a clipped/masked child shows its raw content — the mask
+                    // geometry of that ancestor is then skipped entirely.
+                    const NodeId scopeNode = r.scene.Scopes()[d.scope].node;
+                    const bool scopeInSet = scopeNode != kNullNode &&
+                                            inPreview(scopeNode);
+                    if (d.isClipSource) {
+                        if (!scopeInSet) continue;         // ancestor mask — drop
+                    } else if (!inPreview(d.owner)) {
+                        continue;                          // not our subtree
+                    }
+                    if (!scopeInSet) role = ClipRole::None; // ignore inherited clip
+                }
                 // Mask geometry is never culled (its coverage defines the
                 // clip); ordinary content culls against the view rect.
-                if (d.clip == ClipRole::None && culled(d)) continue;
-                if (!open || d.clip != cur) {
+                if (role == ClipRole::None && !d.isClipSource && culled(d))
+                    continue;
+                if (!open || role != cur) {
                     detail::CmdSegment seg;
                     seg.cmdOffset = (std::uint32_t)cmds.size();
-                    seg.role      = d.clip;
+                    seg.role      = role;
                     segs.push_back(seg);
-                    cur = d.clip;
+                    cur = role;
                     open = true;
                     last = MeshRange{};   // never merge across segments
                 }
