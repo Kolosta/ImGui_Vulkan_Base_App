@@ -111,6 +111,12 @@ struct EditorState {
     // meaningful for an Outliner leaf, but carried by every EditorState so a tab
     // can switch kind / move between zones without losing it. See OutlinerState.h.
     OutlinerState outliner;
+
+    // Properties editor page (Blender-style top-bar tabs): Object = transform /
+    // compositing / instance target; Paint = the fill & stroke stacks (path
+    // nodes); Modifiers = the modifier stack.
+    enum class PropTab : uint8_t { Object = 0, Paint = 1, Modifiers = 2 };
+    PropTab propTab = PropTab::Object;
 };
 
 // One tab inside a zone: an editor id plus its own independent view state.

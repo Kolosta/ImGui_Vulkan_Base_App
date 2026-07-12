@@ -27,6 +27,10 @@ void Application::PropModifiersSection(Ink::NodeId id) {
         std::vector<Ink::Modifier> mods = n->modifiers;
         bool structural = false;
         const char* structLabel = "Edit Modifiers";
+        // Blender-style stack: each modifier is a reorderable list panel (drag
+        // the header to reorder, cross to remove) — the edit applies after the
+        // loop as ONE undoable command.
+        UI::PanelListEdit listEdit;
 
         auto liveApply = [&](const char* releaseLabel, bool released) {
             if (!propEditActive_) {
@@ -44,7 +48,6 @@ void Application::PropModifiersSection(Ink::NodeId id) {
         };
 
         for (std::size_t i = 0; i < mods.size(); ++i) {
-            ImGui::PushID((int)(3000 + i));
             Ink::Modifier& m = mods[i];
             const char* kindName =
                 m.kind == Ink::ModifierKind::Array ? "Array"
@@ -54,7 +57,11 @@ void Application::PropModifiersSection(Ink::NodeId id) {
             std::snprintf(lab, sizeof lab, "%d \xC2\xB7 %s", (int)i + 1, kindName);
             UI::PanelConfig mp; mp.id = "##mod"; mp.label = lab;
             mp.defaultOpen = true;
-            if (UI::BeginPanel(mp).open) {
+            mp.flatBody = true;       // share the Modifiers panel's surface
+            mp.closable = true;       // a close cross removes it
+            UI::PanelResult mr =
+                UI::BeginPanelListItem(mp, (int)i, (int)mods.size(), listEdit);
+            if (mr.open) {
                 bool enabled = m.enabled;
                 if (pr::CheckRow("Enabled", &enabled)) {
                     m.enabled = enabled;
@@ -196,27 +203,21 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         });
                     }
                 }
-
-                pr::ControlColumn();
-                if (ImGui::SmallButton("Up") && i > 0) {
-                    std::swap(mods[i], mods[i - 1]);
-                    structural = true; structLabel = "Reorder Modifiers";
-                }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Down") && i + 1 < mods.size()) {
-                    std::swap(mods[i], mods[i + 1]);
-                    structural = true; structLabel = "Reorder Modifiers";
-                }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Remove")) {
-                    mods.erase(mods.begin() + (long)i);
-                    structural = true; structLabel = "Remove Modifier";
-                    UI::EndPanel(); ImGui::PopID();
-                    break;
-                }
             }
-            UI::EndPanel();
-            ImGui::PopID();
+            UI::EndPanelListItem();
+        }
+
+        // Apply the list edit (a close or a header-drag reorder), committed as
+        // one undoable command. Only one edit fires per frame.
+        if (listEdit.removeAt >= 0 && listEdit.removeAt < (int)mods.size()) {
+            mods.erase(mods.begin() + listEdit.removeAt);
+            structural = true; structLabel = "Remove Modifier";
+        } else if (listEdit.moveFrom >= 0 && listEdit.moveTo >= 0 &&
+                   listEdit.moveFrom < (int)mods.size() &&
+                   listEdit.moveTo < (int)mods.size()) {
+            std::swap(mods[(std::size_t)listEdit.moveFrom],
+                      mods[(std::size_t)listEdit.moveTo]);
+            structural = true; structLabel = "Reorder Modifiers";
         }
 
         pr::ControlColumn();

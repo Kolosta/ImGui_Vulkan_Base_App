@@ -144,7 +144,10 @@ void Application::RegisterCoreEditors() {
         // Owns its own overlay scrollbar (BeginScroll inside RenderProperties) —
         // don't double-wrap (that reserved the spurious empty right gutter).
         d.wrapInScroll = false;
-        d.draw = [this](ImVec2, EditorState&) { RenderProperties(); };
+        d.draw = [this](ImVec2, EditorState& st) { RenderProperties(st); };
+        d.topBar = [this](EditorState& st, EditorBar& bar) {
+            BuildPropertiesTopBar(st, bar);
+        };
         reg.Register(std::move(d));
     }
 

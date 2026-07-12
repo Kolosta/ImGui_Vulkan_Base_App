@@ -366,7 +366,11 @@ private:
     // node property is visible and editable: transform, compositing, the
     // unified paint stack (multi fills incl. patterns, multi strokes incl.
     // hairlines), the modifier stack and instance targeting.
-    void RenderProperties();
+    void RenderProperties(EditorState& st);
+    // Properties top bar: the centred Object / Paint / Modifiers page tabs.
+    void BuildPropertiesTopBar(EditorState& st, EditorBar& bar);
+    // The page actually shown (Paint falls back to Object off path nodes).
+    EditorState::PropTab PropsEffectiveTab(const EditorState& st) const;
     // Property sub-sections (Properties.cpp / PropertiesPaint.cpp /
     // PropertiesModifiers.cpp).
     void PropTransformSection(Ink::NodeId id);

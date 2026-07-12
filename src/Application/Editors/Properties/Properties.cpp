@@ -3,6 +3,7 @@
 #include "PropertiesRows.h"
 #include <UI/Widgets/ScrollArea.h>
 #include <UI/Widgets/Panel.h>
+#include <UI/Widgets/ButtonGroup.h>
 #include <imgui.h>
 #include <cstdio>
 #include <string>
@@ -165,9 +166,64 @@ void Application::PropCompositingSection(Ink::NodeId id) {
     UI::EndPanel();
 }
 
+// ── Top bar — the centred page tabs (Blender's property tabs) ─────────────────
+// One linked ButtonGroup, exactly one page active: Object / Paint / Modifiers.
+// Paint only applies to path nodes — its cell is DISABLED otherwise and the
+// page falls back to Object (PropsEffectiveTab, shared with RenderProperties so
+// the highlighted cell always matches the page actually shown).
+
+EditorState::PropTab Application::PropsEffectiveTab(const EditorState& st) const {
+    if (st.propTab == EditorState::PropTab::Paint) {
+        const Ink::Node* n = project_.document && edit_.active != Ink::kNullNode
+                                 ? project_.document->Find(edit_.active)
+                                 : nullptr;
+        if (!n || n->kind != Ink::NodeKind::Path)
+            return EditorState::PropTab::Object;
+    }
+    return st.propTab;
+}
+
+void Application::BuildPropertiesTopBar(EditorState& st, EditorBar& bar) {
+    auto& ds = pr::DST::DesignSystem::Instance();
+    const float gs = ds.GetGlobalScale();
+    const float h  = ds.GetFloat(pr::Tok::S_Size_ControlHeight) * gs;
+    const float cellW = 84.0f * gs;
+    EditorState* stp = &st;
+
+    bar.middle.width = cellW * 3.0f;
+    bar.middle.draw = [this, stp, cellW, h](ImVec2 pos, float) {
+        ImGui::SetCursorPos(pos);
+        const Ink::Node* n = project_.document && edit_.active != Ink::kNullNode
+                                 ? project_.document->Find(edit_.active)
+                                 : nullptr;
+        const bool isPath = n && n->kind == Ink::NodeKind::Path;
+        const EditorState::PropTab cur = PropsEffectiveTab(*stp);
+
+        struct TabDef { const char* label; EditorState::PropTab tab; bool enabled; };
+        const TabDef tabs[] = {
+            { "Object",    EditorState::PropTab::Object,    true },
+            { "Paint",     EditorState::PropTab::Paint,     isPath },
+            { "Modifiers", EditorState::PropTab::Modifiers, true },
+        };
+        UI::ButtonGroup g("##propTabs");
+        g.SetGrid({ cellW, cellW, cellW }, { h });
+        for (int i = 0; i < 3; ++i) {
+            UI::ButtonGroup::Cell c{};
+            c.label = tabs[i].label; c.col = i; c.row = 0;
+            c.selected = (cur == tabs[i].tab);
+            c.enabled  = tabs[i].enabled;
+            g.AddCell(c);
+        }
+        UI::ButtonGroup::Result r = g.Render();
+        if (r.clickedIndex >= 0 && r.clickedIndex < 3 &&
+            tabs[r.clickedIndex].enabled)
+            stp->propTab = tabs[r.clickedIndex].tab;
+    };
+}
+
 // ── Render entry ──────────────────────────────────────────────────────────────
 
-void Application::RenderProperties() {
+void Application::RenderProperties(EditorState& st) {
     auto& ds = pr::DST::DesignSystem::Instance();
     if (!project_.document) return;
     Ink::Document& doc = *project_.document;
@@ -185,7 +241,7 @@ void Application::RenderProperties() {
     const Ink::Node* n = doc.Find(id);
 
     if (UI::BeginScroll("##propsScroll", ImVec2(0, 0))) {
-        // Name + type header.
+        // Name + type header (shown on both pages).
         {
             char nameBuf[128];
             std::snprintf(nameBuf, sizeof nameBuf, "%s", n->name.c_str());
@@ -204,23 +260,24 @@ void Application::RenderProperties() {
         }
         ImGui::Separator();
 
-        PropTransformSection(id);
-        PropCompositingSection(id);
-
-        if (n->kind == Ink::NodeKind::Path) {
-            UI::PanelConfig pc; pc.id = "##paint"; pc.label = "Paint";
-            pc.defaultOpen = true;
-            if (UI::BeginPanel(pc).open) {
+        // Blender-style pages (the top-bar tabs): Object = transform /
+        // compositing / instance target; Paint = the fill & stroke stacks;
+        // Modifiers = the modifier stack. Paint falls back to Object when the
+        // active node is not a path (its tab is disabled).
+        switch (PropsEffectiveTab(st)) {
+            case EditorState::PropTab::Paint:
                 PropFillsSection(id);
                 PropStrokesSection(id);
-            }
-            UI::EndPanel();
-            PropModifiersSection(id);
-        } else if (n->kind == Ink::NodeKind::Instance) {
-            PropInstanceSection(id);
-            PropModifiersSection(id);
-        } else {
-            PropModifiersSection(id);
+                break;
+            case EditorState::PropTab::Modifiers:
+                PropModifiersSection(id);
+                break;
+            case EditorState::PropTab::Object:
+            default:
+                PropTransformSection(id);
+                PropCompositingSection(id);
+                if (n->kind == Ink::NodeKind::Instance) PropInstanceSection(id);
+                break;
         }
     }
     UI::EndScroll();

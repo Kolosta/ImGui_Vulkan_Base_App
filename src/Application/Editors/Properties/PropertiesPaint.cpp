@@ -44,15 +44,20 @@ void Application::PropFillsSection(Ink::NodeId id) {
             }
         };
 
+        // Blender-style stack: each fill is a reorderable list panel (drag the
+        // header to reorder, cross to remove).
+        UI::PanelListEdit listEdit;
         for (std::size_t i = 0; i < style.fills.size(); ++i) {
-            ImGui::PushID((int)(1000 + i));
             Ink::Fill& f = style.fills[i];
 
             char lab[24];
             std::snprintf(lab, sizeof lab, "Fill %d", (int)i + 1);
             UI::PanelConfig fp; fp.id = "##fill"; fp.label = lab;
             fp.defaultOpen = true;
-            if (UI::BeginPanel(fp).open) {
+            fp.flatBody = true;       // share the Fills panel's surface
+            fp.closable = true;       // a close cross removes it
+            if (UI::BeginPanelListItem(fp, (int)i, (int)style.fills.size(),
+                                       listEdit).open) {
                 bool enabled = f.enabled;
                 if (pr::CheckRow("Enabled", &enabled)) {
                     f.enabled = enabled; structural = true;
@@ -185,27 +190,20 @@ void Application::PropFillsSection(Ink::NodeId id) {
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit())
                     liveApply("Fill Opacity", true);
-
-                pr::ControlColumn();
-                if (ImGui::SmallButton("Up") && i > 0) {
-                    std::swap(style.fills[i], style.fills[i - 1]);
-                    structural = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Down") && i + 1 < style.fills.size()) {
-                    std::swap(style.fills[i], style.fills[i + 1]);
-                    structural = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Remove")) {
-                    style.fills.erase(style.fills.begin() + (long)i);
-                    structural = true;
-                    UI::EndPanel(); ImGui::PopID();
-                    break;
-                }
             }
-            UI::EndPanel();
-            ImGui::PopID();
+            UI::EndPanelListItem();
+        }
+
+        // Apply the list edit (close cross / header-drag reorder).
+        if (listEdit.removeAt >= 0 && listEdit.removeAt < (int)style.fills.size()) {
+            style.fills.erase(style.fills.begin() + listEdit.removeAt);
+            structural = true; structLabel = "Remove Fill";
+        } else if (listEdit.moveFrom >= 0 && listEdit.moveTo >= 0 &&
+                   listEdit.moveFrom < (int)style.fills.size() &&
+                   listEdit.moveTo < (int)style.fills.size()) {
+            std::swap(style.fills[(std::size_t)listEdit.moveFrom],
+                      style.fills[(std::size_t)listEdit.moveTo]);
+            structural = true; structLabel = "Reorder Fills";
         }
 
         pr::ControlColumn();
@@ -252,15 +250,20 @@ void Application::PropStrokesSection(Ink::NodeId id) {
             }
         };
 
+        // Blender-style stack: each stroke is a reorderable list panel (drag
+        // the header to reorder, cross to remove).
+        UI::PanelListEdit listEdit;
         for (std::size_t i = 0; i < style.strokes.size(); ++i) {
-            ImGui::PushID((int)(2000 + i));
             Ink::Stroke& s = style.strokes[i];
 
             char lab[24];
             std::snprintf(lab, sizeof lab, "Stroke %d", (int)i + 1);
             UI::PanelConfig sp; sp.id = "##stroke"; sp.label = lab;
             sp.defaultOpen = true;
-            if (UI::BeginPanel(sp).open) {
+            sp.flatBody = true;       // share the Strokes panel's surface
+            sp.closable = true;       // a close cross removes it
+            if (UI::BeginPanelListItem(sp, (int)i, (int)style.strokes.size(),
+                                       listEdit).open) {
                 bool enabled = s.enabled;
                 if (pr::CheckRow("Enabled", &enabled)) {
                     s.enabled = enabled; structural = true;
@@ -352,27 +355,21 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     if (ImGui::IsItemDeactivatedAfterEdit())
                         liveApply("Dash Offset", true);
                 }
-
-                pr::ControlColumn();
-                if (ImGui::SmallButton("Up") && i > 0) {
-                    std::swap(style.strokes[i], style.strokes[i - 1]);
-                    structural = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Down") && i + 1 < style.strokes.size()) {
-                    std::swap(style.strokes[i], style.strokes[i + 1]);
-                    structural = true;
-                }
-                ImGui::SameLine();
-                if (ImGui::SmallButton("Remove")) {
-                    style.strokes.erase(style.strokes.begin() + (long)i);
-                    structural = true;
-                    UI::EndPanel(); ImGui::PopID();
-                    break;
-                }
             }
-            UI::EndPanel();
-            ImGui::PopID();
+            UI::EndPanelListItem();
+        }
+
+        // Apply the list edit (close cross / header-drag reorder).
+        if (listEdit.removeAt >= 0 &&
+            listEdit.removeAt < (int)style.strokes.size()) {
+            style.strokes.erase(style.strokes.begin() + listEdit.removeAt);
+            structural = true; structLabel = "Remove Stroke";
+        } else if (listEdit.moveFrom >= 0 && listEdit.moveTo >= 0 &&
+                   listEdit.moveFrom < (int)style.strokes.size() &&
+                   listEdit.moveTo < (int)style.strokes.size()) {
+            std::swap(style.strokes[(std::size_t)listEdit.moveFrom],
+                      style.strokes[(std::size_t)listEdit.moveTo]);
+            structural = true; structLabel = "Reorder Strokes";
         }
 
         pr::ControlColumn();
