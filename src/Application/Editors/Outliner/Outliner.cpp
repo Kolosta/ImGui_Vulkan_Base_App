@@ -847,21 +847,24 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
                     ImVec4(.6f, .6f, .6f, 1));
                 for (auto& z : md.colorZones) z.customColor = tint;
                 const float bx = slot0.x + (ol::ChevronSlotW() - bsz) * 0.5f;
-                // Top half of the row when a chevron follows, else centred.
-                const float by = row.RowTop() +
-                    (rrow.hasChildren ? row.RowH() * 0.16f
-                                      : (row.RowH() - bsz) * 0.5f);
+                // Badge centred at ~28% of the row height (a small gap from the
+                // top); the chevron sits at ~72% (a matching gap from the
+                // bottom) — spread from the edges and from each other.
+                const float by = row.RowTop() + row.RowH() * 0.28f - bsz * 0.5f;
                 im.RenderIcon(ImGui::GetWindowDrawList(), badge,
                               ImVec2(bx, by), bsz, md);
             }
         }
+        // The chevron drops to the lower part of the slot so it clears the
+        // clip/mask badge above it.
+        const float chevY = clipMaskChild ? 0.72f : 0.5f;
         if (!layers) {
             bool open = o.ObjExpanded(rrow.id);
-            ol::Chevron("##ch", open);
+            ol::Chevron("##ch", open, chevY);
             if (open != o.ObjExpanded(rrow.id)) o.ToggleObjExpanded(rrow.id);
         } else {
             bool open = !o.IsCollapsed(rrow.id);
-            ol::Chevron("##ch", open);
+            ol::Chevron("##ch", open, chevY);
             if (open == o.IsCollapsed(rrow.id)) o.ToggleCollapsed(rrow.id);
         }
     } else if (layers && n->parent != Ink::kNullNode) {
@@ -952,6 +955,11 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
 
     if (outlinerSuppressInput_) return;   // sync-picking owns the mouse
     const UI::ListRowInput& in = row.Input();
+    // Object eyedropper: hovering a row shows its name (same tooltip as
+    // elsewhere) so the pick has feedback in the Outliner too.
+    if (ObjectPickActive() && in.hovered)
+        UI::DrawTooltip(n->name.empty() ? "(unnamed)" : n->name.c_str(),
+                        ImGui::GetIO().MousePos);
     if (in.doubleClicked) {
         o.renaming = rrow.id;
         o.renameTakeFocus = true;

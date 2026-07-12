@@ -3,6 +3,7 @@
 #include "ViewportMath.h"
 #include <Ink/Scene/Picking.h>
 #include <Shortcuts/ToolManager.h>
+#include <UI/Widgets/PopupMenu.h>   // UI::DrawTooltipTranslucent (object picker)
 #include <algorithm>
 #include <cmath>
 
@@ -71,9 +72,16 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     // cancels. Clicking empty canvas also cancels (no object). No selection
     // change happens either way.
     if (ObjectPickActive()) {
+        Ink::PickOptions opt; opt.tolerance = 6.0 / cam.zoom; opt.zoom = cam.zoom;
+        const Ink::NodeId hit = ink_ ? ink_->PickAt(doc, opt) : Ink::kNullNode;
+        // Hovering a compatible object shows its NAME (same tooltip widget as
+        // the rest of the app), so the user sees what the click will pick.
+        if (hit != Ink::kNullNode && project_.document) {
+            if (const Ink::Node* hn = project_.document->Find(hit))
+                UI::DrawTooltip(hn->name.empty() ? "(unnamed)" : hn->name.c_str(),
+                                ImGui::GetIO().MousePos);
+        }
         if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            Ink::PickOptions opt; opt.tolerance = 6.0 / cam.zoom; opt.zoom = cam.zoom;
-            const Ink::NodeId hit = ink_ ? ink_->PickAt(doc, opt) : Ink::kNullNode;
             if (hit != Ink::kNullNode) DeliverObjectPick(hit);
             else CancelObjectPick();
         } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {

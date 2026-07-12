@@ -155,6 +155,51 @@ void Application::OutlinerDropToRoot(const std::vector<Ink::NodeId>& ids) {
     LogInfoAction("Unparent");
 }
 
+// Affinity CLIP / MASK drop: nest each dragged node under `target` (as a clip
+// child, or a mask child when `asMask`), preserving its world position, as ONE
+// undoable command. Capturing parent + index + transform + isMask before and
+// after makes Ctrl+Z restore the exact previous placement (the earlier version
+// did a bare MoveTo/SetMask with no command, so undo unwound unrelated edits).
+void Application::OutlinerDropClipMask(const std::vector<Ink::NodeId>& ids,
+                                       Ink::NodeId target, bool asMask) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    if (!doc.Find(target)) return;
+
+    struct Place { Ink::NodeId id; Ink::NodeId parent; int index;
+                   Ink::Transform2D t; bool mask; };
+    auto capture = [&](Ink::NodeId id) {
+        const Ink::Node* n = doc.Find(id);
+        return Place{ id, n->parent != Ink::kNullNode ? n->parent : n->page,
+                      doc.IndexInParent(id), n->transform, n->isMask };
+    };
+    std::vector<Place> before, after;
+    std::vector<Ink::NodeId> done;
+    for (Ink::NodeId id : ids) {
+        if (id == target || !doc.Find(id)) continue;
+        before.push_back(capture(id));
+        if (doc.MoveTo(id, target, -1)) {   // world position preserved
+            doc.SetMask(id, asMask);
+            done.push_back(id);
+        } else {
+            before.pop_back();              // refused (cycle / invalid)
+        }
+    }
+    if (done.empty()) return;
+    for (Ink::NodeId id : done) after.push_back(capture(id));
+    auto apply = [](Ink::Document& d, const std::vector<Place>& v) {
+        for (const Place& p : v) {
+            d.MoveTo(p.id, p.parent, p.index);
+            d.SetTransform(p.id, p.t);
+            d.SetMask(p.id, p.mask);
+        }
+    };
+    PushDocCommand(asMask ? "Mask Layer" : "Clip Layer",
+        [before, apply](Ink::Document& d) { apply(d, before); },
+        [after, apply](Ink::Document& d)  { apply(d, after); });
+    LogInfoAction(asMask ? "Mask Layer" : "Clip Layer");
+}
+
 void Application::OutlinerDropReorder(const std::vector<Ink::NodeId>& ids,
                                       Ink::NodeId target, bool above) {
     if (!project_.document) return;
@@ -414,17 +459,9 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
             if (p->IsDelivery() && !self) {
                 const auto ids = OutlinerDraggedIds(dragged);
                 if (onSquare) {
-                    for (Ink::NodeId id : ids) {
-                        doc.MoveTo(id, row.id, -1);
-                        doc.SetMask(id, true);
-                    }
-                    LogInfoAction("Mask Layer");
+                    OutlinerDropClipMask(ids, row.id, /*asMask=*/true);
                 } else if (z == DropZone::Into) {
-                    for (Ink::NodeId id : ids) {
-                        doc.MoveTo(id, row.id, -1);
-                        doc.SetMask(id, false);
-                    }
-                    LogInfoAction("Clip Layer");
+                    OutlinerDropClipMask(ids, row.id, /*asMask=*/false);
                 } else {
                     // Rows list top-of-stack first: visually ABOVE the target
                     // = AFTER it in painter order.

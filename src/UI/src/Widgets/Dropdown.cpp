@@ -590,10 +590,10 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                 for (size_t i = 0; i < cfg.items.size(); ++i)
                     if (ContainsCI(cfg.items[i].label, search)) vis.push_back(i);
 
+                int kbChanged = 0;   // -1 up, +1 down; drives a ONE-shot scroll
                 if (cfg.searchable) {
-                    // Search field styled like the editors' search bars: the
-                    // theme frame background + the field vertically centred on
-                    // one row; a thin baseline separates it from the list.
+                    // Search field styled like the editors' search bars (theme
+                    // frame background, field vertically centred), no separator.
                     const float padY = std::max(0.0f, (rowH - lineH) * 0.5f);
                     ImGui::SetCursorScreenPos(ImVec2(m0.x + mPad.x, y0));
                     ImGui::SetNextItemWidth(menuW - mPad.x * 2.0f);
@@ -607,17 +607,17 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                         ImGui::SetKeyboardFocusHere();   // type-to-filter at once
                         kbSel = -1;
                     }
-                    // Arrow keys navigate the list even while the field is
-                    // focused; they must NOT move the text caret (steal them).
+                    // Arrow keys navigate the FILTERED list from inside the
+                    // field (nav is disabled app-wide, so they are ours).
                     const int nVis = (int)vis.size();
                     if (nVis > 0) {
                         if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, true)) {
                             kbSel = (kbSel < 0) ? 0 : std::min(kbSel + 1, nVis - 1);
-                            io.AddKeyEvent(ImGuiKey_DownArrow, false);
+                            kbChanged = 1;
                         }
                         if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, true)) {
                             kbSel = (kbSel <= 0) ? 0 : kbSel - 1;
-                            io.AddKeyEvent(ImGuiKey_UpArrow, false);
+                            kbChanged = -1;
                         }
                     }
                     const bool commit = ImGui::InputTextWithHint(
@@ -625,9 +625,6 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                         ImGuiInputTextFlags_EnterReturnsTrue);
                     ImGui::PopStyleVar(2);
                     if (std::string(buf) != search) { search = buf; kbSel = -1; }
-                    mdl->AddLine(ImVec2(m0.x + mPad.x, y0 + rowH),
-                                 ImVec2(m0.x + menuW - mPad.x, y0 + rowH),
-                                 ImGui::ColorConvertFloat4ToU32(borderV), 1.0f);
                     if (commit && !vis.empty()) {
                         // Enter picks the keyboard-highlighted row, else first.
                         const int pick = (kbSel >= 0 && kbSel < nVis) ? kbSel : 0;
@@ -653,12 +650,18 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                     const float total = (float)vis.size() * rowH +
                         (float)std::max<int>(0, (int)vis.size() - 1) * itemGap;
                     ImGui::Dummy(ImVec2(rowW, std::max(total, 1.0f)));
-                    // Keep the keyboard-highlighted row in view.
-                    if (kbSel >= 0 && kbSel < (int)vis.size()) {
-                        const float ry = (float)kbSel * (rowH + itemGap);
-                        ImGui::SetScrollFromPosY(
-                            ImGui::GetCursorStartPos().y + ry - ImGui::GetScrollY()
-                            + rowH * 0.5f, 0.5f);
+                    // Keep the keyboard-highlighted row in view — ONLY on the
+                    // frame the arrow key moved it (never every frame, which
+                    // would fight the mouse wheel / recentre in a loop).
+                    if (kbChanged != 0 && kbSel >= 0 && kbSel < (int)vis.size()) {
+                        const float rowTop = (float)kbSel * (rowH + itemGap);
+                        const float rowBot = rowTop + rowH;
+                        const float sy = ImGui::GetScrollY();
+                        const float viewH = ImGui::GetContentRegionAvail().y > 0
+                            ? ImGui::GetWindowHeight() : rowH;
+                        if (rowTop < sy) ImGui::SetScrollY(rowTop);
+                        else if (rowBot > sy + viewH)
+                            ImGui::SetScrollY(rowBot - viewH);
                     }
                     ImDrawList* cdl = ImGui::GetWindowDrawList();
                     for (size_t k = 0; k < vis.size(); ++k)

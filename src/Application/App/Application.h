@@ -315,6 +315,10 @@ private:
     void OutlinerDropToRoot(const std::vector<Ink::NodeId>& ids);
     void OutlinerDropReorder(const std::vector<Ink::NodeId>& ids, Ink::NodeId target,
                              bool above);
+    // Affinity clip/mask drop (undoable): nest ids under target as clip
+    // children, or mask children when `asMask`.
+    void OutlinerDropClipMask(const std::vector<Ink::NodeId>& ids,
+                              Ink::NodeId target, bool asMask);
     // Modifier drag & drop: COPY the source object's stack entry onto a
     // compatible (path) object, appended below its own modifiers. Undoable.
     void OutlinerDropModifierCopy(Ink::NodeId srcObj, int modIndex,
@@ -340,24 +344,20 @@ private:
 
     // ── Object eyedropper (Properties node pickers) ─────────────────────────
     // When active, the cursor becomes an eyedropper and the next object click
-    // (in a viewport OR an outliner) writes that node id into *objPickTarget_
-    // (undoable via the fold callback). Clicking anything that is NOT an
-    // object just cancels the pick. `objPickField_` disambiguates concurrent
-    // pickers (only the armed one accepts).
-    Ink::NodeId* objPickTarget_ = nullptr;
+    // (in a viewport OR an outliner) commits that node id through the fold
+    // callback. Clicking anything that is NOT an object just cancels the pick.
+    bool objPickActive_ = false;
     std::function<void(Ink::NodeId)> objPickCommit_;
-    bool ObjectPickActive() const { return objPickTarget_ != nullptr; }
+    bool ObjectPickActive() const { return objPickActive_; }
     void BeginObjectPick(Ink::NodeId* target, std::function<void(Ink::NodeId)> commit) {
-        objPickTarget_ = target; objPickCommit_ = std::move(commit);
+        (void)target;   // the commit lambda owns the write (re-fetches the node)
+        objPickActive_ = true; objPickCommit_ = std::move(commit);
     }
-    void CancelObjectPick() { objPickTarget_ = nullptr; objPickCommit_ = nullptr; }
+    void CancelObjectPick() { objPickActive_ = false; objPickCommit_ = nullptr; }
     // Deliver a picked node to the armed eyedropper (returns true if consumed).
     bool DeliverObjectPick(Ink::NodeId id) {
-        if (!objPickTarget_) return false;
-        if (id != Ink::kNullNode) {
-            if (objPickCommit_) objPickCommit_(id);
-            else *objPickTarget_ = id;
-        }
+        if (!objPickActive_) return false;
+        if (id != Ink::kNullNode && objPickCommit_) objPickCommit_(id);
         CancelObjectPick();
         return true;
     }

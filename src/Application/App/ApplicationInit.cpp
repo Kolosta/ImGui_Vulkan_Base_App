@@ -152,8 +152,12 @@ bool Application::Initialize() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    // Keyboard / gamepad NAVIGATION is intentionally OFF everywhere: the app
+    // drives its own focus (search fields, dropdown arrow-nav, shortcuts), and
+    // ImGui's nav draws a focus ring that would wander onto whole windows on
+    // an arrow press. We keep the flags cleared and also suppress the ring.
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
     // The docking *engine* stays compiled (docking branch), but its native
     // drag&drop / drop-target UX is intentionally NOT enabled: the app uses
     // its own Blender-style fixed 3-zone layout + custom resize instead.

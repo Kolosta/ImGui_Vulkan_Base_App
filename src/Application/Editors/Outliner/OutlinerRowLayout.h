@@ -57,14 +57,18 @@ inline float RowRight() {
 }
 inline float BandMargin() { return std::max(0.0f, SafeFloat(Tok::C_Editor_ContentInset, 6.0f) * Gs()); }
 
-// A collapse chevron in a fixed uniform slot. Toggles `open`, returns slot width.
-inline float Chevron(const char* id, bool& open) {
+// A collapse chevron in a fixed uniform slot. Toggles `open`, returns slot
+// width. `yCenterFrac` places the glyph's vertical centre at that fraction of
+// the row height (0.5 = centred; used to push it to the bottom when a clip/
+// mask badge shares the slot above it).
+inline float Chevron(const char* id, bool& open, float yCenterFrac = 0.5f) {
     auto& iconMgr = VectorGraphics::IconManager::Instance();
     const float chev = ChevronSize(), slot = ChevronSlotW(), rowH = RowH();
     ImGui::PushID(id);
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     if (ImGui::InvisibleButton("##chev", ImVec2(slot, ItemH()))) open = !open;
-    const ImVec2 ipos(p0.x + (slot - chev) * 0.5f, p0.y + (rowH - chev) * 0.5f);
+    const ImVec2 ipos(p0.x + (slot - chev) * 0.5f,
+                      p0.y + rowH * yCenterFrac - chev * 0.5f);
     const char* icon = open ? "chevron-down" : "chevron-right";
     auto md = iconMgr.GetDefaultMetadata(icon);
     if (!md.colorZones.empty())
