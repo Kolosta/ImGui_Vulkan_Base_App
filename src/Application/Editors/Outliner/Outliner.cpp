@@ -364,17 +364,41 @@ void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
     // off-screen View, so strokes (dash/cap/align/width), transparency,
     // patterns, instances, arrays and booleans all come out EXACTLY as on the
     // canvas, MSAA and all. The View filters the scene to this node's own
-    // subtree (owner ∈ subtree), fit to the node's rendered bounds. Views are
-    // cached per node id by the engine and evicted when unused, so only the
-    // handful of visible Layers rows cost anything.
+    // subtree (owner ∈ subtree) and isolates it (clips/masks inherited from an
+    // ancestor are dropped), fit to the subtree's rendered bounds. Views are
+    // cached per node id and evicted when unused, so only the handful of
+    // visible Layers rows cost anything.
+
+    // Owner filter = the node's LAYER subtree (its own drawables + every
+    // descendant, so GROUPS show their children too). Instanced copies of
+    // OTHER nodes stamp their own owner, so they stay excluded (an along-path
+    // tick shows only itself; an array keeps its own copies).
+    std::vector<std::uint64_t> owners;
+    {
+        std::vector<Ink::NodeId> stack{ id };
+        while (!stack.empty()) {
+            const Ink::NodeId c = stack.back(); stack.pop_back();
+            owners.push_back(c);
+            if (const Ink::Node* n = project_.document->Find(c))
+                for (Ink::NodeId k : n->children) stack.push_back(k);
+        }
+    }
+
+    // Bounds = the UNION of every subtree node's rendered bounds (a group /
+    // clip layer has no bounds of its own — its geometry lives in its
+    // children), so a group frames its whole content.
     Ink::DRect bb;
-    if (!ink_->NodeBounds(id, bb) || !bb.valid) { (void)ds; return; }
+    for (std::uint64_t o : owners) {
+        Ink::DRect nb;
+        if (ink_->NodeBounds(o, nb) && nb.valid) { bb.Grow(nb.min); bb.Grow(nb.max); }
+    }
+    if (!bb.valid) { (void)ds; return; }
 
     const float gs = ol::Gs();
     const std::uint32_t pxW = (std::uint32_t)std::max(8.0f, (mx.x - mn.x) - 2.0f * gs);
     const std::uint32_t pxH = (std::uint32_t)std::max(8.0f, (mx.y - mn.y) - 2.0f * gs);
 
-    // Fit the node's bbox into the pixel area with a small padding (aspect
+    // Fit the bbox into the pixel area with a small padding (aspect
     // preserving). The camera maps screen_px = (doc - pan) · zoom.
     const double bw = std::max(1e-6, bb.max.x - bb.min.x);
     const double bh = std::max(1e-6, bb.max.y - bb.min.y);
@@ -392,22 +416,6 @@ void Application::OutlinerDrawPreview(Ink::NodeId id, ImVec2 mn, ImVec2 mx) {
     view->SetViewport(pxW, pxH);
     view->SetCamera(panX, panY, zoom);
     view->SetBackground(Ink::SrgbToLinearPremultiplied(1, 1, 1, 1));   // white card
-
-    // Owner filter = the node's LAYER subtree (its own drawables + descendants;
-    // instanced copies of OTHER nodes stamp their own owner, so they are
-    // excluded — an along-path tick shows only itself, not the copies along
-    // the path, while an array keeps its own copies since they share its
-    // owner).
-    std::vector<std::uint64_t> owners;
-    {
-        std::vector<Ink::NodeId> stack{ id };
-        while (!stack.empty()) {
-            const Ink::NodeId c = stack.back(); stack.pop_back();
-            owners.push_back(c);
-            if (const Ink::Node* n = project_.document->Find(c))
-                for (Ink::NodeId k : n->children) stack.push_back(k);
-        }
-    }
     view->SetPreviewFilter(owners);
 
     dl->PushClipRect(mn, mx, true);

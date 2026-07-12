@@ -477,6 +477,10 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     if (isOpen) {
         ImGui::SetNextWindowPos(menuPos);
         ImGui::SetNextWindowSize(ImVec2(menuW, menuH));
+        // Force the popup to the FRONT of the window stack so it always renders
+        // above the panel widgets that follow it (the modifier Up/Down/Remove
+        // buttons) rather than under them.
+        ImGui::SetNextWindowFocus();
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding,  0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 0.0f);

@@ -258,19 +258,27 @@ void Application::Update() {
     if (osCursorHidden_ && transformOp_.Active())
         ImGui::SetMouseCursor(ImGuiMouseCursor_None);
 
-    // Object eyedropper: swap the REAL OS cursor to a crosshair (instant, no
-    // frame lag — like the transform-cursor swap) rather than drawing a glyph.
-    // Esc cancels; a click that reaches here (not consumed by a viewport /
-    // outliner object hit) was on some other widget — cancel there too.
+    // Object eyedropper: hide the OS cursor and draw the "colorize" glyph on the
+    // ImGui FOREGROUND list — the exact same technique as the transform cursor
+    // (SetMouseCursor(None) + IconManager on the foreground list, tinted by
+    // C_Cursor_Color, Multicolor scheme). The eyedropper points at its tip, so
+    // the glyph is anchored by its bottom-left corner on the mouse position.
+    // Esc cancels.
     if (ObjectPickActive()) {
-        if (!pickCursor_) pickCursor_ = SDL_CreateSystemCursor(SDL_SYSTEM_CURSOR_CROSSHAIR);
-        if (pickCursor_) SDL_SetCursor(pickCursor_);
-        // Stop ImGui's per-frame cursor update from overriding ours.
-        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
+        ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        auto& im = VectorGraphics::IconManager::Instance();
+        if (im.HasIcon("colorize")) {
+            auto& ds = DesignSystem::DesignSystem::Instance();
+            const float sz = 28.0f * ds.GetGlobalScale();
+            const ImVec2 m = ImGui::GetIO().MousePos;
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            ImVec4 col = ds.GetColor(DesignSystem::Tok::C_Cursor_Color);
+            auto md = im.GetDefaultMetadata("colorize");
+            md.scheme = VectorGraphics::IconColorScheme::Multicolor;
+            for (auto& z : md.colorZones) z.customColor = col;
+            im.RenderIcon(fg, "colorize", ImVec2(m.x, m.y - sz), sz, md);
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_Escape)) CancelObjectPick();
-    } else {
-        // Restore ImGui's cursor management the frame the pick ends.
-        ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
     }
 
     // With every floating window now submitted, register the ones overlapping the

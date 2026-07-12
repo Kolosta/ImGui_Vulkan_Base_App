@@ -762,7 +762,6 @@ void Application::Shutdown() {
     vkDestroyDevice(device_, g_Allocator);
     vkDestroyInstance(instance_, g_Allocator);
 
-    if (pickCursor_) { SDL_DestroyCursor(pickCursor_); pickCursor_ = nullptr; }
     SDL_DestroyWindow(window_);
     SDL_Quit();
 }
