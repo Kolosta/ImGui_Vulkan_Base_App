@@ -166,6 +166,23 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     ImGui::InvisibleButton("##trigger", ImVec2(btnW, controlH),
                            ImGuiButtonFlags_PressedOnClick);
     bool clicked = ImGui::IsItemActivated();
+    // Full width of the whole widget (left buttons + trigger + right buttons).
+    // Every SetCursorScreenPos below (action slot, fused buttons, popup) is a
+    // manual DRAW placement; if the layout cursor is left parked over the
+    // trigger, the next panel row (e.g. the modifier Up/Down/Remove buttons)
+    // draws ON the same line as this dropdown. We fix the layout by submitting
+    // one final Dummy of this size at groupMin before returning (see FinishRow).
+    float groupW = leftW + btnW;
+    for (const DropdownButton& b : cfg.buttons)
+        if (b.side == DropdownButton::Side::Right) groupW += buttonCellW(b);
+    // Restore a clean single-row layout: place the cursor at the group origin
+    // and submit a real (interaction-free) item so ImGui advances to the next
+    // line AND grows the parent bounds — SetCursorScreenPos alone would assert
+    // ("uses SetCursorPos to extend boundaries ... submit an item afterwards").
+    auto FinishRow = [&]() {
+        ImGui::SetCursorScreenPos(groupMin);
+        ImGui::Dummy(ImVec2(groupW, controlH));
+    };
     // Hover uses the geometric rect (the overlapping action button would
     // otherwise steal IsItemHovered from the trigger over its sub-rect).
     bool hovered = ImGui::IsMouseHoveringRect(btnMin, btnMax);
@@ -186,7 +203,6 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
         // A press that landed on the action must NOT also open the menu.
         if (objPickActHovered && ImGui::IsItemActivated()) clicked = false;
         ImGui::PopID();
-        ImGui::SetCursorScreenPos(btnMin);   // restore layout cursor
     }
     const ImU32 menuKey = ImGui::GetID("##menukey");
     if (clicked && !wasOpen) {
@@ -469,6 +485,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
         }
         ImGui::PopStyleColor(2);
         ImGui::PopStyleVar(3);
+        FinishRow();
         ImGui::PopID();
         return result;
     }
@@ -477,10 +494,6 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     if (isOpen) {
         ImGui::SetNextWindowPos(menuPos);
         ImGui::SetNextWindowSize(ImVec2(menuW, menuH));
-        // Force the popup to the FRONT of the window stack so it always renders
-        // above the panel widgets that follow it (the modifier Up/Down/Remove
-        // buttons) rather than under them.
-        ImGui::SetNextWindowFocus();
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding,  0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_PopupBorderSize, 0.0f);
@@ -756,6 +769,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
         ImGui::PopStyleVar(3);
     }
 
+    FinishRow();
     ImGui::PopID();
     return result;
 }
