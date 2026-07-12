@@ -90,6 +90,23 @@ public:
     // fit-selection). False when it produced nothing in the last compile.
     bool NodeBounds(NodeId id, DRect& out) const;
 
+    // ── Vector thumbnail (Outliner Layers preview) ────────────────────────
+    // A flattened, resolved snapshot of a node's rendered content, straight
+    // from the compiled Scene — so it INCLUDES pattern fills, instances,
+    // array/along-path copies and boolean results, exactly what the canvas
+    // draws. Each piece is a closed/open polygon in DOCUMENT space with its
+    // display colour (linear-straight). `tolerance` bounds curve flattening.
+    struct PreviewPiece {
+        std::vector<DVec2> pts;
+        bool  closed   = false;
+        bool  isStroke = false;
+        Color color;                // linear straight
+    };
+    // Fill `out` with the pieces whose owner is `id` or one of its descendants
+    // (the node's whole rendered subtree). Returns the covered doc-space bbox.
+    DRect PreviewPieces(NodeId id, double tolerance,
+                        std::vector<PreviewPiece>& out) const;
+
 private:
     std::unique_ptr<detail::RendererImpl> impl_;
 };

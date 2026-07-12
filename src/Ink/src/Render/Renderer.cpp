@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <unordered_set>
 
 namespace Ink {
 
@@ -911,6 +912,59 @@ std::vector<NodeId> Renderer::PickInBox(DVec2 boxMin, DVec2 boxMax) const {
 }
 bool Renderer::NodeBounds(NodeId id, DRect& out) const {
     return impl_->scene.NodeBounds(id, out);
+}
+
+DRect Renderer::PreviewPieces(NodeId id, double tolerance,
+                              std::vector<PreviewPiece>& out) const {
+    out.clear();
+    DRect bb;
+    RendererImpl& r = *impl_;
+    if (!r.document) return bb;
+
+    // The layer subtree of `id` — the set of nodes whose drawables belong to
+    // this thumbnail (an instance's/array's copies stamp `owner` = the node,
+    // which is already in the set; pattern cells stamp the host too).
+    std::unordered_set<NodeId> subtree;
+    {
+        std::vector<NodeId> stack{ id };
+        while (!stack.empty()) {
+            const NodeId cur = stack.back(); stack.pop_back();
+            if (!subtree.insert(cur).second) continue;
+            if (const Node* n = r.document->Find(cur))
+                for (NodeId c : n->children) stack.push_back(c);
+        }
+    }
+
+    // Walk the compiled drawables in painter order: each already carries the
+    // RESOLVED geometry (pattern motif copies, instance/array copies, boolean
+    // outlines) with its world + colour. Flatten at the requested tolerance
+    // (per-tier for boolean programs) and map to document space.
+    // Tier chosen so `tolerance` (doc units) matches the flatten error.
+    const int tier = GeometryCache::TierFromZoom(
+        tolerance > 1e-9 ? GeometryCache::kTolerancePx / tolerance : 1.0);
+    for (const Drawable& d : r.scene.Drawables()) {
+        if (d.isClipSource) continue;                 // masks never paint
+        if (subtree.find(d.owner) == subtree.end() &&
+            subtree.find(d.node) == subtree.end()) continue;
+        if (!d.path) continue;
+        const auto& polys = r.cache.GetFlattened(*d.path, d.pathHash, tier,
+                                                 d.boolProg);
+        for (const geom::Polyline& pl : polys) {
+            if (pl.points.size() < 2) continue;
+            PreviewPiece pc;
+            pc.closed = pl.closed;
+            pc.isStroke = d.isStroke;
+            pc.color = d.color;
+            pc.pts.reserve(pl.points.size());
+            for (const DVec2& p : pl.points) {
+                const DVec2 w = d.world.Apply(p);
+                pc.pts.push_back(w);
+                bb.Grow(w);
+            }
+            out.push_back(std::move(pc));
+        }
+    }
+    return bb;
 }
 
 } // namespace Ink

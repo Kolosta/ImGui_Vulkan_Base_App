@@ -68,6 +68,37 @@ Key semantics:
   render nothing, modifiers skip the input) and the UI surfaces it — no
   cascade deletes, no dangling pointers (ids, not pointers).
 
+### 2.1 Clipping & masking (Affinity model)
+
+Two distinct, composable mechanisms — both implemented with the render
+graph's stencil clip pass (RENDER_GRAPH §ClipPass), so both are vector-exact
+at any zoom:
+
+- **Per-node clip / mask layer.** ANY node can hold children (a path's
+  children are *nested inside it*). A child is by default a **clip child**:
+  it paints only where its parent's fill covers (`node.isMask == false`). A
+  child flagged `isMask` is a **mask layer** instead: it does not paint — its
+  coverage masks the parent (and the parent's other children), so they show
+  only through the mask's shape. The parent's own fill still paints. This is
+  the "drag a layer onto another (clip) or onto its thumbnail (mask)"
+  gesture. The mask/clip source is the child itself, chosen by direct
+  nesting; nothing is ambiguous.
+
+- **Clip group** (`Group.clip`). A *group* masks its WHOLE subtree by its
+  **first path child** (the topmost child in the list — SVG clip-path
+  semantics). Every other member is clipped by that one shape. This is the
+  "clip many sibling objects with one shared shape" case: instead of nesting
+  each object, drop them all into a group and mark the group `clip`. The clip
+  shape is that first child (so in the demo the ellipse "clip shape" clips
+  every "dot"). The clip source is thus *implicit* (first child) rather than
+  per-object. Toggle it from the Layers outliner context menu ("Clip to First
+  Child") or the Properties Compositing panel ("Clip"). A clip group also
+  composites as a unit (opacity/blend apply to the masked result), which a
+  loose per-node clip does not.
+
+Rule of thumb: per-node clip/mask nests one thing inside one thing; a clip
+group shares one mask across a whole group.
+
 ## 3. Geometry: PathData
 
 One geometry type for everything (no Mesh/Curve split — the old model's
