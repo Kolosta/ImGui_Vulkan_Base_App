@@ -40,11 +40,21 @@ struct PanelConfig {
     // Optional right-aligned inline content width reserved in the header (e.g.
     // an inline editor for a property panel). 0 = none.
     float headerInlineWidth = 0.0f;
+    // FLAT body: keep the PARENT's body colour instead of darkening with depth,
+    // so a sub-panel reads as flush with the surface it sits on (the Properties
+    // editor wants every section to share the level-1 surface). Level-1 panels
+    // ignore this (they already own the top surface).
+    bool flatBody = false;
+    // CLOSE button: a small cross at the header's right edge. When clicked,
+    // PanelResult.closeClicked is set (the caller removes the item). The slot is
+    // reserved so the label/inline area never shifts.
+    bool closable = false;
 };
 
 struct PanelResult {
     bool open = false;          // body is expanded this frame
     bool resetClicked = false;  // the override badge was clicked
+    bool closeClicked = false;  // the close cross was clicked (closable panels)
     // Screen-space rect of the header's right-hand inline area (valid when
     // headerInlineWidth > 0): the caller can draw an inline editor there.
     ImVec2 inlineMin{};
@@ -67,5 +77,41 @@ int PanelDepth();
 // "Resolution chain" panel header). `depth` is the would-be panel depth — i.e.
 // PanelDepth() + 1 for a sub-panel begun inside the current body.
 float PanelHeaderTextIndent(int depth);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Reorderable panel list — Blender's modifier-stack interaction, reusable.
+//
+//  A run of SIBLING panels the user can reorder by dragging their headers
+//  (neighbours shift live under the drag) and remove via the header cross:
+//
+//      UI::PanelListEdit edit;
+//      for (int i = 0; i < n; ++i) {
+//          UI::PanelConfig cfg; cfg.id = "##item"; cfg.label = ...;
+//          if (UI::BeginPanelListItem(cfg, i, n, edit).open) { ...rows... }
+//          UI::EndPanelListItem();
+//      }
+//      if (edit.removeAt >= 0)      items.erase(items.begin() + edit.removeAt);
+//      else if (edit.moveFrom >= 0) std::swap(items[edit.moveFrom],
+//                                             items[edit.moveTo]);
+//
+//  The list owns the per-item ImGui ids (do NOT PushID around items) and tracks
+//  the drag at LIST level, so a multi-step drag keeps working while items swap
+//  underneath, and each panel's open/closed state FOLLOWS its item. The header
+//  toggles open/closed on a press RELEASED without dragging — release, not
+//  click, is what lets drag and expand share the header. The dragged panel gets
+//  an accent outline. Every item of one list must use the same cfg.id; one list
+//  per id scope.
+// ─────────────────────────────────────────────────────────────────────────────
+struct PanelListEdit {
+    int removeAt = -1;               // index whose close cross was clicked
+    int moveFrom = -1, moveTo = -1;  // swap these two sibling indices
+};
+
+// Begin item `index` of `count`. cfg.closable/flatBody are honoured (set them
+// for the Blender look); the drag handle is always on. Pair with
+// EndPanelListItem() (NOT EndPanel).
+PanelResult BeginPanelListItem(const PanelConfig& cfg, int index, int count,
+                               PanelListEdit& edit);
+void EndPanelListItem();
 
 } // namespace UI

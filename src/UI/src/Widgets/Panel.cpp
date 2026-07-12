@@ -5,6 +5,7 @@
 #include <imgui_internal.h>
 #include <vector>
 #include <cmath>
+#include <cstdio>
 
 namespace UI {
 
@@ -37,6 +38,50 @@ struct PanelFrame {
 std::vector<PanelFrame>& Stack() {
     static std::vector<PanelFrame> s;
     return s;
+}
+
+// ── Reorderable-list context ─────────────────────────────────────────────────
+// Set for the duration of one BeginPanelListItem/EndPanelListItem pair; the
+// header logic inside BeginPanel consults it (press capture, release-toggle
+// gating). List state (drag index, press, per-item rects) lives in the LIST
+// window's ImGuiStorage so it survives frames; the keys are computed at list
+// scope (outside the per-item PushID) so every item reads the same slots.
+struct ListCtx {
+    bool           active   = false;
+    int            index    = 0;
+    int            count    = 0;
+    const char*    itemId   = "";        // cfg.id — identical for every item
+    ImGuiStorage*  st       = nullptr;   // the list window's storage
+    ImGuiID        kDrag    = 0;         // int: index being dragged (-1 none)
+    ImGuiID        kPress   = 0;         // int: index pressed, pre-threshold
+    ImGuiID        kPressY  = 0;         // float: mouse y at press
+    ImGuiID        kDragged = 0;         // bool: this hold entered a drag
+    PanelListEdit* edit     = nullptr;
+};
+ListCtx g_list;
+
+// Per-index storage key at LIST scope (call outside the item's PushID).
+ImGuiID ListRectKey(int index, bool top) {
+    char buf[32];
+    std::snprintf(buf, sizeof buf, "##plR%d%c", index, top ? 't' : 'b');
+    return ImGui::GetID(buf);
+}
+
+// Swap the two items' persisted panel state (the "##open" flag) so expansion
+// follows the ITEM when the list reorders it, not the slot it sat in.
+void ListSwapItemState(ImGuiStorage* st, const char* itemId, int a, int b) {
+    auto key = [&](int i) {
+        ImGui::PushID(i);
+        ImGui::PushID(itemId);
+        const ImGuiID k = ImGui::GetID("##open");
+        ImGui::PopID();
+        ImGui::PopID();
+        return k;
+    };
+    const ImGuiID ka = key(a), kb = key(b);
+    const bool va = st->GetBool(ka, true), vb = st->GetBool(kb, true);
+    st->SetBool(ka, vb);
+    st->SetBool(kb, va);
 }
 
 // Body background by nesting level (per the design spec):
@@ -118,7 +163,12 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
     // not a stray margin. The header background is a FLAT rectangle whose colour
     // equals the body colour at the corners, so the rounded ChildBg shows
     // through the corners with no seam (no need to round the header rect).
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(BodyTokForDepth(depth)));
+    // A flat sub-panel keeps its PARENT's body colour (Properties: every
+    // section shares the level-1 surface); otherwise the body darkens with
+    // depth. Level-1 always uses its own body token.
+    const Tok bodyTok = (cfg.flatBody && depth > 1) ? BodyTokForDepth(depth - 1)
+                                                    : BodyTokForDepth(depth);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(bodyTok));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(Tok::C_Panel_Border));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, level1 ? radius : 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, borderW);
@@ -150,7 +200,7 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
     // that both resolve to "raised". Comparing enums would always draw the flat
     // rect, whose square top corners overflow the rounded ChildBg + border.
     const ImVec4 headerCol = Col(HeaderTokForDepth(depth));
-    const ImVec4 bodyCol   = Col(BodyTokForDepth(depth));
+    const ImVec4 bodyCol   = Col(bodyTok);
     if (headerCol.x != bodyCol.x || headerCol.y != bodyCol.y ||
         headerCol.z != bodyCol.z || headerCol.w != bodyCol.w) {
         // A level-1 panel is rounded, so its header must round its TOP corners
@@ -163,14 +213,31 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
                           level1 ? radius : 0.0f, rf);
     }
 
-    // The reset-badge slot is ALWAYS reserved (drawn only when overridden), so
-    // the header inline editor never shifts when the badge appears/disappears.
+    // The reset-badge / close-cross slot is ALWAYS reserved (drawn only when
+    // overridden / closable), so the header inline editor never shifts.
     const float badgeW  = headerH;
     const float inlineW = cfg.headerInlineWidth;
     const float toggleW = innerW - badgeW - inlineW;
     ImGui::SetCursorScreenPos(headerMin);
     ImGui::InvisibleButton("##hdr", ImVec2(std::max(1.0f, toggleW), headerH));
-    if (ImGui::IsItemClicked()) { open = !open; st->SetBool(openKey, open); }
+    if (g_list.active) {
+        // List item: the header is a click-OR-drag handle. The press is only
+        // RECORDED here; the list step (BeginPanelListItem, index 0) promotes
+        // it to a drag past the threshold and performs the live reordering. A
+        // press released WITHOUT ever dragging toggles open/closed — release,
+        // not click, is what lets drag and expand share the header.
+        if (ImGui::IsItemActivated()) {
+            g_list.st->SetInt(g_list.kPress, g_list.index);
+            g_list.st->SetFloat(g_list.kPressY, ImGui::GetIO().MousePos.y);
+        }
+        if (ImGui::IsItemDeactivated() &&
+            !g_list.st->GetBool(g_list.kDragged, false) &&
+            ImGui::IsItemHovered()) {
+            open = !open; st->SetBool(openKey, open);
+        }
+    } else if (ImGui::IsItemClicked()) {
+        open = !open; st->SetBool(openKey, open);
+    }
 
     auto& im = VectorGraphics::IconManager::Instance();
     const ImVec4 textV = Col(Tok::C_Panel_Text);
@@ -222,6 +289,25 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
         if (!md.colorZones.empty())
             im.RenderIcon(dl, "reset-settings", ip, bi, md);
         if (bHov) ImGui::SetTooltip("Reset all overrides under this panel");
+    }
+
+    // Close → a small cross in the right-hand slot (reorderable paint / modifier
+    // panels). Drawn on TOP of the header handle (AllowOverlap) so clicking the
+    // cross removes the item instead of dragging / toggling the panel.
+    if (cfg.closable) {
+        ImVec2 bMin(headerMax.x - badgeW, headerMin.y);
+        ImGui::SetCursorScreenPos(bMin);
+        ImGui::SetNextItemAllowOverlap();
+        ImGui::InvisibleButton("##close", ImVec2(badgeW, headerH));
+        bool bHov = ImGui::IsItemHovered();
+        if (ImGui::IsItemClicked()) res.closeClicked = true;
+        const float bi = iconSz;
+        ImVec2 ip(bMin.x + (badgeW - bi) * 0.5f, headerMin.y + (headerH - bi) * 0.5f);
+        ImVec4 tint = bHov ? Col(Tok::S_Color_Text_Default) : Col(Tok::C_Panel_Text);
+        auto md = im.GetDefaultMetadata("close");
+        for (auto& z : md.colorZones) z.customColor = tint;
+        if (!md.colorZones.empty())
+            im.RenderIcon(dl, "close", ip, bi, md);
     }
 
     // Cursor below the header for body content.
@@ -278,6 +364,113 @@ void EndPanel() {
     // matching the order it was pushed in BeginPanel (before PushID/BeginChild).
     if (f.spacingPushed) ImGui::PopStyleVar();   // parent ItemSpacing
     (void)f;
+}
+
+// ── Reorderable panel list ────────────────────────────────────────────────────
+
+PanelResult BeginPanelListItem(const PanelConfig& cfg, int index, int count,
+                               PanelListEdit& edit) {
+    ImGuiStorage* st = ImGui::GetStateStorage();
+    g_list.active   = true;
+    g_list.index    = index;
+    g_list.count    = count;
+    g_list.itemId   = cfg.id;
+    g_list.st       = st;
+    g_list.kDrag    = ImGui::GetID("##plistDrag");
+    g_list.kPress   = ImGui::GetID("##plistPress");
+    g_list.kPressY  = ImGui::GetID("##plistPressY");
+    g_list.kDragged = ImGui::GetID("##plistDragged");
+    g_list.edit     = &edit;
+
+    // The list step runs ONCE per frame, on the first item: end/promote the
+    // press, and while a drag is live, reorder when the cursor crosses a
+    // neighbour's midline (last frame's item rects — one-frame lag is fine).
+    if (index == 0) {
+        int drag = st->GetInt(g_list.kDrag, -1);
+        if (drag >= count) { drag = -1; st->SetInt(g_list.kDrag, -1); }
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            // Release: end the drag but keep the "dragged" flag for THIS frame —
+            // the headers' IsItemDeactivated runs later this frame and must not
+            // treat a drag release as a collapse click.
+            if (drag >= 0) st->SetInt(g_list.kDrag, -1);
+            else           st->SetBool(g_list.kDragged, false);
+            st->SetInt(g_list.kPress, -1);
+        } else {
+            const float my = ImGui::GetIO().MousePos.y;
+            const int press = st->GetInt(g_list.kPress, -1);
+            if (drag < 0 && press >= 0 && press < count) {
+                const float py = st->GetFloat(g_list.kPressY, my);
+                if (std::fabs(my - py) > ImGui::GetIO().MouseDragThreshold) {
+                    drag = press;
+                    st->SetInt(g_list.kDrag, drag);
+                    st->SetBool(g_list.kDragged, true);
+                }
+            }
+            if (drag >= 0) {
+                auto mid = [&](int i) {
+                    const float y0 = st->GetFloat(ListRectKey(i, true), 0.0f);
+                    const float y1 = st->GetFloat(ListRectKey(i, false), 0.0f);
+                    return (y0 + y1) * 0.5f;
+                };
+                if (drag > 0 && my < mid(drag - 1)) {
+                    edit.moveFrom = drag; edit.moveTo = drag - 1;
+                } else if (drag + 1 < count && my > mid(drag + 1)) {
+                    edit.moveFrom = drag; edit.moveTo = drag + 1;
+                }
+                // The persisted-state swap + drag-index update are applied at
+                // the END of the list (last EndPanelListItem), so this frame
+                // still draws consistently in the old order.
+            }
+        }
+    }
+
+    ImGui::PushID(index);
+    PanelResult r = BeginPanel(cfg);
+    if (r.closeClicked) edit.removeAt = index;
+    return r;
+}
+
+void EndPanelListItem() {
+    EndPanel();
+    ImGui::PopID();
+    ImGuiStorage* st = g_list.st;
+
+    // Record this item's rect (list scope) for next frame's midline tests; the
+    // panel child window is the last submitted item after EndPanel.
+    const ImVec2 mn = ImGui::GetItemRectMin();
+    const ImVec2 mx = ImGui::GetItemRectMax();
+    st->SetFloat(ListRectKey(g_list.index, true),  mn.y);
+    st->SetFloat(ListRectKey(g_list.index, false), mx.y);
+
+    // The dragged item carries an accent outline (Blender's lifted panel).
+    if (st->GetInt(g_list.kDrag, -1) == g_list.index) {
+        const float gs = DS::DesignSystem::Instance().GetGlobalScale();
+        ImGui::GetWindowDrawList()->AddRect(
+            mn, mx,
+            ImGui::ColorConvertFloat4ToU32(Col(Tok::S_Color_Accent_Default)),
+            Flt(Tok::C_Panel_CornerRadius) * gs, 0, 1.0f * gs);
+    }
+
+    // Last item and a move is pending: swap the persisted per-item state (open
+    // flag) and the cached rects NOW — after every panel drew with the old
+    // order — so next frame the caller-applied data order and the panel states
+    // agree. The drag index follows the item to its new slot.
+    if (g_list.index + 1 == g_list.count && g_list.edit &&
+        g_list.edit->moveFrom >= 0) {
+        const int a = g_list.edit->moveFrom, b = g_list.edit->moveTo;
+        ListSwapItemState(st, g_list.itemId, a, b);
+        for (int t = 0; t < 2; ++t) {
+            const ImGuiID ka = ListRectKey(a, t == 0);
+            const ImGuiID kb = ListRectKey(b, t == 0);
+            const float va = st->GetFloat(ka, 0.0f), vb = st->GetFloat(kb, 0.0f);
+            st->SetFloat(ka, vb);
+            st->SetFloat(kb, va);
+        }
+        if (st->GetInt(g_list.kDrag, -1) == a) st->SetInt(g_list.kDrag, b);
+    }
+
+    g_list.active = false;
+    g_list.edit   = nullptr;
 }
 
 } // namespace UI
