@@ -146,7 +146,33 @@ void KeepBy(const std::vector<Edge>& edges, const Polys& other,
     }
 }
 
-Polys BuildOp(const Polys& A, const Polys& B, BoolOp op) {
+// Signed area of a ring (positive = counter-clockwise, y-down conventions
+// aside — this is just used for consistency, not absolute orientation).
+double RingArea(const Poly& r) {
+    double a = 0.0;
+    for (std::size_t i = 0, n = r.size(); i < n; ++i) {
+        const DVec2& p = r[i];
+        const DVec2& q = r[(i + 1) % n];
+        a += p.x * q.y - q.x * p.y;
+    }
+    return a * 0.5;
+}
+
+// Force every ring counter-clockwise. The edge-keep + reverse-for-hole rules
+// assume a CONSISTENT input winding; the shape factories disagree (Rect/
+// Polygon are CCW, Ellipse's cubic arcs come out CW), which mixed opposite
+// orientations into one edge set and produced garbage rings — hence booleans
+// failing on ellipses. Normalising both operands fixes it for any input.
+Polys NormalizeCCW(const Polys& in) {
+    Polys out = in;
+    for (Poly& r : out)
+        if (RingArea(r) < 0.0) std::reverse(r.begin(), r.end());
+    return out;
+}
+
+Polys BuildOp(const Polys& Araw, const Polys& Braw, BoolOp op) {
+    const Polys A = NormalizeCCW(Araw);
+    const Polys B = NormalizeCCW(Braw);
     const std::vector<Edge> ae = SplitEdges(A, B);
     const std::vector<Edge> be = SplitEdges(B, A);
     std::vector<Edge> kept;

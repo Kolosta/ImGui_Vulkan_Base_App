@@ -573,15 +573,20 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                            ? Color{ 0, 0, 0, 1 }
                            : motif->style.fills.front().paint.color;
     motifColor.a *= fill.opacity;
-    // The angle rotates the whole LATTICE (motifs ride it — Affinity
-    // semantics), the scale applies per motif.
+    // `rotation` rotates the whole LATTICE (motifs ride it — Affinity
+    // semantics); `motifRotation` spins each motif in place on top of that;
+    // `scale` sizes each motif.
     const double c = std::cos(pat.rotation), s = std::sin(pat.rotation);
     const double sc = pat.scale;
     DMat23 latt;  latt.m[0] = c;  latt.m[1] = -s;   // lattice → anchor space
                   latt.m[3] = s;  latt.m[4] =  c;
     DMat23 lattInv; lattInv.m[0] = c;  lattInv.m[1] = s;
                     lattInv.m[3] = -s; lattInv.m[4] = c;
-    DMat23 sca; sca.m[0] = sc; sca.m[4] = sc;
+    // Per-motif transform = rotate(motifRotation) ∘ scale.
+    const double mc = std::cos(pat.motifRotation), ms = std::sin(pat.motifRotation);
+    DMat23 sca;
+    sca.m[0] = mc * sc; sca.m[1] = -ms * sc;
+    sca.m[3] = ms * sc; sca.m[4] =  mc * sc;
 
     // Conservative motif radius (local units, rotation-safe): the anchor/handle
     // extent times the pattern scale — used only to CULL cells that cannot

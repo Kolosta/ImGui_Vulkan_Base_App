@@ -55,7 +55,10 @@ struct PatternFill {
     double spacingY = 40.0;
     double phaseX   = 0.0;         // lattice origin offset
     double phaseY   = 0.0;
-    double rotation = 0.0;         // per-motif rotation (radians)
+    double rotation = 0.0;         // LATTICE rotation (radians) — rotates the
+                                   // whole grid (Affinity "angle")
+    double motifRotation = 0.0;    // extra per-motif spin (radians), applied
+                                   // on top of the lattice orientation
     double scale    = 1.0;         // per-motif uniform scale
     PatternClip   clip   = PatternClip::Bounds;
     PatternAnchor anchor = PatternAnchor::Object;
