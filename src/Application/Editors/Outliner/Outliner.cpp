@@ -1073,6 +1073,19 @@ void Application::RenderOutliner(EditorState& st) {
     edit_.Prune(*project_.document);
     st.outliner.rowOrder.clear();
     if (edit_.active != Ink::kNullNode) st.outliner.active = edit_.active;
+    // The child-row selection (a modifier / linked-data sub-row that reads as
+    // selected, with its owner shown subtle + the linked original in violet) is
+    // only coherent while its OWNER is the sole active document selection.
+    // Selecting anything else — a row here, or an object in the viewport, which
+    // never touches OutlinerState — must drop it, exactly like every other
+    // selection. Invalidate it once per frame when the document selection has
+    // moved off the owning object (or grown past it).
+    if (st.outliner.selChildObj != 0 &&
+        (edit_.active != st.outliner.selChildObj ||
+         edit_.selection.size() != 1)) {
+        st.outliner.ClearChildSel();
+        st.outliner.activeModifier = -1;
+    }
     // Object and collection selection are EXCLUSIVE: selecting objects
     // anywhere (viewport click, Shift+click extend, box select) drops any
     // selected collection rows — the two never read as selected together.

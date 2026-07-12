@@ -260,12 +260,14 @@ void Application::PropInstanceSection(Ink::NodeId id) {
     pc.defaultOpen = true;
     if (UI::BeginPanel(pc).open) {
         Ink::NodeId target = n->targetRef;
-        // Any node can be instanced (paths, groups, even other instances).
+        // Any node can be instanced (paths, groups, even other instances) —
+        // and the target can be CLEARED (the trailing cross writes kNullNode).
         auto commitTarget = [this, id](Ink::NodeId picked) {
             if (!project_.document) return;
             const Ink::Node* nn = project_.document->Find(id);
-            if (!nn || picked == Ink::kNullNode) return;
+            if (!nn) return;
             const Ink::NodeId before = nn->targetRef;
+            if (picked == before) return;
             project_.document->SetInstanceTarget(id, picked);
             PushDocCommand("Instance Target",
                 [id, before](Ink::Document& d) { d.SetInstanceTarget(id, before); },
@@ -273,15 +275,14 @@ void Application::PropInstanceSection(Ink::NodeId id) {
             LogInfoAction("Instance Target");
         };
         bool pickTgt = false;
+        // The picker writes the chosen id (or kNullNode on clear) into `target`
+        // and returns true; the trigger already shows the resolved target name,
+        // so there is NO separate "Renders <name>" row (it doubled the label and
+        // overlapped the input).
         if (pr::NodePickerRow("Target", doc, &target, id,
-                              /*allowNone=*/false, /*pathsOnly=*/false, &pickTgt))
+                              /*allowNone=*/true, /*pathsOnly=*/false, &pickTgt))
             commitTarget(target);
         if (pickTgt) BeginObjectPick(nullptr, commitTarget);
-        if (const Ink::Node* t = doc.Find(n->targetRef)) {
-            pr::Label("Renders");
-            ImGui::TextUnformatted(t->name.empty() ? "(unnamed)"
-                                                   : t->name.c_str());
-        }
     }
     UI::EndPanel();
 }
