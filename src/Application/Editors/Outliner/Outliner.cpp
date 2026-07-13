@@ -292,11 +292,14 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
                 for (Ink::NodeId cc : c.childCollections)
                     if (const Ink::Collection* child = doc.FindCollection(cc))
                         flattenColl(*child, depth + 1, c.id, myRow);
-                // Members are ALPHABETICAL (never manually ordered).
+                // Members are ALPHABETICAL (never manually ordered). GROUPS
+                // never list here: a group is Layers-only structure (z-order /
+                // compositing), not a real object — its children stand on
+                // their own in this view.
                 std::vector<Ink::NodeId> members;
                 for (Ink::NodeId m : c.members) {
                     const Ink::Node* mn = doc.Find(m);
-                    if (!mn) continue;
+                    if (!mn || mn->kind == Ink::NodeKind::Group) continue;
                     if (mn->parentId != Ink::kNullNode &&
                         std::find(c.members.begin(), c.members.end(), mn->parentId)
                             != c.members.end()) continue;   // nests under parent
@@ -313,7 +316,9 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
         // EVERY document object that is in no collection and not parented
         // lands flat under the project root, ALPHABETICAL — the layer tree
         // (group nesting, z-order) never structures this view, so a group's
-        // children list here too when no collection claims them.
+        // children list here too when no collection claims them. GROUPS
+        // themselves are skipped: a group is Layers-only structure, not a
+        // real object of the Collections organisation.
         std::vector<Ink::NodeId> loose;
         for (const Ink::Page& page : doc.Pages()) {
             std::vector<Ink::NodeId> stack(page.children.begin(),
@@ -323,6 +328,7 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
                 const Ink::Node* n = doc.Find(id);
                 if (!n) continue;
                 for (Ink::NodeId c : n->children) stack.push_back(c);
+                if (n->kind == Ink::NodeKind::Group) continue;
                 if (!OutlinerInAnyCollection(id) && !isParented(id))
                     loose.push_back(id);
             }
@@ -1085,6 +1091,48 @@ void Application::RenderOutliner(EditorState& st) {
          edit_.selection.size() != 1)) {
         st.outliner.ClearChildSel();
         st.outliner.activeModifier = -1;
+    }
+
+    // Numpad "." must reach a selection buried in a COLLAPSED hierarchy:
+    // unfold every ancestor FIRST (the flat-row scroll below only finds rows
+    // that exist). Layers: the layer-tree parent chain + the owning page.
+    // Collections: the Project root, every collection containing the node
+    // (and their parent collections), and the object-parent chain (those
+    // child rows unfold via expandedObjects).
+    if (st.outliner.reqScrollToActive && edit_.active != Ink::kNullNode) {
+        OutlinerState& o = st.outliner;
+        Ink::Document& d = *project_.document;
+        if (const Ink::Node* an = d.Find(edit_.active)) {
+            for (Ink::NodeId p = an->parent; p != Ink::kNullNode;) {
+                o.collapsed.erase(p);
+                const Ink::Node* pn = d.Find(p);
+                p = pn ? pn->parent : Ink::kNullNode;
+            }
+            o.collapsed.erase(an->page);
+            if (o.display == OutlinerDisplayMode::Collections) {
+                o.collapsed.erase(kProjectRootRowId);
+                std::unordered_map<Ink::NodeId, Ink::NodeId> collParent;
+                for (const Ink::Collection& c : d.Collections())
+                    for (Ink::NodeId k : c.childCollections)
+                        collParent[k] = c.id;
+                for (const Ink::Collection& c : d.Collections()) {
+                    if (std::find(c.members.begin(), c.members.end(),
+                                  edit_.active) == c.members.end())
+                        continue;
+                    for (Ink::NodeId cc = c.id; cc != Ink::kNullNode;) {
+                        o.collapsed.erase(cc);
+                        auto it = collParent.find(cc);
+                        cc = it == collParent.end() ? Ink::kNullNode
+                                                    : it->second;
+                    }
+                }
+                for (Ink::NodeId p = an->parentId; p != Ink::kNullNode;) {
+                    o.expandedObjects.insert(p);
+                    const Ink::Node* pn = d.Find(p);
+                    p = pn ? pn->parentId : Ink::kNullNode;
+                }
+            }
+        }
     }
     // Object and collection selection are EXCLUSIVE: selecting objects
     // anywhere (viewport click, Shift+click extend, box select) drops any

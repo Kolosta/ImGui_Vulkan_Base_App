@@ -184,11 +184,20 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
         ov.AddLine({ m.x, m.y - s }, { m.x, m.y + s }, accentCol, 1.0f);
     }
 
-    // The single UI call for the whole canvas.
-    if (auto tex = view->Texture())
-        ImGui::Image((ImTextureID)tex, size);
-    else
+    // The single UI call for the whole canvas. The image blits with ROUNDED
+    // BOTTOM corners only (the zone's radius): the top edge sits flush under
+    // the menu bar and must meet it square, the bottom follows the zone frame.
+    if (auto tex = view->Texture()) {
+        const float rnd = ds.GetFloat(Tok::C_Window_CornerRadius) *
+                          ds.GetGlobalScale();
+        ImGui::GetWindowDrawList()->AddImageRounded(
+            (ImTextureID)tex, cMin, ImVec2(cMin.x + size.x, cMin.y + size.y),
+            ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, rnd,
+            ImDrawFlags_RoundCornersBottom);
         ImGui::Dummy(size);
+    } else {
+        ImGui::Dummy(size);
+    }
 
     // Outliner viewport-sync picking (Lot 9): while an Outliner is armed, the
     // hovered viewport paints the LEGACY preview — the full zone inset like the
