@@ -572,9 +572,17 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         const Ink::Collection* c = doc.FindCollection(rrow.id);
         if (!c) { UI::ListRow dummy(cfg); return; }
         cfg.selected = o.RowSelected(rrow.id);
-        ImVec4 selc = ds.GetColor(Tok::C_Outliner_Row_Selected);
-        cfg.colors.hover    = ImGui::ColorConvertFloat4ToU32(ImVec4(selc.x, selc.y, selc.z, 0.55f));
-        cfg.colors.selected = ImGui::ColorConvertFloat4ToU32(selc);
+        // Hover is the STANDARD grey row hover (a blue hover read as selected);
+        // only the real selection fills blue, with its selected-hover blend.
+        ImVec4 hovc = ol::SafeColor(Tok::C_Outliner_Row_Hover,
+                                    ImVec4(0.5f, 0.5f, 0.5f, 1));
+        hovc.w = 0.55f;
+        cfg.colors.hover    = ImGui::ColorConvertFloat4ToU32(hovc);
+        cfg.colors.selected = ImGui::ColorConvertFloat4ToU32(
+            ds.GetColor(Tok::C_Outliner_Row_Selected));
+        cfg.colors.selectedHover = ImGui::ColorConvertFloat4ToU32(
+            ol::SafeColor(Tok::C_Outliner_Row_SelectedHover,
+                          ImVec4(0.3f, 0.5f, 0.8f, 1)));
         UI::ListRow row(cfg);
         OutlinerRowDragDrop(rrow, row);   // drag source + drop target on the row item
         ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
@@ -691,6 +699,11 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
             cfg.colors.selected = ImGui::ColorConvertFloat4ToU32(
                 ol::SafeColor(Tok::C_Outliner_Row_Selected,
                               ImVec4(0.2f, 0.4f, 0.7f, 1)));
+            // Hovering a selected child row blends selected + hover — never
+            // falls back to the base row colour.
+            cfg.colors.selectedHover = ImGui::ColorConvertFloat4ToU32(
+                ol::SafeColor(Tok::C_Outliner_Row_SelectedHover,
+                              ImVec4(0.3f, 0.5f, 0.8f, 1)));
         }
         UI::ListRow row(cfg);
         OutlinerRowDragDrop(rrow, row);   // modifier drag source / obj targets
@@ -816,6 +829,14 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     cfg.colors.selectedHover = colf(Tok::C_Outliner_Row_SelectedHover, Tok::C_Outliner_Search_SelectedHover, 1.0f);
     cfg.colors.active        = colf(Tok::C_Outliner_Row_Active, Tok::C_Outliner_Search_Active, 1.0f);
     cfg.colors.activeHover   = colf(Tok::C_Outliner_Row_ActiveHover, Tok::C_Outliner_Search_ActiveHover, 1.0f);
+    if (linkedMarker) {
+        // Hovering the violet "linked original" marker stays in the violet
+        // family (a brighter purple), never the generic grey.
+        ImVec4 vh = ol::SafeColor(Tok::P_Color_Purple_400,
+                                  ImVec4(0.85f, 0.75f, 0.95f, 1));
+        vh.w = 0.45f;
+        cfg.colors.hover = ImGui::ColorConvertFloat4ToU32(vh);
+    }
     if (selfHit && searching && !selected)
         cfg.colors.idle = colf(Tok::C_Outliner_Search_Visual, Tok::C_Outliner_Search_Visual, 0.45f);
 
