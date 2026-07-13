@@ -1,6 +1,7 @@
 #pragma once
 
 #include <imgui.h>
+#include <algorithm>   // PanelListApplyMove (std::rotate)
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Blender-style nested collapsible "panel".
@@ -81,8 +82,10 @@ float PanelHeaderTextIndent(int depth);
 // ─────────────────────────────────────────────────────────────────────────────
 //  Reorderable panel list — Blender's modifier-stack interaction, reusable.
 //
-//  A run of SIBLING panels the user can reorder by dragging their headers
-//  (neighbours shift live under the drag) and remove via the header cross:
+//  A run of SIBLING panels the user can reorder by dragging their headers —
+//  the grabbed panel FLOATS with the cursor while the others slide out of its
+//  way with a smooth animation (Blender's modifier stack) — and remove via the
+//  header cross:
 //
 //      UI::PanelListEdit edit;
 //      for (int i = 0; i < n; ++i) {
@@ -91,20 +94,19 @@ float PanelHeaderTextIndent(int depth);
 //          UI::EndPanelListItem();
 //      }
 //      if (edit.removeAt >= 0)      items.erase(items.begin() + edit.removeAt);
-//      else if (edit.moveFrom >= 0) std::swap(items[edit.moveFrom],
-//                                             items[edit.moveTo]);
+//      else if (edit.moveFrom >= 0) UI::PanelListApplyMove(items, edit);
 //
-//  The list owns the per-item ImGui ids (do NOT PushID around items) and tracks
-//  the drag at LIST level, so a multi-step drag keeps working while items swap
-//  underneath, and each panel's open/closed state FOLLOWS its item. The header
-//  toggles open/closed on a press RELEASED without dragging — release, not
-//  click, is what lets drag and expand share the header. The dragged panel gets
-//  an accent outline. Every item of one list must use the same cfg.id; one list
-//  per id scope.
+//  The move commits ON RELEASE as one edit (moveFrom → slot moveTo, the items
+//  in between shift by one — apply with PanelListApplyMove). The list owns the
+//  per-item ImGui ids (do NOT PushID around items); each panel's open/closed
+//  state FOLLOWS its item across moves. The header toggles open/closed on a
+//  press RELEASED without dragging — release, not click, is what lets drag and
+//  expand share the header. Every item of one list must use the same cfg.id;
+//  one list per id scope.
 // ─────────────────────────────────────────────────────────────────────────────
 struct PanelListEdit {
     int removeAt = -1;               // index whose close cross was clicked
-    int moveFrom = -1, moveTo = -1;  // swap these two sibling indices
+    int moveFrom = -1, moveTo = -1;  // MOVE item moveFrom to slot moveTo
 };
 
 // Begin item `index` of `count`. cfg.closable/flatBody are honoured (set them
@@ -113,5 +115,17 @@ struct PanelListEdit {
 PanelResult BeginPanelListItem(const PanelConfig& cfg, int index, int count,
                                PanelListEdit& edit);
 void EndPanelListItem();
+
+// Apply a committed move to the caller's item vector (bounds-checked no-op on
+// an empty edit).
+template <class Vec>
+inline void PanelListApplyMove(Vec& items, const PanelListEdit& edit) {
+    const int n = (int)items.size();
+    const int from = edit.moveFrom, to = edit.moveTo;
+    if (from < 0 || to < 0 || from >= n || to >= n || from == to) return;
+    auto first = items.begin();
+    if (from < to) std::rotate(first + from, first + from + 1, first + to + 1);
+    else           std::rotate(first + to, first + from, first + from + 1);
+}
 
 } // namespace UI
