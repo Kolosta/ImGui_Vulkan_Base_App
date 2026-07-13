@@ -777,21 +777,34 @@ void Renderer::EndFrame() {
                 ClipRole role = d.clip;
                 if (preview) {
                     // A node's thumbnail shows its OWN subtree in isolation.
-                    // A clip / mask is honoured ONLY when the scope that owns
-                    // it is itself inside the preview set (so a clip-group or
-                    // clip/mask-layer thumbnail keeps its own clipping); a clip
-                    // INHERITED from an ancestor outside the set is dropped, so
-                    // a clipped/masked child shows its raw content — the mask
-                    // geometry of that ancestor is then skipped entirely.
-                    const NodeId scopeNode = r.scene.Scopes()[d.scope].node;
-                    const bool scopeInSet = scopeNode != kNullNode &&
-                                            inPreview(scopeNode);
+                    // A SCOPE clip/mask (its scope has a clip mask) is honoured
+                    // only when the scope's node is itself in the preview set;
+                    // inherited from an ancestor outside the set it is dropped
+                    // (a clipped child shows its raw content) and the
+                    // ancestor's mask geometry is skipped. A SELF clip — the
+                    // pattern stencil, whose scope carries NO clip mask —
+                    // belongs to its OWNER and is kept whenever the owner
+                    // previews, so pattern fills stay cut at their fill-clip
+                    // edge (Bounds/Contour/Stroke) exactly as on the canvas.
+                    const auto& sc = r.scene.Scopes()[d.scope];
+                    const bool scopeClip  = sc.hasClipMask;
+                    const bool scopeInSet = sc.node != kNullNode &&
+                                            inPreview(sc.node);
                     if (d.isClipSource) {
-                        if (!scopeInSet) continue;         // ancestor mask — drop
+                        if (scopeClip ? !scopeInSet : !inPreview(d.owner))
+                            continue;
                     } else if (!inPreview(d.owner)) {
                         continue;                          // not our subtree
                     }
-                    if (!scopeInSet) role = ClipRole::None; // ignore inherited clip
+                    // Per-piece narrowing (fill vignettes): only ONE paint
+                    // piece of the owners renders — pattern expansions carry
+                    // their host fill's index, masks included.
+                    if (v.previewPiece >= 0 &&
+                        (d.ownerPiece != (std::uint8_t)v.previewPiece ||
+                         d.ownerPieceStroke != v.previewPieceStroke))
+                        continue;
+                    if (scopeClip && !scopeInSet)
+                        role = ClipRole::None;   // inherited scope clip only
                 }
                 // Mask geometry is never culled (its coverage defines the
                 // clip); ordinary content culls against the view rect.

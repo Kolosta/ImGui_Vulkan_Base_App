@@ -61,6 +61,13 @@ struct Node {
     std::vector<NodeId> children;
     // kind == Instance — the node/subtree this instance renders (Lot 5).
     NodeId   targetRef = kNullNode;
+    // Which of the ORIGINAL's object-transform components the instance keeps
+    // COPYING live. Default: none — the linked data is the edit-mode geometry;
+    // the original's location/rotation/scale never move its instances (they
+    // were merely copied once at duplicate-linked time). Instance kind only.
+    bool instCopyLoc   = false;
+    bool instCopyRot   = false;
+    bool instCopyScale = false;
 
     // Instancing modifiers (Lot 5): an ordered stack evaluated at Scene
     // compile. Each turns this node's rendered content into many copies at
@@ -121,6 +128,9 @@ public:
     void   SetModifiers(NodeId node, std::vector<Modifier> modifiers);
     // Retarget an Instance node (kind must be Instance; self-ref refused).
     void   SetInstanceTarget(NodeId inst, NodeId target);
+    // Which of the original's transform components the instance copies live
+    // (location / rotation / scale — see Node::instCopy*).
+    void   SetInstanceTransformCopy(NodeId inst, bool loc, bool rot, bool scale);
     void   SetTransform(NodeId node, const Transform2D& t);
     void   SetVisible(NodeId node, bool visible);
     // Object parenting (docs/Ink/DOCUMENT_MODEL.md §2). `keepWorld` preserves

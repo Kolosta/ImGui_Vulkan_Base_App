@@ -81,32 +81,128 @@ DMat23 InvertAffine(const DMat23& m) {
 
 // The self-copy transforms a modifier stack produces (docs/Ink/
 // DOCUMENT_MODEL.md §6): starting from the identity ("one copy"), each
-// enabled Array multiplies the current transform set. Local-space transforms
-// (composed onto the node's world before emit). AlongPath does NOT expand the
-// node itself — it instances a motif OBJECT along the node's spine (emitted
-// by EmitNode after the node's own content).
+// enabled Array multiplies the current transform set with LOCAL factors
+// (composed onto the node's world before emit). AlongPath does NOT expand
+// the node itself — it instances a motif OBJECT along the node's spine.
+//
+// Parent-space quantities convert through the LINEAR part of the node's
+// local transform ONLY (rotation + scale, never translation): conjugating by
+// the full matrix — the old code — folded the node's POSITION into the step,
+// so a rotation step orbited a displaced centre and MOVING the object bent
+// the whole array. With the linear-only conjugation the array is rigid under
+// the node's translation, exactly one block.
 std::vector<DMat23> ExpandModifiers(const Node& host) {
     std::vector<DMat23> xf{ DMat23{} };   // identity = the original copy
+
+    Transform2D linT = host.transform;
+    linT.tx = linT.ty = 0.0;
+    const DMat23 Llin    = linT.Matrix();
+    const DMat23 LlinInv = InvertAffine(Llin);
+    // A parent-space offset as a LOCAL translation factor (linear inverse —
+    // no translation part, so this is position-independent by construction).
+    auto parentOffset = [&](double ox, double oy) {
+        const DVec2 v = LlinInv.Apply({ ox, oy });
+        return DMat23::Translation(v.x, v.y);
+    };
+    auto spin = [](double ang) {
+        const double c = std::cos(ang), s = std::sin(ang);
+        DMat23 r;
+        r.m[0] = c; r.m[1] = -s; r.m[3] = s; r.m[4] = c;
+        return r;
+    };
+    auto scaleOf = [](double sx, double sy) {
+        DMat23 r;
+        r.m[0] = sx; r.m[4] = sy;
+        return r;
+    };
+    // Node-local bbox (Line/Relative reads its step in object sizes).
+    double bw = 0.0, bh = 0.0;
+    {
+        double x0 = 1e300, y0 = 1e300, x1 = -1e300, y1 = -1e300;
+        bool any = false;
+        for (const Subpath& sp : host.path.subpaths)
+            for (const Anchor& a : sp.anchors) {
+                any = true;
+                x0 = std::min(x0, a.pos.x); y0 = std::min(y0, a.pos.y);
+                x1 = std::max(x1, a.pos.x); y1 = std::max(y1, a.pos.y);
+            }
+        if (any) { bw = x1 - x0; bh = y1 - y0; }
+    }
+
     for (const Modifier& m : host.modifiers) {
         if (!m.enabled || m.kind != ModifierKind::Array) continue;
-        const int count = m.count < 1 ? 1 : m.count;
-        DMat23 step = m.step.Matrix();
-        if (m.stepSpace == ArrayStepSpace::Parent) {
-            // The step is authored in the node's PARENT space (a 10-unit
-            // step is 10 document units whatever the node's scale). As a
-            // local factor that is L⁻¹ ∘ step ∘ L.
-            const DMat23 L = host.transform.Matrix();
-            step = InvertAffine(L).Compose(step).Compose(L);
-        }
-        std::vector<DMat23> out;
-        out.reserve(xf.size() * (std::size_t)count);
-        for (const DMat23& base : xf) {
-            DMat23 acc = base;
+        std::vector<DMat23> copies;
+
+        if (m.arrayMode == ArrayMode::Transform) {
+            // Cumulative composition (spirals/orbits by design).
+            const int count = m.count < 1 ? 1 : m.count;
+            DMat23 step = m.step.Matrix();
+            if (m.stepSpace == ArrayStepSpace::Parent)
+                step = LlinInv.Compose(step).Compose(Llin);
+            DMat23 acc;
+            copies.reserve((std::size_t)count);
             for (int i = 0; i < count; ++i) {
-                out.push_back(acc);
-                acc = acc.Compose(step);   // each copy offset from the last
+                copies.push_back(acc);
+                acc = acc.Compose(step);
+            }
+        } else if (m.arrayMode == ArrayMode::Line) {
+            // A straight line of copies; rotation/scale spin each instance IN
+            // PLACE (positions never couple to them).
+            const int count = m.count < 1 ? 1 : m.count;
+            const double asx = std::sqrt(Llin.m[0]*Llin.m[0] + Llin.m[3]*Llin.m[3]);
+            const double asy = std::sqrt(Llin.m[1]*Llin.m[1] + Llin.m[4]*Llin.m[4]);
+            double ox = m.step.tx, oy = m.step.ty;
+            if (m.lineMode == ArrayLineMode::Relative) {
+                ox *= bw * asx;             // factors of the object's own size
+                oy *= bh * asy;
+            }
+            if (m.lineMode == ArrayLineMode::Endpoint) {
+                const double div = count > 1 ? (double)(count - 1) : 1.0;
+                ox /= div;                  // translation IS the end point
+                oy /= div;
+            }
+            copies.reserve((std::size_t)count);
+            for (int k = 0; k < count; ++k) {
+                DMat23 f = parentOffset(ox * k, oy * k)
+                               .Compose(spin(m.step.rotation * k))
+                               .Compose(scaleOf(std::pow(m.step.sx, k),
+                                                std::pow(m.step.sy, k)));
+                copies.push_back(f);
+            }
+        } else {   // ArrayMode::Circle
+            constexpr double kTau = 6.283185307179586;
+            const double sweep = m.circleArc
+                                     ? std::clamp(m.circleSweep, 0.0, kTau)
+                                     : kTau;
+            int count;
+            double delta;
+            if (m.circleMethod == ArrayCircleMethod::ByCount) {
+                count = m.count < 1 ? 1 : m.count;
+                delta = m.circleArc
+                            ? (count > 1 ? sweep / (double)(count - 1) : 0.0)
+                            : sweep / (double)count;
+            } else {
+                delta = std::max(1e-4, m.circleAngleStep);
+                count = m.circleArc
+                            ? (int)std::floor(sweep / delta + 1e-9) + 1
+                            : (int)std::floor((kTau - 1e-9) / delta) + 1;
+                count = std::clamp(count, 1, 10000);
+            }
+            copies.reserve((std::size_t)count);
+            for (int k = 0; k < count; ++k) {
+                const double th = delta * (double)k;
+                DMat23 f = parentOffset(m.circleRadius * std::cos(th),
+                                        m.circleRadius * std::sin(th));
+                if (m.circleAlign) f = f.Compose(spin(th));
+                copies.push_back(f);
             }
         }
+
+        std::vector<DMat23> out;
+        out.reserve(xf.size() * copies.size());
+        for (const DMat23& base : xf)
+            for (const DMat23& c : copies)
+                out.push_back(base.Compose(c));
         xf.swap(out);
     }
     return xf;
@@ -298,11 +394,23 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
         if (instDepth >= kMaxInstanceDepth) return;
         const Node* target = doc.Find(n.targetRef);
         if (!target || target == &n) return;   // missing / self-reference
-        // Render the target's OWN content at this instance's world (the
-        // target's own transform is part of its identity — apply it), even
-        // when the ORIGINAL is hidden (linked duplicates stay visible).
+        // Render the target's content at this instance's world — even when
+        // the ORIGINAL is hidden (linked duplicates stay visible). The LINKED
+        // data is the edit-mode geometry, NOT the original's object transform:
+        // by default the target's location/rotation/scale are CANCELLED (they
+        // were merely copied once at duplicate time), so moving the original
+        // never drags its instances along. Each component can opt back in via
+        // the instance's copy flags. The correction pre-composes the FILTERED
+        // local against the inverse of the full one; EmitNode then re-applies
+        // the full local, netting exactly the filtered components.
         // Selection-wise the whole subtree belongs to the OUTERMOST instance.
-        EmitNode(doc, *target, world, scope, instDepth + 1,
+        Transform2D ft = target->transform;
+        if (!n.instCopyLoc)   { ft.tx = 0.0; ft.ty = 0.0; }
+        if (!n.instCopyRot)   { ft.rotation = 0.0; }
+        if (!n.instCopyScale) { ft.sx = 1.0; ft.sy = 1.0; }
+        const DMat23 corr =
+            ft.Matrix().Compose(InvertAffine(target->transform.Matrix()));
+        EmitNode(doc, *target, world.Compose(corr), scope, instDepth + 1,
                  owner != kNullNode ? owner : n.id, /*forceVisible=*/true);
         return;
     }
@@ -555,13 +663,14 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         const Fill& f = n.style.fills[i];
         if (!f.enabled) continue;
         if (f.kind == FillKind::Pattern) {
-            EmitPattern(doc, f, n, geo, pathHash, prog, world, scope, owner);
+            EmitPattern(doc, f, n, geo, pathHash, prog, world, scope, owner, i);
             continue;
         }
         Drawable d;
         d.node = n.id;  d.owner = owner;  d.world = world;
         d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
         d.isStroke = false;  d.pieceIndex = (std::uint8_t)i;
+        d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = false;
         d.rule = f.rule;  d.color = f.paint.color;
         d.color.a *= f.opacity;             // layer opacity
         d.scope = scope;
@@ -575,6 +684,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         d.node = n.id;  d.owner = owner;  d.world = world;
         d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
         d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
+        d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = true;
         d.stroke = s;  d.color = s.paint.color;
         d.scope = scope;
         if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
@@ -585,7 +695,8 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
 void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                         const PathData* geo, std::uint64_t geoHash,
                         const geom::BoolProgram* geoProg,
-                        const DMat23& world, ScopeId scope, NodeId owner) {
+                        const DMat23& world, ScopeId scope, NodeId owner,
+                        std::size_t fillIndex) {
     const Node* motif = doc.Find(fill.pattern.motifRef);
     if (!motif || motif->kind != NodeKind::Path || motif->path.Empty()) return;
     if (!geo || geo->Empty()) return;
@@ -707,6 +818,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
         m.node = host.id;  m.owner = owner;  m.world = world;
         m.pathHash = geoHash;  m.path = geo;  m.boolProg = geoProg;
         m.isStroke = false;
+        m.ownerPiece = (std::uint8_t)fillIndex;  m.ownerPieceStroke = false;
         m.rule = fill.rule;
         m.scope = scope;
         m.clip = ClipRole::MaskWrite;
@@ -761,6 +873,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
             d.node = host.id;  d.owner = owner;  d.world = mw;
             d.pathHash = motifHash;  d.path = &motif->path;
             d.isStroke = false;
+            d.ownerPiece = (std::uint8_t)fillIndex;  d.ownerPieceStroke = false;
             d.rule = FillRule::NonZero;
             d.color = motifColor;
             d.scope = scope;
@@ -773,6 +886,8 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                 sd.node = host.id;  sd.owner = owner;  sd.world = mw;
                 sd.pathHash = motifHash;  sd.path = &motif->path;
                 sd.isStroke = true;  sd.pieceIndex = (std::uint8_t)si;
+                sd.ownerPiece = (std::uint8_t)fillIndex;
+                sd.ownerPieceStroke = false;   // the HOST fill owns the cells
                 sd.stroke = st;  sd.color = st.paint.color;
                 sd.color.a *= fill.opacity;
                 sd.scope = scope;
@@ -787,6 +902,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
         m.node = host.id;  m.owner = owner;  m.world = world;
         m.pathHash = geoHash;  m.path = geo;  m.boolProg = geoProg;
         m.isStroke = false;
+        m.ownerPiece = (std::uint8_t)fillIndex;  m.ownerPieceStroke = false;
         m.rule = fill.rule;
         m.scope = scope;
         m.clip = ClipRole::MaskClear;

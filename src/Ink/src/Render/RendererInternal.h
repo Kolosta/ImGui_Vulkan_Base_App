@@ -114,7 +114,11 @@ struct ViewImpl {
     // whose OWNER is in this set are drawn — a node rendered in isolation
     // through the real pipeline (same strokes / patterns / transparency /
     // MSAA as the viewport). Empty = the whole scene (a normal viewport).
+    // previewPiece >= 0 (fill vignettes): additionally only the drawables of
+    // ONE paint piece — Drawable.ownerPiece/ownerPieceStroke — are drawn.
     std::unordered_set<NodeId> previewOwners;
+    int                        previewPiece = -1;
+    bool                       previewPieceStroke = false;
     std::uint64_t              previewFilterGen = 0;   // bumped on filter change
 
     // Target chain. iso[0] is the main content; iso[1..isoLevels] are the

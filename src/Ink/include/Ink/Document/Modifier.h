@@ -42,6 +42,24 @@ enum class AlongDistribute : std::uint8_t {
 // regardless of the node's scale — the predictable default for UI editing).
 enum class ArrayStepSpace : std::uint8_t { Local = 0, Parent = 1 };
 
+// Array placement mode (Blender's array, 2D):
+//   Transform — cumulative per-copy transform (translate∘rotate∘scale
+//               composed k times: spirals/orbits possible).
+//   Line      — copies on a straight line; rotation/scale spin each INSTANCE
+//               in place (never the positions).
+//   Circle    — copies on a circle around the object.
+enum class ArrayMode : std::uint8_t { Transform = 0, Line = 1, Circle = 2 };
+
+// How the Line mode reads its translation: Relative = factors of the object's
+// own size (1 = one object width/height per copy); Offset = absolute parent
+// units per copy; Endpoint = the translation is the END POINT and the copies
+// distribute evenly from the original to it.
+enum class ArrayLineMode : std::uint8_t { Relative = 0, Offset = 1, Endpoint = 2 };
+
+// How the Circle mode derives its copy count: an explicit count, or one copy
+// every `circleAngleStep` radians of the (arc or full) sweep.
+enum class ArrayCircleMethod : std::uint8_t { ByCount = 0, ByAngle = 1 };
+
 // Boolean geometry operation (docs/Ink/DOCUMENT_MODEL.md §6). Operates on the
 // flattened outlines of the host and the operand (v1: polygon-level, the
 // pragmatic standard; exact Bézier booleans are a later quality lot).
@@ -58,9 +76,21 @@ struct Modifier {
 
     // ── Array ────────────────────────────────────────────────────────────────
     int            count = 2;           // total copies (incl. the original)
-    Transform2D    step;                // per-copy incremental transform
-                                        // (translate/rotate/scale composed)
-    ArrayStepSpace stepSpace = ArrayStepSpace::Local;
+    Transform2D    step;                // per-copy transform: Transform mode
+                                        // composes it cumulatively; Line mode
+                                        // reads translation as the line step /
+                                        // endpoint and rotation/scale as the
+                                        // per-instance in-place spin.
+    ArrayStepSpace stepSpace = ArrayStepSpace::Local;   // Transform mode only
+    ArrayMode      arrayMode = ArrayMode::Transform;
+    ArrayLineMode  lineMode  = ArrayLineMode::Offset;
+    // Circle mode.
+    double            circleRadius    = 100.0;
+    ArrayCircleMethod circleMethod    = ArrayCircleMethod::ByCount;
+    double            circleAngleStep = 0.5235987755982988;  // 30° in radians
+    bool              circleArc       = false;  // false = full circle
+    double            circleSweep     = 3.141592653589793;   // arc sweep (rad)
+    bool              circleAlign     = true;   // rotate instances along it
 
     // ── AlongPath ────────────────────────────────────────────────────────────
     // The modifier lives on the PATH being followed (Blender's rule): it

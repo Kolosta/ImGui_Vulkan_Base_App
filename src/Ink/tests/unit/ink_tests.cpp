@@ -431,6 +431,115 @@ void TestInstancing() {
         CHECK_NEAR(xs[4] - xs[0], 80.0, 1e-9);
     }
 
+    // Array TRANSLATION-INVARIANCE: a rotated Parent-space step must move as
+    // ONE BLOCK when the host translates (the old full-matrix conjugation
+    // folded the node's position into the step — moving the object bent the
+    // whole array).
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        Modifier arr;
+        arr.kind = ModifierKind::Array;
+        arr.count = 4;
+        arr.step.tx = 30.0;
+        arr.step.rotation = 0.5;                  // the coupling trigger
+        arr.stepSpace = ArrayStepSpace::Parent;
+        const NodeId n = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                     Style::Filled({ 1, 0, 0, 1 }), "r");
+        doc.SetModifiers(n, { arr });
+        Scene s; s.Compile(doc);
+        std::vector<DVec2> before;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == n) before.push_back({ d.world.m[2], d.world.m[5] });
+        Transform2D t; t.tx = 123.0; t.ty = -77.0;
+        doc.SetTransform(n, t);
+        s.Compile(doc);
+        std::vector<DVec2> after;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == n) after.push_back({ d.world.m[2], d.world.m[5] });
+        CHECK(before.size() == 4 && after.size() == 4);
+        for (std::size_t i = 0; i < before.size(); ++i) {
+            CHECK_NEAR(after[i].x - before[i].x, 123.0, 1e-9);
+            CHECK_NEAR(after[i].y - before[i].y, -77.0, 1e-9);
+        }
+    }
+
+    // Array LINE mode: straight positions, PROGRESSIVE IN-PLACE spin (the
+    // rotation never bends the line), Endpoint distributes to the end point.
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        Modifier arr;
+        arr.kind = ModifierKind::Array;
+        arr.arrayMode = ArrayMode::Line;
+        arr.lineMode  = ArrayLineMode::Endpoint;
+        arr.count = 5;
+        arr.step.tx = 200.0;                      // END point
+        arr.step.rotation = 0.7;                  // instance spin only
+        const NodeId n = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                     Style::Filled({ 1, 0, 0, 1 }), "r");
+        doc.SetModifiers(n, { arr });
+        Scene s; s.Compile(doc);
+        std::vector<double> xs, ys;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == n) { xs.push_back(d.world.m[2]); ys.push_back(d.world.m[5]); }
+        CHECK(xs.size() == 5);
+        CHECK_NEAR(xs[4] - xs[0], 200.0, 1e-9);   // reaches the end point
+        CHECK_NEAR(xs[1] - xs[0], 50.0, 1e-9);    // even distribution
+        for (double y : ys) CHECK_NEAR(y - ys[0], 0.0, 1e-9);   // straight
+    }
+
+    // Array CIRCLE mode: N copies on the radius, closing the full circle.
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        Modifier arr;
+        arr.kind = ModifierKind::Array;
+        arr.arrayMode = ArrayMode::Circle;
+        arr.count = 8;
+        arr.circleRadius = 50.0;
+        const NodeId n = doc.AddPath(page, PathData::Rect(-5, -5, 10, 10),
+                                     Style::Filled({ 1, 0, 0, 1 }), "r");
+        doc.SetModifiers(n, { arr });
+        Scene s; s.Compile(doc);
+        int copies = 0;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == n) {
+                ++copies;
+                const double dx = d.world.m[2], dy = d.world.m[5];
+                CHECK_NEAR(std::sqrt(dx * dx + dy * dy), 50.0, 1e-6);
+            }
+        CHECK(copies == 8);
+    }
+
+    // INSTANCE transform decoupling: moving/scaling the ORIGINAL never moves
+    // its instances (the link is the edit-mode data; the object transform was
+    // merely copied at duplicate time) — unless a copy flag opts back in.
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        const NodeId src = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                       Style::Filled({ 1, 0, 0, 1 }), "src");
+        const NodeId inst = doc.AddInstance(page, src, "inst");
+        { Transform2D t; t.tx = 300.0; doc.SetTransform(inst, t); }
+        Scene s; s.Compile(doc);
+        auto instX = [&] {
+            for (const Drawable& d : s.Drawables())
+                if (d.owner == inst) return d.world.m[2];
+            return -1.0;
+        };
+        const double x0 = instX();
+        CHECK_NEAR(x0, 300.0, 1e-9);
+        // Move the ORIGINAL: the instance must NOT follow.
+        { Transform2D t; t.tx = 90.0; t.ty = 40.0; doc.SetTransform(src, t); }
+        s.Compile(doc);
+        CHECK_NEAR(instX(), 300.0, 1e-9);
+        // Opt in to location copying: now it follows.
+        doc.SetInstanceTransformCopy(inst, true, false, false);
+        s.Compile(doc);
+        CHECK_NEAR(instX(), 390.0, 1e-9);
+    }
+
     // AlongPath modifier: it lives ON the path and instances a motif object
     // along its spine — N copies, owner = the path, motif's own translation
     // ignored, and the copies survive hiding the motif (linked-instance rule).

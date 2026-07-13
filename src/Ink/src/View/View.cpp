@@ -27,16 +27,21 @@ void View::SetBackground(const Color& linearPremultiplied) {
 
 OverlayList& View::Overlay() { return impl_->overlay; }
 
-void View::SetPreviewFilter(const std::vector<std::uint64_t>& owners) {
+void View::SetPreviewFilter(const std::vector<std::uint64_t>& owners,
+                            int piece, bool pieceIsStroke) {
     detail::ViewImpl& v = *impl_;
     // Detect a real change so the view only re-records when the filter moves.
-    bool changed = owners.size() != v.previewOwners.size();
+    bool changed = owners.size() != v.previewOwners.size() ||
+                   piece != v.previewPiece ||
+                   pieceIsStroke != v.previewPieceStroke;
     if (!changed)
         for (std::uint64_t o : owners)
             if (v.previewOwners.find(o) == v.previewOwners.end()) { changed = true; break; }
     if (!changed) return;
     v.previewOwners.clear();
     for (std::uint64_t o : owners) v.previewOwners.insert(o);
+    v.previewPiece       = piece;
+    v.previewPieceStroke = pieceIsStroke;
     ++v.previewFilterGen;
 }
 

@@ -66,6 +66,13 @@ struct Drawable {
     const PathData* path = nullptr;     // borrowed; valid until the next compile
     bool            isStroke = false;
     std::uint8_t    pieceIndex = 0;     // index into style.fills / style.strokes
+    // The OWNER's paint piece this drawable belongs to (drives the per-piece
+    // preview filter — a fill vignette renders ONE fill in isolation): plain
+    // content mirrors pieceIndex/isStroke; every drawable a pattern fill
+    // expands into (motif copies, their strokes, the stencil masks) carries
+    // the HOST FILL's index with ownerPieceStroke = false.
+    std::uint8_t    ownerPiece = 0;
+    bool            ownerPieceStroke = false;
     FillRule        rule = FillRule::NonZero;   // fill pieces
     Stroke          stroke;                     // stroke pieces (geometry params)
     Color           color;              // linear straight (premultiplied later)
@@ -142,7 +149,8 @@ private:
     void EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                      const PathData* geo, std::uint64_t geoHash,
                      const geom::BoolProgram* geoProg,
-                     const DMat23& world, ScopeId scope, NodeId owner);
+                     const DMat23& world, ScopeId scope, NodeId owner,
+                     std::size_t fillIndex);
     // A group that composites as a unit opens a scope; returns its id (or the
     // parent scope when the group is a plain pass-through layer).
     ScopeId OpenScopeIfNeeded(const Document& doc, const Node& group,

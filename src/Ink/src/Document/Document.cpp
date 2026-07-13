@@ -96,6 +96,19 @@ void Document::SetModifiers(NodeId node, std::vector<Modifier> modifiers) {
     }
 }
 
+void Document::SetInstanceTransformCopy(NodeId inst, bool loc, bool rot,
+                                        bool scale) {
+    Node* n = FindMutable(inst);
+    if (!n || n->kind != NodeKind::Instance) return;
+    if (n->instCopyLoc == loc && n->instCopyRot == rot &&
+        n->instCopyScale == scale)
+        return;
+    n->instCopyLoc   = loc;
+    n->instCopyRot   = rot;
+    n->instCopyScale = scale;
+    Log(inst, ChangeKind::Moved);
+}
+
 void Document::SetInstanceTarget(NodeId inst, NodeId target) {
     Node* n = FindMutable(inst);
     if (!n || n->kind != NodeKind::Instance || target == inst) return;

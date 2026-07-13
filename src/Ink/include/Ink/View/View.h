@@ -45,7 +45,12 @@ public:
     // (identical strokes / patterns / transparency / MSAA to a viewport).
     // Empty clears it back to a normal full-scene view. Cheap: it just filters
     // the command build; call once per frame before EndFrame like the camera.
-    void SetPreviewFilter(const std::vector<std::uint64_t>& owners);
+    // `piece` >= 0 narrows further to ONE paint piece of the owners (the fill
+    // vignettes render a single fill — its pattern expansion included — in
+    // isolation): the piece index into style.fills (pieceIsStroke=false) or
+    // style.strokes (true).
+    void SetPreviewFilter(const std::vector<std::uint64_t>& owners,
+                          int piece = -1, bool pieceIsStroke = false);
 
     // The sampled canvas texture handle as registered through the app's
     // TextureHooks (an ImTextureID app-side). 0 until SetViewport ran, or
