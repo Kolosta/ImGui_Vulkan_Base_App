@@ -32,6 +32,42 @@ void Application::PropModifiersSection(Ink::NodeId id) {
         const char* structLabel = "Edit Modifiers";
         UI::PanelListEdit listEdit;
 
+        // "+ Add Modifier" ON TOP of the stack (Blender): a full-width menu
+        // button listing the modifier kinds; the new modifier appends BELOW
+        // the existing ones. Along Path samples this node's own spine — path
+        // nodes only.
+        {
+            struct AddDef { const char* label; Ink::ModifierKind kind; };
+            std::vector<AddDef> defs = {
+                { "Array",   Ink::ModifierKind::Array },
+            };
+            if (n->kind == Ink::NodeKind::Path)
+                defs.push_back({ "Along Path", Ink::ModifierKind::AlongPath });
+            defs.push_back({ "Boolean", Ink::ModifierKind::Boolean });
+
+            UI::DropdownConfig cfg;
+            cfg.id = "##addModifier";
+            cfg.triggerIcon  = "new";
+            cfg.triggerLabel = "Add Modifier";
+            cfg.triggerWidth = ImGui::GetContentRegionAvail().x;
+            for (const AddDef& d : defs) {
+                UI::DropdownItem it;
+                it.label = d.label;
+                cfg.items.push_back(it);
+            }
+            UI::DropdownResult r = UI::Dropdown(cfg);
+            if (r.changed && r.selected >= 0 && r.selected < (int)defs.size()) {
+                Ink::Modifier m;
+                m.kind = defs[(std::size_t)r.selected].kind;
+                if (m.kind == Ink::ModifierKind::Array) {
+                    m.step.tx = 20.0;
+                    m.stepSpace = Ink::ArrayStepSpace::Parent;
+                }
+                mods.push_back(m);
+                structural = true; structLabel = "Add Modifier";
+            }
+        }
+
         auto liveApply = [&](const char* releaseLabel, bool released) {
             if (!propEditActive_) {
                 propEditActive_ = true; propEditNode_ = id;
@@ -214,27 +250,6 @@ void Application::PropModifiersSection(Ink::NodeId id) {
         } else if (listEdit.moveFrom >= 0) {
             UI::PanelListApplyMove(mods, listEdit);
             structural = true; structLabel = "Reorder Modifiers";
-        }
-
-        pr::ControlColumn();
-        if (ImGui::SmallButton("+ Array")) {
-            Ink::Modifier m; m.kind = Ink::ModifierKind::Array;
-            m.step.tx = 20.0; m.stepSpace = Ink::ArrayStepSpace::Parent;
-            mods.push_back(m);
-            structural = true; structLabel = "Add Modifier";
-        }
-        ImGui::SameLine();
-        // Along Path samples THIS node's own spine — path nodes only.
-        if (n->kind == Ink::NodeKind::Path && ImGui::SmallButton("+ Along Path")) {
-            Ink::Modifier m; m.kind = Ink::ModifierKind::AlongPath;
-            mods.push_back(m);
-            structural = true; structLabel = "Add Modifier";
-        }
-        ImGui::SameLine();
-        if (ImGui::SmallButton("+ Boolean")) {
-            Ink::Modifier m; m.kind = Ink::ModifierKind::Boolean;
-            mods.push_back(m);
-            structural = true; structLabel = "Add Modifier";
         }
 
         if (structural) {

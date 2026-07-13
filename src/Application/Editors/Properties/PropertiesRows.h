@@ -296,10 +296,9 @@ inline bool ThumbTile(const char* idstr, float size, bool selected,
     ImGui::PopID();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float r = SafeFloat(Tok::S_CornerRadius_Control, 3.0f) * gs;
-    dl->AddRectFilled(mn, mx,
-        ImGui::ColorConvertFloat4ToU32(
-            SafeColor(Tok::S_Color_Background_Layer2, ImVec4(0.16f, 0.16f, 0.18f, 1))),
-        r);
+    // White canvas behind every sample (the same paper the viewport pages
+    // show), so colours and alpha read as printed — not against the panel.
+    dl->AddRectFilled(mn, mx, IM_COL32(255, 255, 255, 255), r);
     const ImVec4 bord =
         selected ? SafeColor(Tok::S_Color_Accent_Default, ImVec4(0.3f, 0.5f, 0.9f, 1))
         : hovered ? SafeColor(Tok::S_Color_Text_Default, ImVec4(0.9f, 0.9f, 0.9f, 1))
@@ -312,31 +311,15 @@ inline bool ThumbTile(const char* idstr, float size, bool selected,
     return clicked;
 }
 
-// Checkerboard (alpha background) clipped to a rect.
-inline void DrawChecker(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float cell) {
-    const ImU32 a = IM_COL32(140, 140, 140, 255);
-    const ImU32 b = IM_COL32(90, 90, 90, 255);
-    dl->PushClipRect(mn, mx, true);
-    int row = 0;
-    for (float y = mn.y; y < mx.y; y += cell, ++row) {
-        int col = row & 1;
-        for (float x = mn.x; x < mx.x; x += cell, ++col)
-            dl->AddRectFilled(ImVec2(x, y),
-                              ImVec2(std::min(x + cell, mx.x), std::min(y + cell, mx.y)),
-                              (col & 1) ? a : b);
-    }
-    dl->PopClipRect();
-}
-
-// Preview of ONE fill, alone: a solid swatch (checker under a translucent
-// paint) or a motif lattice for a pattern fill.
+// Preview of ONE fill, alone, over the tile's white canvas: a solid swatch
+// (alpha shows against the white) or a motif lattice for a pattern fill (the
+// Paint page substitutes the REAL pipeline render when a view is available).
 inline void DrawFillSample(ImDrawList* dl, ImVec2 mn, ImVec2 mx,
                            const Ink::Fill& f) {
     const float gs = Gs();
     if (f.kind == Ink::FillKind::Solid) {
         ImVec4 c = ToSrgb(f.paint.color);
         c.w *= f.opacity;
-        if (c.w < 0.999f) DrawChecker(dl, mn, mx, 5.0f * gs);
         dl->AddRectFilled(mn, mx, ImGui::ColorConvertFloat4ToU32(c));
     } else {
         // Pattern: a small dot lattice in the subtle text colour (the motif is
@@ -359,13 +342,13 @@ inline void DrawFillSample(ImDrawList* dl, ImVec2 mn, ImVec2 mx,
     }
 }
 
-// Preview of ONE stroke, alone: a horizontal line SAMPLE (not the host shape's
-// contour) with the stroke's colour, a clamped display width and its dashes.
+// Preview of ONE stroke, alone, over the tile's white canvas: a horizontal
+// line SAMPLE (not the host shape's contour) with the stroke's colour, a
+// clamped display width and its dashes.
 inline void DrawStrokeSample(ImDrawList* dl, ImVec2 mn, ImVec2 mx,
                              const Ink::Stroke& s) {
     const float gs = Gs();
     ImVec4 c = ToSrgb(s.paint.color);
-    if (c.w < 0.999f) DrawChecker(dl, mn, mx, 5.0f * gs);
     const ImU32 col = ImGui::ColorConvertFloat4ToU32(c);
     const float y = (mn.y + mx.y) * 0.5f;
     const float pad = 3.0f * gs;

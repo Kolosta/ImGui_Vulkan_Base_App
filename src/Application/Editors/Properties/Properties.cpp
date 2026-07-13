@@ -186,14 +186,14 @@ EditorState::PropTab Application::PropsEffectiveTab(const EditorState& st) const
 void Application::BuildPropertiesTopBar(EditorState& st, EditorBar& bar) {
     auto& ds = pr::DST::DesignSystem::Instance();
     const float gs = ds.GetGlobalScale();
-    const float h  = ds.GetFloat(pr::Tok::S_Size_ControlHeight) * gs;
-    // Icon-only cells at menu-bar control height — the same fused-button
-    // chrome as the Viewport bar's snap widget.
-    const float cellW = h * 1.45f;
+    // Icon-only fused cells in the DROPDOWN chrome — exactly the family of the
+    // Viewport bar's snap widget (dark dropdown fill, no group outline,
+    // dead-centred icons, accent fill on the selected cell).
+    const float cellW = ds.GetFloat(pr::Tok::C_Dropdown_Height) * gs * 1.45f;
     EditorState* stp = &st;
 
     bar.middle.width = cellW * 3.0f;
-    bar.middle.draw = [this, stp, cellW, h](ImVec2 pos, float) {
+    bar.middle.draw = [this, stp, cellW](ImVec2 pos, float) {
         ImGui::SetCursorPos(pos);
         const Ink::Node* n = project_.document && edit_.active != Ink::kNullNode
                                  ? project_.document->Find(edit_.active)
@@ -213,20 +213,17 @@ void Application::BuildPropertiesTopBar(EditorState& st, EditorBar& bar) {
             { "settings",       "Modifiers",
               EditorState::PropTab::Modifiers, true },
         };
-        UI::ButtonGroup g("##propTabs");
-        g.SetGrid({ cellW, cellW, cellW }, { h });
+        std::vector<UI::DropdownButton> cells(3);
         for (int i = 0; i < 3; ++i) {
-            UI::ButtonGroup::Cell c{};
-            c.icon = tabs[i].icon; c.col = i; c.row = 0;
-            c.selected = (cur == tabs[i].tab);
-            c.enabled  = tabs[i].enabled;
-            c.tooltip  = tabs[i].tip;
-            g.AddCell(c);
+            cells[(std::size_t)i].id      = tabs[i].icon;
+            cells[(std::size_t)i].icon    = tabs[i].icon;
+            cells[(std::size_t)i].tooltip = tabs[i].tip;
+            cells[(std::size_t)i].active  = (cur == tabs[i].tab);
+            cells[(std::size_t)i].enabled = tabs[i].enabled;
         }
-        UI::ButtonGroup::Result r = g.Render();
-        if (r.clickedIndex >= 0 && r.clickedIndex < 3 &&
-            tabs[r.clickedIndex].enabled)
-            stp->propTab = tabs[r.clickedIndex].tab;
+        const int clicked = UI::DropdownButtonRow("##propTabs", cells, cellW);
+        if (clicked >= 0 && clicked < 3 && tabs[clicked].enabled)
+            stp->propTab = tabs[clicked].tab;
     };
 }
 

@@ -23,6 +23,43 @@ namespace App {
 
 namespace {
 constexpr float kThumbBase = 40.0f;   // vignette side, × global scale
+constexpr float kRailGap   = 3.0f;    // vertical gap between vignettes, × gs
+}
+
+// Real-pipeline render for the PATTERN vignettes: a per-node off-screen Ink
+// view (128 px, white bg, the node isolated via the preview filter — the same
+// mechanism as the Outliner thumbnails), so the vignette shows the ACTUAL
+// motif at its actual spacing/rotation/scale instead of a generic lattice.
+// Rendered at 128 px and minified into the 40 px tile, the hover tooltip shows
+// it at native size.
+ImTextureID Application::PaintPatternPreview(Ink::NodeId id) {
+    if (!ink_ || !project_.document) return (ImTextureID)0;
+    Ink::DRect bb;
+    if (!ink_->NodeBounds(id, bb) || !bb.valid) return (ImTextureID)0;
+    const double w = bb.max.x - bb.min.x, h = bb.max.y - bb.min.y;
+    if (w <= 1e-9 || h <= 1e-9) return (ImTextureID)0;
+
+    // Key space (id<<2)|2: never collides with the Outliner previews
+    // ((id<<1)|1, odd) or the viewport views (aligned EditorState pointers).
+    const void* key = (const void*)(std::uintptr_t)((id << 2) | 2u);
+    Ink::View* view = ink_->AcquireView(key);
+    constexpr std::uint32_t px = 128;
+    view->SetViewport(px, px);
+    const double zoom = std::min((double)px / w, (double)px / h) * 0.92;
+    view->SetCamera(bb.min.x - ((double)px / zoom - w) * 0.5,
+                    bb.min.y - ((double)px / zoom - h) * 0.5, zoom);
+    view->SetBackground(Ink::SrgbToLinearPremultiplied(1, 1, 1, 1));
+    std::vector<std::uint64_t> owners;
+    std::vector<Ink::NodeId> stack{ id };
+    while (!stack.empty()) {
+        const Ink::NodeId c = stack.back();
+        stack.pop_back();
+        owners.push_back(c);
+        if (const Ink::Node* n = project_.document->Find(c))
+            for (Ink::NodeId k : n->children) stack.push_back(k);
+    }
+    view->SetPreviewFilter(owners);
+    return (ImTextureID)view->Texture();
 }
 
 // ── Fills ─────────────────────────────────────────────────────────────────────
@@ -59,21 +96,57 @@ void Application::PropFillsSection(Ink::NodeId id) {
         };
 
         const float thumb = kThumbBase * gs;
-        const float railGap = 4.0f * gs;
 
         // ── LEFT: the vignette rail (+ the "add" tile) ────────────────────────
+        // A pattern fill's vignette is the REAL pipeline render of the node
+        // (its actual motif/spacing/rotation), minified into the tile; solids
+        // stay plain swatches. Both show a bigger preview on hover-dwell.
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                            ImVec2(ImGui::GetStyle().ItemSpacing.x,
+                                   kRailGap * gs));
         ImGui::BeginGroup();
         for (std::size_t i = 0; i < style.fills.size(); ++i) {
             ImGui::PushID((int)i);
+            const Ink::Fill& f = style.fills[i];
             ImVec2 cmn, cmx;
             char tid[16];
             std::snprintf(tid, sizeof tid, "f%d", (int)i);
             if (pr::ThumbTile(tid, thumb, (int)i == propFillSel_, &cmn, &cmx))
                 propFillSel_ = (int)i;
-            pr::DrawFillSample(ImGui::GetWindowDrawList(), cmn, cmx,
-                               style.fills[i]);
+            ImTextureID patTex = (ImTextureID)0;
+            if (f.kind == Ink::FillKind::Pattern)
+                patTex = PaintPatternPreview(id);
+            if (patTex)
+                ImGui::GetWindowDrawList()->AddImage(patTex, cmn, cmx);
+            else
+                pr::DrawFillSample(ImGui::GetWindowDrawList(), cmn, cmx, f);
+            // Hover-dwell: a bigger sample in a tooltip (like the strokes).
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                ImGui::PushStyleColor(ImGuiCol_PopupBg,
+                    pr::SafeColor(pr::Tok::S_Color_Background_Layer1,
+                                  ImVec4(0.13f, 0.13f, 0.15f, 1)));
+                ImGui::BeginTooltip();
+                const float big = thumb * 3.2f;
+                const ImVec2 mn = ImGui::GetCursorScreenPos();
+                ImGui::Dummy(ImVec2(big, big));
+                ImDrawList* tdl = ImGui::GetWindowDrawList();
+                tdl->AddRectFilled(mn, ImVec2(mn.x + big, mn.y + big),
+                                   IM_COL32(255, 255, 255, 255));
+                if (patTex)
+                    tdl->AddImage(patTex, mn, ImVec2(mn.x + big, mn.y + big));
+                else
+                    pr::DrawFillSample(tdl, mn, ImVec2(mn.x + big, mn.y + big), f);
+                if (f.kind == Ink::FillKind::Solid) {
+                    const ImVec4 c = pr::ToSrgb(f.paint.color);
+                    ImGui::Text("RGBA %.2f %.2f %.2f %.2f \xC2\xB7 opacity %.2f",
+                                c.x, c.y, c.z, c.w, f.opacity);
+                } else {
+                    ImGui::TextUnformatted("Pattern fill");
+                }
+                ImGui::EndTooltip();
+                ImGui::PopStyleColor();
+            }
             ImGui::PopID();
-            ImGui::Dummy(ImVec2(0, railGap * 0.5f));
         }
         if (pr::ThumbAddTile(thumb)) {
             Ink::Fill f; f.paint.color = pr::ToLinear(edit_.defaultFill);
@@ -82,6 +155,7 @@ void Application::PropFillsSection(Ink::NodeId id) {
             structural = true; structLabel = "Add Fill";
         }
         ImGui::EndGroup();
+        ImGui::PopStyleVar();
         ImGui::SameLine(0.0f, 8.0f * gs);
 
         // ── RIGHT: the selected fill's properties ─────────────────────────────
@@ -288,9 +362,11 @@ void Application::PropStrokesSection(Ink::NodeId id) {
         };
 
         const float thumb = kThumbBase * gs;
-        const float railGap = 4.0f * gs;
 
         // ── LEFT: the vignette rail (line samples + tooltip preview) ──────────
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
+                            ImVec2(ImGui::GetStyle().ItemSpacing.x,
+                                   kRailGap * gs));
         ImGui::BeginGroup();
         for (std::size_t i = 0; i < style.strokes.size(); ++i) {
             ImGui::PushID((int)(100 + i));
@@ -310,7 +386,10 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                 const ImVec2 sz(thumb * 4.0f, thumb * 1.6f);
                 const ImVec2 mn = ImGui::GetCursorScreenPos();
                 ImGui::Dummy(sz);
-                pr::DrawStrokeSample(ImGui::GetWindowDrawList(), mn,
+                ImDrawList* tdl = ImGui::GetWindowDrawList();
+                tdl->AddRectFilled(mn, ImVec2(mn.x + sz.x, mn.y + sz.y),
+                                   IM_COL32(255, 255, 255, 255));
+                pr::DrawStrokeSample(tdl, mn,
                                      ImVec2(mn.x + sz.x, mn.y + sz.y),
                                      style.strokes[i]);
                 ImGui::Text("%.2f %s%s", style.strokes[i].width,
@@ -323,7 +402,6 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                 ImGui::PopStyleColor();
             }
             ImGui::PopID();
-            ImGui::Dummy(ImVec2(0, railGap * 0.5f));
         }
         if (pr::ThumbAddTile(thumb)) {
             Ink::Stroke s; s.paint.color = pr::ToLinear(edit_.defaultStroke);
@@ -333,6 +411,7 @@ void Application::PropStrokesSection(Ink::NodeId id) {
             structural = true; structLabel = "Add Stroke";
         }
         ImGui::EndGroup();
+        ImGui::PopStyleVar();
         ImGui::SameLine(0.0f, 8.0f * gs);
 
         // ── RIGHT: the selected stroke's properties ───────────────────────────

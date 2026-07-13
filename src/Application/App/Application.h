@@ -407,6 +407,9 @@ private:
     Ink::NodeId     propPaintNode_ = Ink::kNullNode;
     int             propFillSel_   = 0;
     int             propStrokeSel_ = 0;
+    // Real-pipeline render of the node (128 px, white bg, isolated) for the
+    // PATTERN fill vignettes + their hover tooltips. 0 when unavailable.
+    ImTextureID PaintPatternPreview(Ink::NodeId id);
 
     // ── Info log (Blender-style action feed) + Dev data editor ───────────────
     struct InfoEntry { uint64_t frame; std::string text; std::string detail; };
