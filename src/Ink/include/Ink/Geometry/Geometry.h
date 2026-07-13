@@ -70,9 +70,16 @@ double SignedArea(const std::vector<DVec2>& ring);
 // perturbation on degenerate (vertex-on-edge) intersections; exact on
 // non-degenerate input, robust (never hangs) otherwise.
 enum class BoolOp { Union, Subtract, Intersect, Xor };
+// `jitter` scales the degeneracy-breaking nudge (0 = base): a boolean CHAIN
+// passes its step index so an operand that shares edges with an earlier
+// step's result (already nudged by the same base constant) is displaced
+// DIFFERENTLY — otherwise the coincidence reappears exactly. Result rings are
+// closed, sliver-free and oriented by NESTING PARITY (outers CCW, holes CW),
+// so they feed the NonZero fill and the aligned stroker directly.
 std::vector<std::vector<DVec2>>
 BooleanPolygons(const std::vector<std::vector<DVec2>>& subject,
-                const std::vector<std::vector<DVec2>>& clip, BoolOp op);
+                const std::vector<std::vector<DVec2>>& clip, BoolOp op,
+                int jitter = 0);
 
 // A non-destructive boolean PIPELINE evaluated at view tolerance: the render
 // path re-runs the ops per zoom tier so the result stays vector-smooth at any

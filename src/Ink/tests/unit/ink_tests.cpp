@@ -856,6 +856,33 @@ double RingsArea(const std::vector<std::vector<DVec2>>& rings) {
     return std::abs(a);
 }
 
+// NonZero coverage at a point (winding number over all rings ≠ 0) — validates
+// the boolean output's ring ORIENTATIONS, not just its net area: a hole with
+// the wrong winding still nets the right area but fills solid.
+bool CoveredNonZero(DVec2 p, const std::vector<std::vector<DVec2>>& rings) {
+    int w = 0;
+    for (const auto& ring : rings) {
+        const std::size_t n = ring.size();
+        for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+            const DVec2 a = ring[j], b = ring[i];
+            const double cross =
+                (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+            if (a.y <= p.y) { if (b.y >  p.y && cross > 0) ++w; }
+            else            { if (b.y <= p.y && cross < 0) --w; }
+        }
+    }
+    return w != 0;
+}
+
+// Closed rings of a flattened path (test helper for ellipse operands).
+std::vector<std::vector<DVec2>> FlatRings(const PathData& p, double tol) {
+    std::vector<std::vector<DVec2>> rings;
+    for (geom::Polyline& pl : geom::Flatten(p, tol))
+        if (pl.closed && pl.points.size() >= 3)
+            rings.push_back(std::move(pl.points));
+    return rings;
+}
+
 void TestBoolean() {
     // Two squares overlapping in a corner (no shared/collinear edges — the
     // non-degenerate case the v1 clipper is exact on): A=[0,10]²,
@@ -890,6 +917,64 @@ void TestBoolean() {
         { { 4, 4 }, { 6, 4 }, { 6, 6 }, { 4, 6 } } };   // 2×2 = 4
     CHECK_NEAR(RingsArea(geom::BooleanPolygons(A, Inner, geom::BoolOp::Subtract)),
                96.0, 1e-6);
+
+    // ── Xor regressions: rect ⊕ ellipse across positions ────────────────────
+    // The reported bug: the intersection lens sometimes rendered filled (half,
+    // along a diagonal, or entirely) depending on the operand's position —
+    // broken chains emitted as garbage rings, and force-CCW normalisation
+    // destroying hole windings. For each offset: the Xor area must equal
+    // Union − Intersect (engine-consistent), a point inside the LENS must be
+    // UNCOVERED under NonZero (orientation-correct), and a point in A-only
+    // must stay covered.
+    for (double cx : { 3.0, 5.0, 7.0, 9.0, 10.0 }) {
+        const auto E = FlatRings(PathData::Ellipse(cx, 5.0, 4.0, 4.0), 0.05);
+        const double uni = RingsArea(geom::BooleanPolygons(A, E, geom::BoolOp::Union));
+        const double its = RingsArea(geom::BooleanPolygons(A, E, geom::BoolOp::Intersect));
+        const auto x = geom::BooleanPolygons(A, E, geom::BoolOp::Xor);
+        CHECK_NEAR(RingsArea(x), uni - its, 1e-3);
+        // Lens probe: a point clearly inside BOTH (on the segment between the
+        // ellipse centre clamped into A and the rect interior).
+        const DVec2 lens{ std::min(cx, 9.0) - 0.5, 5.0 };
+        if (its > 1.0) CHECK(!CoveredNonZero(lens, x));
+        // A-only probe (far from the ellipse).
+        if (cx >= 5.0) CHECK(CoveredNonZero({ 0.5, 0.5 }, x));
+    }
+
+    // Xor with CONTAINMENT (ellipse fully inside the rect) = an annulus: one
+    // positive outer + one negative hole, and the hole must not fill.
+    {
+        const auto E = FlatRings(PathData::Ellipse(5.0, 5.0, 2.0, 2.0), 0.05);
+        const auto x = geom::BooleanPolygons(A, E, geom::BoolOp::Xor);
+        CHECK(x.size() >= 2);
+        int pos = 0, neg = 0;
+        for (const auto& r : x) (geom::SignedArea(r) > 0 ? pos : neg)++;
+        CHECK(pos >= 1 && neg >= 1);
+        CHECK(!CoveredNonZero({ 5.0, 5.0 }, x));   // inside the hole
+        CHECK(CoveredNonZero({ 1.0, 1.0 }, x));    // in the rim
+        const double eArea = RingsArea(E);
+        CHECK_NEAR(RingsArea(x), 100.0 - eArea, 1e-3);
+    }
+
+    // ── Chained booleans sharing an operand (the coincident-edge case) ──────
+    // host ⊕ B ⊕ B must return the host: the second step's operand shares
+    // every edge with a boundary already present in the first step's result.
+    // The per-step nudge keeps the coincidence broken; the parity orientation
+    // keeps intermediate holes as holes.
+    {
+        const PathData host = PathData::Rect(0, 0, 10, 10);
+        const PathData b    = PathData::Rect(5, 2, 10, 10);
+        geom::BoolProgram prog;
+        prog.host = &host;
+        geom::BoolStep s1; s1.op = geom::BoolOp::Xor; s1.operand = &b;
+        prog.steps = { s1, s1 };
+        const auto res = geom::EvaluateBoolean(prog, 0.05);
+        std::vector<std::vector<DVec2>> rings;
+        for (const auto& pl : res)
+            if (pl.closed && pl.points.size() >= 3) rings.push_back(pl.points);
+        CHECK_NEAR(RingsArea(rings), 100.0, 1e-2);
+        CHECK(CoveredNonZero({ 7.0, 5.0 }, rings));    // inside host ∩ B
+        CHECK(!CoveredNonZero({ 12.0, 5.0 }, rings));  // B-only: cancelled out
+    }
 
     // The Boolean MODIFIER through the Scene: a rect minus an overlapping rect.
     {

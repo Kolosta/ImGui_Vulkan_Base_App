@@ -52,6 +52,72 @@ bool Inside(DVec2 p, const Polys& poly) {
 
 struct Edge { DVec2 a, b; };
 
+// Signed area of a ring (shoelace; the sign is the ring's winding).
+double RingArea(const Poly& r) {
+    double a = 0.0;
+    for (std::size_t i = 0, n = r.size(); i < n; ++i) {
+        const DVec2& p = r[i];
+        const DVec2& q = r[(i + 1) % n];
+        a += p.x * q.y - q.x * p.y;
+    }
+    return a * 0.5;
+}
+
+// Even-odd point-in-ring (one ring).
+bool InsideSingle(DVec2 p, const Poly& ring) {
+    bool in = false;
+    const std::size_t n = ring.size();
+    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
+        const DVec2 a = ring[i], b = ring[j];
+        if (((a.y > p.y) != (b.y > p.y)) &&
+            (p.x < (b.x - a.x) * (p.y - a.y) / (b.y - a.y) + a.x))
+            in = !in;
+    }
+    return in;
+}
+
+// Orient every ring by its NESTING PARITY: depth-even rings (outers, islands)
+// get positive area, depth-odd rings (holes) negative. This is what the
+// NonZero fill and the aligned stroker expect — and unlike a blanket
+// "force everything CCW" it PRESERVES holes, which is exactly what a chained
+// boolean feeds back in (the old normalisation turned a result's hole into a
+// solid on the next step). The probe point sits slightly INSIDE its ring, off
+// the longest edge, so rings that merely touch another ring's boundary (Xor
+// crescents share the lens arc) still classify robustly.
+void OrientByParity(Polys& rings) {
+    if (rings.size() < 1) return;
+    for (std::size_t i = 0; i < rings.size(); ++i) {
+        Poly& r = rings[i];
+        const std::size_t n = r.size();
+        if (n < 3) continue;
+        // Longest edge + its midpoint.
+        std::size_t bi = 0;
+        double bestLen = -1.0;
+        for (std::size_t k = 0; k < n; ++k) {
+            const DVec2 a = r[k], b = r[(k + 1) % n];
+            const double dx = b.x - a.x, dy = b.y - a.y;
+            const double len = dx * dx + dy * dy;
+            if (len > bestLen) { bestLen = len; bi = k; }
+        }
+        const DVec2 a = r[bi], b = r[(bi + 1) % n];
+        const double dx = b.x - a.x, dy = b.y - a.y;
+        const double len = std::sqrt(dx * dx + dy * dy);
+        if (len < 1e-12) continue;
+        // Interior side of the walk: left of travel for a positive-area ring,
+        // right otherwise (shoelace convention, orientation as stored NOW).
+        const double sgn = RingArea(r) >= 0.0 ? 1.0 : -1.0;
+        const double delta = std::max(len * 1e-7, 1e-9);
+        const DVec2 probe{ (a.x + b.x) * 0.5 - sgn * (dy / len) * delta,
+                           (a.y + b.y) * 0.5 + sgn * (dx / len) * delta };
+        int depth = 0;
+        for (std::size_t j = 0; j < rings.size(); ++j)
+            if (j != i && InsideSingle(probe, rings[j])) ++depth;
+        const bool wantPositive = (depth % 2) == 0;
+        if ((RingArea(r) >= 0.0) != wantPositive)
+            std::reverse(r.begin(), r.end());
+    }
+}
+
 // Split every edge of `src` at its intersections with every edge of `other`.
 std::vector<Edge> SplitEdges(const Polys& src, const Polys& other) {
     std::vector<Edge> out;
@@ -95,18 +161,26 @@ std::vector<Edge> SplitEdges(const Polys& src, const Polys& other) {
 // (smallest turn) — following the same boundary across the junction keeps the
 // rings simple and avoids hopping onto the other polygon, which is what
 // produced the "straight cut across a disc" artefacts.
+//
+// Only chains that actually CLOSE are emitted: an open chain (a junction whose
+// twin endpoint was lost to numeric noise) rendered as if closed produces the
+// classic "half-filled diagonal" garbage polygon. A small terminal gap (a
+// junction split across two float paths) is snapped shut; anything larger is
+// DROPPED — a missing sliver is invisible, a garbage ring is not.
 Polys ChainEdges(std::vector<Edge> edges) {
     Polys rings;
+    constexpr double kCloseEps = 1e-6;   // terminal-gap snap tolerance
     std::vector<bool> used(edges.size(), false);
     for (std::size_t start = 0; start < edges.size(); ++start) {
         if (used[start]) continue;
         Poly ring;
         std::size_t cur = start;
+        DVec2 tail = edges[start].a;
         int guard = 0;
         while (cur != (std::size_t)-1 && !used[cur] && ++guard < 200000) {
             used[cur] = true;
             ring.push_back(edges[cur].a);
-            const DVec2 tail = edges[cur].b;
+            tail = edges[cur].b;
             const DVec2 din{ edges[cur].b.x - edges[cur].a.x,
                              edges[cur].b.y - edges[cur].a.y };
             const double dinLen = std::sqrt(din.x * din.x + din.y * din.y);
@@ -128,10 +202,15 @@ Polys ChainEdges(std::vector<Edge> edges) {
                 }
             }
             cur = nxt;
-            if (nxt == (std::size_t)-1 && NearlyEqual(tail, edges[start].a))
-                break;   // closed
         }
-        if (ring.size() >= 3) rings.push_back(std::move(ring));
+        if (ring.size() < 3) continue;
+        // Closed = the last tail returns to the ring start (within the snap
+        // tolerance — the implicit closing edge bridges the residue).
+        const double gx = tail.x - ring.front().x, gy = tail.y - ring.front().y;
+        if (std::sqrt(gx * gx + gy * gy) > kCloseEps) continue;   // open: drop
+        // Nudge-sized slivers carry no visible area — drop them too.
+        if (std::abs(RingArea(ring)) < 1e-12) continue;
+        rings.push_back(std::move(ring));
     }
     return rings;
 }
@@ -146,33 +225,14 @@ void KeepBy(const std::vector<Edge>& edges, const Polys& other,
     }
 }
 
-// Signed area of a ring (positive = counter-clockwise, y-down conventions
-// aside — this is just used for consistency, not absolute orientation).
-double RingArea(const Poly& r) {
-    double a = 0.0;
-    for (std::size_t i = 0, n = r.size(); i < n; ++i) {
-        const DVec2& p = r[i];
-        const DVec2& q = r[(i + 1) % n];
-        a += p.x * q.y - q.x * p.y;
-    }
-    return a * 0.5;
-}
-
-// Force every ring counter-clockwise. The edge-keep + reverse-for-hole rules
-// assume a CONSISTENT input winding; the shape factories disagree (Rect/
-// Polygon are CCW, Ellipse's cubic arcs come out CW), which mixed opposite
-// orientations into one edge set and produced garbage rings — hence booleans
-// failing on ellipses. Normalising both operands fixes it for any input.
-Polys NormalizeCCW(const Polys& in) {
-    Polys out = in;
-    for (Poly& r : out)
-        if (RingArea(r) < 0.0) std::reverse(r.begin(), r.end());
-    return out;
-}
-
 Polys BuildOp(const Polys& Araw, const Polys& Braw, BoolOp op) {
-    const Polys A = NormalizeCCW(Araw);
-    const Polys B = NormalizeCCW(Braw);
+    // Orient both operands by NESTING PARITY (outers positive, holes
+    // negative). The edge-keep + reverse-for-hole rules need a CONSISTENT
+    // winding convention — the shape factories disagree (Rect/Polygon CCW,
+    // Ellipse's arcs CW) — but a blanket force-CCW destroyed HOLES, which is
+    // exactly what a chained boolean feeds back in as its next subject.
+    Polys A = Araw; OrientByParity(A);
+    Polys B = Braw; OrientByParity(B);
     const std::vector<Edge> ae = SplitEdges(A, B);
     const std::vector<Edge> be = SplitEdges(B, A);
     std::vector<Edge> kept;
@@ -203,19 +263,28 @@ Polys BuildOp(const Polys& Araw, const Polys& Braw, BoolOp op) {
 
 std::vector<std::vector<DVec2>>
 BooleanPolygons(const std::vector<std::vector<DVec2>>& subject,
-                const std::vector<std::vector<DVec2>>& clip, BoolOp op) {
+                const std::vector<std::vector<DVec2>>& clip, BoolOp op,
+                int jitter) {
     if (subject.empty()) return op == BoolOp::Intersect ? Polys{} : clip;
     if (clip.empty())    return op == BoolOp::Intersect ? Polys{} : subject;
     // Break exact vertex-on-edge coincidences (a disc tangent to a rectangle
     // edge, snapped grids…) with a sub-visible deterministic nudge of the
     // clip set — the classic cure for the split/classify degeneracies. The
     // offset is far below any flattening tolerance AND below the tests'
-    // area epsilon, so exact non-degenerate cases stay exact.
+    // area epsilon, so exact non-degenerate cases stay exact. `jitter`
+    // (the chain's step index) scales it so an operand that shares edges
+    // with an EARLIER step's result — itself already nudged by the base
+    // constant — lands on a DIFFERENT offset instead of re-coinciding.
     Polys nudged = clip;
-    constexpr double kNudgeX = 1.180339887e-9, kNudgeY = 0.7071067811e-9;
+    const double scale = 1.0 + (double)std::max(0, jitter);
+    const double nx = 1.180339887e-9 * scale, ny = 0.7071067811e-9 * scale;
     for (Poly& ring : nudged)
-        for (DVec2& p : ring) { p.x += kNudgeX; p.y += kNudgeY; }
-    return BuildOp(subject, nudged, op);
+        for (DVec2& p : ring) { p.x += nx; p.y += ny; }
+    Polys out = BuildOp(subject, nudged, op);
+    // Final winding pass: outers CCW, holes CW — what the NonZero fill and
+    // the aligned stroker consume, and what the next chained step expects.
+    OrientByParity(out);
+    return out;
 }
 
 std::vector<Polyline> EvaluateBoolean(const BoolProgram& prog,
@@ -229,7 +298,8 @@ std::vector<Polyline> EvaluateBoolean(const BoolProgram& prog,
         return rings;
     };
     Polys acc = toRings(Flatten(*prog.host, tolerance));
-    for (const BoolStep& s : prog.steps) {
+    for (std::size_t si = 0; si < prog.steps.size(); ++si) {
+        const BoolStep& s = prog.steps[si];
         if (!s.operand) continue;
         Polys rings;
         for (Polyline& pl : Flatten(*s.operand, tolerance)) {
@@ -237,7 +307,10 @@ std::vector<Polyline> EvaluateBoolean(const BoolProgram& prog,
             for (DVec2& p : pl.points) p = s.rel.Apply(p);
             rings.push_back(std::move(pl.points));
         }
-        acc = BooleanPolygons(acc, rings, s.op);
+        // The step index varies the degeneracy nudge: reusing the SAME
+        // operand (or one sharing edges with an earlier result) must not
+        // re-create the exact coincidence the base nudge just broke.
+        acc = BooleanPolygons(acc, rings, s.op, (int)si);
         if (acc.empty()) break;
     }
     out.reserve(acc.size());
