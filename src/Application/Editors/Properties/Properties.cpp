@@ -187,7 +187,9 @@ void Application::BuildPropertiesTopBar(EditorState& st, EditorBar& bar) {
     auto& ds = pr::DST::DesignSystem::Instance();
     const float gs = ds.GetGlobalScale();
     const float h  = ds.GetFloat(pr::Tok::S_Size_ControlHeight) * gs;
-    const float cellW = 84.0f * gs;
+    // Icon-only cells at menu-bar control height — the same fused-button
+    // chrome as the Viewport bar's snap widget.
+    const float cellW = h * 1.45f;
     EditorState* stp = &st;
 
     bar.middle.width = cellW * 3.0f;
@@ -199,19 +201,26 @@ void Application::BuildPropertiesTopBar(EditorState& st, EditorBar& bar) {
         const bool isPath = n && n->kind == Ink::NodeKind::Path;
         const EditorState::PropTab cur = PropsEffectiveTab(*stp);
 
-        struct TabDef { const char* label; EditorState::PropTab tab; bool enabled; };
+        struct TabDef {
+            const char* icon; const char* tip;
+            EditorState::PropTab tab; bool enabled;
+        };
         const TabDef tabs[] = {
-            { "Object",    EditorState::PropTab::Object,    true },
-            { "Paint",     EditorState::PropTab::Paint,     isPath },
-            { "Modifiers", EditorState::PropTab::Modifiers, true },
+            { "shape-category", "Object properties",
+              EditorState::PropTab::Object,    true },
+            { "colorize",       "Paint (fills & strokes)",
+              EditorState::PropTab::Paint,     isPath },
+            { "settings",       "Modifiers",
+              EditorState::PropTab::Modifiers, true },
         };
         UI::ButtonGroup g("##propTabs");
         g.SetGrid({ cellW, cellW, cellW }, { h });
         for (int i = 0; i < 3; ++i) {
             UI::ButtonGroup::Cell c{};
-            c.label = tabs[i].label; c.col = i; c.row = 0;
+            c.icon = tabs[i].icon; c.col = i; c.row = 0;
             c.selected = (cur == tabs[i].tab);
             c.enabled  = tabs[i].enabled;
+            c.tooltip  = tabs[i].tip;
             g.AddCell(c);
         }
         UI::ButtonGroup::Result r = g.Render();

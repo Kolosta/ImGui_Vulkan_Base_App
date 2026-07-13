@@ -402,6 +402,11 @@ private:
     std::vector<Ink::Modifier> modifiersBeforeScratch_;   // modifier drag before
     Ink::NodeId     propEditNode_ = Ink::kNullNode;
     bool            propEditActive_ = false;
+    // Paint page selection (the fill/stroke vignette rails): which item the
+    // right-hand property column edits. Reset when the active node changes.
+    Ink::NodeId     propPaintNode_ = Ink::kNullNode;
+    int             propFillSel_   = 0;
+    int             propStrokeSel_ = 0;
 
     // ── Info log (Blender-style action feed) + Dev data editor ───────────────
     struct InfoEntry { uint64_t frame; std::string text; std::string detail; };

@@ -280,5 +280,147 @@ inline bool NodePickerRow(const char* label, const Ink::Document& doc,
     return false;
 }
 
+// ── Paint-stack thumbnails (the fill / stroke vignette rails) ────────────────
+
+// A selectable square tile: token chrome, accent border when selected,
+// brighter border on hover. Returns true on click; outMin/outMax receive the
+// CONTENT rect (inside the border) for the caller to draw the preview into.
+inline bool ThumbTile(const char* idstr, float size, bool selected,
+                      ImVec2* outMin, ImVec2* outMax) {
+    const float gs = Gs();
+    const ImVec2 mn = ImGui::GetCursorScreenPos();
+    const ImVec2 mx(mn.x + size, mn.y + size);
+    ImGui::PushID(idstr);
+    const bool clicked = ImGui::InvisibleButton("##tile", ImVec2(size, size));
+    const bool hovered = ImGui::IsItemHovered();
+    ImGui::PopID();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float r = SafeFloat(Tok::S_CornerRadius_Control, 3.0f) * gs;
+    dl->AddRectFilled(mn, mx,
+        ImGui::ColorConvertFloat4ToU32(
+            SafeColor(Tok::S_Color_Background_Layer2, ImVec4(0.16f, 0.16f, 0.18f, 1))),
+        r);
+    const ImVec4 bord =
+        selected ? SafeColor(Tok::S_Color_Accent_Default, ImVec4(0.3f, 0.5f, 0.9f, 1))
+        : hovered ? SafeColor(Tok::S_Color_Text_Default, ImVec4(0.9f, 0.9f, 0.9f, 1))
+                  : SafeColor(Tok::S_Color_Border_Default, ImVec4(0.3f, 0.3f, 0.3f, 1));
+    dl->AddRect(mn, mx, ImGui::ColorConvertFloat4ToU32(bord), r, 0,
+                (selected ? 2.0f : 1.0f) * gs);
+    const float inset = 3.0f * gs;
+    if (outMin) *outMin = ImVec2(mn.x + inset, mn.y + inset);
+    if (outMax) *outMax = ImVec2(mx.x - inset, mx.y - inset);
+    return clicked;
+}
+
+// Checkerboard (alpha background) clipped to a rect.
+inline void DrawChecker(ImDrawList* dl, ImVec2 mn, ImVec2 mx, float cell) {
+    const ImU32 a = IM_COL32(140, 140, 140, 255);
+    const ImU32 b = IM_COL32(90, 90, 90, 255);
+    dl->PushClipRect(mn, mx, true);
+    int row = 0;
+    for (float y = mn.y; y < mx.y; y += cell, ++row) {
+        int col = row & 1;
+        for (float x = mn.x; x < mx.x; x += cell, ++col)
+            dl->AddRectFilled(ImVec2(x, y),
+                              ImVec2(std::min(x + cell, mx.x), std::min(y + cell, mx.y)),
+                              (col & 1) ? a : b);
+    }
+    dl->PopClipRect();
+}
+
+// Preview of ONE fill, alone: a solid swatch (checker under a translucent
+// paint) or a motif lattice for a pattern fill.
+inline void DrawFillSample(ImDrawList* dl, ImVec2 mn, ImVec2 mx,
+                           const Ink::Fill& f) {
+    const float gs = Gs();
+    if (f.kind == Ink::FillKind::Solid) {
+        ImVec4 c = ToSrgb(f.paint.color);
+        c.w *= f.opacity;
+        if (c.w < 0.999f) DrawChecker(dl, mn, mx, 5.0f * gs);
+        dl->AddRectFilled(mn, mx, ImGui::ColorConvertFloat4ToU32(c));
+    } else {
+        // Pattern: a small dot lattice in the subtle text colour (the motif is
+        // another object — the lattice reads as "pattern" at a glance).
+        const ImU32 dot = ImGui::ColorConvertFloat4ToU32(
+            SafeColor(Tok::S_Color_Text_Subtle, ImVec4(0.6f, 0.6f, 0.6f, 1)));
+        const float w = mx.x - mn.x, h = mx.y - mn.y;
+        for (int gy = 0; gy < 3; ++gy)
+            for (int gx = 0; gx < 3; ++gx)
+                dl->AddCircleFilled(
+                    ImVec2(mn.x + w * (0.25f + 0.25f * gx),
+                           mn.y + h * (0.25f + 0.25f * gy)),
+                    1.8f * gs, dot);
+    }
+    if (!f.enabled) {
+        // Disabled: wash the tile + a diagonal slash.
+        dl->AddRectFilled(mn, mx, IM_COL32(30, 30, 30, 150));
+        dl->AddLine(ImVec2(mn.x, mx.y), ImVec2(mx.x, mn.y),
+                    IM_COL32(220, 80, 80, 200), 1.5f * gs);
+    }
+}
+
+// Preview of ONE stroke, alone: a horizontal line SAMPLE (not the host shape's
+// contour) with the stroke's colour, a clamped display width and its dashes.
+inline void DrawStrokeSample(ImDrawList* dl, ImVec2 mn, ImVec2 mx,
+                             const Ink::Stroke& s) {
+    const float gs = Gs();
+    ImVec4 c = ToSrgb(s.paint.color);
+    if (c.w < 0.999f) DrawChecker(dl, mn, mx, 5.0f * gs);
+    const ImU32 col = ImGui::ColorConvertFloat4ToU32(c);
+    const float y = (mn.y + mx.y) * 0.5f;
+    const float pad = 3.0f * gs;
+    const float x0 = mn.x + pad, x1 = mx.x - pad;
+    const float wpx = std::clamp((float)s.width * gs, 1.0f,
+                                 (mx.y - mn.y) * 0.45f);
+    if (s.dashPattern.empty()) {
+        dl->AddLine(ImVec2(x0, y), ImVec2(x1, y), col, wpx);
+    } else {
+        // Scale the dash pattern so ~2.5 periods fit in the sample.
+        double period = 0.0;
+        for (double d : s.dashPattern) period += d;
+        if (s.dashPattern.size() & 1) period *= 2.0;   // odd runs repeat doubled
+        const double scale = period > 1e-6
+            ? ((double)(x1 - x0) / 2.5) / period : 1.0;
+        float x = x0;
+        std::size_t k = 0;
+        bool on = true;
+        while (x < x1) {
+            const float run =
+                (float)(s.dashPattern[k % s.dashPattern.size()] * scale);
+            if (on && run > 0.01f)
+                dl->AddLine(ImVec2(x, y), ImVec2(std::min(x + run, x1), y), col, wpx);
+            x += std::max(run, 0.5f);
+            on = !on;
+            ++k;
+        }
+    }
+    if (!s.enabled) {
+        dl->AddRectFilled(mn, mx, IM_COL32(30, 30, 30, 150));
+        dl->AddLine(ImVec2(mn.x, mx.y), ImVec2(mx.x, mn.y),
+                    IM_COL32(220, 80, 80, 200), 1.5f * gs);
+    }
+}
+
+// The "+" tile appended under a thumbnail rail (adds an item).
+inline bool ThumbAddTile(float size) {
+    const float gs = Gs();
+    const ImVec2 mn = ImGui::GetCursorScreenPos();
+    const ImVec2 mx(mn.x + size, mn.y + size);
+    const bool clicked = ImGui::InvisibleButton("##addTile", ImVec2(size, size));
+    const bool hovered = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float r = SafeFloat(Tok::S_CornerRadius_Control, 3.0f) * gs;
+    const ImVec4 fg = hovered
+        ? SafeColor(Tok::S_Color_Text_Default, ImVec4(0.9f, 0.9f, 0.9f, 1))
+        : SafeColor(Tok::S_Color_Text_Subtle, ImVec4(0.6f, 0.6f, 0.6f, 1));
+    dl->AddRect(mn, mx, ImGui::ColorConvertFloat4ToU32(fg), r, 0, 1.0f * gs);
+    const ImVec2 ctr((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+    const float arm = size * 0.22f;
+    const ImU32 fgc = ImGui::ColorConvertFloat4ToU32(fg);
+    dl->AddLine(ImVec2(ctr.x - arm, ctr.y), ImVec2(ctr.x + arm, ctr.y), fgc, 1.5f * gs);
+    dl->AddLine(ImVec2(ctr.x, ctr.y - arm), ImVec2(ctr.x, ctr.y + arm), fgc, 1.5f * gs);
+    return clicked;
+}
+
 } // namespace pr
 } // namespace App
