@@ -53,6 +53,7 @@ struct DropdownButton {
     std::string label;           // text (optional; icon-only if empty)
     std::string tooltip;
     bool        active = false;  // toggled/accented state
+    bool        enabled = true;  // false: dimmed, no hover, ignores clicks
     enum class Side { Left, Right } side = Side::Left;
 };
 
@@ -106,5 +107,16 @@ struct DropdownResult {
 // Draw the trigger at the current cursor position and, if open, its menu.
 // Returns whether an item was picked this frame.
 DropdownResult Dropdown(const DropdownConfig& cfg);
+
+// A standalone row of FUSED buttons in the dropdown chrome — the same cells
+// the snap widget fuses to its trigger (dark dropdown background, shared
+// border, only the row's outer corners rounded, icons dead-centred, active
+// cell filled with the accent), without any dropdown. Menu-bar toggle groups
+// (e.g. the Properties editor's page tabs) use this so every bar control
+// shares one visual family. Cell width: `cellW` per cell when > 0, else each
+// cell sizes to its content (min = control height). Returns the index of the
+// cell clicked this frame, or -1.
+int DropdownButtonRow(const char* id, const std::vector<DropdownButton>& cells,
+                      float cellW = 0.0f);
 
 } // namespace UI

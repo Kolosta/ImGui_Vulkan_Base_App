@@ -60,6 +60,7 @@ struct ListCtx {
     ImGuiID        kDragged = 0;         // bool: this hold entered a drag
     ImGuiID        kFloat   = 0;         // float: dragged item's floating top
     ImGuiID        kTarget  = 0;         // int: current insertion slot
+    ImGuiID        kDragWin = 0;         // void*: dragged item's child window
     PanelListEdit* edit     = nullptr;
     // Per-item bookkeeping between Begin and End of the same item.
     float          naturalY = 0.0f;      // layout position before any offset
@@ -402,6 +403,7 @@ PanelResult BeginPanelListItem(const PanelConfig& cfg, int index, int count,
     g_list.kDragged = ImGui::GetID("##plistDragged");
     g_list.kFloat   = ImGui::GetID("##plistFloat");
     g_list.kTarget  = ImGui::GetID("##plistTarget");
+    g_list.kDragWin = ImGui::GetID("##plistDragWin");
     g_list.edit     = &edit;
 
     // ── The list step: once per frame, on the first item ─────────────────────
@@ -441,17 +443,26 @@ PanelResult BeginPanelListItem(const PanelConfig& cfg, int index, int count,
                 }
             }
             if (drag >= 0) {
-                // Floating position, clamped to the list's visual span.
+                // Floating position (child-top space), clamped to the list's
+                // NATURAL span — never to the visual rects: those include the
+                // float itself and the animated offsets, and clamping against
+                // them feeds back (the pinned panel crept downward forever).
                 const float dragH =
                     st->GetFloat(ListRectKey(drag, false), 0.0f) -
                     st->GetFloat(ListRectKey(drag, true), 0.0f);
-                float lo = 1e30f, hi = -1e30f;
-                for (int i = 0; i < count; ++i) {
-                    lo = std::min(lo, st->GetFloat(ListRectKey(i, true), lo));
-                    hi = std::max(hi, st->GetFloat(ListRectKey(i, false), hi));
-                }
+                const float gapD  = st->GetFloat(ListKey("Gap", drag), 0.0f);
+                const float natTop =
+                    st->GetFloat(ListKey("Nat", 0), 0.0f) + gapD;
+                const float lastH =
+                    st->GetFloat(ListRectKey(count - 1, false), 0.0f) -
+                    st->GetFloat(ListRectKey(count - 1, true), 0.0f);
+                const float natBottom =
+                    st->GetFloat(ListKey("Nat", count - 1), natTop) +
+                    st->GetFloat(ListKey("Gap", count - 1), 0.0f) + lastH;
                 float ft = my - st->GetFloat(g_list.kGrabDY, dragH * 0.5f);
-                if (lo < hi) ft = std::clamp(ft, lo, std::max(lo, hi - dragH));
+                if (natBottom > natTop)
+                    ft = std::clamp(ft, natTop,
+                                    std::max(natTop, natBottom - dragH));
                 st->SetFloat(g_list.kFloat, ft);
                 // Insertion slot = how many OTHER items sit above the floating
                 // centre (their shifted, visual midlines from last frame).
@@ -472,14 +483,17 @@ PanelResult BeginPanelListItem(const PanelConfig& cfg, int index, int count,
     const ImVec2 cur = ImGui::GetCursorScreenPos();
     g_list.naturalY = cur.y;
     g_list.x        = cur.x;
+    st->SetFloat(ListKey("Nat", index), cur.y);
     const int   drag = st->GetInt(g_list.kDrag, -1);
     const int   tgt  = st->GetInt(g_list.kTarget, -1);
     const float adv  = st->GetFloat(ListKey("Adv", drag < 0 ? 0 : drag), 0.0f);
     float target = 0.0f;
     float off    = st->GetFloat(ListKey("Off", index), 0.0f);
     if (drag >= 0 && index == drag) {
-        // The grabbed panel tracks the cursor directly (no smoothing).
-        off = st->GetFloat(g_list.kFloat, cur.y) - cur.y;
+        // The grabbed panel tracks the cursor directly (no smoothing). kFloat
+        // is in CHILD-TOP space; the cursor sits one panel gap above it.
+        const float gap = st->GetFloat(ListKey("Gap", index), 0.0f);
+        off = (st->GetFloat(g_list.kFloat, cur.y + gap) - gap) - cur.y;
     } else {
         if (drag >= 0 && tgt >= 0) {
             // Neighbours slide out of / into the vacated slot (Blender): the
@@ -499,6 +513,10 @@ PanelResult BeginPanelListItem(const PanelConfig& cfg, int index, int count,
 
     ImGui::PushID(index);
     PanelResult r = BeginPanel(cfg);
+    // Remember the grabbed item's child window so the list can push it to the
+    // END of its parent's child list (drawn last = on top of its siblings).
+    if (drag >= 0 && index == drag)
+        st->SetVoidPtr(g_list.kDragWin, ImGui::GetCurrentWindow());
     if (r.closeClicked) edit.removeAt = index;
     return r;
 }
@@ -515,6 +533,9 @@ void EndPanelListItem() {
     const ImVec2 mx = ImGui::GetItemRectMax();
     st->SetFloat(ListRectKey(index, true),  mn.y);
     st->SetFloat(ListRectKey(index, false), mx.y);
+    // The panel's leading gap (a level-1 panel opens with a gap Dummy before
+    // its child) — converts between cursor space and child-top space.
+    st->SetFloat(ListKey("Gap", index), mn.y - g_list.placedY);
 
     // Natural advance (gap + panel + spacing) and flow restore: the next item
     // lays out from the NATURAL position, not the offset one.
@@ -523,29 +544,53 @@ void EndPanelListItem() {
     st->SetFloat(ListKey("Adv", index), advance);
     ImGui::SetCursorScreenPos(ImVec2(g_list.x, g_list.naturalY + advance));
 
-    // The grabbed panel carries an accent outline (Blender's lifted panel).
+    // The grabbed panel carries an accent outline — on the FOREGROUND list,
+    // since the panel itself is raised above its siblings while dragged.
     if (st->GetInt(g_list.kDrag, -1) == index) {
         const float gs = DS::DesignSystem::Instance().GetGlobalScale();
-        ImGui::GetWindowDrawList()->AddRect(
+        ImGui::GetForegroundDrawList()->AddRect(
             mn, mx,
             ImGui::ColorConvertFloat4ToU32(Col(Tok::S_Color_Accent_Default)),
             Flt(Tok::C_Panel_CornerRadius) * gs, 0, 1.0f * gs);
     }
 
-    // Last item + a move committed this frame (mouse released): move the
-    // persisted open flags WITH the item and settle the offsets — the caller
-    // applies the same rotation to its data after the loop, so next frame the
-    // new order and the panel states agree.
-    if (index + 1 == g_list.count && g_list.edit && g_list.edit->moveFrom >= 0) {
-        const int from = g_list.edit->moveFrom, to = g_list.edit->moveTo;
-        ListRotateItemState(st, g_list.itemId, from, to);
-        for (int i = 0; i < g_list.count; ++i)
-            st->SetFloat(ListKey("Off", i), 0.0f);
-        // Let the dropped panel glide from where it was released to its new
-        // slot (the slot's last-frame rect approximates its new natural spot).
-        const float dropped = st->GetFloat(g_list.kFloat, 0.0f);
-        const float slotY   = st->GetFloat(ListRectKey(to, true), dropped);
-        st->SetFloat(ListKey("Off", to), dropped - slotY);
+    if (index + 1 == g_list.count) {
+        // While dragging, raise the grabbed panel's child window ABOVE its
+        // siblings: child windows render in submission order (the parent's
+        // ChildWindows list), so moving it to the back draws it last — the
+        // floating panel passes OVER the others instead of slotting between.
+        if (st->GetInt(g_list.kDrag, -1) >= 0) {
+            ImGuiWindow* parent = ImGui::GetCurrentWindow();
+            ImGuiWindow* dragWin =
+                (ImGuiWindow*)st->GetVoidPtr(g_list.kDragWin);
+            if (parent && dragWin) {
+                ImVector<ImGuiWindow*>& kids = parent->DC.ChildWindows;
+                for (int i = 0; i < kids.Size; ++i) {
+                    if (kids[i] == dragWin) {
+                        for (int j = i; j + 1 < kids.Size; ++j)
+                            kids[j] = kids[j + 1];
+                        kids[kids.Size - 1] = dragWin;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // A move committed this frame (mouse released): move the persisted
+        // open flags WITH the item and settle the offsets — the caller applies
+        // the same rotation to its data after the loop, so next frame the new
+        // order and the panel states agree.
+        if (g_list.edit && g_list.edit->moveFrom >= 0) {
+            const int from = g_list.edit->moveFrom, to = g_list.edit->moveTo;
+            ListRotateItemState(st, g_list.itemId, from, to);
+            for (int i = 0; i < g_list.count; ++i)
+                st->SetFloat(ListKey("Off", i), 0.0f);
+            // Let the dropped panel glide from where it was released to its
+            // new slot (the slot's last-frame rect approximates it).
+            const float dropped = st->GetFloat(g_list.kFloat, 0.0f);
+            const float slotY   = st->GetFloat(ListRectKey(to, true), dropped);
+            st->SetFloat(ListKey("Off", to), dropped - slotY);
+        }
     }
 
     g_list.active = false;

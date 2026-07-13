@@ -774,4 +774,110 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     return result;
 }
 
+// ── DropdownButtonRow — fused toggle cells in the dropdown chrome ────────────
+
+int DropdownButtonRow(const char* id, const std::vector<DropdownButton>& cells,
+                      float cellW) {
+    if (cells.empty()) return -1;
+    DS::DesignSystem::ComponentScope _cs("Dropdown");
+    auto& ds = DS::DesignSystem::Instance();
+    const float gs = ds.GetGlobalScale();
+
+    const float controlH = Flt(Tok::C_Dropdown_Height) * gs;
+    ImVec2 pad = V2(Tok::C_Dropdown_Padding); pad.x *= gs; pad.y *= gs;
+    const float iconSz = Flt(Tok::C_Dropdown_IconSize) * gs;
+    const float radius = Flt(Tok::C_Dropdown_CornerRadius) * gs;
+    const bool  bordersOn = ds.BordersEnabled();
+    const float borderW = bordersOn ? Flt(Tok::C_Dropdown_BorderWidth) * gs : 0.0f;
+    const float gap = 4.0f * gs;
+
+    const ImVec4 bgV     = Col(Tok::C_Dropdown_Background);
+    const ImVec4 hovV    = Col(Tok::C_Dropdown_BackgroundHover);
+    const ImVec4 bordV   = Col(Tok::C_Dropdown_Border);
+    const ImVec4 accentV = Col(Tok::S_Color_Accent_Default);
+    const ImVec4 iconV   = Col(Tok::C_Dropdown_Icon);
+    const ImVec4 textV   = Col(Tok::C_Dropdown_Text);
+
+    auto cellWidth = [&](const DropdownButton& b) {
+        if (cellW > 0.0f) return cellW;
+        float w = pad.x * 2.0f;
+        const bool bIcon = b.icon && *b.icon;
+        const bool bText = !b.label.empty();
+        if (bIcon) w += iconSz;
+        if (bIcon && bText) w += gap;
+        if (bText) w += ImGui::CalcTextSize(b.label.c_str()).x;
+        if (!bIcon && !bText) w = controlH;
+        return std::max(w, controlH);
+    };
+
+    ImGui::PushID(id);
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    int clicked = -1;
+    float x = origin.x;
+    float totalW = 0.0f;
+    for (const DropdownButton& b : cells) totalW += cellWidth(b);
+
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        const DropdownButton& b = cells[i];
+        const float cw = cellWidth(b);
+        const ImVec2 cmin(x, origin.y), cmax(x + cw, origin.y + controlH);
+        ImGui::SetCursorScreenPos(cmin);
+        ImGui::PushID((int)i);
+        if (ImGui::InvisibleButton("##cell", ImVec2(cw, controlH)) && b.enabled)
+            clicked = (int)i;
+        const bool hov = b.enabled && ImGui::IsItemHovered();
+        ImGui::PopID();
+
+        // Only the ROW's outer corners round (the ButtonGroup / snap look).
+        ImDrawFlags rf = ImDrawFlags_RoundCornersNone;
+        if (i == 0)                rf |= ImDrawFlags_RoundCornersLeft;
+        if (i + 1 == cells.size()) rf |= ImDrawFlags_RoundCornersRight;
+        const ImVec4 fill = b.active ? accentV : (hov ? hovV : bgV);
+        dl->AddRectFilled(cmin, cmax, ImGui::ColorConvertFloat4ToU32(fill),
+                          radius, rf);
+        if (borderW > 0.01f)
+            dl->AddRect(cmin, cmax, ImGui::ColorConvertFloat4ToU32(bordV),
+                        radius, rf, borderW);
+
+        ImVec4 tint = b.active ? textV : iconV;
+        if (!b.enabled) tint.w *= 0.4f;   // dimmed, like a disabled control
+        const bool bIcon = b.icon && *b.icon;
+        const bool bText = !b.label.empty();
+        if (bIcon && !bText) {
+            // Icon-only cell: dead-centred (the snap magnet look).
+            DrawIcon(dl, b.icon,
+                     ImVec2(cmin.x + (cw - iconSz) * 0.5f,
+                            cmin.y + (controlH - iconSz) * 0.5f),
+                     iconSz, tint);
+        } else {
+            float cx = cmin.x + pad.x;
+            if (bIcon) {
+                DrawIcon(dl, b.icon,
+                         ImVec2(cx, cmin.y + (controlH - iconSz) * 0.5f),
+                         iconSz, tint);
+                cx += iconSz + gap;
+            }
+            if (bText) {
+                const ImVec2 ts = ImGui::CalcTextSize(b.label.c_str());
+                ImVec4 tv = textV;
+                if (!b.enabled) tv.w *= 0.4f;
+                dl->AddText(ImVec2(cx, cmin.y + (controlH - ts.y) * 0.5f),
+                            ImGui::ColorConvertFloat4ToU32(tv),
+                            b.label.c_str());
+            }
+        }
+        if (hov && !b.tooltip.empty() &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            DrawTooltip(b.tooltip.c_str(), ImGui::GetIO().MousePos);
+        x += cw;
+    }
+
+    // One layout item for the whole row (the cells were manual placements).
+    ImGui::SetCursorScreenPos(origin);
+    ImGui::Dummy(ImVec2(totalW, controlH));
+    ImGui::PopID();
+    return clicked;
+}
+
 } // namespace UI
