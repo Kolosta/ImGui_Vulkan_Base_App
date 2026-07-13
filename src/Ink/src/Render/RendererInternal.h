@@ -80,10 +80,15 @@ enum class ScopePhase : std::uint8_t {
 // A contiguous slice of a content run sharing one stencil interaction: the
 // recorder binds the matching pipeline (plain / mask-write / mask-clear /
 // clip-test) per segment and issues one multi-draw indirect for it.
+// `stencilTag` > 0 (role None only): the slice is ONE translucent stroke,
+// drawn through the self-overlap dedup pipeline with this tag as its dynamic
+// stencil reference — its own join/segment overlaps blend once, while other
+// strokes (different tags) still blend over it.
 struct CmdSegment {
-    std::uint32_t cmdOffset = 0;   // into ViewImpl::indirectScratch
-    std::uint32_t cmdCount  = 0;
-    ClipRole      role      = ClipRole::None;
+    std::uint32_t cmdOffset  = 0;   // into ViewImpl::indirectScratch
+    std::uint32_t cmdCount   = 0;
+    ClipRole      role       = ClipRole::None;
+    std::uint32_t stencilTag = 0;   // 0 = no dedup; 2..255 cycling
 };
 
 struct ScopeRun {
@@ -196,6 +201,7 @@ struct RendererImpl {
     VkPipeline contentClipPipeline = VK_NULL_HANDLE;  // stencil TestEqual 1
     VkPipeline clipMaskPipeline    = VK_NULL_HANDLE;  // stencil WriteMask ← 1
     VkPipeline clipClearPipeline   = VK_NULL_HANDLE;  // stencil WriteMask ← 0
+    VkPipeline strokeDedupPipeline = VK_NULL_HANDLE;  // TestNotEqualWrite (dyn ref)
     VkPipeline overlayPipeline     = VK_NULL_HANDLE;
     VkPipeline presentPipeline     = VK_NULL_HANDLE;
     VkPipeline compositePipeline   = VK_NULL_HANDLE;  // iso composite (blend)

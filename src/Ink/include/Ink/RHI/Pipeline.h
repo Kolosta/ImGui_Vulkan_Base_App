@@ -25,10 +25,16 @@ struct VertexAttribute {
 // §ClipPass). None: stencil untouched (test off). WriteMask: colour-write
 // off, sets stencil = `stencilRef` where the geometry covers (ref 0 erases a
 // mask). TestEqual: draws only where stencil == `stencilRef`.
+// TestNotEqualWrite: draws (colour ON) only where stencil != ref and REPLACES
+// the stencil with ref where it drew — the self-overlap dedup for TRANSLUCENT
+// strokes (join fans / segment quads overlap on the inner side of a turn;
+// without the test each overlap blends twice and reads darker). The stencil
+// REFERENCE is a DYNAMIC state for this mode, so one pipeline serves the
+// per-draw tags.
 // NOTE (dynamic rendering VUs): a pipeline used inside a pass that HAS a
 // stencil attachment must declare that format even when its mode is None —
 // set `stencilFormat` on every pipeline that renders into such a pass.
-enum class StencilMode { None, WriteMask, TestEqual };
+enum class StencilMode { None, WriteMask, TestEqual, TestNotEqualWrite };
 
 struct GraphicsPipelineDesc {
     VkShaderModule vert = VK_NULL_HANDLE;

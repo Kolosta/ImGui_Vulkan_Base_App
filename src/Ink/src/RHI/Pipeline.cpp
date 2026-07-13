@@ -113,6 +113,19 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
             op.reference   = desc.stencilRef;
             op.writeMask   = 0xFF;
             op.compareMask = 0xFF;
+        } else if (desc.stencil == StencilMode::TestNotEqualWrite) {
+            // Translucent-stroke self-overlap dedup: the first fragment of a
+            // draw at a pixel tags it (REPLACE with the reference); any later
+            // fragment of the SAME draw fails NOT_EQUAL — one blend per pixel
+            // per draw. Different draws carry different tags (dynamic ref), so
+            // separate translucent strokes still blend over each other.
+            op.compareOp   = VK_COMPARE_OP_NOT_EQUAL;
+            op.passOp      = VK_STENCIL_OP_REPLACE;
+            op.failOp      = VK_STENCIL_OP_KEEP;
+            op.depthFailOp = VK_STENCIL_OP_KEEP;
+            op.reference   = desc.stencilRef;   // overridden per draw (dynamic)
+            op.writeMask   = 0xFF;
+            op.compareMask = 0xFF;
         } else {   // TestEqual
             op.compareOp   = VK_COMPARE_OP_EQUAL;
             op.passOp      = VK_STENCIL_OP_KEEP;
@@ -125,11 +138,15 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
         ds.front = ds.back = op;
     }
 
+    // The dedup mode drives its stencil reference per draw (one pipeline,
+    // per-draw tags) — the reference becomes a dynamic state for that mode.
     const VkDynamicState dynStates[] = { VK_DYNAMIC_STATE_VIEWPORT,
-                                         VK_DYNAMIC_STATE_SCISSOR };
+                                         VK_DYNAMIC_STATE_SCISSOR,
+                                         VK_DYNAMIC_STATE_STENCIL_REFERENCE };
     VkPipelineDynamicStateCreateInfo dyn{};
     dyn.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-    dyn.dynamicStateCount = 2;
+    dyn.dynamicStateCount =
+        desc.stencil == StencilMode::TestNotEqualWrite ? 3u : 2u;
     dyn.pDynamicStates    = dynStates;
 
     // Dynamic rendering: the pipeline binds to a color format, not a pass.

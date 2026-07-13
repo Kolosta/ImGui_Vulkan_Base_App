@@ -172,6 +172,10 @@ bool CreatePipelines(RendererImpl& r) {
         r.clipMaskPipeline = rhi::CreateGraphicsPipeline(r.device, d);
         d.stencilRef = 0;
         r.clipClearPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        // Translucent-stroke self-overlap dedup: colour ON, stencil NOT_EQUAL
+        // + REPLACE with a per-draw dynamic reference (the segment's tag).
+        d.stencil = rhi::StencilMode::TestNotEqualWrite;
+        r.strokeDedupPipeline = rhi::CreateGraphicsPipeline(r.device, d);
         d.stencil    = rhi::StencilMode::None;
         d.stencilRef = 1;
 
@@ -203,8 +207,8 @@ bool CreatePipelines(RendererImpl& r) {
         r.presentPipeline = rhi::CreateGraphicsPipeline(r.device, d);
 
         ok = r.contentPipeline && r.contentClipPipeline && r.clipMaskPipeline &&
-             r.clipClearPipeline && r.overlayPipeline && r.compositePipeline &&
-             r.presentPipeline;
+             r.clipClearPipeline && r.strokeDedupPipeline &&
+             r.overlayPipeline && r.compositePipeline && r.presentPipeline;
     }
     for (VkShaderModule m : all)
         if (m) vkDestroyShaderModule(r.device.vk(), m, nullptr);
@@ -510,6 +514,7 @@ void Renderer::Shutdown() {
         destroyPipeline(r.contentClipPipeline);
         destroyPipeline(r.clipMaskPipeline);
         destroyPipeline(r.clipClearPipeline);
+        destroyPipeline(r.strokeDedupPipeline);
         destroyPipeline(r.overlayPipeline);
         destroyPipeline(r.compositePipeline);
         destroyPipeline(r.presentPipeline);
@@ -755,6 +760,13 @@ void Renderer::EndFrame() {
             run.segOffset = (std::uint32_t)segs.size();
             ClipRole cur = ClipRole::None;
             bool open = false;
+            // Self-overlap dedup tags for TRANSLUCENT strokes (a stroke's own
+            // join/segment triangles overlap on the inner side of a turn and
+            // would blend twice). Each such stroke draws in its OWN segment
+            // through the dedup pipeline, tagged 2..255 (1 belongs to the clip
+            // mask; the stencil clears per content pass, so tags only cycle —
+            // and could alias — past 254 translucent strokes in one scope).
+            std::uint32_t nextTag = 2;
             const bool preview = !v.previewOwners.empty();
             auto inPreview = [&](NodeId id) {
                 return v.previewOwners.find(id) != v.previewOwners.end();
@@ -785,10 +797,24 @@ void Renderer::EndFrame() {
                 // clip); ordinary content culls against the view rect.
                 if (role == ClipRole::None && !d.isClipSource && culled(d))
                     continue;
-                if (!open || role != cur) {
+                // A translucent stroke outside any clip role gets a private
+                // dedup segment (its instanced merge is intentionally broken:
+                // distinct copies must still blend over EACH OTHER, so each
+                // carries its own tag). Clipped translucent strokes keep the
+                // clip pipeline — the stencil can't express both tests at
+                // once; documented v1 limit.
+                const bool dedup = d.isStroke && !d.isClipSource &&
+                                   role == ClipRole::None &&
+                                   d.color.a < 0.999f;
+                if (!open || role != cur || dedup ||
+                    (!segs.empty() && segs.back().stencilTag != 0)) {
                     detail::CmdSegment seg;
-                    seg.cmdOffset = (std::uint32_t)cmds.size();
-                    seg.role      = role;
+                    seg.cmdOffset  = (std::uint32_t)cmds.size();
+                    seg.role       = role;
+                    if (dedup) {
+                        seg.stencilTag = nextTag;
+                        nextTag = nextTag >= 255 ? 2 : nextTag + 1;
+                    }
                     segs.push_back(seg);
                     cur = role;
                     open = true;

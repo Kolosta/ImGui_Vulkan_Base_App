@@ -41,10 +41,18 @@ void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
             case ClipRole::Clipped:   pipe = r.contentClipPipeline; break;
             case ClipRole::None: default: break;
         }
+        // Translucent-stroke self-overlap dedup: the segment is one stroke,
+        // drawn where the stencil differs from its tag and tagging as it goes
+        // — its own overlapping triangles blend exactly once. The reference is
+        // dynamic on this pipeline (one pipeline, per-draw tags).
+        if (seg.stencilTag != 0) pipe = r.strokeDedupPipeline;
         if (pipe != bound) {
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
             bound = pipe;
         }
+        if (seg.stencilTag != 0)
+            vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_AND_BACK,
+                                     seg.stencilTag);
         vkCmdDrawIndexedIndirect(
             cmd, indirect,
             seg.cmdOffset * (std::uint32_t)sizeof(VkDrawIndexedIndirectCommand),
