@@ -314,6 +314,11 @@ void ZoneLayout::DrawLeaf(Node* n, float gap) {
     ImVec2 cs(avail.x, std::max(0.0f, avail.y - chromeH));
     ImGui::SetCursorPos(ImVec2(0.0f, chromeH));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    // The content child is SQUARE: its top edge sits flush under the menu bar
+    // (a rounded clip here notched the canvas's top corners mid-zone). The
+    // zone's rounded BOTTOM corners are restored on the overlay by
+    // DrawZoneFrames' corner masks, above any content (canvas included).
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
     ImGui::BeginChild("##c", cs, false,
                       ImGuiWindowFlags_NoScrollbar |
                       ImGuiWindowFlags_NoScrollWithMouse);
@@ -382,7 +387,7 @@ void ZoneLayout::DrawLeaf(Node* n, float gap) {
         }
     }
     ImGui::EndChild(); // ##c
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(2);     // ChildRounding(0) + WindowPadding
 
     ImGui::EndChild(); // zone
     ImGui::PopStyleVar(2);     // ChildRounding + WindowPadding
@@ -429,11 +434,30 @@ void ZoneLayout::DrawZoneFrames(Node* n) {
     ImVec2 mx(std::roundf(n->pos.x + n->size.x), std::roundf(n->pos.y + n->size.y));
     ImU32 border = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Border_Default));
 
-    // The editor canvas + its bars are clipped to the rounded rect natively (the
-    // zone child's ChildRounding, with the bars rounding their own top corners).
-    // No corner re-paint here: just the crisp rounded border, ON TOP of all
-    // content, as the strict visual limit of the zone. Skipped when the border
-    // token is 0 (borders removed everywhere).
+    // BOTTOM corner masks: the content child is square (its rounded clip used
+    // to notch the canvas's TOP corners mid-zone), so the zone's rounded
+    // bottom corners are restored here by painting the area between the square
+    // corner and the arc with the HOST background (the colour between zones),
+    // above any content — canvas included. Top corners need no mask (the
+    // tab/menu bars round their own tops under the zone clip).
+    if (rnd > 0.5f) {
+        const ImU32 hostBg = ImGui::GetColorU32(
+            ds.GetColor(DesignSystem::Tok::S_Color_Background_Default));
+        constexpr float kPi = 3.14159265358979f;
+        // Each mask = the square corner minus the quarter disc. The path fans
+        // from the CORNER point (the notch is star-shaped from there): corner →
+        // arc points → close.
+        dl->PathLineTo(ImVec2(mn.x, mx.y));                    // bottom-left
+        dl->PathArcTo(ImVec2(mn.x + rnd, mx.y - rnd), rnd,
+                      kPi, kPi * 0.5f);                        // 180° → 90°
+        dl->PathFillConvex(hostBg);
+        dl->PathLineTo(ImVec2(mx.x, mx.y));                    // bottom-right
+        dl->PathArcTo(ImVec2(mx.x - rnd, mx.y - rnd), rnd,
+                      kPi * 0.5f, 0.0f);                       // 90° → 0°
+        dl->PathFillConvex(hostBg);
+    }
+    // The crisp rounded border, ON TOP of all content, as the strict visual
+    // limit of the zone. Skipped when the border token is 0.
     if (bord > 0.01f)
         dl->AddRect(mn, mx, border, rnd, 0, bord);
 }
