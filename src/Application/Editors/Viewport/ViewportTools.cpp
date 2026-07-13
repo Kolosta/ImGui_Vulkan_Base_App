@@ -361,10 +361,11 @@ void Application::Action_DuplicateLinked() {
             parent, target,
             (n->name.empty() ? std::string("Object") : n->name) + " linked");
         if (inst == Ink::kNullNode) continue;
-        // Overlay the source exactly: an instance of a plain node renders the
-        // target WITH its own transform, so identity overlays it; an instance
-        // source hands its transform down.
-        if (n->kind == Ink::NodeKind::Instance) doc.SetTransform(inst, n->transform);
+        // Overlay the source exactly: the instance renders the target's DATA
+        // only (the original's object transform is decoupled by default), so
+        // its transform is COPIED once from the source here — that copy is
+        // the whole link between their placements (Blender's Alt+D).
+        doc.SetTransform(inst, n->transform);
         // Land the copy RIGHT AFTER the source in the layer tree, and in the
         // same collections (so it appears next to it in both Outliner views,
         // not orphaned at the top/root).

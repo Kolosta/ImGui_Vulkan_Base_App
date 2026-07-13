@@ -26,28 +26,30 @@ constexpr float kThumbBase = 40.0f;   // vignette side, × global scale
 constexpr float kRailGap   = 3.0f;    // vertical gap between vignettes, × gs
 }
 
-// Real-pipeline render for the PATTERN vignettes: a per-node off-screen Ink
-// view (128 px, white bg, the node isolated via the preview filter — the same
-// mechanism as the Outliner thumbnails), so the vignette shows the ACTUAL
-// motif at its actual spacing/rotation/scale instead of a generic lattice.
-// Rendered at 128 px and minified into the 40 px tile, the hover tooltip shows
-// it at native size.
-ImTextureID Application::PaintPatternPreview(Ink::NodeId id) {
-    if (!ink_ || !project_.document) return (ImTextureID)0;
+// Real-pipeline render for the PATTERN vignettes: a per-(node, fill)
+// off-screen Ink view showing ONLY that fill — the per-piece preview filter
+// keeps just its drawables (motif copies, their strokes, the fill-clip
+// stencil masks) — at 100 % ZOOM, centred on the shape, so the vignette
+// previews the pattern as it tiles (actual motif, spacing, rotation, clip),
+// never the whole object. Rendered at 128 px, minified into the 40 px tile;
+// the hover tooltip shows it at native size.
+ImTextureID Application::PaintPatternPreview(Ink::NodeId id, int fillIndex) {
+    if (!ink_ || !project_.document || fillIndex < 0) return (ImTextureID)0;
     Ink::DRect bb;
     if (!ink_->NodeBounds(id, bb) || !bb.valid) return (ImTextureID)0;
-    const double w = bb.max.x - bb.min.x, h = bb.max.y - bb.min.y;
-    if (w <= 1e-9 || h <= 1e-9) return (ImTextureID)0;
 
-    // Key space (id<<2)|2: never collides with the Outliner previews
-    // ((id<<1)|1, odd) or the viewport views (aligned EditorState pointers).
-    const void* key = (const void*)(std::uintptr_t)((id << 2) | 2u);
+    // Key space: bit1 set + bit0 clear marks the paint previews (Outliner
+    // thumbnails are (id<<1)|1 = odd; viewport keys are aligned pointers);
+    // the fill index folds in so each fill owns its view.
+    const void* key = (const void*)(std::uintptr_t)(
+        ((id * 41u + (std::uint64_t)fillIndex) << 2) | 2u);
     Ink::View* view = ink_->AcquireView(key);
     constexpr std::uint32_t px = 128;
     view->SetViewport(px, px);
-    const double zoom = std::min((double)px / w, (double)px / h) * 0.92;
-    view->SetCamera(bb.min.x - ((double)px / zoom - w) * 0.5,
-                    bb.min.y - ((double)px / zoom - h) * 0.5, zoom);
+    // 100 % zoom, centred on the shape: a 128×128 doc-unit window of the fill.
+    const double cx = (bb.min.x + bb.max.x) * 0.5;
+    const double cy = (bb.min.y + bb.max.y) * 0.5;
+    view->SetCamera(cx - px * 0.5, cy - px * 0.5, 1.0);
     view->SetBackground(Ink::SrgbToLinearPremultiplied(1, 1, 1, 1));
     std::vector<std::uint64_t> owners;
     std::vector<Ink::NodeId> stack{ id };
@@ -58,7 +60,7 @@ ImTextureID Application::PaintPatternPreview(Ink::NodeId id) {
         if (const Ink::Node* n = project_.document->Find(c))
             for (Ink::NodeId k : n->children) stack.push_back(k);
     }
-    view->SetPreviewFilter(owners);
+    view->SetPreviewFilter(owners, fillIndex, /*pieceIsStroke=*/false);
     return (ImTextureID)view->Texture();
 }
 
@@ -115,7 +117,7 @@ void Application::PropFillsSection(Ink::NodeId id) {
                 propFillSel_ = (int)i;
             ImTextureID patTex = (ImTextureID)0;
             if (f.kind == Ink::FillKind::Pattern)
-                patTex = PaintPatternPreview(id);
+                patTex = PaintPatternPreview(id, (int)i);
             if (patTex)
                 ImGui::GetWindowDrawList()->AddImage(patTex, cmn, cmx);
             else
@@ -146,6 +148,26 @@ void Application::PropFillsSection(Ink::NodeId id) {
                 ImGui::EndTooltip();
                 ImGui::PopStyleColor();
             }
+            // Drag the vignette up/down to reorder the DRAW ORDER of the
+            // stack (a plain click still selects — the swap needs a real
+            // vertical drag past the neighbouring tile). Selection follows
+            // the moved fill; the whole drag folds into ONE undo command.
+            if (ImGui::IsItemActive() &&
+                std::fabs(ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y) >
+                    (thumb + kRailGap * gs) * 0.6f) {
+                const float dy =
+                    ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y;
+                const int nxt = (int)i + (dy < 0.0f ? -1 : 1);
+                if (nxt >= 0 && nxt < (int)style.fills.size()) {
+                    std::swap(style.fills[i], style.fills[(std::size_t)nxt]);
+                    if (propFillSel_ == (int)i) propFillSel_ = nxt;
+                    else if (propFillSel_ == nxt) propFillSel_ = (int)i;
+                    ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+                    liveApply("Reorder Fills", false);
+                }
+            }
+            if (ImGui::IsItemDeactivated())
+                liveApply("Reorder Fills", true);
             ImGui::PopID();
         }
         if (pr::ThumbAddTile(thumb)) {
@@ -401,6 +423,24 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                 ImGui::EndTooltip();
                 ImGui::PopStyleColor();
             }
+            // Drag the vignette up/down to reorder the stack's draw order
+            // (click still selects; the swap needs a real vertical drag).
+            if (ImGui::IsItemActive() &&
+                std::fabs(ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y) >
+                    (thumb + kRailGap * gs) * 0.6f) {
+                const float dy =
+                    ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y;
+                const int nxt = (int)i + (dy < 0.0f ? -1 : 1);
+                if (nxt >= 0 && nxt < (int)style.strokes.size()) {
+                    std::swap(style.strokes[i], style.strokes[(std::size_t)nxt]);
+                    if (propStrokeSel_ == (int)i) propStrokeSel_ = nxt;
+                    else if (propStrokeSel_ == nxt) propStrokeSel_ = (int)i;
+                    ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+                    liveApply("Reorder Strokes", false);
+                }
+            }
+            if (ImGui::IsItemDeactivated())
+                liveApply("Reorder Strokes", true);
             ImGui::PopID();
         }
         if (pr::ThumbAddTile(thumb)) {

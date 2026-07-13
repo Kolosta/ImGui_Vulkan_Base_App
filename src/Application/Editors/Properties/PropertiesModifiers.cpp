@@ -104,46 +104,136 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                 }
 
                 if (m.kind == Ink::ModifierKind::Array) {
-                    int count = m.count;
-                    if (pr::DragInt("Count", &count, 0.1f, 1, 10000)) {
-                        m.count = count;
-                        liveApply("Array Count", false);
+                    constexpr double kDeg = 3.14159265358979 / 180.0;
+                    // Placement mode (Blender's array, 2D): Transform =
+                    // cumulative per-copy transform; Line = straight line with
+                    // in-place instance spin; Circle = copies on a circle.
+                    static const char* kAMode[] = { "Transform", "Line",
+                                                    "Circle" };
+                    int am = (int)m.arrayMode;
+                    if (pr::ButtonGroupRow("Mode", kAMode, 3, &am)) {
+                        m.arrayMode = (Ink::ArrayMode)am;
+                        structural = true; structLabel = "Array Mode";
                     }
-                    dragCommit("Array Count");
-
-                    float st[2] = { (float)m.step.tx, (float)m.step.ty };
-                    bool dx = false, dy = false;
-                    if (pr::Vec2Group("Step", st, 0.5f, 0.0f, 0.0f, 2, "",
-                                      &dx, &dy)) {
-                        m.step.tx = st[0]; m.step.ty = st[1];
-                        liveApply("Array Step", false);
-                    }
-                    if (dx || dy) liveApply("Array Step", true);
-
                     pr::GroupGap();
-                    float rotDeg =
-                        (float)(m.step.rotation * 180.0 / 3.14159265358979);
-                    if (pr::DragFloat("Step rotation", &rotDeg, 0.5f, -360.0f,
-                                      360.0f, 1, "\xC2\xB0")) {
-                        m.step.rotation = rotDeg * 3.14159265358979 / 180.0;
-                        liveApply("Array Rotation", false);
-                    }
-                    dragCommit("Array Rotation");
 
-                    float sc[2] = { (float)m.step.sx, (float)m.step.sy };
-                    if (pr::Vec2Group("Step scale", sc, 0.005f, 0.0f, 0.0f, 3,
-                                      "", &dx, &dy)) {
-                        m.step.sx = sc[0]; m.step.sy = sc[1];
-                        liveApply("Array Scale", false);
+                    const bool circle =
+                        m.arrayMode == Ink::ArrayMode::Circle;
+                    const bool byAngle = circle &&
+                        m.circleMethod == Ink::ArrayCircleMethod::ByAngle;
+                    if (!circle || !byAngle) {
+                        int count = m.count;
+                        if (pr::DragInt("Count", &count, 0.1f, 1, 10000)) {
+                            m.count = count;
+                            liveApply("Array Count", false);
+                        }
+                        dragCommit("Array Count");
                     }
-                    if (dx || dy) liveApply("Array Scale", true);
 
-                    pr::GroupGap();
-                    static const char* kSpace[] = { "Local", "Parent" };
-                    int space = (int)m.stepSpace;
-                    if (pr::ButtonGroupRow("Step space", kSpace, 2, &space)) {
-                        m.stepSpace = (Ink::ArrayStepSpace)space;
-                        structural = true; structLabel = "Array Step Space";
+                    if (m.arrayMode == Ink::ArrayMode::Transform ||
+                        m.arrayMode == Ink::ArrayMode::Line) {
+                        if (m.arrayMode == Ink::ArrayMode::Line) {
+                            static const char* kLine[] = { "Relative",
+                                                           "Offset",
+                                                           "Endpoint" };
+                            int lm = (int)m.lineMode;
+                            if (pr::ButtonGroupRow("Line mode", kLine, 3, &lm)) {
+                                m.lineMode = (Ink::ArrayLineMode)lm;
+                                structural = true; structLabel = "Array Line Mode";
+                            }
+                        }
+                        const bool endpoint =
+                            m.arrayMode == Ink::ArrayMode::Line &&
+                            m.lineMode == Ink::ArrayLineMode::Endpoint;
+                        const bool relative =
+                            m.arrayMode == Ink::ArrayMode::Line &&
+                            m.lineMode == Ink::ArrayLineMode::Relative;
+                        float st[2] = { (float)m.step.tx, (float)m.step.ty };
+                        bool dx = false, dy = false;
+                        if (pr::Vec2Group(endpoint ? "End point"
+                                          : relative ? "Factor" : "Step",
+                                          st, relative ? 0.01f : 0.5f,
+                                          0.0f, 0.0f, relative ? 3 : 2, "",
+                                          &dx, &dy)) {
+                            m.step.tx = st[0]; m.step.ty = st[1];
+                            liveApply("Array Step", false);
+                        }
+                        if (dx || dy) liveApply("Array Step", true);
+
+                        pr::GroupGap();
+                        float rotDeg = (float)(m.step.rotation / kDeg);
+                        if (pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600.0f,
+                                          3600.0f, 1, "\xC2\xB0")) {
+                            m.step.rotation = rotDeg * kDeg;
+                            liveApply("Array Rotation", false);
+                        }
+                        dragCommit("Array Rotation");
+
+                        float sc[2] = { (float)m.step.sx, (float)m.step.sy };
+                        if (pr::Vec2Group("Scale", sc, 0.005f, 0.0f, 0.0f, 3,
+                                          "", &dx, &dy)) {
+                            m.step.sx = sc[0]; m.step.sy = sc[1];
+                            liveApply("Array Scale", false);
+                        }
+                        if (dx || dy) liveApply("Array Scale", true);
+
+                        if (m.arrayMode == Ink::ArrayMode::Transform) {
+                            pr::GroupGap();
+                            static const char* kSpace[] = { "Local", "Parent" };
+                            int space = (int)m.stepSpace;
+                            if (pr::ButtonGroupRow("Step space", kSpace, 2,
+                                                   &space)) {
+                                m.stepSpace = (Ink::ArrayStepSpace)space;
+                                structural = true;
+                                structLabel = "Array Step Space";
+                            }
+                        }
+                    } else {   // Circle
+                        static const char* kMeth[] = { "Count", "Angle" };
+                        int meth = (int)m.circleMethod;
+                        if (pr::ButtonGroupRow("Method", kMeth, 2, &meth)) {
+                            m.circleMethod = (Ink::ArrayCircleMethod)meth;
+                            structural = true; structLabel = "Array Method";
+                        }
+                        if (byAngle) {
+                            float stepDeg =
+                                (float)(m.circleAngleStep / kDeg);
+                            if (pr::DragFloat("Angle step", &stepDeg, 0.5f,
+                                              0.1f, 360.0f, 1, "\xC2\xB0")) {
+                                m.circleAngleStep = stepDeg * kDeg;
+                                liveApply("Array Angle Step", false);
+                            }
+                            dragCommit("Array Angle Step");
+                        }
+                        float radius = (float)m.circleRadius;
+                        if (pr::DragFloat("Radius", &radius, 0.5f, 0.0f,
+                                          1000000.0f, 1)) {
+                            m.circleRadius = radius;
+                            liveApply("Array Radius", false);
+                        }
+                        dragCommit("Array Radius");
+
+                        pr::GroupGap();
+                        bool arc = m.circleArc;
+                        if (pr::CheckRow("Arc", &arc)) {
+                            m.circleArc = arc;
+                            structural = true; structLabel = "Array Arc";
+                        }
+                        if (m.circleArc) {
+                            float sweepDeg =
+                                (float)(m.circleSweep / kDeg);
+                            if (pr::DragFloat("Sweep", &sweepDeg, 0.5f, 1.0f,
+                                              360.0f, 1, "\xC2\xB0")) {
+                                m.circleSweep = sweepDeg * kDeg;
+                                liveApply("Array Sweep", false);
+                            }
+                            dragCommit("Array Sweep");
+                        }
+                        bool alignR = m.circleAlign;
+                        if (pr::CheckRow("Align rotation", &alignR)) {
+                            m.circleAlign = alignR;
+                            structural = true; structLabel = "Array Align";
+                        }
                     }
                 } else if (m.kind == Ink::ModifierKind::AlongPath) {
                     // The modifier lives on THIS path; it instances the picked
@@ -294,6 +384,31 @@ void Application::PropInstanceSection(Ink::NodeId id) {
                               /*allowNone=*/true, /*pathsOnly=*/false, &pickTgt))
             commitTarget(target);
         if (pickTgt) BeginObjectPick(nullptr, commitTarget);
+
+        // Which of the ORIGINAL's transform components this instance keeps
+        // copying LIVE. Default: none — the link is the edit-mode data; the
+        // object transform was merely copied once at Alt+D.
+        pr::GroupGap();
+        bool cl = n->instCopyLoc, cr = n->instCopyRot, cs = n->instCopyScale;
+        auto commitCopy = [&](const char* label) {
+            const bool bl = n->instCopyLoc, br = n->instCopyRot,
+                       bs = n->instCopyScale;
+            doc.SetInstanceTransformCopy(id, cl, cr, cs);
+            PushDocCommand(label,
+                [id, bl, br, bs](Ink::Document& d) {
+                    d.SetInstanceTransformCopy(id, bl, br, bs);
+                },
+                [id, cl, cr, cs](Ink::Document& d) {
+                    d.SetInstanceTransformCopy(id, cl, cr, cs);
+                });
+            LogInfoAction(label);
+        };
+        if (pr::CheckRow("Copy location", &cl))
+            commitCopy("Instance Copy Location");
+        if (pr::CheckRow("Copy rotation", &cr))
+            commitCopy("Instance Copy Rotation");
+        if (pr::CheckRow("Copy scale", &cs))
+            commitCopy("Instance Copy Scale");
     }
     UI::EndPanel();
 }

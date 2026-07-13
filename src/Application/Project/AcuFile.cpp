@@ -37,7 +37,10 @@ constexpr std::uint32_t kTagDoc  = 0x00434F44;   // 'DOC\0'
 constexpr std::uint32_t kTagLay  = 0x0059414C;   // 'LAY\0'
 constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 
-constexpr std::uint32_t kDocVersion = 1;
+// v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
+//     modifier record; instance transform-copy flags ride bits 5-7 of the
+//     node flags byte (v1 wrote them as 0 = the new default).
+constexpr std::uint32_t kDocVersion = 2;
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -269,8 +272,17 @@ void WriteModifier(Writer& w, const Ink::Modifier& m) {
     w.f64(m.endTrim);
     w.u8((std::uint8_t)m.op);
     w.u64(m.operandRef);
+    // v2: the Array placement modes.
+    w.u8((std::uint8_t)m.arrayMode);
+    w.u8((std::uint8_t)m.lineMode);
+    w.f64(m.circleRadius);
+    w.u8((std::uint8_t)m.circleMethod);
+    w.f64(m.circleAngleStep);
+    w.u8(m.circleArc ? 1 : 0);
+    w.f64(m.circleSweep);
+    w.u8(m.circleAlign ? 1 : 0);
 }
-Ink::Modifier ReadModifier(Reader& r) {
+Ink::Modifier ReadModifier(Reader& r, std::uint32_t ver) {
     Ink::Modifier m;
     m.kind    = (Ink::ModifierKind)std::min<std::uint8_t>(r.u8(), 2);
     m.enabled = r.u8() != 0;
@@ -286,6 +298,17 @@ Ink::Modifier ReadModifier(Reader& r) {
     m.endTrim    = r.f64();
     m.op         = (Ink::BooleanOp)std::min<std::uint8_t>(r.u8(), 3);
     m.operandRef = r.u64();
+    if (ver >= 2) {
+        m.arrayMode = (Ink::ArrayMode)std::min<std::uint8_t>(r.u8(), 2);
+        m.lineMode  = (Ink::ArrayLineMode)std::min<std::uint8_t>(r.u8(), 2);
+        m.circleRadius    = r.f64();
+        m.circleMethod =
+            (Ink::ArrayCircleMethod)std::min<std::uint8_t>(r.u8(), 1);
+        m.circleAngleStep = r.f64();
+        m.circleArc       = r.u8() != 0;
+        m.circleSweep     = r.f64();
+        m.circleAlign     = r.u8() != 0;
+    }
     return m;
 }
 
@@ -299,7 +322,9 @@ void WriteNode(Writer& w, const Ink::Node& n) {
     WriteTransform(w, n.transform);
     w.u8((std::uint8_t)((n.visible ? 1 : 0) | (n.locked ? 2 : 0) |
                         (n.isolate ? 4 : 0) | (n.clip ? 8 : 0) |
-                        (n.isMask ? 16 : 0)));
+                        (n.isMask ? 16 : 0) |
+                        (n.instCopyLoc ? 32 : 0) | (n.instCopyRot ? 64 : 0) |
+                        (n.instCopyScale ? 128 : 0)));
     w.f32(n.opacity);
     w.u8((std::uint8_t)n.blend);
     w.u32((std::uint32_t)n.children.size());
@@ -310,7 +335,7 @@ void WriteNode(Writer& w, const Ink::Node& n) {
     w.u32((std::uint32_t)n.modifiers.size());
     for (const Ink::Modifier& m : n.modifiers) WriteModifier(w, m);
 }
-Ink::Node ReadNode(Reader& r) {
+Ink::Node ReadNode(Reader& r, std::uint32_t ver) {
     Ink::Node n;
     n.id   = r.u64();
     n.kind = (Ink::NodeKind)std::min<std::uint8_t>(r.u8(), 2);
@@ -325,6 +350,9 @@ Ink::Node ReadNode(Reader& r) {
     n.isolate = (flags & 4) != 0;
     n.clip    = (flags & 8) != 0;
     n.isMask  = (flags & 16) != 0;
+    n.instCopyLoc   = (flags & 32) != 0;   // v1 wrote 0s = the new default
+    n.instCopyRot   = (flags & 64) != 0;
+    n.instCopyScale = (flags & 128) != 0;
     n.opacity = r.f32();
     n.blend   = (Ink::BlendMode)std::min<std::uint8_t>(
         r.u8(), (std::uint8_t)Ink::BlendMode::Erase);
@@ -335,7 +363,7 @@ Ink::Node ReadNode(Reader& r) {
     n.style = ReadStyle(r);
     const std::uint32_t nM = r.u32();
     for (std::uint32_t i = 0; i < nM && r.ok; ++i)
-        n.modifiers.push_back(ReadModifier(r));
+        n.modifiers.push_back(ReadModifier(r, ver));
     return n;
 }
 
@@ -411,7 +439,7 @@ bool DecodeDoc(const std::uint8_t* p, std::size_t n, AcuData& out) {
 
     const std::uint32_t nNodes = r.u32();
     for (std::uint32_t i = 0; i < nNodes && r.ok; ++i)
-        out.nodes.push_back(ReadNode(r));
+        out.nodes.push_back(ReadNode(r, ver));
 
     const std::uint32_t nColls = r.u32();
     for (std::uint32_t i = 0; i < nColls && r.ok; ++i) {
