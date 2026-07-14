@@ -40,10 +40,11 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 4;   // v3: subpath spline params +
+constexpr std::uint32_t kDocVersion = 5;   // v3: subpath spline params +
                                            //     anchor weight (+ dead marks)
-                                           // v4: generic stroke marks
-                                           //     (phase/side/offset + objects)
+                                           // v4: first generic marks (dead)
+                                           // v5: generic marks — offset unit,
+                                           //     Fusion/Blend/Cut, bend, rect W
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -231,8 +232,9 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
         w.u32((std::uint32_t)st.dashPattern.size());
         for (double d : st.dashPattern) w.f64(d);
         w.f64(st.dashOffset);
-        // v4: the generic stroke marks (phase / side / offset + a list of
-        // objects — SVG-marker shapes or node instances, added or subtracted).
+        // v5: the generic stroke marks (phase / side / offset + unit + a list
+        // of objects — SVG-marker shapes or node instances; Fusion / Blend /
+        // Cut mode, Hard / Bend, Rectangle length+width).
         w.u32((std::uint32_t)st.marks.size());
         for (const Ink::StrokeMark& m : st.marks) {
             w.u32((std::uint32_t)m.sub);
@@ -240,13 +242,16 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
             w.u8((std::uint8_t)m.phase);
             w.u8((std::uint8_t)m.side);
             w.f64(m.offset);
+            w.u8(m.offsetPercent ? 1 : 0);
             w.u32((std::uint32_t)m.nodeAnchor);
             w.u32((std::uint32_t)m.objects.size());
             for (const Ink::MarkObject& o : m.objects) {
                 w.u8((std::uint8_t)o.shape);
                 w.u8((std::uint8_t)o.mode);
+                w.u8((std::uint8_t)o.bend);
                 w.u8((std::uint8_t)o.blend);
                 w.f64(o.size);
+                w.f64(o.width);
                 w.f64(o.rotation);
                 w.u64(o.nodeRef);
                 WriteColor(w, o.color);
@@ -291,15 +296,26 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         st.dashOffset = r.f64();
         if (ver == 3) {
             // v3 carried the OLD typed-mark layout (a dead pre-release format).
-            // Drain its bytes so the stream stays aligned; the marks are not
-            // reconstructed (the model changed shape entirely in v4).
+            // Drain its bytes so the stream stays aligned; not reconstructed.
             const std::uint32_t nMk = r.u32();
             for (std::uint32_t j = 0; j < nMk && r.ok; ++j) {
                 r.u8(); r.u32(); r.f64(); r.u32();       // kind/sub/t/side
                 r.f64(); r.f64(); r.f64();               // gap/size/thickness
                 r.u8(); r.u32();                          // flags/nodeAnchor
             }
-        } else if (ver >= 4) {
+        } else if (ver == 4) {
+            // v4 was a first generic-mark layout (also pre-release) without the
+            // offset unit / bend / rectangle width — drain it likewise.
+            const std::uint32_t nMk = r.u32();
+            for (std::uint32_t j = 0; j < nMk && r.ok; ++j) {
+                r.u32(); r.f64(); r.u8(); r.u8(); r.f64(); r.u32();
+                const std::uint32_t nObj = r.u32();
+                for (std::uint32_t k = 0; k < nObj && r.ok; ++k) {
+                    r.u8(); r.u8(); r.u8(); r.f64(); r.f64(); r.u64();
+                    ReadColor(r); r.u8();
+                }
+            }
+        } else if (ver >= 5) {
             const std::uint32_t nMk = r.u32();
             for (std::uint32_t j = 0; j < nMk && r.ok; ++j) {
                 Ink::StrokeMark m;
@@ -308,15 +324,18 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
                 m.phase  = (Ink::MarkPhase)std::min<std::uint8_t>(r.u8(), 2);
                 m.side   = (Ink::MarkSide)std::min<std::uint8_t>(r.u8(), 2);
                 m.offset = r.f64();
+                m.offsetPercent = r.u8() != 0;
                 m.nodeAnchor = (std::int32_t)r.u32();
                 const std::uint32_t nObj = r.u32();
                 for (std::uint32_t k = 0; k < nObj && r.ok; ++k) {
                     Ink::MarkObject o;
-                    o.shape = (Ink::MarkShape)std::min<std::uint8_t>(r.u8(), 6);
-                    o.mode  = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 1);
+                    o.shape = (Ink::MarkShape)std::min<std::uint8_t>(r.u8(), 3);
+                    o.mode  = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
+                    o.bend  = (Ink::MarkBend)std::min<std::uint8_t>(r.u8(), 1);
                     o.blend = (Ink::BlendMode)std::min<std::uint8_t>(
                         r.u8(), (std::uint8_t)Ink::BlendMode::Erase);
                     o.size = r.f64();
+                    o.width = r.f64();
                     o.rotation = r.f64();
                     o.nodeRef = r.u64();
                     o.color = ReadColor(r);
