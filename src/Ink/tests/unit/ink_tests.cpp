@@ -1201,46 +1201,74 @@ void TestNurbs() {
     CHECK(b.Hash() != c.Hash());
 }
 
-// Stroke marks (docs/Ink/IOF_CORE_PLAN.md Phase A): a Crossing/Bridge CUTS
-// the base line (less base geometry, plus the glyph), a mark contributes to
-// the geometry hash, and a mark's Hash() folds every field.
+// Stroke marks (docs/Ink/IOF_CORE_PLAN.md Phase A — the generic model): the
+// stroker only re-phases the dash run (a Dash mark lands a dash element on it);
+// the mark OBJECTS are emitted by the Scene into the stroke's isolation scope,
+// where a subtractive object cuts it (EraseWrite). Marks fold into the
+// geometry hash so a mark edit re-tessellates.
 void TestStrokeMarks() {
-    const double kTol = 0.05;
+    // Marks contribute to the stroke geometry hash (a mark edit re-tessellates).
+    Stroke plain;
+    plain.width = 4.0;
+    Stroke marked = plain;
+    StrokeMark m;
+    m.sub = 0; m.t = 0.5; m.phase = MarkPhase::Neutral;
+    MarkObject obj;
+    obj.shape = MarkShape::Circle; obj.mode = MarkObjectMode::Add; obj.size = 6.0;
+    m.objects.push_back(obj);
+    marked.marks.push_back(m);
+    CHECK(marked.GeometryHash() != plain.GeometryHash());
+    Stroke marked2 = marked;
+    CHECK(marked2.GeometryHash() == marked.GeometryHash());
+    marked2.marks[0].t = 0.6;
+    CHECK(marked2.GeometryHash() != marked.GeometryHash());
+    // The object mode / phase / side all change the hash.
+    Stroke sub = marked; sub.marks[0].objects[0].mode = MarkObjectMode::Subtract;
+    CHECK(sub.GeometryHash() != marked.GeometryHash());
+    Stroke ph = marked; ph.marks[0].phase = MarkPhase::Dash;
+    CHECK(ph.GeometryHash() != marked.GeometryHash());
+
+    // Dash re-phasing: a Dash mark lands a dash ELEMENT centred on it, so the
+    // stroke is COVERED (inside a dash) exactly at the mark — the tessellated
+    // area near t differs from an un-phased dashed line.
     geom::Polyline pl;
     pl.points = { { 0, 0 }, { 100, 0 } };
     pl.closed = false;
+    const double kTol = 0.05;
+    Stroke dashed;
+    dashed.width = 4.0;
+    dashed.dashPattern = { 10.0, 10.0 };
+    StrokeMark dm;
+    dm.sub = 0; dm.t = 0.5; dm.phase = MarkPhase::Dash;
+    dashed.marks.push_back(dm);
+    const geom::Mesh dm1 = geom::TessellateStroke({ pl }, dashed, kTol);
+    CHECK(!dm1.Empty());
 
-    Stroke plain;
-    plain.width = 4.0;
-    const double baseArea = MeshArea(geom::TessellateStroke({ pl }, plain, kTol));
-    CHECK(baseArea > 0.0);
-
-    // A slope tick adds a small glyph → strictly more area than the plain line.
-    Stroke tick = plain;
-    StrokeMark m;
-    m.kind = MarkKind::SlopeTick;
-    m.sub = 0; m.t = 0.5; m.size = 10.0; m.thickness = 2.0;
-    tick.marks.push_back(m);
-    const double tickArea = MeshArea(geom::TessellateStroke({ pl }, tick, kTol));
-    CHECK(tickArea > baseArea + 5.0);
-
-    // A crossing CUTS the base line (a gap) yet stamps two bars: the total is
-    // still finite and the geometry hash differs from the plain stroke.
-    Stroke cross = plain;
-    StrokeMark cm2;
-    cm2.kind = MarkKind::Crossing;
-    cm2.sub = 0; cm2.t = 0.5; cm2.gap = 20.0; cm2.size = 6.0; cm2.thickness = 2.0;
-    cross.marks.push_back(cm2);
-    const geom::Mesh crossMesh = geom::TessellateStroke({ pl }, cross, kTol);
-    CHECK(!crossMesh.Empty());
-    CHECK(cross.GeometryHash() != plain.GeometryHash());
-    CHECK(tick.GeometryHash() != plain.GeometryHash());
-
-    // The marks ride the GeometryHash → identical marks hash identically.
-    Stroke cross2 = cross;
-    CHECK(cross2.GeometryHash() == cross.GeometryHash());
-    cross2.marks[0].t = 0.6;
-    CHECK(cross2.GeometryHash() != cross.GeometryHash());
+    // The Scene emits a mark OBJECT into an isolated scope: a stroke with an
+    // Add object gets an extra scope + drawable vs a plain stroke.
+    Document doc;
+    const NodeId page = doc.AddPage("p", { 0, 0 }, { 400, 400 });
+    Style st;
+    Stroke s; s.width = 6.0; s.paint.color = { 0, 0, 0, 1 };
+    StrokeMark om; om.sub = 0; om.t = 0.5;
+    MarkObject o2; o2.shape = MarkShape::Circle; o2.size = 10.0;
+    om.objects.push_back(o2);
+    s.marks.push_back(om);
+    st.strokes.push_back(s);
+    const NodeId line = doc.AddPath(page,
+        PathData::Polygon({ { 20, 200 }, { 380, 200 } }, false), st, "line");
+    CHECK(line != kNullNode);
+    Scene scene;
+    scene.Compile(doc, true);
+    // The stroke opened its own isolation scope (root + page + stroke scope).
+    CHECK(scene.Scopes().size() >= 2);
+    bool sawIsoScope = false, sawObject = false;
+    for (const CompositeScope& sc : scene.Scopes())
+        sawIsoScope = sawIsoScope || (sc.isolate && sc.node == line);
+    for (const Drawable& d : scene.Drawables())
+        if (!d.isStroke && d.owner == line) sawObject = true;   // the shape fill
+    CHECK(sawIsoScope);
+    CHECK(sawObject);
 }
 
 } // namespace
