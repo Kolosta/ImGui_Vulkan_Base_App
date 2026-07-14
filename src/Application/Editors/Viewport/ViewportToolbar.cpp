@@ -261,26 +261,27 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
         // offset and the full object list are edited in Properties.
         if (markTool) {
             ImGui::SameLine(0.0f, 8.0f * gs);
-            static const char* kShapes[] = {
-                "Circle", "Rectangle", "Diamond",
-                "Inverted Circle", "Inverted Rectangle", "Inverted Diamond" };
+            static const char* kShapes[] = { "Circle", "Rectangle", "Diamond" };
             UI::DropdownConfig cfg; cfg.id = "##markshape";
             cfg.triggerIcon = "line-end-diamond";
-            cfg.triggerLabel = kShapes[(int)markPlaceShape_];
-            for (int i = 0; i < 6; ++i) {
+            const int shp = std::min((int)markPlaceShape_, 2);
+            cfg.triggerLabel = kShapes[shp];
+            for (int i = 0; i < 3; ++i) {
                 UI::DropdownItem it; it.label = kShapes[i];
                 cfg.items.push_back(it);
             }
-            cfg.selectedIndex = (int)markPlaceShape_;
+            cfg.selectedIndex = shp;
             UI::DropdownResult r = UI::Dropdown(cfg);
-            if (r.changed && r.selected >= 0 && r.selected < 6)
+            if (r.changed && r.selected >= 0 && r.selected < 3)
                 markPlaceShape_ = (Ink::MarkShape)r.selected;
             ImGui::SameLine(0.0f, 6.0f * gs);
             bool sub = markPlaceSubtract_;
             if (UI::CheckboxBox("##marksub", &sub)) markPlaceSubtract_ = sub;
             if (ImGui::IsItemHovered())
                 UI::DrawTooltip("Subtract: the object cuts the stroke instead "
-                                "of adding to it", ImGui::GetIO().MousePos);
+                                "of fusing into it (Ctrl-click places an "
+                                "objectless dash tick)",
+                                ImGui::GetIO().MousePos);
         }
         (void)pst;
     };

@@ -578,8 +578,7 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     "Lighten", "Color Dodge", "Color Burn", "Hard Light",
                     "Soft Light", "Difference", "Exclusion", "Erase" };
                 static const char* kShape[] = {
-                    "Circle", "Rectangle", "Diamond", "Inv. Circle",
-                    "Inv. Rectangle", "Inv. Diamond", "Instance" };
+                    "Circle", "Rectangle", "Diamond", "Instance" };
                 ImGui::PushStyleColor(ImGuiCol_Text,
                     pr::SafeColor(pr::Tok::S_Color_Text_Subtle,
                                   ImVec4(0.6f, 0.6f, 0.6f, 1)));
@@ -604,7 +603,9 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     if (ImGui::IsItemClicked()) edit_.MarkSelectOnly(ref);
 
                     // Side (Center / Left / Right) + a signed offset for the
-                    // off-line sides.
+                    // off-line sides, in % of the stroke width (default) or
+                    // doc-units. Switching the unit CONVERTS the value so the
+                    // object doesn't jump.
                     static const char* kSide[] = { "Center", "Left", "Right" };
                     int sd = (int)m.side;
                     if (pr::ButtonGroupRow("Side", kSide, 3, &sd)) {
@@ -613,12 +614,30 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     }
                     if (m.side != Ink::MarkSide::Center) {
                         float off = (float)m.offset;
-                        if (pr::DragFloat("Distance", &off, 0.1f, -10000.0f,
-                                          10000.0f, 2)) {
+                        if (pr::DragFloat("Distance", &off, m.offsetPercent ? 0.5f : 0.1f,
+                                          -100000.0f, 100000.0f, 2,
+                                          m.offsetPercent ? "%" : "")) {
                             m.offset = off; liveApply("Mark Distance", false);
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit())
                             liveApply("Mark Distance", true);
+                        static const char* kUnit[] = { "%", "px" };
+                        int un = m.offsetPercent ? 0 : 1;
+                        if (pr::ButtonGroupRow("Unit", kUnit, 2, &un)) {
+                            const bool toPercent = (un == 0);
+                            if (toPercent != m.offsetPercent) {
+                                // Convert so the resolved distance is unchanged.
+                                const double w = s.width > 1e-9 ? s.width : 1.0;
+                                if (toPercent) m.offset = m.offset / w * 100.0;
+                                else           m.offset = m.offset * 0.01 * w;
+                                m.offsetPercent = toPercent;
+                                structural = true; structLabel = "Mark Unit";
+                            }
+                        }
+                        if (ImGui::IsItemHovered())
+                            UI::DrawTooltipTranslucent(
+                                "100 % = one full stroke width (50 % reaches the "
+                                "stroke edge)", ImGui::GetIO().MousePos, 1.0f);
                     }
 
                     // Dash phase (Neutral / Dash / Gap).
@@ -634,29 +653,67 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                             "(Neutral = no re-phasing)",
                             ImGui::GetIO().MousePos, 1.0f);
 
-                    // ── Objects on this mark ──────────────────────────────────
+                    // ── Objects on this mark (may be none) ────────────────────
                     int removeObj = -1;
                     for (std::size_t oi = 0; oi < m.objects.size(); ++oi) {
                         Ink::MarkObject& o = m.objects[oi];
                         ImGui::PushID((int)(50 + oi));
                         int shp = (int)o.shape;
-                        if (pr::DropdownRow("Object", kShape, 7, &shp)) {
+                        if (pr::DropdownRow("Object", kShape, 4, &shp)) {
                             o.shape = (Ink::MarkShape)shp;
                             structural = true; structLabel = "Mark Object";
                         }
-                        static const char* kMode[] = { "Add", "Subtract" };
+                        // Mode: Fusion (part of the stroke) / Blend / Subtract.
+                        static const char* kMode[] = { "Fusion", "Blend", "Cut" };
                         int md = (int)o.mode;
-                        if (pr::ButtonGroupRow("Mode", kMode, 2, &md)) {
+                        if (pr::ButtonGroupRow("Mode", kMode, 3, &md)) {
                             o.mode = (Ink::MarkObjectMode)md;
                             structural = true; structLabel = "Mark Object Mode";
                         }
+                        if (ImGui::IsItemHovered())
+                            UI::DrawTooltipTranslucent(
+                                "Fusion: the shape becomes part of the stroke "
+                                "(one drawing). Blend: composited over the "
+                                "stroke with a blend mode. Cut: erases the "
+                                "stroke.", ImGui::GetIO().MousePos, 1.0f);
                         if (o.shape == Ink::MarkShape::Instance) {
                             bool pickReq = false;
                             if (pr::NodePickerRow("Node", doc, &o.nodeRef, id,
                                                   true, false, &pickReq)) {
                                 structural = true; structLabel = "Mark Instance";
                             }
-                            (void)pickReq;
+                            if (pickReq) {
+                                const std::size_t mmi = mi, ooi = oi;
+                                const int sIdx = strokeIdx;
+                                BeginObjectPick(nullptr,
+                                    [this, id, sIdx, mmi, ooi](Ink::NodeId picked) {
+                                        if (!project_.document) return;
+                                        const Ink::Node* nn = project_.document->Find(id);
+                                        if (!nn || sIdx < 0 ||
+                                            sIdx >= (int)nn->style.strokes.size())
+                                            return;
+                                        Ink::Style before = nn->style, after = before;
+                                        auto& mks = after.strokes[(std::size_t)sIdx].marks;
+                                        if (mmi >= mks.size() ||
+                                            ooi >= mks[mmi].objects.size()) return;
+                                        mks[mmi].objects[ooi].nodeRef = picked;
+                                        project_.document->SetStyle(id, after);
+                                        CommitStyleEdit(id, before, "Mark Instance");
+                                    });
+                            }
+                        } else if (o.shape == Ink::MarkShape::Rectangle) {
+                            float len = (float)o.size;   // half-length (tangent)
+                            if (pr::DragFloat("Length", &len, 0.1f, 0.1f, 10000.0f, 2)) {
+                                o.size = len; liveApply("Mark Object Size", false);
+                            }
+                            if (ImGui::IsItemDeactivatedAfterEdit())
+                                liveApply("Mark Object Size", true);
+                            float wid = (float)o.width;   // half-height (normal)
+                            if (pr::DragFloat("Width", &wid, 0.1f, 0.1f, 10000.0f, 2)) {
+                                o.width = wid; liveApply("Mark Object Width", false);
+                            }
+                            if (ImGui::IsItemDeactivatedAfterEdit())
+                                liveApply("Mark Object Width", true);
                         } else {
                             float sz = (float)o.size;
                             if (pr::DragFloat("Size", &sz, 0.1f, 0.1f, 10000.0f, 2)) {
@@ -673,25 +730,39 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit())
                             liveApply("Mark Object Rotation", true);
-                        // Add-only: blend mode + colour (primitives).
-                        if (o.mode == Ink::MarkObjectMode::Add) {
+                        // Bend along the curve, or keep a hard shape.
+                        static const char* kBend[] = { "Hard", "Bend" };
+                        int bd = (int)o.bend;
+                        if (pr::ButtonGroupRow("Shape", kBend, 2, &bd)) {
+                            o.bend = (Ink::MarkBend)bd;
+                            structural = true; structLabel = "Mark Bend";
+                        }
+                        if (ImGui::IsItemHovered())
+                            UI::DrawTooltipTranslucent(
+                                "Bend: the shape follows the curvature of the "
+                                "line. Hard: a rigid shape.",
+                                ImGui::GetIO().MousePos, 1.0f);
+                        // Blend-mode row (Blend mode only).
+                        if (o.mode == Ink::MarkObjectMode::Blend) {
                             int bl = std::min((int)o.blend, 12);
-                            if (pr::DropdownRow("Blend", kBlend, 13, &bl)) {
+                            if (pr::DropdownRow("Blend mode", kBlend, 13, &bl)) {
                                 o.blend = (Ink::BlendMode)bl;
                                 structural = true; structLabel = "Mark Blend";
                             }
-                            if (o.shape != Ink::MarkShape::Instance) {
-                                bool inh = o.useStrokeColor;
-                                if (pr::CheckRow("Stroke colour", &inh)) {
-                                    o.useStrokeColor = inh;
-                                    structural = true; structLabel = "Mark Colour";
-                                }
-                                if (!o.useStrokeColor) {
-                                    bool rel = false;
-                                    if (pr::ColorRow("Colour", &o.color, true, &rel))
-                                        liveApply("Mark Colour", false);
-                                    if (rel) liveApply("Mark Colour", true);
-                                }
+                        }
+                        // Colour (primitives; Cut ignores colour).
+                        if (o.shape != Ink::MarkShape::Instance &&
+                            o.mode != Ink::MarkObjectMode::Subtract) {
+                            bool inh = o.useStrokeColor;
+                            if (pr::CheckRow("Stroke colour", &inh)) {
+                                o.useStrokeColor = inh;
+                                structural = true; structLabel = "Mark Colour";
+                            }
+                            if (!o.useStrokeColor) {
+                                bool rel = false;
+                                if (pr::ColorRow("Colour", &o.color, true, &rel))
+                                    liveApply("Mark Colour", false);
+                                if (rel) liveApply("Mark Colour", true);
                             }
                         }
                         pr::ControlColumn();
@@ -706,7 +777,8 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     pr::ControlColumn();
                     if (ImGui::SmallButton("Add object")) {
                         Ink::MarkObject o;
-                        o.size = std::max(4.0, s.width * 3.0);
+                        o.size = std::max(4.0, s.width * 1.5);
+                        o.width = std::max(4.0, s.width * 1.5);
                         m.objects.push_back(o);
                         structural = true; structLabel = "Add Mark Object";
                     }
@@ -724,11 +796,19 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                 if (ImGui::SmallButton("Add mark")) {
                     Ink::StrokeMark m;
                     m.t = 0.5;
-                    Ink::MarkObject o;
-                    o.size = std::max(4.0, s.width * 3.0);
+                    Ink::MarkObject o;   // a fused circle by default
+                    o.size = std::max(4.0, s.width * 1.5);
+                    o.width = std::max(4.0, s.width * 1.5);
                     m.objects.push_back(o);
                     s.marks.push_back(m);
                     structural = true; structLabel = "Add Mark";
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Add dash tick")) {
+                    Ink::StrokeMark m;   // objectless dash re-phaser
+                    m.t = 0.5; m.phase = Ink::MarkPhase::Dash;
+                    s.marks.push_back(m);
+                    structural = true; structLabel = "Add Dash Tick";
                 }
             }
 

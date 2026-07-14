@@ -218,7 +218,9 @@ private:
         bool armed = false, active = false;
         EditContext::MarkRef ref;
         ImVec2 pressPos{};
-        double dragT = 0.0;
+        double dragT0 = 0.0;    // the grabbed mark's t at press
+        double dragT = 0.0;     // its previewed t this frame
+        bool pendingCycle = false;  // a plain click (no drag) cycles the phase
     } markDrag_;
     struct MarkGrab {           // modal G (slide along the curve) over markSel
         int op = 0;             // 0 = none, 1 = grab
