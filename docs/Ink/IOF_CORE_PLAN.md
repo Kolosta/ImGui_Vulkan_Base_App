@@ -7,61 +7,58 @@ render-graph. The CORE features land first (usable in Classic mode, in the
 normal Property Editor); the module then curates them (special display,
 restrictions, ISOM presets).
 
-**Status: Phase A and Phase B are DONE in core** (this pass). The mark model +
-stroker pipeline, the line-mark tool, the marks Properties list, the NURBS/Poly
-spline model + evaluation, the Curve Properties panel, the Shapes/Curves Shift+A
-menu, the pen tool and the legacy selection/vertex colours all landed and are
-covered by `ink_tests` (`TestNurbs`, `TestStrokeMarks`). Persistence rides
-`.acu` DOC **v3**. Phase C (the module curation) is the remaining work.
+**Status: Phase A and Phase B are DONE in core** (this pass). The GENERIC mark
+model + isolated-stroke rendering, the line-mark tool, the marks Properties
+editor, the NURBS/Poly spline model + evaluation, the Curve Properties panel,
+the Shapes/Curves Shift+A menu (with draw-on-create for shapes AND curves), the
+pen tool and the legacy selection/vertex colours all landed and are covered by
+`ink_tests` (`TestNurbs`, `TestStrokeMarks`). Persistence rides `.acu` DOC
+**v4**. Phase C (the module curation) is the remaining work.
 
-## Phase A — Marks on strokes (core) — DONE
+## Phase A — Marks on strokes (core) — DONE (generic model)
 
-The legacy `LineMark` (Renderer/Document/Paint.h) — a point ON a stroke,
-addressed by arc length, that decorates or re-phases the line WITHOUT touching
-its geometry:
+The core mark is a **generic** annotation — NOT the typed IOF glyphs. It is a
+point on a stroke, addressed by arc length, that (a) optionally re-phases the
+dash run and (b) carries a list of OBJECTS. The IOF-specific ticks / crossings /
+bridges / pylons are rebuilt from these primitives BY THE MODULE (Phase C), so
+core has no notion of ISOM "kinds".
 
-- **Model** (per mark): kind, subpath index, `t` ∈ [0,1] arc-length position,
-  `side` (+1 left of travel / −1 right), `gap`, `size`, `thickness` (0 = base
-  line width), `outsideMeasure` (size measured from the stroke's OUTER edge —
-  ISOM "OM" convention), `square` (pylon box variant), `nodeAnchor` (pin the
-  mark to a control point so it tracks edits; −1 = free at `t`).
-- **Kinds**: SlopeTick (contour/form-line downhill tick, 101–103), Crossing
-  (519: a gap cut in the line + two ticks across), Bridge (512: gap + two
-  facing brackets), Pylon (510/511: pinned crossbar, optional box), DashAnchor
-  (NO geometry: forces a dash/pattern ELEMENT (+1) or GAP (−1) to land centred
-  there and re-phases the run independently on each side).
-- **Implicit START/MIDDLE/END markers** on every open stroke (invisible,
-  always present, zero cost until used): the anchor points for end arrows /
-  start decorations — settled design question: they are ordinary marks with
-  reserved positions, so arrowheads become a mark kind later.
-- **Rendering**: derived geometry at Scene compile (per zoom tier like
-  booleans): gap-splitting the stroke's dash run, tick/bracket/bar meshes —
-  EXACT legacy shapes and colours, through the normal Vulkan content pass.
-- **Tool** (`tool.linemark`, same shortcut & visibility rules as legacy):
-  marks render handles only while the tool is active (Normal/Hover/Selected
-  states, legacy colours); click places (with ISOM auto-preset in the module);
-  click modes: cycle form-line, toggle dash-anchor side; G/R/S act on the
-  SELECTED marks (slide along the curve / flip side / scale size) with the
-  precision-drag + Ctrl-snap behaviour; X deletes selected marks
-  (quasi-objects); ghost preview under the cursor before placing.
-- **Properties**: a "Marks" list on the stroke (vignette-rail or row list per
-  the existing Paint panels), fields per kind, undoable via the style commit
-  machinery.
-- **Persistence**: marks ride the Stroke record (.acu DOC v3).
+- **Model** (per mark): `sub`, `t` ∈ [0,1], `phase` (Neutral / Dash / Gap —
+  Dash/Gap force a dash element / gap to land centred here, Neutral does no
+  re-phasing), `side` (Center / Left / Right), `offset` (signed distance to the
+  line for Left/Right, may be negative), `nodeAnchor` (pin to a control point;
+  −1 = free), and `objects[]`.
+- **Objects** (`MarkObject`): `shape` ∈ { Circle, Rectangle, Diamond, their
+  Inverted forms (per w3.org/TR/svg-markers), Instance }, `mode` (Add /
+  Subtract), `blend` (Add only), `size`, `rotation`, `nodeRef` (for Instance),
+  `color` / `useStrokeColor` (primitive fill). Several objects per mark.
+- **Rendering**: the Scene emits a stroke-with-objects into its OWN isolation
+  scope; Add objects paint (nested scope for a non-Normal blend), Subtract
+  objects use an absolute geometric ERASE (`ClipRole::EraseWrite`, dst-out
+  `contentErasePipeline`) so the shape CUTS the stroke, and Instance objects
+  route a node's subtree at the mark. The stroke then composites into the layer
+  above with real holes — see RENDER_GRAPH.md §Erase. The stroker only does the
+  dash re-phasing (`AnchorDashOffset`).
+- **Tool** (`tool.linemark`): handles render only while active
+  (Normal/Hover/Selected, phase-indicator diamond/square); click drops a
+  neutral mark with one default object (the top-bar SHAPE + add/subtract
+  toggle); a handle click selects (Shift toggles, Alt deletes) and arms a slide;
+  **G** slides along the curve, **R** cycles the side (Center→Left→Right), **X**
+  deletes; ghost preview under the cursor.
+- **Properties**: a "Marks" editor on the stroke — phase / side / offset per
+  mark, then a per-mark object list (shape, mode, blend, size, rotation, node
+  picker for Instance, colour for primitives), all undoable via the style
+  commit machinery.
+- **Persistence**: marks ride the Stroke record (.acu DOC v4).
 
-Landed as: `Ink::StrokeMark` on `Ink::Stroke` (kind / sub / t / side / gap /
-size / thickness / outsideMeasure / square / nodeAnchor), folded into
-`Stroke::GeometryHash`. The stroker (`src/Ink/src/Geometry/Stroker.cpp`) applies
-gap cuts (Crossing/Bridge interrupt the base line via `KeptRuns`), re-phases the
-dash run of each kept run at a DashAnchor (`AnchorDashOffset`), and stamps
-tick/crossing/bridge/pylon glyphs into the same mesh. `TessellateStroke` takes an
-optional source `PathData*` to resolve node-pinned dash anchors; `GeometryCache`
-passes it (nullptr for boolean-derived outlines). The tool
-(`src/Application/Editors/Viewport/ViewportMarkTool.cpp`, `tool.linemark`) draws
-handles/ghosts into the Vulkan overlay list, places marks on the nearest stroked
-line (kind from the top-bar picker), and G slides / R flips / S scales / X
-deletes the selected marks; all edits go through `SetStyle` (one undo command
-each). The Properties Strokes panel grows a "Marks" list.
+Landed in: `Ink::StrokeMark` / `Ink::MarkObject` on `Ink::Stroke` (Style.h),
+folded into `Stroke::GeometryHash`; the stroker
+(`src/Ink/src/Geometry/Stroker.cpp`) re-phases dashes only; the Scene
+(`Scene::EmitStrokeMarks`) opens the isolation scope and emits the objects; the
+RHI gains `BlendKind::Erase` + `contentErasePipeline` and the Scene gains
+`ClipRole::EraseWrite`. Tool + Properties in
+`src/Application/Editors/Viewport/ViewportMarkTool.cpp` and
+`PropertiesPaint.cpp`.
 
 ## Phase B — Curves, NURBS & the pen workflow (core) — DONE
 
@@ -100,15 +97,25 @@ uniform-periodic) with adaptive chord-error subdivision; Poly is the control
 polygon verbatim. Builders `PathData::NurbsCircle` (8-point square hull, order 3,
 √2/2 corners — an exact circle) and `PathData::Nurbs` (open clamped order 4) live
 in `Document.cpp`. The Shift+A menu splits into **Shapes** / **Curves** submenus
-with a **Draw on Create** toggle; when on, a Curve leaf arms the pen tool
-(`BeginPenDraw`/`HandlePenInput`/`CommitPenDraw` in `ViewportTools.cpp`): click =
-corner anchor, click-drag = symmetric handles, Backspace = drop last, Enter /
-double-click = finish, click-first-anchor = close, Esc = cancel. The Curve
-Properties panel (`PropCurveSection` in `Properties.cpp`) exposes spline type,
-cyclic, Order U, Endpoint/Bezier U, and the selected control points' weight (Edit
-mode). The NURBS control hull draws in the edit overlay (`C_EditHandle_NurbsHull`).
-*Not yet ported* (deferred, low value now): resolution/convert-to/join-family
-rows, `openFillStraight`, follow-curve tracing.
+with a **Draw on Create** toggle. When on:
+- **Shapes** (rect/ellipse/triangle) and the **circle** curves (Bézier Circle,
+  NURBS Circle) arm a drag-to-place: a press-drag on the canvas defines the box
+  and `SpawnShapeInRect` builds the shape at that size/position, with a live
+  flattened ghost during the drag (`CanvasDrag::Kind::DrawShape`,
+  `BuildShapeGeometry` shared via `ViewportShapes.h`).
+- **Open curves** (Bézier / NURBS Path / Poly) arm the pen tool
+  (`BeginPenDraw`/`HandlePenInput`/`CommitPenDraw`): click = corner anchor,
+  click-drag = symmetric handles (Bézier), Backspace = drop last, Enter /
+  double-click = finish, click-first-anchor = close, Esc = cancel. A
+  handle-less spline (NURBS / Poly) shows the LIVE curve to the cursor (a
+  phantom control point flattened each frame — the drag has no effect there).
+
+The Curve Properties panel (`PropCurveSection` in `Properties.cpp`) exposes
+spline type, cyclic, Order U, Endpoint/Bezier U, and the selected control
+points' weight (Edit mode). The NURBS control hull draws in the edit overlay
+(`C_EditHandle_NurbsHull`). *Not yet ported* (deferred, low value now):
+resolution/convert-to/join-family rows, `openFillStraight`, follow-curve
+tracing.
 
 ## Phase C — IOF Mapping module re-entry
 

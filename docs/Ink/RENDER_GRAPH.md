@@ -132,6 +132,24 @@ culled).
   a workaround).
 - Erase is `BlendMode::Erase` (dst-out), same path, no special casing.
 
+### §Erase — stroke mark objects (IOF_CORE_PLAN Phase A)
+A stroke carrying mark OBJECTS (DOCUMENT_MODEL §4) is emitted by the Scene into
+its OWN isolation scope (a normal composite into the parent), so the objects
+resolve against the stroke alone before it reaches the layer above:
+- **Add** objects paint into the stroke scope (premultiplied over); an Add
+  object with a non-Normal blend opens a nested scope for that blend.
+- **Subtract** objects are `Drawable`s with `ClipRole::EraseWrite`: the
+  `contentErasePipeline` uses `BlendKind::Erase` (out = dst·(1−src.a)), so
+  rasterising the shape OPAQUE CLEARS its coverage from the stroke layer — an
+  absolute geometric cut, independent of any alpha. The layer then composites
+  up with a real hole where the shape was.
+- **Instance** objects route an existing node's whole subtree at the mark point
+  (the same instancing path as `InstanceNode`).
+This is the clean, professional realisation of "the stroke is an isolated layer
+its marks cut into, resolved in the layer above": no boolean on the stroke
+mesh, no stencil gymnastics — one extra scope + one dst-out pipeline, and it
+composes with everything else (blend, opacity, clip) for free.
+
 ### OverlayPass (P5)
 - Draws the editor's per-frame `OverlayList`: an immediate-mode primitive
   buffer the app fills each frame (world- or screen-space points):

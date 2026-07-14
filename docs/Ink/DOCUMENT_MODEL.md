@@ -140,12 +140,25 @@ Style
                        marks: [StrokeMark …] }]
 ```
 
-- **`StrokeMark`** (the legacy LineMark, IOF_CORE_PLAN Phase A — DONE): a manual
-  glyph or phase pin at arc-length `t` on one subpath —
-  `{ kind: SlopeTick|Crossing|Bridge|Pylon|DashAnchor, sub, t, side, gap, size,
-  thickness, outsideMeasure, square, nodeAnchor }`. Applied by the stroker (gap
-  cuts, dash re-phasing, glyph meshes — see GEOMETRY.md §2); edited by the
-  line-mark tool and the Strokes Properties "Marks" list.
+- **`StrokeMark`** (IOF_CORE_PLAN Phase A — the GENERIC core model): a manual
+  anchor at arc-length `t` on one subpath that does two independent things:
+  `{ sub, t, phase: Neutral|Dash|Gap, side: Center|Left|Right, offset,
+  nodeAnchor, objects: [MarkObject …] }`.
+  - **phase** re-phases the dash run (a Dash/Gap mark lands a dash element /
+    gap centred on it; Neutral does nothing) — applied by the stroker
+    (GEOMETRY.md §2).
+  - **side + offset** place the objects on the line (Center) or ±`offset`
+    (doc-units, may be negative) along the normal (Left/Right).
+  - **objects** are stamped at the mark: `MarkObject{ shape, mode, blend, size,
+    rotation, nodeRef, color }` where `shape` is an SVG-marker primitive
+    (Circle / Rectangle / Diamond + their Inverted forms) or `Instance` of an
+    existing node, and `mode` ADDS it to the stroke or SUBTRACTS it (a
+    geometric cut). Emitted by the Scene into the stroke's own isolation scope
+    (RENDER_GRAPH.md §Erase), NOT by the stroker — so a subtractive object cuts
+    the stroke cleanly and an add object can carry its own blend.
+  The IOF-specific glyphs (slope ticks, bridges, pylons…) are NOT core: the
+  module (Phase C) rebuilds them from these primitives. Edited by the line-mark
+  tool and the Strokes Properties "Marks" panel.
 
 - Both lists are ordered (paint order: fills bottom-up, then strokes
   bottom-up) and both take **any** `Paint` — a stroke filled with a pattern
@@ -259,8 +272,10 @@ Every mutation goes through typed operations
 - Sections: META, DOCUMENT (model), LAYOUT (zone tree — kept concept),
   THMB (PNG thumbnail — kept concept, Windows shell integration unchanged).
 - The DOCUMENT blob is versioned independently (`kDocVersion`): **v2** added the
-  array placement modes + instance copy flags; **v3** adds the subpath spline
-  params (`spline`, `orderU`, endpoint/bezier flags), the per-anchor `weight`,
-  and the stroke `marks`. Readers are `ver`-gated, so a v2 file still loads (the
-  new fields take their defaults).
+  array placement modes + instance copy flags; **v3** added the subpath spline
+  params (`spline`, `orderU`, endpoint/bezier flags) and the per-anchor
+  `weight`; **v4** carries the generic stroke `marks` (phase/side/offset +
+  objects) — a v3 file's dead pre-release marks are drained and dropped.
+  Readers are `ver`-gated, so an older file still loads (the new fields take
+  their defaults).
 - Written/read by `App::ProjectFile` (app side) through the Document public API.
