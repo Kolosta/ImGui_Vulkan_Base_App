@@ -1214,7 +1214,7 @@ void TestStrokeMarks() {
     StrokeMark m;
     m.sub = 0; m.t = 0.5; m.phase = MarkPhase::Neutral;
     MarkObject obj;
-    obj.shape = MarkShape::Circle; obj.mode = MarkObjectMode::Add; obj.size = 6.0;
+    obj.shape = MarkShape::Circle; obj.mode = MarkObjectMode::Fusion; obj.size = 6.0;
     m.objects.push_back(obj);
     marked.marks.push_back(m);
     CHECK(marked.GeometryHash() != plain.GeometryHash());
@@ -1244,31 +1244,66 @@ void TestStrokeMarks() {
     const geom::Mesh dm1 = geom::TessellateStroke({ pl }, dashed, kTol);
     CHECK(!dm1.Empty());
 
-    // The Scene emits a mark OBJECT into an isolated scope: a stroke with an
-    // Add object gets an extra scope + drawable vs a plain stroke.
-    Document doc;
-    const NodeId page = doc.AddPage("p", { 0, 0 }, { 400, 400 });
-    Style st;
-    Stroke s; s.width = 6.0; s.paint.color = { 0, 0, 0, 1 };
-    StrokeMark om; om.sub = 0; om.t = 0.5;
-    MarkObject o2; o2.shape = MarkShape::Circle; o2.size = 10.0;
-    om.objects.push_back(o2);
-    s.marks.push_back(om);
-    st.strokes.push_back(s);
-    const NodeId line = doc.AddPath(page,
-        PathData::Polygon({ { 20, 200 }, { 380, 200 } }, false), st, "line");
-    CHECK(line != kNullNode);
-    Scene scene;
-    scene.Compile(doc, true);
-    // The stroke opened its own isolation scope (root + page + stroke scope).
-    CHECK(scene.Scopes().size() >= 2);
-    bool sawIsoScope = false, sawObject = false;
-    for (const CompositeScope& sc : scene.Scopes())
-        sawIsoScope = sawIsoScope || (sc.isolate && sc.node == line);
-    for (const Drawable& d : scene.Drawables())
-        if (!d.isStroke && d.owner == line) sawObject = true;   // the shape fill
-    CHECK(sawIsoScope);
-    CHECK(sawObject);
+    // A FUSION object needs NO scope and NO separate drawable — it is
+    // triangulated into the stroke mesh (one drawing, one alpha).
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("p", { 0, 0 }, { 400, 400 });
+        Style st;
+        Stroke s; s.width = 6.0; s.paint.color = { 0, 0, 0, 1 };
+        StrokeMark om; om.sub = 0; om.t = 0.5;
+        MarkObject o2; o2.shape = MarkShape::Circle;
+        o2.mode = MarkObjectMode::Fusion; o2.size = 10.0;
+        om.objects.push_back(o2);
+        s.marks.push_back(om);
+        st.strokes.push_back(s);
+        const NodeId line = doc.AddPath(page,
+            PathData::Polygon({ { 20, 200 }, { 380, 200 } }, false), st, "line");
+        Scene scene; scene.Compile(doc, true);
+        int objDraws = 0, isoScopes = 0;
+        for (const CompositeScope& sc : scene.Scopes())
+            isoScopes += (sc.isolate && sc.node == line) ? 1 : 0;
+        for (const Drawable& d : scene.Drawables())
+            if (!d.isStroke && d.owner == line) ++objDraws;
+        CHECK(isoScopes == 0);   // Fusion needs no isolation scope
+        CHECK(objDraws == 0);    // the shape lives in the stroke mesh
+    }
+
+    // A SUBTRACT object opens the stroke's isolation scope and emits an
+    // EraseWrite drawable that cuts it.
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("p", { 0, 0 }, { 400, 400 });
+        Style st;
+        Stroke s; s.width = 6.0; s.paint.color = { 0, 0, 0, 1 };
+        StrokeMark om; om.sub = 0; om.t = 0.5;
+        MarkObject o2; o2.shape = MarkShape::Circle;
+        o2.mode = MarkObjectMode::Subtract; o2.size = 10.0;
+        om.objects.push_back(o2);
+        s.marks.push_back(om);
+        st.strokes.push_back(s);
+        const NodeId line = doc.AddPath(page,
+            PathData::Polygon({ { 20, 200 }, { 380, 200 } }, false), st, "line");
+        Scene scene; scene.Compile(doc, true);
+        bool sawIso = false, sawErase = false;
+        for (const CompositeScope& sc : scene.Scopes())
+            sawIso = sawIso || (sc.isolate && sc.node == line);
+        for (const Drawable& d : scene.Drawables())
+            if (!d.isStroke && d.owner == line &&
+                d.clip == ClipRole::EraseWrite)
+                sawErase = true;
+        CHECK(sawIso);
+        CHECK(sawErase);
+    }
+
+    // Offset percentage resolves to a fraction of the stroke width.
+    {
+        StrokeMark pm; pm.side = MarkSide::Left; pm.offset = 50.0;
+        pm.offsetPercent = true;
+        CHECK_NEAR(pm.OffsetUnits(8.0), 4.0, 1e-9);   // 50 % of 8 = 4
+        pm.offsetPercent = false; pm.offset = 3.0;
+        CHECK_NEAR(pm.OffsetUnits(8.0), 3.0, 1e-9);
+    }
 }
 
 } // namespace
