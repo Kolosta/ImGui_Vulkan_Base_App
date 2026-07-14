@@ -146,6 +146,7 @@ void Application::RegisterDefaultShortcuts() {
     tm.RegisterTool({"tool.rect",    "Rectangle",  "crop-landscape", {"tool.rect.activate"}});
     tm.RegisterTool({"tool.ellipse", "Ellipse",    "format-shapes",  {"tool.ellipse.activate"}});
     tm.RegisterTool({"tool.cursor",  "2D Cursor",  "crop-free",      {"tool.cursor.activate"}});
+    tm.RegisterTool({"tool.linemark","Line Mark",  "line-end-diamond", {"tool.linemark.activate"}});
     {
         Action a; a.id = "tool.select.activate"; a.name = "Activate Select";
         a.description = "Select, box-select and grab-move objects";
@@ -172,6 +173,14 @@ void Application::RegisterDefaultShortcuts() {
         a.description = "Place the 2D cursor by clicking (2D cursor — later)";
         a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_ActivateNamedTool("tool.cursor"); };
+        sm.RegisterAction(a, {});
+    }
+    {
+        Action a; a.id = "tool.linemark.activate"; a.name = "Activate Line Mark";
+        a.description = "Place and edit marks on strokes (ticks, crossings, "
+                        "bridges, pylons, dash anchors)";
+        a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
+        a.callback = [this]{ Action_ActivateNamedTool("tool.linemark"); };
         sm.RegisterAction(a, {});
     }
     tm.SetActiveTool("tool.select");

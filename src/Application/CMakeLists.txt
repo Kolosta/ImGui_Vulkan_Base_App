@@ -27,6 +27,7 @@ add_library(Application STATIC
     Editors/Viewport/ViewportInput.cpp
     Editors/Viewport/ViewportModal.cpp
     Editors/Viewport/ViewportTools.cpp
+    Editors/Viewport/ViewportMarkTool.cpp
     Editors/Viewport/ViewportOverlays.cpp
     Editors/Viewport/ViewportToolbar.cpp
     Editors/Outliner/Outliner.cpp

@@ -216,9 +216,13 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
     const float gs = ds.GetGlobalScale();
     EditorState* pst = &st;
 
-    // LEFT: Object/Edit mode + ruler space (greyed) + fill/stroke swatches.
-    bar.left.width = (110.0f + 6.0f + 130.0f + 6.0f + 60.0f) * gs;
-    bar.left.draw = [this, gs, pst](ImVec2 pos, float bh) {
+    // LEFT: Object/Edit mode + ruler space (greyed) + fill/stroke swatches
+    // (+ the mark-kind picker while the line-mark tool is active).
+    const bool markTool = Shortcuts::Tools::ToolManager::Instance()
+                              .GetActiveTool() == "tool.linemark";
+    bar.left.width =
+        (110.0f + 6.0f + 130.0f + 6.0f + 60.0f + (markTool ? 136.0f : 0.0f)) * gs;
+    bar.left.draw = [this, gs, pst, markTool](ImVec2 pos, float bh) {
         ImGui::SetCursorPos(pos);
         const bool canEdit = edit_.active != Ink::kNullNode && project_.document &&
             project_.document->Find(edit_.active) &&
@@ -251,6 +255,30 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
         }
         ImGui::SameLine(0.0f, 8.0f * gs);
         DrawDefaultColorSwatches(bh);
+        // The mark KIND placed by the line-mark tool (the module presets the
+        // ISOM dimensions later; here the user picks the glyph type).
+        if (markTool) {
+            ImGui::SameLine(0.0f, 8.0f * gs);
+            static const char* kKinds[] = { "Slope Tick", "Crossing", "Bridge",
+                                            "Pylon", "Dash Anchor" };
+            static const char* kKindTips[] = {
+                "A short downhill tick on one side of the line",
+                "A gap cut in the line with two ticks across the ends",
+                "A gap with two facing brackets (bridge / tunnel)",
+                "A crossbar across the line (power-line pylon)",
+                "A phase pin: forces a dash element or gap to land here" };
+            UI::DropdownConfig cfg; cfg.id = "##markkind";
+            cfg.triggerIcon = "line-end-diamond";
+            cfg.triggerLabel = kKinds[(int)markPlaceKind_];
+            for (int i = 0; i < 5; ++i) {
+                UI::DropdownItem it; it.label = kKinds[i];
+                it.tooltip = kKindTips[i]; cfg.items.push_back(it);
+            }
+            cfg.selectedIndex = (int)markPlaceKind_;
+            UI::DropdownResult r = UI::Dropdown(cfg);
+            if (r.changed && r.selected >= 0 && r.selected < 5)
+                markPlaceKind_ = (Ink::MarkKind)r.selected;
+        }
         (void)pst;
     };
 
@@ -348,16 +376,60 @@ void Application::RenderAddMenu() {
     }
     if (!addMenuOpen_) return;
 
+    // The legacy two-column split: SHAPES (filled primitives) and CURVES
+    // (Bézier / NURBS / Poly, with their circle forms) as submenus.
     std::vector<UI::MenuEntry> entries;
-    auto leaf = [&](const char* label, const char* kind, const char* tip) {
+    auto leaf = [&](std::vector<UI::MenuEntry>& dst, const char* label,
+                    const char* kind, const char* tip) {
         UI::MenuEntry e; e.label = label; e.tooltip = tip;
         e.onClick = [this, kind]() { SpawnShape(kind); addMenuOpen_ = false; };
-        entries.push_back(std::move(e));
+        dst.push_back(std::move(e));
     };
-    leaf("Rectangle", "rect",     "Add a rectangle at the 2D cursor");
-    leaf("Ellipse",   "ellipse",  "Add an ellipse at the 2D cursor");
-    leaf("Triangle",  "triangle", "Add a triangle at the 2D cursor");
-    leaf("Bézier Curve", "curve", "Add an open Bézier curve at the 2D cursor");
+    {
+        UI::MenuEntry shapes; shapes.label = "Shapes"; shapes.icon = "shape-category";
+        leaf(shapes.submenu, "Rectangle", "rect",     "Add a rectangle at the 2D cursor");
+        leaf(shapes.submenu, "Ellipse",   "ellipse",  "Add an ellipse at the 2D cursor");
+        leaf(shapes.submenu, "Triangle",  "triangle", "Add a triangle at the 2D cursor");
+        entries.push_back(std::move(shapes));
+    }
+    {
+        // Open curve kinds honour "Draw on Create" (the pen); the circle
+        // forms are complete shapes and always spawn.
+        auto curveLeaf = [&](std::vector<UI::MenuEntry>& dst, const char* label,
+                             const char* kind, const char* tip) {
+            UI::MenuEntry e; e.label = label; e.tooltip = tip;
+            e.onClick = [this, kind]() {
+                if (addDrawOnCreate_) BeginPenDraw(kind);
+                else                  SpawnShape(kind);
+                addMenuOpen_ = false;
+            };
+            dst.push_back(std::move(e));
+        };
+        UI::MenuEntry curves; curves.label = "Curves"; curves.icon = "bezier-curve";
+        curveLeaf(curves.submenu, "Bézier",     "curve",
+                  "Add an open Bézier curve (pen when Draw on Create is on)");
+        leaf(curves.submenu, "Bézier Circle",   "beziercircle",
+             "Add a four-arc Bézier circle at the 2D cursor");
+        curveLeaf(curves.submenu, "NURBS Path", "nurbs",
+                  "Add an open NURBS path (pen when Draw on Create is on)");
+        leaf(curves.submenu, "NURBS Circle",    "nurbscircle",
+             "Add an EXACT rational-NURBS circle (8-point square hull)");
+        curveLeaf(curves.submenu, "Poly Line",  "poly",
+                  "Add a straight polyline (pen when Draw on Create is on)");
+        entries.push_back(std::move(curves));
+    }
+    // Draw-on-create: when ON, picking a CURVE arms the PEN instead of
+    // spawning a ready-made object — click places corner anchors, click-drag
+    // pulls symmetric handles, Enter/double-click finishes, first-anchor
+    // click closes, Esc cancels (the legacy pen workflow).
+    {
+        UI::MenuEntry t;
+        t.label = addDrawOnCreate_ ? "Draw on Create: On" : "Draw on Create: Off";
+        t.tooltip = "When on, curve entries start the pen tool at the cursor "
+                    "instead of spawning a preset object";
+        t.onClick = [this] { addDrawOnCreate_ = !addDrawOnCreate_; addMenuOpen_ = false; };
+        entries.push_back(std::move(t));
+    }
 
     const bool open = UI::ContextMenu("##addMenu", addMenuPos_, entries, "Add");
     if (!open) addMenuOpen_ = false;

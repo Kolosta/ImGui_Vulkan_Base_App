@@ -29,6 +29,9 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     (void)canvasMin; (void)canvasSize;
     ImGuiIO& io = ImGui::GetIO();
 
+    // The pen (draw-on-create) owns the viewport input while active.
+    if (penActive_ && HandlePenInput(st, cam, hovered)) return;
+
     // A modal transform owns all input until it confirms or cancels. It can be
     // driven from any hovered viewport, but only the leaf that started it.
     if (transformOp_.Active()) {
@@ -43,9 +46,15 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
         return;
     }
 
-    // Esc (no modal op): clear the selection (Object) or leave Edit mode.
+    // The line-mark modal op (G/S on marks) owns input — it is driven from
+    // HandleMarkTool (overlay phase), so the router must stay inert.
+    if (markGrab_.Active()) return;
+
+    // Esc (no modal op): clear the mark selection (line-mark tool), the
+    // selection (Object) or leave Edit mode.
     if (hovered && ImGui::IsKeyPressed(ImGuiKey_Escape) && !io.WantTextInput) {
-        if (edit_.mode == EditorMode::Edit) Action_ExitEditMode();
+        if (MarkToolArmed()) edit_.markSel.clear();
+        else if (edit_.mode == EditorMode::Edit) Action_ExitEditMode();
         else edit_.Clear();
     }
 
@@ -131,6 +140,10 @@ void Application::ToolMousePress(EditorState& st, const ViewCam& cam,
         edit_.cursor2DValid = true;
         return;
     }
+
+    // Line-mark tool: all mouse handling lives in HandleMarkTool (overlay
+    // phase — it needs the overlay list for ghosts/handles).
+    if (tool == "tool.linemark") return;
 
     if (tool == "tool.select") {
         if (edit_.mode == EditorMode::Edit && edit_.active != Ink::kNullNode) {

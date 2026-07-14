@@ -565,6 +565,130 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     liveApply("Dash Offset", true);
             }
 
+            // ── Marks (the legacy LineMark list — docs/Ink/IOF_CORE_PLAN.md
+            //    Phase A): a row per mark with its kind + per-kind fields; the
+            //    line-mark tool drops them on the canvas, this list edits and
+            //    removes them. The active tool's SELECTED mark (if it lives on
+            //    THIS stroke) highlights so the two views stay in sync. ───────
+            pr::GroupGap();
+            {
+                const int strokeIdx = propStrokeSel_;
+                static const char* kMarkKind[] = { "Slope Tick", "Crossing",
+                    "Bridge", "Pylon", "Dash Anchor" };
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                    pr::SafeColor(pr::Tok::S_Color_Text_Subtle,
+                                  ImVec4(0.6f, 0.6f, 0.6f, 1)));
+                ImGui::Text("Marks (%d)", (int)s.marks.size());
+                ImGui::PopStyleColor();
+
+                int removeMark = -1;
+                for (std::size_t mi = 0; mi < s.marks.size(); ++mi) {
+                    Ink::StrokeMark& m = s.marks[mi];
+                    ImGui::PushID((int)(2000 + mi));
+                    const EditContext::MarkRef ref{ id, strokeIdx, (int)mi };
+                    const bool sel = edit_.MarkSelected(ref);
+
+                    // Header row: kind picker + a delete cross. Selecting the
+                    // kind is structural (re-tessellates); selecting the ROW
+                    // syncs the canvas selection.
+                    int kind = (int)m.kind;
+                    if (pr::DropdownRow(sel ? "\xE2\x97\x86 Kind" : "Kind",
+                                        kMarkKind, 5, &kind)) {
+                        m.kind = (Ink::MarkKind)kind;
+                        structural = true; structLabel = "Mark Kind";
+                    }
+                    if (ImGui::IsItemClicked()) edit_.MarkSelectOnly(ref);
+
+                    // Side (all glyph kinds; for a dash anchor it is dash/gap).
+                    if (m.kind != Ink::MarkKind::Pylon &&
+                        m.kind != Ink::MarkKind::Crossing) {
+                        static const char* kSide2[] = { "Left", "Right" };
+                        static const char* kPhase2[] = { "Dash", "Gap" };
+                        int sd = m.side >= 0 ? 0 : 1;
+                        const bool anchor = m.kind == Ink::MarkKind::DashAnchor;
+                        if (pr::ButtonGroupRow(anchor ? "Centres" : "Side",
+                                               anchor ? kPhase2 : kSide2, 2, &sd)) {
+                            m.side = sd == 0 ? +1 : -1;
+                            structural = true; structLabel = "Mark Side";
+                        }
+                    }
+
+                    // Position along the line.
+                    float t = (float)m.t;
+                    if (pr::DragFloat("Position", &t, 0.002f, 0.0f, 1.0f, 3)) {
+                        m.t = t; liveApply("Mark Position", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Mark Position", true);
+
+                    if (m.kind != Ink::MarkKind::DashAnchor) {
+                        float sz = (float)m.size;
+                        if (pr::DragFloat("Size", &sz, 0.1f, 0.1f, 10000.0f, 2)) {
+                            m.size = sz; liveApply("Mark Size", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Mark Size", true);
+                    }
+                    if (m.kind == Ink::MarkKind::Crossing ||
+                        m.kind == Ink::MarkKind::Bridge ||
+                        (m.kind == Ink::MarkKind::Pylon && m.square)) {
+                        float gp = (float)m.gap;
+                        if (pr::DragFloat(m.kind == Ink::MarkKind::Pylon
+                                              ? "Box" : "Gap",
+                                          &gp, 0.1f, 0.1f, 10000.0f, 2)) {
+                            m.gap = gp; liveApply("Mark Gap", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Mark Gap", true);
+                    }
+                    float th = (float)m.thickness;
+                    if (pr::DragFloat("Thickness", &th, 0.05f, 0.0f, 1000.0f, 2)) {
+                        m.thickness = th; liveApply("Mark Thickness", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Mark Thickness", true);
+                    if (ImGui::IsItemHovered())
+                        UI::DrawTooltipTranslucent(
+                            "0 = reuse the base stroke width",
+                            ImGui::GetIO().MousePos, 1.0f);
+
+                    if (m.kind == Ink::MarkKind::SlopeTick) {
+                        bool om = m.outsideMeasure;
+                        if (pr::CheckRow("Outside measure", &om)) {
+                            m.outsideMeasure = om;
+                            structural = true; structLabel = "Outside Measure";
+                        }
+                    }
+                    if (m.kind == Ink::MarkKind::Pylon) {
+                        bool sq = m.square;
+                        if (pr::CheckRow("Box", &sq)) {
+                            m.square = sq;
+                            structural = true; structLabel = "Pylon Box";
+                        }
+                    }
+
+                    pr::ControlColumn();
+                    if (ImGui::SmallButton("Remove mark")) removeMark = (int)mi;
+                    if ((int)mi + 1 < (int)s.marks.size()) ImGui::Separator();
+                    ImGui::PopID();
+                }
+                if (removeMark >= 0) {
+                    s.marks.erase(s.marks.begin() + removeMark);
+                    edit_.markSel.clear();
+                    structural = true; structLabel = "Remove Mark";
+                }
+                pr::ControlColumn();
+                if (ImGui::SmallButton("Add mark")) {
+                    // A middle-of-the-line slope tick, sized off the stroke.
+                    Ink::StrokeMark m;
+                    m.kind = Ink::MarkKind::SlopeTick;
+                    m.t = 0.5; m.size = std::max(4.0, s.width * 3.0);
+                    m.gap = std::max(6.0, s.width * 4.0);
+                    s.marks.push_back(m);
+                    structural = true; structLabel = "Add Mark";
+                }
+            }
+
             pr::GroupGap();
             pr::ControlColumn();
             if (ImGui::SmallButton("Remove")) {

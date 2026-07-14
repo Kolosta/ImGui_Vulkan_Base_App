@@ -115,6 +115,130 @@ void Application::PropTransformSection(Ink::NodeId id) {
     UI::EndPanel();
 }
 
+// ── Curve panel (path nodes) — the subpath spline model (legacy Curve
+//    properties): Bézier / NURBS / Poly type, cyclic, NURBS order + knot
+//    modes, and in Edit mode the rational weight of the selected control
+//    points. Type/cyclic/knob edits apply to EVERY subpath of the path. ──────
+
+void Application::PropCurveSection(Ink::NodeId id) {
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(id);
+    if (!n || n->kind != Ink::NodeKind::Path || n->path.subpaths.empty()) return;
+
+    UI::PanelConfig pc; pc.id = "##curve"; pc.label = "Curve";
+    pc.defaultOpen = true;
+    if (UI::BeginPanel(pc).open) {
+        const Ink::Subpath& s0 = n->path.subpaths.front();
+
+        // One-shot structural change: mutate a copy, SetPath, one undo command.
+        auto commit = [&](const char* label, auto mutate) {
+            const Ink::PathData before = n->path;
+            Ink::PathData after = before;
+            mutate(after);
+            doc.SetPath(id, after);
+            PushDocCommand(label,
+                [id, before](Ink::Document& d) { d.SetPath(id, before); },
+                [id, after](Ink::Document& d)  { d.SetPath(id, after); });
+        };
+        // Drag fields (order / weight) live-apply and fold into ONE undo
+        // command, committed when the field deactivates.
+        auto applyLive = [&](auto mutate) {
+            if (!propEditActive_) {
+                propEditActive_ = true; propEditNode_ = id;
+                pathBeforeScratch_ = n->path;
+            }
+            Ink::PathData np = doc.Find(id)->path;
+            mutate(np);
+            doc.SetPath(id, np);
+        };
+        auto commitOnRelease = [&](const char* label, bool deactivated) {
+            if (deactivated && propEditActive_ && propEditNode_ == id) {
+                const Ink::PathData before = pathBeforeScratch_;
+                const Ink::PathData after  = doc.Find(id)->path;
+                PushDocCommand(label,
+                    [id, before](Ink::Document& d) { d.SetPath(id, before); },
+                    [id, after](Ink::Document& d)  { d.SetPath(id, after); });
+                propEditActive_ = false; propEditNode_ = Ink::kNullNode;
+            }
+        };
+
+        static const char* kSpline[] = { "B\xC3\xA9zier", "NURBS", "Poly" };
+        int stype = std::clamp((int)s0.spline, 0, 2);
+        if (pr::ButtonGroupRow("Spline", kSpline, 3, &stype))
+            commit("Spline Type", [&](Ink::PathData& p) {
+                for (Ink::Subpath& sp : p.subpaths)
+                    sp.spline = (Ink::SplineType)stype;
+            });
+
+        bool cyc = s0.closed;
+        if (pr::CheckRow("Cyclic", &cyc))
+            commit(cyc ? "Cyclic On" : "Cyclic Off", [&](Ink::PathData& p) {
+                for (Ink::Subpath& sp : p.subpaths) sp.closed = cyc;
+            });
+
+        if ((Ink::SplineType)stype == Ink::SplineType::Nurbs) {
+            pr::GroupGap();
+            // Order is capped per subpath at min(6, control-point count); the
+            // row's range uses the largest subpath so the value is reachable.
+            int maxOrder = 2;
+            for (const Ink::Subpath& sp : n->path.subpaths)
+                maxOrder = std::max(maxOrder,
+                    (int)std::min<std::size_t>(6, sp.anchors.size()));
+            int order = std::clamp((int)s0.orderU, 2, maxOrder);
+            if (pr::DragInt("Order U", &order, 0.05f, 2, maxOrder))
+                applyLive([&](Ink::PathData& p) {
+                    for (Ink::Subpath& sp : p.subpaths)
+                        sp.orderU = (std::uint8_t)std::clamp(order, 2,
+                            (int)std::min<std::size_t>(6, sp.anchors.size()));
+                });
+            commitOnRelease("Order U", ImGui::IsItemDeactivatedAfterEdit());
+
+            bool ep = s0.nurbsEndpoint;
+            if (pr::CheckRow("Endpoint U", &ep))
+                commit("Endpoint U", [&](Ink::PathData& p) {
+                    for (Ink::Subpath& sp : p.subpaths) sp.nurbsEndpoint = ep;
+                });
+            bool bz = s0.nurbsBezier;
+            if (pr::CheckRow("Bezier U", &bz))
+                commit("Bezier U", [&](Ink::PathData& p) {
+                    for (Ink::Subpath& sp : p.subpaths) sp.nurbsBezier = bz;
+                });
+
+            // Edit mode: the rational weight of the SELECTED control points
+            // (shows the mean; a drag writes the value to all of them).
+            if (edit_.mode == EditorMode::Edit && edit_.active == id) {
+                double wsum = 0.0; int wcount = 0;
+                for (const EditContext::ElemRef& e : edit_.elemSel) {
+                    if (e.part != EditContext::ElemPart::Point) continue;
+                    if (e.sp < 0 || e.sp >= (int)n->path.subpaths.size()) continue;
+                    const auto& an = n->path.subpaths[(std::size_t)e.sp].anchors;
+                    if (e.a < 0 || e.a >= (int)an.size()) continue;
+                    wsum += an[(std::size_t)e.a].weight; ++wcount;
+                }
+                if (wcount > 0) {
+                    pr::GroupGap();
+                    float w = (float)(wsum / wcount);
+                    if (pr::DragFloat("Weight", &w, 0.01f, 0.01f, 100.0f, 3))
+                        applyLive([&](Ink::PathData& p) {
+                            for (const EditContext::ElemRef& e : edit_.elemSel) {
+                                if (e.part != EditContext::ElemPart::Point)
+                                    continue;
+                                if (e.sp < 0 ||
+                                    e.sp >= (int)p.subpaths.size()) continue;
+                                auto& an = p.subpaths[(std::size_t)e.sp].anchors;
+                                if (e.a < 0 || e.a >= (int)an.size()) continue;
+                                an[(std::size_t)e.a].weight = (double)w;
+                            }
+                        });
+                    commitOnRelease("Weight",
+                                    ImGui::IsItemDeactivatedAfterEdit());
+                }
+            }
+        }
+    }
+    UI::EndPanel();
+}
+
 // ── Compositing panel — ANY node composites (the scene opens a scope for a
 //    path/instance with opacity/blend too, not only groups) ──────────────────
 
@@ -281,6 +405,7 @@ void Application::RenderProperties(EditorState& st) {
             case EditorState::PropTab::Object:
             default:
                 PropTransformSection(id);
+                if (n->kind == Ink::NodeKind::Path) PropCurveSection(id);
                 PropCompositingSection(id);
                 if (n->kind == Ink::NodeKind::Instance) PropInstanceSection(id);
                 break;

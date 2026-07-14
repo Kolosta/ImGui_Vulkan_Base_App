@@ -48,8 +48,14 @@ void Application::Action_ToggleImGuiDemo() {
 }
 
 void Application::Action_ActivateNamedTool(const std::string& toolId) {
-    // Transitional: just switch the ToolManager's active tool. Gesture
-    // cancellation / mode handling returns with the Ink editing loop (Lot 8).
+    // Mark selection only makes sense under the line-mark tool; leaving it
+    // clears the selection and any in-progress mark gesture.
+    if (toolId != "tool.linemark") {
+        edit_.markSel.clear();
+        markGrab_.Reset();
+        markBox_ = {};
+        markDrag_ = {};
+    }
     Shortcuts::Tools::ToolManager::Instance().SetActiveTool(toolId);
 }
 

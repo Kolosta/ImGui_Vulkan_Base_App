@@ -226,6 +226,31 @@ struct EditContext {
         return false;
     }
 
+    // ── Line-mark selection (tool.linemark): marks are quasi-objects ─────────
+    // A mark is addressed (node, stroke index, mark index) — it lives on the
+    // node's Style, so every mark edit goes through SetStyle (undoable).
+    struct MarkRef {
+        Ink::NodeId node = Ink::kNullNode;
+        int stroke = -1;   // index into style.strokes
+        int index  = -1;   // index into stroke.marks
+        bool operator==(const MarkRef& o) const {
+            return node == o.node && stroke == o.stroke && index == o.index;
+        }
+    };
+    std::vector<MarkRef> markSel;
+    bool MarkSelected(const MarkRef& r) const {
+        return std::find(markSel.begin(), markSel.end(), r) != markSel.end();
+    }
+    void MarkToggle(const MarkRef& r) {
+        auto it = std::find(markSel.begin(), markSel.end(), r);
+        if (it != markSel.end()) markSel.erase(it); else markSel.push_back(r);
+    }
+    void MarkSelectOnly(const MarkRef& r) { markSel.clear(); markSel.push_back(r); }
+    void MarkDeselect(const MarkRef& r) {
+        markSel.erase(std::remove(markSel.begin(), markSel.end(), r),
+                      markSel.end());
+    }
+
     // The 2D cursor (document space). New shapes spawn here; it is a snap /
     // pivot / orientation reference. Seeded to the first page centre on Reset.
     Ink::DVec2 cursor2D{ 960.0, 540.0 };
@@ -265,6 +290,16 @@ struct EditContext {
         if (active != Ink::kNullNode && !doc.Find(active))
             active = selection.empty() ? Ink::kNullNode : selection.back();
         if (selection.empty()) elemSel.clear();
+        markSel.erase(std::remove_if(markSel.begin(), markSel.end(),
+                          [&](const MarkRef& r) {
+                              const Ink::Node* n = doc.Find(r.node);
+                              return !n || r.stroke < 0 ||
+                                     r.stroke >= (int)n->style.strokes.size() ||
+                                     r.index < 0 ||
+                                     r.index >= (int)n->style.strokes
+                                         [(std::size_t)r.stroke].marks.size();
+                          }),
+                      markSel.end());
     }
 };
 

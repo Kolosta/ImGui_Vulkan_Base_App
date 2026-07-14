@@ -186,6 +186,51 @@ private:
     void Action_DeleteVertices();
     bool   handleMenuOpen_ = false, handleMenuRequested_ = false;
     ImVec2 handleMenuPos_{};
+    // ── Pen (draw-on-create, the legacy live path construction) ─────────────
+    // Armed from the Add menu when "Draw on Create" is on: click = corner
+    // anchor, click-drag = symmetric handles (Bézier), Backspace = drop the
+    // last anchor, Enter / double-click = finish open, a click on the first
+    // anchor closes, Esc cancels. One undo command on commit.
+    void BeginPenDraw(const char* kind);
+    bool HandlePenInput(EditorState& st, const ViewCam& cam, bool hovered);
+    void CommitPenDraw(bool keep);
+    bool           addDrawOnCreate_ = false;   // the Add-menu toggle
+    bool           penActive_   = false;
+    bool           penDragging_ = false;       // pulling the new anchor's handles
+    Ink::NodeId    penNode_     = Ink::kNullNode;
+    Ink::SplineType penSpline_  = Ink::SplineType::Bezier;
+    // ── Line-mark tool (tool.linemark) — the legacy mark editing on strokes ──
+    // Handles/ghosts only render while the tool is active. Click places a mark
+    // of `markPlaceKind_` on the nearest stroked line; a click on an existing
+    // handle selects (Shift toggles, Alt deletes) and arms a drag ALONG the
+    // curve; G/R/S act on the selected marks (slide / flip side / scale gap);
+    // X deletes them. All edits go through SetStyle (one undo command each).
+    void HandleMarkTool(EditorState& st, const ViewCam& cam,
+                        Ink::OverlayList& ov, bool hovered);
+    void BeginMarkTransform(TransformOp::Kind kind);
+    void DeleteSelectedMarks();
+    bool MarkToolArmed() const;   // tool active + marks selected (redirect G/R/S/X)
+    Ink::MarkKind markPlaceKind_ = Ink::MarkKind::SlopeTick;
+    struct MarkDrag {           // click-drag of one grabbed mark (+ group Δt)
+        bool armed = false, active = false;
+        EditContext::MarkRef ref;
+        ImVec2 pressPos{};
+        double dragT = 0.0; int dragSide = +1;
+        bool pendingToggle = false;   // sole-selected dash anchor: flip on release
+    } markDrag_;
+    struct MarkGrab {           // modal G (slide) / S (crossing gap) over markSel
+        int op = 0;             // 0 = none, 1 = grab, 2 = scale
+        const void* owner = nullptr;
+        ImVec2 startMouse{};
+        std::vector<EditContext::MarkRef> refs;
+        std::vector<double> t0, gap0;
+        bool Active() const { return op != 0; }
+        void Reset() { *this = MarkGrab{}; }
+    } markGrab_;
+    struct MarkBox {            // box-select over mark handles
+        bool active = false; const void* owner = nullptr;
+        Ink::DVec2 start{}; bool additive = false;
+    } markBox_;
     // Snap pie (Shift+S — the legacy 2D adaptation of Blender's snap pie):
     // move the SELECTION to targets (cursor / active / grid) or the 2D CURSOR
     // to references (active / selected / world origin / page origin / grid).
@@ -396,6 +441,7 @@ private:
     // PropertiesModifiers.cpp).
     void PropTransformSection(Ink::NodeId id);
     void PropCompositingSection(Ink::NodeId id);
+    void PropCurveSection(Ink::NodeId id);   // spline type / NURBS params
     void PropFillsSection(Ink::NodeId id);
     void PropStrokesSection(Ink::NodeId id);
     void PropModifiersSection(Ink::NodeId id);
@@ -418,6 +464,7 @@ private:
     // Live property editing: the style captured when a drag-edit began, so the
     // whole drag folds into ONE undo command committed on release.
     Ink::Style      propEditBefore_;
+    Ink::PathData   pathBeforeScratch_;         // curve-panel drag before-state
     Ink::Transform2D transformBeforeScratch_;   // transform drag before-state
     std::vector<Ink::Modifier> modifiersBeforeScratch_;   // modifier drag before
     Ink::NodeId     propEditNode_ = Ink::kNullNode;

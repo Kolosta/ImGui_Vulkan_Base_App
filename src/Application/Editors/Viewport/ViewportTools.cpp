@@ -101,7 +101,26 @@ Ink::NodeId Application::SpawnShape(const char* kind) {
         anchor(0,  -r * 0.6, r * 0.6, 0);
         anchor(r,  0,        0, -r * 0.6);
         path.subpaths.push_back(std::move(sp));
-        name = "Curve";
+        name = "Bézier";
+    } else if (!std::strcmp(kind, "beziercircle")) {
+        path = Ink::PathData::Ellipse(0, 0, r, r);   // four kappa cubic arcs
+        name = "Bézier Circle";
+    } else if (!std::strcmp(kind, "nurbs")) {
+        // An open uniform NURBS path (order 4, clamped ends): a gentle S of
+        // four control points around the cursor.
+        path = Ink::PathData::Nurbs({ { -r, 0 }, { -r * 0.33, -r * 0.8 },
+                                      { r * 0.33, r * 0.8 }, { r, 0 } });
+        name = "NURBS Path";
+    } else if (!std::strcmp(kind, "nurbscircle")) {
+        path = Ink::PathData::NurbsCircle(0, 0, r);
+        name = "NURBS Circle";
+    } else if (!std::strcmp(kind, "poly")) {
+        Ink::PathData pp =
+            Ink::PathData::Polygon({ { -r, 0 }, { 0, -r * 0.6 }, { r, 0 } },
+                                   /*closed=*/false);
+        pp.subpaths.front().spline = Ink::SplineType::Poly;
+        path = std::move(pp);
+        name = "Poly Line";
     } else {
         path = Ink::PathData::Rect(-r, -r, r * 2, r * 2);
         name = "Shape";
@@ -125,6 +144,158 @@ Ink::NodeId Application::SpawnShape(const char* kind) {
         [snap](Ink::Document& d) { d.RestoreSubtree(snap); });
     LogInfoAction("Add " + name);
     return id;
+}
+
+// ── Pen: draw-on-create live path construction ────────────────────────────────
+// The legacy pen workflow on the Ink model. Anchors are laid in DOCUMENT
+// coordinates on a node with an identity transform while drawing; on commit
+// the origin re-bases to the geometry centre (MoveOriginTo), so the finished
+// object behaves exactly like a spawned one.
+
+void Application::BeginPenDraw(const char* kind) {
+    penSpline_ = !std::strcmp(kind, "nurbs") ? Ink::SplineType::Nurbs
+               : !std::strcmp(kind, "poly")  ? Ink::SplineType::Poly
+                                             : Ink::SplineType::Bezier;
+    penActive_   = true;
+    penDragging_ = false;
+    penNode_     = Ink::kNullNode;   // created on the first click
+    LogInfoAction("Pen", "Click to place anchors; drag pulls handles; "
+                         "Enter finishes, Esc cancels");
+}
+
+void Application::CommitPenDraw(bool keep) {
+    penActive_ = false;
+    penDragging_ = false;
+    if (!project_.document || penNode_ == Ink::kNullNode) {
+        penNode_ = Ink::kNullNode;
+        return;
+    }
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(penNode_);
+    const bool tooShort = !n || n->path.Empty();
+    if (!keep || tooShort) {
+        doc.Remove(penNode_);
+        penNode_ = Ink::kNullNode;
+        return;
+    }
+    // Origin onto the geometry centre, then ONE undo command for the whole
+    // construction (remove/restore the finished subtree verbatim).
+    Ink::DRect bb;
+    if (ink_ && ink_->NodeBounds(penNode_, bb) && bb.valid)
+        MoveOriginTo(penNode_, bb.Center());
+    edit_.SelectOnly(penNode_);
+    const Ink::NodeId id = penNode_;
+    auto snap = doc.CopySubtree(id);
+    PushDocCommand("Draw Path",
+        [id](Ink::Document& d) { d.Remove(id); },
+        [snap](Ink::Document& d) { d.RestoreSubtree(snap); });
+    LogInfoAction("Draw Path");
+    penNode_ = Ink::kNullNode;
+}
+
+bool Application::HandlePenInput(EditorState& st, const ViewCam& cam,
+                                 bool hovered) {
+    (void)st;
+    if (!penActive_) return false;
+    if (!project_.document) { penActive_ = false; return false; }
+    Ink::Document& doc = *project_.document;
+    ImGuiIO& io = ImGui::GetIO();
+
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        CommitPenDraw(false);
+        return true;
+    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter) ||
+        ImGui::IsKeyPressed(ImGuiKey_KeypadEnter) ||
+        (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))) {
+        CommitPenDraw(true);
+        return true;
+    }
+    const Ink::DVec2 docPos = cam.ScreenToDoc(io.MousePos.x, io.MousePos.y);
+
+    // Backspace drops the last anchor (removing the node when empty).
+    if (ImGui::IsKeyPressed(ImGuiKey_Backspace) &&
+        penNode_ != Ink::kNullNode) {
+        const Ink::Node* n = doc.Find(penNode_);
+        if (n && !n->path.subpaths.empty()) {
+            Ink::PathData p = n->path;
+            auto& an = p.subpaths.front().anchors;
+            if (!an.empty()) an.pop_back();
+            if (an.empty()) {
+                doc.Remove(penNode_);
+                penNode_ = Ink::kNullNode;
+            } else {
+                doc.SetPath(penNode_, p);
+            }
+        }
+        return true;
+    }
+
+    // Pulling the freshly placed anchor's handles (Bézier only).
+    if (penDragging_) {
+        if (penNode_ != Ink::kNullNode &&
+            penSpline_ == Ink::SplineType::Bezier) {
+            const Ink::Node* n = doc.Find(penNode_);
+            if (n && !n->path.subpaths.empty() &&
+                !n->path.subpaths.front().anchors.empty()) {
+                Ink::PathData p = n->path;
+                Ink::Anchor& a = p.subpaths.front().anchors.back();
+                const Ink::DVec2 d{ docPos.x - a.pos.x, docPos.y - a.pos.y };
+                const bool has = std::abs(d.x) + std::abs(d.y) > 1e-9;
+                a.out = d;
+                a.in  = { -d.x, -d.y };
+                a.hasIn = a.hasOut = has;
+                a.kind  = Ink::AnchorKind::Symmetric;
+                doc.SetPath(penNode_, p);
+            }
+        }
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) penDragging_ = false;
+        return true;
+    }
+
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (penNode_ == Ink::kNullNode) {
+            // First click: create the node with one corner anchor.
+            if (doc.Pages().empty()) { penActive_ = false; return true; }
+            Ink::PathData p;
+            Ink::Subpath sp;
+            sp.spline = penSpline_;
+            Ink::Anchor a;
+            a.pos = docPos;
+            sp.anchors.push_back(a);
+            p.subpaths.push_back(std::move(sp));
+            penNode_ = doc.AddPath(doc.Pages().front().id, std::move(p),
+                                   DefaultStyle(),
+                                   penSpline_ == Ink::SplineType::Nurbs
+                                       ? "NURBS Path"
+                                       : penSpline_ == Ink::SplineType::Poly
+                                             ? "Poly Line" : "Bézier");
+            penDragging_ = (penSpline_ == Ink::SplineType::Bezier);
+            return true;
+        }
+        const Ink::Node* n = doc.Find(penNode_);
+        if (!n || n->path.subpaths.empty()) { penActive_ = false; return true; }
+        Ink::PathData p = n->path;
+        auto& sub = p.subpaths.front();
+        // A click on the FIRST anchor closes the path and commits.
+        if (sub.anchors.size() >= 3) {
+            const Ink::DVec2 f = sub.anchors.front().pos;
+            const double dx = docPos.x - f.x, dy = docPos.y - f.y;
+            if (std::sqrt(dx * dx + dy * dy) * cam.zoom < 8.0) {
+                sub.closed = true;
+                doc.SetPath(penNode_, p);
+                CommitPenDraw(true);
+                return true;
+            }
+        }
+        Ink::Anchor a;
+        a.pos = docPos;
+        sub.anchors.push_back(a);
+        doc.SetPath(penNode_, p);
+        penDragging_ = (penSpline_ == Ink::SplineType::Bezier);
+        return true;
+    }
+    return true;   // the pen owns viewport input while active
 }
 
 // ── Selection actions ─────────────────────────────────────────────────────────
@@ -258,6 +429,9 @@ void Application::Action_DeleteVertices() {
 }
 
 void Application::Action_DeleteSelection() {
+    // Line-mark tool with marks selected → X deletes those marks
+    // (quasi-objects), never the host object.
+    if (MarkToolArmed()) { DeleteSelectedMarks(); return; }
     // In Edit mode, X deletes the selected anchors, not the object.
     if (edit_.mode == EditorMode::Edit) { Action_DeleteVertices(); return; }
     if (!project_.document || edit_.selection.empty()) return;
@@ -465,12 +639,18 @@ void Application::Action_ApplyScale() {
 // ── Modal transform launchers (bound to G / R / S) ──────────────────────────────
 
 void Application::Action_BeginMove() {
+    // Line-mark tool with marks selected → G slides the marks along the curve.
+    if (MarkToolArmed()) { BeginMarkTransform(TransformOp::Kind::Move); return; }
     if (hoveredViewport_) BeginTransform(TransformOp::Kind::Move, *hoveredViewport_);
 }
 void Application::Action_BeginRotate() {
+    // Line-mark tool → R flips the selected marks' side (instantaneous).
+    if (MarkToolArmed()) { BeginMarkTransform(TransformOp::Kind::Rotate); return; }
     if (hoveredViewport_) BeginTransform(TransformOp::Kind::Rotate, *hoveredViewport_);
 }
 void Application::Action_BeginScale() {
+    // Line-mark tool → S scales the selected crossings' gap.
+    if (MarkToolArmed()) { BeginMarkTransform(TransformOp::Kind::Scale); return; }
     if (hoveredViewport_) BeginTransform(TransformOp::Kind::Scale, *hoveredViewport_);
 }
 void Application::Action_ConstrainAxisX() {
