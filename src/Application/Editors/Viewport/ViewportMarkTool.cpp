@@ -40,6 +40,18 @@ Ink::Color MkCol(Tok t, float a) {
     }
 }
 
+// A fresh mark object with the default dimensions (in % of the stroke width):
+// a circle radius 100 %, a rectangle length 200 % × width 100 %, a diamond
+// diagonal 100 %. Shared placement/Properties default.
+Ink::MarkObject DefaultMarkObject(Ink::MarkShape shape) {
+    Ink::MarkObject o;
+    o.shape = shape;
+    o.sizePercent = true;
+    if (shape == Ink::MarkShape::Rectangle) { o.size = 200.0; o.width = 100.0; }
+    else                                    { o.size = 100.0; o.width = 100.0; }
+    return o;
+}
+
 // A dashed segment (view px) on the overlay list.
 void DashLine(Ink::OverlayList& ov, Ink::Vec2 a, Ink::Vec2 b,
               const Ink::Color& col, float th, float dash = 5.0f,
@@ -146,22 +158,20 @@ enum class HState { Normal, Hover, Selected };
 
 // A mark's clickable construction handle (legacy look): the dash-phase decides
 // the FILLED glyph — a violet DIAMOND (Dash), a green SQUARE (Gap), or a plain
-// grey dot (Neutral). Selected/hover add an outer ring (active-orange /
-// accent). `tv` is the curve tangent (view space) for orienting the glyph.
+// grey dot (Neutral). The glyph and the hover/select ring keep the TYPE colour
+// in every state; only the CENTRE DOT turns active-orange when selected (the
+// exact legacy convention). `tv` is the curve tangent (view space).
 void DrawHandle(Ink::OverlayList& ov, Ink::Vec2 sp, Ink::Vec2 tv,
                 const Ink::StrokeMark& m, HState state) {
     const bool dash = m.phase == Ink::MarkPhase::Dash;
     const bool gap  = m.phase == Ink::MarkPhase::Gap;
-    // Type colour: violet dash pin, green gap pin, grey neutral dot; the centre
-    // turns active-orange when selected (geometry convention).
-    Ink::Color typeCol =
-        dash ? MkCol(Tok::C_EditHandle_Vector, 1.0f)
-      : gap  ? MkCol(Tok::C_EditHandle_Mirrored, 1.0f)
-             : MkCol(Tok::S_Color_Text_Subtle, 1.0f);   // Neutral = grey
-    const Ink::Color fill =
-        state == HState::Selected ? MkCol(Tok::S_State_Active_OnPage, 1.0f)
-                                  : typeCol;
+    const Ink::Color typeCol =
+        dash ? MkCol(Tok::C_EditHandle_Vector, 1.0f)     // violet
+      : gap  ? MkCol(Tok::C_EditHandle_Mirrored, 1.0f)   // green
+             : MkCol(Tok::S_Color_Accent_Default, 1.0f); // Neutral = accent
+    const Ink::Color grey = MkCol(Tok::S_Color_Text_Subtle, 1.0f);
     const Ink::Color ring = MkCol(Tok::C_EditHandle_VertexRing, 1.0f);
+    const Ink::Color orange = MkCol(Tok::S_State_Active_OnPage, 1.0f);
 
     float tx = tv.x, ty = tv.y;
     const float tl = std::sqrt(tx * tx + ty * ty);
@@ -172,30 +182,32 @@ void DrawHandle(Ink::OverlayList& ov, Ink::Vec2 sp, Ink::Vec2 tv,
     };
     if (dash) {                 // filled diamond (vertices on ±tangent/±normal)
         const float r = 4.5f;
-        ov.AddTriangle(P(r, 0), P(0, r), P(-r, 0), fill);
-        ov.AddTriangle(P(r, 0), P(-r, 0), P(0, -r), fill);
+        ov.AddTriangle(P(r, 0), P(0, r), P(-r, 0), typeCol);
+        ov.AddTriangle(P(r, 0), P(-r, 0), P(0, -r), typeCol);
         ov.AddLine(P(r, 0), P(0, r), ring, 1.0f);
         ov.AddLine(P(0, r), P(-r, 0), ring, 1.0f);
         ov.AddLine(P(-r, 0), P(0, -r), ring, 1.0f);
         ov.AddLine(P(0, -r), P(r, 0), ring, 1.0f);
     } else if (gap) {           // filled square aligned to the curve
         const float h = 3.6f;
-        ov.AddQuad(P(h, h), P(-h, h), P(-h, -h), P(h, -h), fill);
+        ov.AddQuad(P(h, h), P(-h, h), P(-h, -h), P(h, -h), typeCol);
         ov.AddLine(P(h, h), P(-h, h), ring, 1.0f);
         ov.AddLine(P(-h, h), P(-h, -h), ring, 1.0f);
         ov.AddLine(P(-h, -h), P(h, -h), ring, 1.0f);
         ov.AddLine(P(h, -h), P(h, h), ring, 1.0f);
-    } else {                    // Neutral: plain ringed dot
-        ov.AddCircleFilled(sp, 3.5f, fill);
+    } else {                    // Neutral: plain ringed dot in grey
+        ov.AddCircleFilled(sp, 3.5f, grey);
         ov.AddCircle(sp, 3.5f, ring, 1.0f);
     }
+    // Selected: an orange centre dot over the glyph (only the dot turns orange).
+    if (state == HState::Selected)
+        ov.AddCircleFilled(sp, 2.0f, orange);
 
     if (state == HState::Normal) return;
+    // Hover/select ring in the TYPE colour (never a flat orange).
     const float rr = state == HState::Selected ? 8.5f : 7.5f;
     const float th = state == HState::Selected ? 2.0f : 1.5f;
-    ov.AddCircle(sp, rr, state == HState::Selected
-                             ? MkCol(Tok::S_State_Active_OnPage, 1.0f)
-                             : MkCol(Tok::S_Color_Accent_Default, 1.0f), th);
+    ov.AddCircle(sp, rr, typeCol, th);
 }
 
 } // namespace
@@ -343,21 +355,34 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             if (o.shape == Ink::MarkShape::Instance) {
                 // No contour for an instance — hint it with a ring at the point.
                 if (haveMarkW)
-                    ov.AddCircle(d2v(markW),
-                                 std::max(4.0f, (float)(o.size * wsc * zoom)),
+                    ov.AddCircle(d2v(markW), std::max(4.0f,
+                                 (float)(o.SizeUnits(sk.width) * wsc * zoom)),
                                  MkCol(Tok::S_Color_Accent_Default, 0.7f), 1.5f);
                 continue;
             }
+            // The real filled shape (as it renders): a Follow object bends its
+            // outline along the curve; Hard/Bend place a parametric primitive.
             std::vector<Ink::DVec2> ring;
-            if (!Ink::geom::MarkObjectContour(spine, m, o, sk.width, localTol,
-                                              ring) || ring.size() < 3)
-                continue;
+            if (o.bend == Ink::MarkBend::Follow) {
+                if (!Ink::geom::MarkFollowContour(spine, m, o, sk.width,
+                                                  localTol, ring))
+                    continue;
+            } else {
+                const Ink::PathData shape =
+                    Ink::geom::MarkPrimitiveShape(o, sk.width);
+                if (shape.Empty()) continue;
+                const Ink::DMat23 place =
+                    Ink::geom::MarkPlaceMatrix(spine, m, o, sk.width);
+                for (const auto& pl : Ink::geom::Flatten(shape, localTol))
+                    for (const Ink::DVec2& q : pl.points)
+                        ring.push_back(place.Apply(q));
+            }
+            if (ring.size() < 3) continue;
             // Fan-fill in view space.
             Ink::DVec2 cen{ 0, 0 };
             for (const Ink::DVec2& p : ring) { cen.x += p.x; cen.y += p.y; }
             cen.x /= (double)ring.size(); cen.y /= (double)ring.size();
-            const Ink::DVec2 cw = w.Apply(cen);
-            const Ink::Vec2 cv = d2v(cw);
+            const Ink::Vec2 cv = d2v(w.Apply(cen));
             for (std::size_t i = 0; i < ring.size(); ++i) {
                 const Ink::DVec2 aw = w.Apply(ring[i]);
                 const Ink::DVec2 bw = w.Apply(ring[(i + 1) % ring.size()]);
@@ -665,15 +690,13 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         m.sub = best.sub;
         m.t = best.t;
         m.side = Ink::MarkSide::Center;
+        (void)sk;
         if (ctrl) {
             m.phase = Ink::MarkPhase::Dash;   // objectless re-phaser
         } else {
-            Ink::MarkObject obj;
-            obj.shape = markPlaceShape_;
+            Ink::MarkObject obj = DefaultMarkObject(markPlaceShape_);
             obj.mode = markPlaceSubtract_ ? Ink::MarkObjectMode::Subtract
                                           : Ink::MarkObjectMode::Fusion;
-            obj.size = std::max(4.0, sk.width * 1.5);
-            obj.width = std::max(4.0, sk.width * 1.5);
             m.objects.push_back(obj);
         }
         auto polys = FlattenWorld(doc, best.id, zoom);

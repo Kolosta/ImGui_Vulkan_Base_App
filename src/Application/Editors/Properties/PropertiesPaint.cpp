@@ -701,26 +701,46 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                                         CommitStyleEdit(id, before, "Mark Instance");
                                     });
                             }
-                        } else if (o.shape == Ink::MarkShape::Rectangle) {
-                            float len = (float)o.size;   // half-length (tangent)
-                            if (pr::DragFloat("Length", &len, 0.1f, 0.1f, 10000.0f, 2)) {
-                                o.size = len; liveApply("Mark Object Size", false);
-                            }
-                            if (ImGui::IsItemDeactivatedAfterEdit())
-                                liveApply("Mark Object Size", true);
-                            float wid = (float)o.width;   // half-height (normal)
-                            if (pr::DragFloat("Width", &wid, 0.1f, 0.1f, 10000.0f, 2)) {
-                                o.width = wid; liveApply("Mark Object Width", false);
-                            }
-                            if (ImGui::IsItemDeactivatedAfterEdit())
-                                liveApply("Mark Object Width", true);
                         } else {
-                            float sz = (float)o.size;
-                            if (pr::DragFloat("Size", &sz, 0.1f, 0.1f, 10000.0f, 2)) {
-                                o.size = sz; liveApply("Mark Object Size", false);
+                            // A size field (in % of stroke width or doc-units,
+                            // per the object's sizePercent), with a shared unit
+                            // toggle that CONVERTS both size + width.
+                            const double sw = s.width > 1e-9 ? s.width : 1.0;
+                            auto sizeField = [&](const char* label, double* v) {
+                                float f = (float)*v;
+                                if (pr::DragFloat(label, &f,
+                                        o.sizePercent ? 1.0f : 0.1f, 0.0f,
+                                        1000000.0f, 2, o.sizePercent ? "%" : "")) {
+                                    *v = f; liveApply("Mark Object Size", false);
+                                }
+                                if (ImGui::IsItemDeactivatedAfterEdit())
+                                    liveApply("Mark Object Size", true);
+                            };
+                            if (o.shape == Ink::MarkShape::Circle) {
+                                sizeField("Radius", &o.size);
+                            } else if (o.shape == Ink::MarkShape::Rectangle) {
+                                sizeField("Length", &o.size);
+                                sizeField("Width", &o.width);
+                            } else {   // Diamond
+                                sizeField("Diagonal", &o.size);
                             }
-                            if (ImGui::IsItemDeactivatedAfterEdit())
-                                liveApply("Mark Object Size", true);
+                            static const char* kUnit[] = { "%", "px" };
+                            int un = o.sizePercent ? 0 : 1;
+                            if (pr::ButtonGroupRow("Unit", kUnit, 2, &un)) {
+                                const bool toPct = (un == 0);
+                                if (toPct != o.sizePercent) {
+                                    if (toPct) { o.size = o.size / sw * 100.0;
+                                                 o.width = o.width / sw * 100.0; }
+                                    else       { o.size = o.size * 0.01 * sw;
+                                                 o.width = o.width * 0.01 * sw; }
+                                    o.sizePercent = toPct;
+                                    structural = true; structLabel = "Mark Unit";
+                                }
+                            }
+                            if (ImGui::IsItemHovered())
+                                UI::DrawTooltipTranslucent(
+                                    "100 % = one full stroke width",
+                                    ImGui::GetIO().MousePos, 1.0f);
                         }
                         float rot = (float)(o.rotation * 180.0 / 3.14159265358979);
                         if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f,
@@ -730,27 +750,44 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit())
                             liveApply("Mark Object Rotation", true);
-                        // Bend along the curve, or keep a hard shape.
-                        static const char* kBend[] = { "Hard", "Bend" };
-                        int bd = (int)o.bend;
-                        if (pr::ButtonGroupRow("Shape", kBend, 2, &bd)) {
-                            o.bend = (Ink::MarkBend)bd;
-                            structural = true; structLabel = "Mark Bend";
+                        // Hard shape / Bend (lean) / Follow (curve the outline).
+                        if (o.shape != Ink::MarkShape::Instance) {
+                            static const char* kBend[] = { "Hard", "Bend",
+                                                           "Follow" };
+                            int bd = (int)o.bend;
+                            if (pr::ButtonGroupRow("Shape", kBend, 3, &bd)) {
+                                o.bend = (Ink::MarkBend)bd;
+                                structural = true; structLabel = "Mark Bend";
+                            }
+                            if (ImGui::IsItemHovered())
+                                UI::DrawTooltipTranslucent(
+                                    "Hard: a rigid shape. Bend: leans with the "
+                                    "local slope. Follow: the outline curves "
+                                    "along the line.",
+                                    ImGui::GetIO().MousePos, 1.0f);
                         }
-                        if (ImGui::IsItemHovered())
-                            UI::DrawTooltipTranslucent(
-                                "Bend: the shape follows the curvature of the "
-                                "line. Hard: a rigid shape.",
-                                ImGui::GetIO().MousePos, 1.0f);
-                        // Blend-mode row (Blend mode only).
+                        // Blend mode + front/behind ordering (Blend mode only).
                         if (o.mode == Ink::MarkObjectMode::Blend) {
                             int bl = std::min((int)o.blend, 12);
                             if (pr::DropdownRow("Blend mode", kBlend, 13, &bl)) {
                                 o.blend = (Ink::BlendMode)bl;
                                 structural = true; structLabel = "Mark Blend";
                             }
+                            static const char* kOrder[] = { "Behind", "Front" };
+                            int fr = o.front ? 1 : 0;
+                            if (pr::ButtonGroupRow("Order", kOrder, 2, &fr)) {
+                                o.front = (fr == 1);
+                                structural = true; structLabel = "Mark Order";
+                            }
+                            if (ImGui::IsItemHovered())
+                                UI::DrawTooltipTranslucent(
+                                    "Front: the mark blends over the stroke. "
+                                    "Behind: the stroke blends over the mark "
+                                    "(the reverse blend order).",
+                                    ImGui::GetIO().MousePos, 1.0f);
                         }
-                        // Colour (primitives; Cut ignores colour).
+                        // Colour (primitives; Cut ignores colour). Available in
+                        // every non-Cut mode, Fusion included.
                         if (o.shape != Ink::MarkShape::Instance &&
                             o.mode != Ink::MarkObjectMode::Subtract) {
                             bool inh = o.useStrokeColor;
@@ -776,10 +813,7 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     }
                     pr::ControlColumn();
                     if (ImGui::SmallButton("Add object")) {
-                        Ink::MarkObject o;
-                        o.size = std::max(4.0, s.width * 1.5);
-                        o.width = std::max(4.0, s.width * 1.5);
-                        m.objects.push_back(o);
+                        m.objects.push_back(Ink::MarkObject{});   // circle 100 %
                         structural = true; structLabel = "Add Mark Object";
                     }
                     ImGui::SameLine();
@@ -796,10 +830,7 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                 if (ImGui::SmallButton("Add mark")) {
                     Ink::StrokeMark m;
                     m.t = 0.5;
-                    Ink::MarkObject o;   // a fused circle by default
-                    o.size = std::max(4.0, s.width * 1.5);
-                    o.width = std::max(4.0, s.width * 1.5);
-                    m.objects.push_back(o);
+                    m.objects.push_back(Ink::MarkObject{});   // fused circle 100 %
                     s.marks.push_back(m);
                     structural = true; structLabel = "Add Mark";
                 }
