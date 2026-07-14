@@ -1,5 +1,6 @@
 #include "Ink/Geometry/Geometry.h"
 
+#include <algorithm>
 #include <cmath>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -130,6 +131,129 @@ std::vector<Polyline> DashSplit(const Polyline& pl,
     return out;   // pieces are OPEN (caps close them visually)
 }
 
+// ── Marks: gap cuts, dash-phase anchors, glyph stations ─────────────────────
+// (the legacy LineMark pipeline, docs/Ink/IOF_CORE_PLAN.md Phase A)
+
+struct CutSpan { double from, to; };
+struct PhaseAnchor { double at; bool elementCentred; };
+
+double PolyTotal(const Polyline& pl) {
+    const std::size_t n = pl.points.size();
+    if (n < 2) return 0.0;
+    const std::size_t sc = pl.closed ? n : n - 1;
+    double total = 0.0;
+    for (std::size_t i = 0; i < sc; ++i)
+        total += Len(Sub(pl.points[(i + 1) % n], pl.points[i]));
+    return total;
+}
+
+// Point + unit tangent at arc-length `d` along the polyline.
+void ArcSampleAt(const Polyline& pl, double d, DVec2& outP, V2& outTan) {
+    const std::size_t n = pl.points.size();
+    const std::size_t sc = pl.closed ? n : n - 1;
+    double acc = 0.0;
+    for (std::size_t i = 0; i < sc; ++i) {
+        const DVec2 a = pl.points[i], b = pl.points[(i + 1) % n];
+        const double L = Len(Sub(b, a));
+        if (L < 1e-12) continue;
+        if (d <= acc + L) {
+            const double u = (d - acc) / L;
+            outP = { a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u };
+            outTan = { (b.x - a.x) / L, (b.y - a.y) / L };
+            return;
+        }
+        acc += L;
+    }
+    outP = pl.points[n - 1];
+    outTan = Norm(Sub(pl.points[n - 1], pl.points[n >= 2 ? n - 2 : 0]));
+}
+
+// The OPEN sub-polyline of `pl` between arc lengths [from, to].
+Polyline ExtractRun(const Polyline& pl, double from, double to) {
+    Polyline run;
+    const std::size_t n = pl.points.size();
+    const std::size_t sc = pl.closed ? n : n - 1;
+    double acc = 0.0;
+    bool started = false;
+    for (std::size_t i = 0; i < sc; ++i) {
+        const DVec2 a = pl.points[i], b = pl.points[(i + 1) % n];
+        const double segLen = Len(Sub(b, a));
+        if (segLen < 1e-12) continue;
+        const V2 dir{ (b.x - a.x) / segLen, (b.y - a.y) / segLen };
+        const double segStart = acc, segEnd = acc + segLen;
+        if (!started && from <= segEnd) {
+            const double d = from > segStart ? from : segStart;
+            run.points.push_back({ a.x + dir.x * (d - segStart),
+                                   a.y + dir.y * (d - segStart) });
+            started = true;
+        }
+        if (started) {
+            if (to < segEnd) {
+                run.points.push_back({ a.x + dir.x * (to - segStart),
+                                       a.y + dir.y * (to - segStart) });
+                break;
+            }
+            run.points.push_back(b);
+        }
+        acc = segEnd;
+    }
+    return run;
+}
+
+// Complement of the cut spans over [0, total] — the kept [from,to] runs.
+std::vector<CutSpan> KeptRuns(double total, std::vector<CutSpan> cuts) {
+    std::sort(cuts.begin(), cuts.end(),
+              [](const CutSpan& a, const CutSpan& b) { return a.from < b.from; });
+    std::vector<CutSpan> kept;
+    double cursor = 0.0;
+    for (const CutSpan& c : cuts) {
+        if (c.from > cursor + 1e-9) kept.push_back({ cursor, c.from });
+        cursor = cursor > c.to ? cursor : c.to;
+    }
+    if (cursor < total - 1e-9) kept.push_back({ cursor, total });
+    return kept;
+}
+
+// Arc-length of the spine point closest to node-local position `p` (projects
+// onto every segment) — used to PIN a dash anchor to a control point.
+double ProjectArc(const Polyline& pl, DVec2 p, double fallback) {
+    const std::size_t n = pl.points.size();
+    const std::size_t sc = pl.closed ? n : n - 1;
+    double acc = 0.0, best = 1e300, arc = fallback;
+    for (std::size_t i = 0; i < sc; ++i) {
+        const DVec2 a = pl.points[i], b = pl.points[(i + 1) % n];
+        const double abx = b.x - a.x, aby = b.y - a.y;
+        const double L2 = abx * abx + aby * aby;
+        const double L = std::sqrt(L2);
+        if (L < 1e-12) continue;
+        double u = ((p.x - a.x) * abx + (p.y - a.y) * aby) / L2;
+        u = u < 0.0 ? 0.0 : (u > 1.0 ? 1.0 : u);
+        const double dx = p.x - (a.x + abx * u), dy = p.y - (a.y + aby * u);
+        const double d2 = dx * dx + dy * dy;
+        if (d2 < best) { best = d2; arc = acc + L * u; }
+        acc += L;
+    }
+    return arc;
+}
+
+// The dash offset that lands a dash ELEMENT centre (or a GAP centre) exactly
+// on run-local arc `aRun` (legacy DashLayout rule; exact dash/gap lengths are
+// preserved — only the partials at the run ends absorb the leftover).
+double AnchorDashOffset(const std::vector<double>& patternIn,
+                        bool elementCentred, double aRun, double fallback) {
+    std::vector<double> pat;
+    double period = 0.0;
+    for (double d : patternIn)
+        if (d > 1e-9) { pat.push_back(d); period += d; }
+    if (pat.empty() || period <= 0.0) return fallback;
+    if (pat.size() % 2 == 1) period *= 2.0;   // odd counts repeat to even
+    const double dashLen = pat[0];
+    const double gapLen  = pat.size() > 1 ? pat[1] : pat[0];
+    const double centre = elementCentred ? dashLen * 0.5
+                                         : dashLen + gapLen * 0.5;
+    return centre - aRun;   // DashSplit wraps negatives into the period
+}
+
 // ── 2. Alignment: shift the spine by ±w/2 along clamped miter normals ───────
 Polyline OffsetSpine(const Polyline& pl, double shift) {
     Polyline out;
@@ -257,14 +381,16 @@ LocalBounds PolylineBounds(const std::vector<Polyline>& polylines) {
 }
 
 Mesh TessellateStroke(const std::vector<Polyline>& polylines,
-                      const Stroke& stroke, double tolerance) {
+                      const Stroke& stroke, double tolerance,
+                      const PathData* source) {
     Mesh out;
     Emitter em{ &out };
     const double w = stroke.width;
     if (w <= 0.0) return out;
     const double tol = tolerance > 0.0 ? tolerance : 0.25;
 
-    for (const Polyline& src : polylines) {
+    for (std::size_t subI = 0; subI < polylines.size(); ++subI) {
+        const Polyline& src = polylines[subI];
         if (src.points.size() < 2) continue;
 
         // Alignment → a center stroke on a shifted spine. Open paths: Inside
@@ -281,13 +407,152 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
         const Polyline spine =
             (shift != 0.0) ? OffsetSpine(src, shift) : src;
 
-        // Dashes cut the (aligned) spine into capped pieces.
-        if (!stroke.dashPattern.empty()) {
-            for (const Polyline& piece :
-                 DashSplit(spine, stroke.dashPattern, stroke.dashOffset))
-                CenterStroke(piece, stroke, w * 0.5, tol, em);
+        // ── This subpath's marks → gap cuts + dash-phase anchors ────────────
+        const double total = PolyTotal(spine);
+        std::vector<CutSpan> cuts;
+        std::vector<PhaseAnchor> anchors;
+        for (const StrokeMark& m : stroke.marks) {
+            if (m.sub != (std::int32_t)subI || total < 1e-9) continue;
+            const double tc = m.t < 0.0 ? 0.0 : (m.t > 1.0 ? 1.0 : m.t);
+            const double d = tc * total;
+            if (m.kind == MarkKind::Crossing || m.kind == MarkKind::Bridge) {
+                const double half = (m.gap > 1e-3 ? m.gap : 1e-3) * 0.5;
+                cuts.push_back({ d - half < 0.0 ? 0.0 : d - half,
+                                 d + half > total ? total : d + half });
+            } else if (m.kind == MarkKind::DashAnchor) {
+                double at = d;
+                if (source && m.nodeAnchor >= 0) {
+                    // Map the flattened index back to its source subpath
+                    // (Flatten skips subpaths with < 2 anchors).
+                    std::size_t si = 0, seen = 0;
+                    for (; si < source->subpaths.size(); ++si) {
+                        if (source->subpaths[si].anchors.size() < 2) continue;
+                        if (seen == subI) break;
+                        ++seen;
+                    }
+                    if (si < source->subpaths.size() &&
+                        m.nodeAnchor <
+                            (std::int32_t)source->subpaths[si].anchors.size())
+                        at = ProjectArc(spine,
+                            source->subpaths[si]
+                                .anchors[(std::size_t)m.nodeAnchor].pos, at);
+                }
+                anchors.push_back({ at, m.side >= 0 });
+            }
+        }
+
+        // The base line is the COMPLEMENT of the cut spans (interrupted at
+        // each crossing/bridge gap); dashes are laid inside each kept run,
+        // re-phased by the run's first dash anchor (legacy rule).
+        struct Run { Polyline pl; double start, len; };
+        std::vector<Run> runs;
+        if (cuts.empty()) {
+            runs.push_back({ spine, 0.0, total });
         } else {
-            CenterStroke(spine, stroke, w * 0.5, tol, em);
+            for (const CutSpan& k : KeptRuns(total, cuts)) {
+                Run r{ ExtractRun(spine, k.from, k.to), k.from, k.to - k.from };
+                if (r.pl.points.size() >= 2) runs.push_back(std::move(r));
+            }
+        }
+        for (const Run& r : runs) {
+            if (stroke.dashPattern.empty()) {
+                CenterStroke(r.pl, stroke, w * 0.5, tol, em);
+                continue;
+            }
+            double offset = stroke.dashOffset;
+            for (const PhaseAnchor& a : anchors) {
+                if (a.at < r.start - 1e-6 || a.at > r.start + r.len + 1e-6)
+                    continue;
+                offset = AnchorDashOffset(stroke.dashPattern, a.elementCentred,
+                                          a.at - r.start, offset);
+                break;
+            }
+            for (const Polyline& piece :
+                 DashSplit(r.pl, stroke.dashPattern, offset))
+                CenterStroke(piece, stroke, w * 0.5, tol, em);
+        }
+
+        // ── Mark glyphs (exact legacy shapes): butt-capped mini-strokes in
+        //    the same mesh, painted with the stroke's paint. ─────────────────
+        Stroke glyph;   // only cap/join/miterLimit are read by CenterStroke
+        glyph.cap = CapStyle::Butt;
+        glyph.join = JoinStyle::Miter;
+        glyph.miterLimit = 4.0;
+        for (const StrokeMark& m : stroke.marks) {
+            if (m.sub != (std::int32_t)subI || total < 1e-9) continue;
+            if (m.kind == MarkKind::DashAnchor) continue;
+            const double tc = m.t < 0.0 ? 0.0 : (m.t > 1.0 ? 1.0 : m.t);
+            const double d = tc * total;
+            DVec2 q; V2 qt;
+            ArcSampleAt(spine, d, q, qt);
+            const V2 nrm = Perp(qt);
+            const double halfTh = (m.thickness > 1e-9 ? m.thickness : w) * 0.5;
+            const double sgn = m.side >= 0 ? 1.0 : -1.0;
+            auto bar = [&](std::initializer_list<DVec2> pts) {
+                Polyline pl;
+                pl.points.assign(pts.begin(), pts.end());
+                CenterStroke(pl, glyph, halfTh, tol, em);
+            };
+            switch (m.kind) {
+            case MarkKind::SlopeTick: {
+                // Starts at the curve CENTRE; Outside Measure adds half the
+                // base width so the part past the line edge is exactly size.
+                const double len =
+                    m.outsideMeasure ? (w * 0.5 + m.size) : m.size;
+                bar({ q, { q.x + nrm.x * len * sgn, q.y + nrm.y * len * sgn } });
+                break;
+            }
+            case MarkKind::Crossing: {   // two ticks across the gap ends
+                const double half = m.gap * 0.5;
+                for (double s2 : { -1.0, +1.0 }) {
+                    double e = d + s2 * half;
+                    e = e < 0.0 ? 0.0 : (e > total ? total : e);
+                    DVec2 ep; V2 et;
+                    ArcSampleAt(spine, e, ep, et);
+                    const V2 en = Perp(et);
+                    bar({ { ep.x - en.x * m.size, ep.y - en.y * m.size },
+                          { ep.x + en.x * m.size, ep.y + en.y * m.size } });
+                }
+                break;
+            }
+            case MarkKind::Bridge: {     // two facing brackets at the gap ends
+                const double half = m.gap * 0.5;
+                for (double s2 : { -1.0, +1.0 }) {
+                    double e = d + s2 * half;
+                    e = e < 0.0 ? 0.0 : (e > total ? total : e);
+                    DVec2 ep; V2 et;
+                    ArcSampleAt(spine, e, ep, et);
+                    const V2 en = Perp(et);
+                    const V2 inward{ et.x * -s2, et.y * -s2 };
+                    const DVec2 top{ ep.x + en.x * m.size, ep.y + en.y * m.size };
+                    const DVec2 bot{ ep.x - en.x * m.size, ep.y - en.y * m.size };
+                    const double stub = m.size * 0.6;
+                    bar({ { top.x + inward.x * stub, top.y + inward.y * stub },
+                          top, bot,
+                          { bot.x + inward.x * stub, bot.y + inward.y * stub } });
+                }
+                break;
+            }
+            case MarkKind::Pylon: {      // crossbar (+ optional box)
+                bar({ { q.x - nrm.x * m.size, q.y - nrm.y * m.size },
+                      { q.x + nrm.x * m.size, q.y + nrm.y * m.size } });
+                if (m.square && m.gap > 1e-4) {
+                    const double h = m.gap * 0.5;
+                    const DVec2 c0{ q.x - qt.x * h - nrm.x * h,
+                                    q.y - qt.y * h - nrm.y * h };
+                    const DVec2 c1{ q.x + qt.x * h - nrm.x * h,
+                                    q.y + qt.y * h - nrm.y * h };
+                    const DVec2 c2{ q.x + qt.x * h + nrm.x * h,
+                                    q.y + qt.y * h + nrm.y * h };
+                    const DVec2 c3{ q.x - qt.x * h + nrm.x * h,
+                                    q.y - qt.y * h + nrm.y * h };
+                    bar({ c0, c1 }); bar({ c1, c2 });
+                    bar({ c2, c3 }); bar({ c3, c0 });
+                }
+                break;
+            }
+            default: break;
+            }
         }
     }
     return out;

@@ -82,6 +82,59 @@ enum class JoinStyle   : std::uint8_t { Miter = 0, Round = 1, Bevel = 2 };
 // annotations; resolved per zoom tier by the GeometryCache).
 enum class WidthSpace  : std::uint8_t { Document = 0, Viewport = 1 };
 
+// ── Stroke marks (the legacy LineMark — docs/Ink/IOF_CORE_PLAN.md Phase A):
+// a MANUAL glyph or phase pin the user places at an arc-length position on
+// one subpath of the stroked path. It decorates or re-phases the line
+// WITHOUT touching the path geometry, and is tessellated with the stroke
+// (same mesh, same paint) so it rides the normal content pass.
+enum class MarkKind : std::uint8_t {
+    SlopeTick  = 0,   // short downhill tick on one side (contour slope hint)
+    Crossing   = 1,   // a gap cut in the line + two ticks across the ends
+    Bridge     = 2,   // a gap + two facing brackets (bridge/tunnel entrances)
+    Pylon      = 3,   // crossbar across the line (optional box variant)
+    DashAnchor = 4,   // NO geometry: forces a dash ELEMENT (side +1) or GAP
+                      // (side −1) to land centred here — re-phases the run
+};
+
+struct StrokeMark {
+    MarkKind     kind = MarkKind::SlopeTick;
+    std::int32_t sub  = 0;    // which FLATTENED subpath the mark lives on
+    double       t    = 0.5;  // arc-length position along it, in [0,1]
+    std::int32_t side = +1;   // tick side: +1 = left of travel, −1 = right
+                              // (DashAnchor: +1 = dash centred, −1 = gap)
+    // Geometry params (node-local units); meaning depends on `kind`:
+    //   SlopeTick : size = tick length.
+    //   Crossing  : gap  = the cut length, size = tick half-length.
+    //   Bridge    : gap  = the opening, size = bracket half-height.
+    //   Pylon     : size = bar half-length; square+gap = box side.
+    double gap       = 8.0;
+    double size      = 6.0;
+    double thickness = 0.0;   // 0 → reuse the base stroke width
+    // SlopeTick: `size` measured from the stroke's OUTER edge (drawn length =
+    // halfWidth + size) — the ISOM "outside measure" (OM) convention.
+    bool outsideMeasure = false;
+    // Pylon: a small square box (side = `gap`) centred on the bar.
+    bool square = false;
+    // DashAnchor: if ≥ 0 the anchor is PINNED to that control point of its
+    // subpath (t recomputed from the point as the curve is edited); −1 = free.
+    std::int32_t nodeAnchor = -1;
+
+    std::uint64_t Hash(std::uint64_t h) const {
+        const std::uint8_t packed[3] = { (std::uint8_t)kind,
+                                         (std::uint8_t)(outsideMeasure ? 1 : 0),
+                                         (std::uint8_t)(square ? 1 : 0) };
+        h = HashBytes(packed, sizeof packed, h);
+        h = HashBytes(&sub, sizeof sub, h);
+        h = HashBytes(&side, sizeof side, h);
+        h = HashBytes(&nodeAnchor, sizeof nodeAnchor, h);
+        h = HashDouble(t, h);
+        h = HashDouble(gap, h);
+        h = HashDouble(size, h);
+        h = HashDouble(thickness, h);
+        return h;
+    }
+};
+
 struct Stroke {
     Paint       paint;
     double      width      = 1.0;
@@ -96,6 +149,9 @@ struct Stroke {
     std::vector<double> dashPattern;
     double              dashOffset = 0.0;
     bool                enabled    = true;
+    // Manual marks along the stroke (ticks/crossings/bridges/pylons + dash
+    // anchors). Cuts and re-phasing are applied by the stroker.
+    std::vector<StrokeMark> marks;
 
     // Geometry-affecting parameters only (paints excluded — a color edit must
     // NOT re-tessellate; docs/Ink/GEOMETRY.md §3).
@@ -109,6 +165,7 @@ struct Stroke {
         h = HashDouble(miterLimit, h);
         for (double d : dashPattern) h = HashDouble(d, h);
         if (!dashPattern.empty()) h = HashDouble(dashOffset, h);
+        for (const StrokeMark& m : marks) h = m.Hash(h);
         return h;
     }
 };
