@@ -1156,6 +1156,93 @@ void TestSceneCompile() {
     CHECK(scene.Bounds().Width() >= 1920.0f);
 }
 
+// NURBS / Poly spline flattening (docs/Ink/IOF_CORE_PLAN.md Phase B): the
+// rational NurbsCircle must lie on the circle at every sample (exact conic),
+// a Poly subpath is its control polygon verbatim, and a spline change alters
+// the geometry hash (re-tessellation trigger).
+void TestNurbs() {
+    // NurbsCircle: an exact circle — every flattened point is at radius r from
+    // the centre (rational Bézier conic; the tolerance only sets the density).
+    PathData circ = PathData::NurbsCircle(10.0, 20.0, 7.0);
+    CHECK(circ.subpaths.size() == 1);
+    CHECK(circ.subpaths[0].spline == SplineType::Nurbs);
+    CHECK(circ.subpaths[0].closed);
+    auto cflat = geom::Flatten(circ, 0.01);
+    CHECK(cflat.size() == 1);
+    CHECK(cflat[0].points.size() >= 16);
+    double maxRadErr = 0.0;
+    for (const DVec2& p : cflat[0].points) {
+        const double rr = std::hypot(p.x - 10.0, p.y - 20.0);
+        maxRadErr = std::max(maxRadErr, std::abs(rr - 7.0));
+    }
+    CHECK(maxRadErr <= 0.05);   // on the circle to sub-pixel precision
+
+    // The circle encloses ~π·r² (a closed conic, filled NonZero).
+    auto cm = geom::TriangulateFill(cflat, FillRule::NonZero);
+    CHECK_NEAR(MeshArea(cm), 3.14159265358979 * 49.0, 1.5);
+
+    // Poly: the flattened polyline is exactly the control points.
+    PathData poly = PathData::Polygon({ { 0, 0 }, { 4, 0 }, { 4, 3 } }, false);
+    poly.subpaths[0].spline = SplineType::Poly;
+    auto pflat = geom::Flatten(poly, 0.01);
+    CHECK(pflat.size() == 1);
+    CHECK(pflat[0].points.size() == 3);
+    CHECK_NEAR(pflat[0].points[2].x, 4.0, 1e-12);
+    CHECK_NEAR(pflat[0].points[2].y, 3.0, 1e-12);
+
+    // A spline-type change is geometry-affecting (distinct hash).
+    PathData a = PathData::Polygon({ { 0, 0 }, { 4, 0 }, { 4, 3 } }, false);
+    PathData b = a;
+    b.subpaths[0].spline = SplineType::Nurbs;
+    CHECK(a.Hash() != b.Hash());
+    // The rational weight is hashed only for NURBS subpaths.
+    PathData c = b;
+    c.subpaths[0].anchors[1].weight = 2.5;
+    CHECK(b.Hash() != c.Hash());
+}
+
+// Stroke marks (docs/Ink/IOF_CORE_PLAN.md Phase A): a Crossing/Bridge CUTS
+// the base line (less base geometry, plus the glyph), a mark contributes to
+// the geometry hash, and a mark's Hash() folds every field.
+void TestStrokeMarks() {
+    const double kTol = 0.05;
+    geom::Polyline pl;
+    pl.points = { { 0, 0 }, { 100, 0 } };
+    pl.closed = false;
+
+    Stroke plain;
+    plain.width = 4.0;
+    const double baseArea = MeshArea(geom::TessellateStroke({ pl }, plain, kTol));
+    CHECK(baseArea > 0.0);
+
+    // A slope tick adds a small glyph → strictly more area than the plain line.
+    Stroke tick = plain;
+    StrokeMark m;
+    m.kind = MarkKind::SlopeTick;
+    m.sub = 0; m.t = 0.5; m.size = 10.0; m.thickness = 2.0;
+    tick.marks.push_back(m);
+    const double tickArea = MeshArea(geom::TessellateStroke({ pl }, tick, kTol));
+    CHECK(tickArea > baseArea + 5.0);
+
+    // A crossing CUTS the base line (a gap) yet stamps two bars: the total is
+    // still finite and the geometry hash differs from the plain stroke.
+    Stroke cross = plain;
+    StrokeMark cm2;
+    cm2.kind = MarkKind::Crossing;
+    cm2.sub = 0; cm2.t = 0.5; cm2.gap = 20.0; cm2.size = 6.0; cm2.thickness = 2.0;
+    cross.marks.push_back(cm2);
+    const geom::Mesh crossMesh = geom::TessellateStroke({ pl }, cross, kTol);
+    CHECK(!crossMesh.Empty());
+    CHECK(cross.GeometryHash() != plain.GeometryHash());
+    CHECK(tick.GeometryHash() != plain.GeometryHash());
+
+    // The marks ride the GeometryHash → identical marks hash identically.
+    Stroke cross2 = cross;
+    CHECK(cross2.GeometryHash() == cross.GeometryHash());
+    cross2.marks[0].t = 0.6;
+    CHECK(cross2.GeometryHash() != cross.GeometryHash());
+}
+
 } // namespace
 
 int main() {
@@ -1164,6 +1251,8 @@ int main() {
     TestFlatten();
     TestTriangulate();
     TestStroker();
+    TestNurbs();
+    TestStrokeMarks();
     TestGeometryCache();
     TestCompositeScopes();
     TestInstancing();
