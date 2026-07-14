@@ -36,10 +36,10 @@ enum class AlongDistribute : std::uint8_t {
     AtAnchors = 2, // one copy on every anchor point (Blender's "on points")
 };
 
-// The space the Array step is expressed in. Local composes after the node's
-// own transform (the step inherits the node's rotation/scale); Parent applies
-// the step in the node's parent space (a 10-unit step is 10 document units
-// regardless of the node's scale — the predictable default for UI editing).
+// DEPRECATED (kept for .acu compatibility, no effect): the array layout now
+// always lives in the node's LOCAL space, so an Object-mode rotate/scale
+// transforms the RESOLVED ensemble — original, copies and spacing together —
+// exactly as if the modifier output were the object.
 enum class ArrayStepSpace : std::uint8_t { Local = 0, Parent = 1 };
 
 // Array placement mode (Blender's array, 2D):

@@ -85,24 +85,18 @@ DMat23 InvertAffine(const DMat23& m) {
 // (composed onto the node's world before emit). AlongPath does NOT expand
 // the node itself — it instances a motif OBJECT along the node's spine.
 //
-// Parent-space quantities convert through the LINEAR part of the node's
-// local transform ONLY (rotation + scale, never translation): conjugating by
-// the full matrix — the old code — folded the node's POSITION into the step,
-// so a rotation step orbited a displaced centre and MOVING the object bent
-// the whole array. With the linear-only conjugation the array is rigid under
-// the node's translation, exactly one block.
+// RESOLVED-OBJECT semantics: the whole layout lives in the node's LOCAL
+// space, so an Object-mode rotate/scale transforms the RESOLVED ensemble —
+// original and copies together, spacing included — exactly as if the
+// modifier output were the object (Blender). Translation still never enters
+// the factors, so moving the object moves the array as one rigid block.
 std::vector<DMat23> ExpandModifiers(const Node& host) {
     std::vector<DMat23> xf{ DMat23{} };   // identity = the original copy
 
-    Transform2D linT = host.transform;
-    linT.tx = linT.ty = 0.0;
-    const DMat23 Llin    = linT.Matrix();
-    const DMat23 LlinInv = InvertAffine(Llin);
-    // A parent-space offset as a LOCAL translation factor (linear inverse —
-    // no translation part, so this is position-independent by construction).
-    auto parentOffset = [&](double ox, double oy) {
-        const DVec2 v = LlinInv.Apply({ ox, oy });
-        return DMat23::Translation(v.x, v.y);
+    // A local-space offset factor (the node's rotation/scale then carry the
+    // whole layout with the object).
+    auto localOffset = [](double ox, double oy) {
+        return DMat23::Translation(ox, oy);
     };
     auto spin = [](double ang) {
         const double c = std::cos(ang), s = std::sin(ang);
@@ -134,11 +128,10 @@ std::vector<DMat23> ExpandModifiers(const Node& host) {
         std::vector<DMat23> copies;
 
         if (m.arrayMode == ArrayMode::Transform) {
-            // Cumulative composition (spirals/orbits by design).
+            // Cumulative composition (spirals/orbits by design), in LOCAL
+            // space — the node's rotate/scale carries the whole spiral.
             const int count = m.count < 1 ? 1 : m.count;
-            DMat23 step = m.step.Matrix();
-            if (m.stepSpace == ArrayStepSpace::Parent)
-                step = LlinInv.Compose(step).Compose(Llin);
+            const DMat23 step = m.step.Matrix();
             DMat23 acc;
             copies.reserve((std::size_t)count);
             for (int i = 0; i < count; ++i) {
@@ -149,12 +142,10 @@ std::vector<DMat23> ExpandModifiers(const Node& host) {
             // A straight line of copies; rotation/scale spin each instance IN
             // PLACE (positions never couple to them).
             const int count = m.count < 1 ? 1 : m.count;
-            const double asx = std::sqrt(Llin.m[0]*Llin.m[0] + Llin.m[3]*Llin.m[3]);
-            const double asy = std::sqrt(Llin.m[1]*Llin.m[1] + Llin.m[4]*Llin.m[4]);
             double ox = m.step.tx, oy = m.step.ty;
             if (m.lineMode == ArrayLineMode::Relative) {
-                ox *= bw * asx;             // factors of the object's own size
-                oy *= bh * asy;
+                ox *= bw;                   // factors of the object's own size
+                oy *= bh;
             }
             if (m.lineMode == ArrayLineMode::Endpoint) {
                 const double div = count > 1 ? (double)(count - 1) : 1.0;
@@ -163,7 +154,7 @@ std::vector<DMat23> ExpandModifiers(const Node& host) {
             }
             copies.reserve((std::size_t)count);
             for (int k = 0; k < count; ++k) {
-                DMat23 f = parentOffset(ox * k, oy * k)
+                DMat23 f = localOffset(ox * k, oy * k)
                                .Compose(spin(m.step.rotation * k))
                                .Compose(scaleOf(std::pow(m.step.sx, k),
                                                 std::pow(m.step.sy, k)));
@@ -191,8 +182,8 @@ std::vector<DMat23> ExpandModifiers(const Node& host) {
             copies.reserve((std::size_t)count);
             for (int k = 0; k < count; ++k) {
                 const double th = delta * (double)k;
-                DMat23 f = parentOffset(m.circleRadius * std::cos(th),
-                                        m.circleRadius * std::sin(th));
+                DMat23 f = localOffset(m.circleRadius * std::cos(th),
+                                       m.circleRadius * std::sin(th));
                 if (m.circleAlign) f = f.Compose(spin(th));
                 copies.push_back(f);
             }

@@ -464,6 +464,30 @@ void TestInstancing() {
         }
     }
 
+    // RESOLVED-OBJECT semantics: rotating the NODE rotates the whole array —
+    // layout included — as if the modifier output were the object (the copy
+    // offsets live in local space).
+    {
+        Document doc;
+        const NodeId page = doc.AddPage("P", { 0, 0 }, { 1000, 1000 });
+        Modifier arr;
+        arr.kind = ModifierKind::Array;
+        arr.count = 2;
+        arr.step.tx = 40.0;                       // copies along local +X
+        const NodeId n = doc.AddPath(page, PathData::Rect(-5, -5, 10, 10),
+                                     Style::Filled({ 1, 0, 0, 1 }), "r");
+        doc.SetModifiers(n, { arr });
+        { Transform2D t; t.rotation = 1.5707963267948966; doc.SetTransform(n, t); }
+        Scene s; s.Compile(doc);
+        std::vector<DVec2> pos;
+        for (const Drawable& d : s.Drawables())
+            if (d.node == n) pos.push_back({ d.world.m[2], d.world.m[5] });
+        CHECK(pos.size() == 2);
+        // 90° node rotation: the +X offset now points along +Y (y-down: sin).
+        CHECK_NEAR(pos[1].x - pos[0].x, 0.0, 1e-9);
+        CHECK_NEAR(pos[1].y - pos[0].y, 40.0, 1e-9);
+    }
+
     // Array LINE mode: straight positions, PROGRESSIVE IN-PLACE spin (the
     // rotation never bends the line), Endpoint distributes to the end point.
     {
