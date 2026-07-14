@@ -62,6 +62,28 @@ Dash pattern + phase are applied by arc-length along the spine **before**
 outlining, so each dash is a correctly capped mini-stroke. Dash lengths are
 in document units (or viewport units when `widthSpace: Viewport`).
 
+### Marks (the legacy LineMark — IOF_CORE_PLAN Phase A)
+
+A stroke carries a list of `StrokeMark`s: manual glyphs / phase pins the user
+places at an arc-length position `t` on one flattened subpath. They are applied
+inside `TessellateStroke`, per subpath, after alignment:
+
+- **Crossing / Bridge** cut the aligned spine — the base line is drawn as the
+  COMPLEMENT of the cut spans (`KeptRuns`), so the line is interrupted at the
+  mark's gap. Each kept run is dashed independently.
+- **DashAnchor** re-phases the dash run of the kept run it falls in: it computes
+  the `dashOffset` that lands a dash ELEMENT centre (`side ≥ 0`) or a GAP centre
+  (`side < 0`) exactly on the anchor (`AnchorDashOffset`, exact mm dash/gap
+  preserved). A node-pinned anchor (`nodeAnchor ≥ 0`) first projects that control
+  point onto the spine (needs the source `PathData*`, which `GeometryCache`
+  passes for non-boolean outlines).
+- **SlopeTick / Crossing / Bridge / Pylon** stamp butt-capped mini-stroke glyphs
+  into the SAME mesh (exact legacy shapes; ends follow the local tangent).
+
+Marks are folded into `Stroke::GeometryHash` (they change geometry), and the
+mark envelope inflates `ComputeBounds` so ticks/brackets that stick out past the
+stroke band stay inside the culling bounds.
+
 ### Self-intersection policy
 
 v1: the stroke outline is emitted with non-zero fill rule so overlaps

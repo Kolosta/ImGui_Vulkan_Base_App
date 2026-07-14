@@ -7,7 +7,14 @@ render-graph. The CORE features land first (usable in Classic mode, in the
 normal Property Editor); the module then curates them (special display,
 restrictions, ISOM presets).
 
-## Phase A — Marks on strokes (core)
+**Status: Phase A and Phase B are DONE in core** (this pass). The mark model +
+stroker pipeline, the line-mark tool, the marks Properties list, the NURBS/Poly
+spline model + evaluation, the Curve Properties panel, the Shapes/Curves Shift+A
+menu, the pen tool and the legacy selection/vertex colours all landed and are
+covered by `ink_tests` (`TestNurbs`, `TestStrokeMarks`). Persistence rides
+`.acu` DOC **v3**. Phase C (the module curation) is the remaining work.
+
+## Phase A — Marks on strokes (core) — DONE
 
 The legacy `LineMark` (Renderer/Document/Paint.h) — a point ON a stroke,
 addressed by arc length, that decorates or re-phases the line WITHOUT touching
@@ -42,7 +49,21 @@ its geometry:
   machinery.
 - **Persistence**: marks ride the Stroke record (.acu DOC v3).
 
-## Phase B — Curves, NURBS & the pen workflow (core)
+Landed as: `Ink::StrokeMark` on `Ink::Stroke` (kind / sub / t / side / gap /
+size / thickness / outsideMeasure / square / nodeAnchor), folded into
+`Stroke::GeometryHash`. The stroker (`src/Ink/src/Geometry/Stroker.cpp`) applies
+gap cuts (Crossing/Bridge interrupt the base line via `KeptRuns`), re-phases the
+dash run of each kept run at a DashAnchor (`AnchorDashOffset`), and stamps
+tick/crossing/bridge/pylon glyphs into the same mesh. `TessellateStroke` takes an
+optional source `PathData*` to resolve node-pinned dash anchors; `GeometryCache`
+passes it (nullptr for boolean-derived outlines). The tool
+(`src/Application/Editors/Viewport/ViewportMarkTool.cpp`, `tool.linemark`) draws
+handles/ghosts into the Vulkan overlay list, places marks on the nearest stroked
+line (kind from the top-bar picker), and G slides / R flips / S scales / X
+deletes the selected marks; all edits go through `SetStyle` (one undo command
+each). The Properties Strokes panel grows a "Marks" list.
+
+## Phase B — Curves, NURBS & the pen workflow (core) — DONE
 
 - **Spline types** (legacy `SplineType`): Bezier (anchors ON the curve,
   in/out handles — today's model), **Nurbs** (anchors are CONTROL POINTS off
@@ -69,6 +90,25 @@ its geometry:
   a curve/shape, the legacy shortcut snaps the run to ANOTHER shape's
   outline, picking the START and END of the followed span; works with the
   snap-while-drawing behaviour already proven in legacy.
+
+Landed as: `SplineType { Bezier, Nurbs, Poly }` + `orderU` + `nurbsEndpoint` +
+`nurbsBezier` per `Ink::Subpath`, and a per-anchor rational `weight`, all folded
+into `PathData::Hash`. `geom::Flatten` (`src/Ink/src/Geometry/Flatten.cpp`)
+dispatches per subpath: `FlattenNurbs` is a full homogeneous de-Boor evaluator
+over the three knot modes (endpoint-clamped / full-multiplicity-Bézier /
+uniform-periodic) with adaptive chord-error subdivision; Poly is the control
+polygon verbatim. Builders `PathData::NurbsCircle` (8-point square hull, order 3,
+√2/2 corners — an exact circle) and `PathData::Nurbs` (open clamped order 4) live
+in `Document.cpp`. The Shift+A menu splits into **Shapes** / **Curves** submenus
+with a **Draw on Create** toggle; when on, a Curve leaf arms the pen tool
+(`BeginPenDraw`/`HandlePenInput`/`CommitPenDraw` in `ViewportTools.cpp`): click =
+corner anchor, click-drag = symmetric handles, Backspace = drop last, Enter /
+double-click = finish, click-first-anchor = close, Esc = cancel. The Curve
+Properties panel (`PropCurveSection` in `Properties.cpp`) exposes spline type,
+cyclic, Order U, Endpoint/Bezier U, and the selected control points' weight (Edit
+mode). The NURBS control hull draws in the edit overlay (`C_EditHandle_NurbsHull`).
+*Not yet ported* (deferred, low value now): resolution/convert-to/join-family
+rows, `openFillStraight`, follow-curve tracing.
 
 ## Phase C — IOF Mapping module re-entry
 

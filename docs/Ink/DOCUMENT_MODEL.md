@@ -112,9 +112,16 @@ PathData
 
 - Anchor kinds: corner / smooth (aligned) / symmetric (mirrored) — the
   editing semantics live in the *editor*; the model stores handles.
-- NURBS-style weighted control (from the old SplineType) is folded into a
-  per-subpath interpolation tag (`bezier` default, `poly`, room for more);
-  Lot 2 ships `bezier` + `poly`, others only when a real need returns.
+- **Spline type per subpath** (`SplineType { Bezier, Nurbs, Poly }`, the legacy
+  spline families, IOF_CORE_PLAN Phase B — DONE): `Bezier` interprets the
+  anchors as on-curve points with in/out cubic handles; `Poly` is a straight
+  polyline through the anchors; `Nurbs` treats them as CONTROL POINTS of a
+  rational uniform B-spline of degree `orderU − 1`, with a per-anchor rational
+  `weight` and two knot-mode flags — `nurbsEndpoint` (clamp an open curve to its
+  end control points) and `nurbsBezier` (interior knots at full multiplicity =
+  consecutive rational Bézier segments, the exact-circle/arc form). Flattening
+  per type happens in `geom::Flatten` at the view tolerance; all spline fields
+  fold into `PathData::Hash`.
 - Booleans/derived geometry are **modifiers**, not baked path edits (the old
   destructive edits become ops that write PathData through the ChangeLog).
 
@@ -129,8 +136,16 @@ Style
 └── strokes: [Stroke { paint: Paint, width, align: Center|Inside|Outside,
                        cap: Butt|Round|Square, join: Miter|Round|Bevel,
                        miterLimit, dash: {pattern[], offset}, enabled,
-                       widthSpace: Document|Viewport }]
+                       widthSpace: Document|Viewport,
+                       marks: [StrokeMark …] }]
 ```
+
+- **`StrokeMark`** (the legacy LineMark, IOF_CORE_PLAN Phase A — DONE): a manual
+  glyph or phase pin at arc-length `t` on one subpath —
+  `{ kind: SlopeTick|Crossing|Bridge|Pylon|DashAnchor, sub, t, side, gap, size,
+  thickness, outsideMeasure, square, nodeAnchor }`. Applied by the stroker (gap
+  cuts, dash re-phasing, glyph meshes — see GEOMETRY.md §2); edited by the
+  line-mark tool and the Strokes Properties "Marks" list.
 
 - Both lists are ordered (paint order: fills bottom-up, then strokes
   bottom-up) and both take **any** `Paint` — a stroke filled with a pattern
@@ -235,13 +250,17 @@ Every mutation goes through typed operations
    the old whole-document snapshot diffing; measured, bounded, and it gives
    labelled steps for free).
 
-## 10. Serialisation (.acu v2)
+## 10. Serialisation (.acu, DOC v3)
 
 - New chunked container (magic/version/sections with sizes; unknown sections
-  skipped) — **v2 is a clean break**: no migration from old .acu (the format
+  skipped) — **a clean break**: no migration from old .acu (the format
   version gates a clear "old file" error; the old reader lives only in
   `_legacy`).
 - Sections: META, DOCUMENT (model), LAYOUT (zone tree — kept concept),
   THMB (PNG thumbnail — kept concept, Windows shell integration unchanged).
-- Written/read by `App::ProjectFile` (app side) through the Document public
-  API. Detailed spec written when the lot lands (`docs/acu-format-v2.md`).
+- The DOCUMENT blob is versioned independently (`kDocVersion`): **v2** added the
+  array placement modes + instance copy flags; **v3** adds the subpath spline
+  params (`spline`, `orderU`, endpoint/bezier flags), the per-anchor `weight`,
+  and the stroke `marks`. Readers are `ver`-gated, so a v2 file still loads (the
+  new fields take their defaults).
+- Written/read by `App::ProjectFile` (app side) through the Document public API.
