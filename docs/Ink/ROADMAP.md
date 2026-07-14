@@ -140,7 +140,9 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   without losing the id). Typography rides the hooks (1000-unit em canvas +
   Guides collection: em square, baseline, x-height, cap height as viewport-px
   hairlines). REMAINING: the IofMapping rebuild on Ink — symbol set, print
-  layers, symbol viewer, map settings — which completes this lot.)*
+  layers, symbol viewer, map settings — which completes this lot. The full
+  legacy feature inventory and the phased plan (core marks → curves/NURBS/pen
+  → module) live in `docs/Ink/IOF_CORE_PLAN.md`.)*
 - [ ] **Lot 6 (deferred) — Images**: run here, after modules. Import
   (decode app-side), bindless texture table, image paints & ImageNode;
   `images` bench.
