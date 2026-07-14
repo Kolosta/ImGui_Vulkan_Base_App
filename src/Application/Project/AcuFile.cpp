@@ -40,7 +40,8 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 2;
+constexpr std::uint32_t kDocVersion = 3;   // v3: subpath spline params +
+                                           // anchor weight + stroke marks
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -153,6 +154,10 @@ void WritePath(Writer& w, const Ink::PathData& p) {
     w.u32((std::uint32_t)p.subpaths.size());
     for (const Ink::Subpath& sp : p.subpaths) {
         w.u8(sp.closed ? 1 : 0);
+        // v3: the spline model (Bezier / Nurbs / Poly + NURBS params).
+        w.u8((std::uint8_t)sp.spline);
+        w.u8(sp.orderU);
+        w.u8((sp.nurbsEndpoint ? 1 : 0) | (sp.nurbsBezier ? 2 : 0));
         w.u32((std::uint32_t)sp.anchors.size());
         for (const Ink::Anchor& a : sp.anchors) {
             w.f64(a.pos.x); w.f64(a.pos.y);
@@ -160,15 +165,23 @@ void WritePath(Writer& w, const Ink::PathData& p) {
             w.f64(a.out.x); w.f64(a.out.y);
             w.u8((std::uint8_t)((a.hasIn ? 1 : 0) | (a.hasOut ? 2 : 0) |
                                 ((std::uint8_t)a.kind << 2)));
+            w.f64(a.weight);   // v3
         }
     }
 }
-Ink::PathData ReadPath(Reader& r) {
+Ink::PathData ReadPath(Reader& r, std::uint32_t ver) {
     Ink::PathData p;
     const std::uint32_t nSub = r.u32();
     for (std::uint32_t i = 0; i < nSub && r.ok; ++i) {
         Ink::Subpath sp;
         sp.closed = r.u8() != 0;
+        if (ver >= 3) {
+            sp.spline = (Ink::SplineType)std::min<std::uint8_t>(r.u8(), 2);
+            sp.orderU = r.u8();
+            const std::uint8_t sf = r.u8();
+            sp.nurbsEndpoint = (sf & 1) != 0;
+            sp.nurbsBezier   = (sf & 2) != 0;
+        }
         const std::uint32_t nA = r.u32();
         for (std::uint32_t j = 0; j < nA && r.ok; ++j) {
             Ink::Anchor a;
@@ -179,6 +192,7 @@ Ink::PathData ReadPath(Reader& r) {
             a.hasIn  = (flags & 1) != 0;
             a.hasOut = (flags & 2) != 0;
             a.kind   = (Ink::AnchorKind)std::min<std::uint8_t>((flags >> 2) & 3, 2);
+            if (ver >= 3) a.weight = r.f64();
             sp.anchors.push_back(a);
         }
         p.subpaths.push_back(std::move(sp));
@@ -215,9 +229,23 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
         w.u32((std::uint32_t)st.dashPattern.size());
         for (double d : st.dashPattern) w.f64(d);
         w.f64(st.dashOffset);
+        // v3: the manual stroke marks (ticks / crossings / bridges / pylons /
+        // dash anchors) — every field, fixed layout.
+        w.u32((std::uint32_t)st.marks.size());
+        for (const Ink::StrokeMark& m : st.marks) {
+            w.u8((std::uint8_t)m.kind);
+            w.u32((std::uint32_t)m.sub);
+            w.f64(m.t);
+            w.u32((std::uint32_t)m.side);
+            w.f64(m.gap);
+            w.f64(m.size);
+            w.f64(m.thickness);
+            w.u8((m.outsideMeasure ? 1 : 0) | (m.square ? 2 : 0));
+            w.u32((std::uint32_t)m.nodeAnchor);
+        }
     }
 }
-Ink::Style ReadStyle(Reader& r) {
+Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
     Ink::Style s;
     const std::uint32_t nF = r.u32();
     for (std::uint32_t i = 0; i < nF && r.ok; ++i) {
@@ -251,6 +279,24 @@ Ink::Style ReadStyle(Reader& r) {
         for (std::uint32_t j = 0; j < nD && r.ok; ++j)
             st.dashPattern.push_back(r.f64());
         st.dashOffset = r.f64();
+        if (ver >= 3) {
+            const std::uint32_t nMk = r.u32();
+            for (std::uint32_t j = 0; j < nMk && r.ok; ++j) {
+                Ink::StrokeMark m;
+                m.kind = (Ink::MarkKind)std::min<std::uint8_t>(r.u8(), 4);
+                m.sub  = (std::int32_t)r.u32();
+                m.t    = r.f64();
+                m.side = (std::int32_t)r.u32();
+                m.gap  = r.f64();
+                m.size = r.f64();
+                m.thickness = r.f64();
+                const std::uint8_t mf = r.u8();
+                m.outsideMeasure = (mf & 1) != 0;
+                m.square         = (mf & 2) != 0;
+                m.nodeAnchor = (std::int32_t)r.u32();
+                st.marks.push_back(m);
+            }
+        }
         s.strokes.push_back(std::move(st));
     }
     return s;
@@ -359,8 +405,8 @@ Ink::Node ReadNode(Reader& r, std::uint32_t ver) {
     const std::uint32_t nC = r.u32();
     for (std::uint32_t i = 0; i < nC && r.ok; ++i) n.children.push_back(r.u64());
     n.targetRef = r.u64();
-    n.path  = ReadPath(r);
-    n.style = ReadStyle(r);
+    n.path  = ReadPath(r, ver);
+    n.style = ReadStyle(r, ver);
     const std::uint32_t nM = r.u32();
     for (std::uint32_t i = 0; i < nM && r.ok; ++i)
         n.modifiers.push_back(ReadModifier(r, ver));
