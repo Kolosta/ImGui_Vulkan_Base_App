@@ -980,4 +980,48 @@ PathData PathData::Ellipse(double cx, double cy, double rx, double ry) {
     return p;
 }
 
+PathData PathData::NurbsCircle(double cx, double cy, double r) {
+    // The classic EXACT rational circle: an 8-point square hull, order 3
+    // (rational quadratic), full-multiplicity (Bézier) periodic knots, √2/2
+    // weights on the corners — four exact quarter arcs.
+    constexpr double w = 0.7071067811865476;
+    PathData p;
+    Subpath sp;
+    sp.closed = true;
+    sp.spline = SplineType::Nurbs;
+    sp.orderU = 3;
+    sp.nurbsBezier = true;
+    auto cp = [&](double px, double py, double weight) {
+        Anchor a;
+        a.pos = { px, py };
+        a.weight = weight;
+        sp.anchors.push_back(a);
+    };
+    cp(cx + r, cy,     1.0);   // E
+    cp(cx + r, cy - r, w);     // NE corner
+    cp(cx,     cy - r, 1.0);   // N
+    cp(cx - r, cy - r, w);     // NW
+    cp(cx - r, cy,     1.0);   // W
+    cp(cx - r, cy + r, w);     // SW
+    cp(cx,     cy + r, 1.0);   // S
+    cp(cx + r, cy + r, w);     // SE
+    p.subpaths.push_back(std::move(sp));
+    return p;
+}
+
+PathData PathData::Nurbs(const std::vector<DVec2>& points, bool closed) {
+    PathData p;
+    Subpath sp;
+    sp.closed = closed;
+    sp.spline = SplineType::Nurbs;
+    sp.orderU = 4;
+    for (const DVec2& pt : points) {
+        Anchor a;
+        a.pos = pt;
+        sp.anchors.push_back(a);
+    }
+    p.subpaths.push_back(std::move(sp));
+    return p;
+}
+
 } // namespace Ink

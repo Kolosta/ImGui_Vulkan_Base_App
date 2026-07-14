@@ -43,8 +43,14 @@ Mesh TriangulateFill(const std::vector<Polyline>& polylines, FillRule rule);
 // Miter(limit)/Round/Bevel joins, dash patterns. `tolerance` (node-local
 // units) bounds the arc-flattening error of round caps/joins. Stroke width is
 // taken as-is (WidthSpace resolution happens in the GeometryCache).
+// Stroke MARKS (IOF_CORE_PLAN Phase A) are applied here: Crossing/Bridge
+// marks CUT the spine (the line is interrupted at their gap), a DashAnchor
+// re-phases the dash run of its kept run, and tick/bracket/bar glyphs are
+// emitted into the same mesh. `source` (optional) is the un-flattened path,
+// used only to resolve node-PINNED dash anchors; polyline index == mark.sub.
 Mesh TessellateStroke(const std::vector<Polyline>& polylines,
-                      const Stroke& stroke, double tolerance);
+                      const Stroke& stroke, double tolerance,
+                      const PathData* source = nullptr);
 
 // AABB of the flattened points alone (style-independent; the caller inflates
 // by stroke bands — used by view culling).

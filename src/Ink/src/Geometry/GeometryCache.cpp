@@ -82,12 +82,15 @@ const geom::Mesh* GeometryCache::GetStroke(const PathData& path,
     auto it = meshes_.find(key);
     if (it == meshes_.end()) {
         // WidthSpace resolution + arc tolerance follow the tier (both are in
-        // the key via `tier` itself).
+        // the key via `tier` itself). The source path resolves node-pinned
+        // dash anchors — only meaningful on the path's own outline (a boolean
+        // program's derived rings no longer map to subpaths).
         Stroke eff = stroke;
         eff.width = EffectiveWidth(stroke, tier);
         it = meshes_.emplace(key,
                  geom::TessellateStroke(GetFlattened(path, pathHash, tier, prog),
-                                        eff, ToleranceForTier(tier))).first;
+                                        eff, ToleranceForTier(tier),
+                                        prog ? nullptr : &path)).first;
     }
     return it->second.Empty() ? nullptr : &it->second;
 }

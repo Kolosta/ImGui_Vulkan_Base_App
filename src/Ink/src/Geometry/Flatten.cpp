@@ -1,5 +1,6 @@
 #include "Ink/Geometry/Geometry.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace Ink::geom {
@@ -50,6 +51,115 @@ void FlattenSegment(const Anchor& a, const Anchor& b, double tol,
     FlattenCubic(a.pos, c1, c2, b.pos, tol, 0, out);
 }
 
+// ── Rational uniform B-spline (NURBS) evaluation — the legacy evaluator, in
+// double precision, tolerance-driven. Weighted de Boor over a knot vector
+// built from the subpath's options:
+//   nurbsBezier   → interior knots at FULL multiplicity (= degree): the hull
+//                   acts as consecutive rational Bézier segments (exact
+//                   circles / arcs from the classic weighted hulls).
+//   nurbsEndpoint → (open) clamped ends: the curve meets the first/last
+//                   control point; off = floating uniform (stays inside hull).
+//   closed        → periodic uniform (bezier closed wraps ONE point, uniform
+//                   wraps `degree`). Adaptive chord-error sampling on the
+//   EVALUATED points, so weights "just work" (samples densify where a heavy
+//   weight bends the curve). Emits points EXCLUDING the start.
+void FlattenNurbs(const Subpath& sp, double tol, std::vector<DVec2>& out,
+                  DVec2& startOut) {
+    const auto& ctrl = sp.anchors;
+    const int n = (int)ctrl.size();
+    if (n < 2) return;
+    const int k = std::clamp((int)sp.orderU, 2, n);   // order = degree + 1
+    const int deg = k - 1;
+
+    struct H { double x, y, w; };
+    auto homog = [](const Anchor& c) {
+        const double w = c.weight > 1e-6 ? c.weight : 1.0;
+        return H{ c.pos.x * w, c.pos.y * w, w };
+    };
+    std::vector<H> P;
+    P.reserve((std::size_t)(n + deg + 1));
+    for (const Anchor& c : ctrl) P.push_back(homog(c));
+    if (sp.closed) {
+        const int wrap = sp.nurbsBezier ? 1 : deg;
+        for (int i = 0; i < wrap; ++i) P.push_back(homog(ctrl[(std::size_t)(i % n)]));
+    }
+    const int m = (int)P.size();
+    if (m < k) return;
+
+    std::vector<double> knot;
+    if (sp.nurbsBezier) {
+        const int segs = std::max(1, (m - 1) / deg);
+        for (int i = 0; i < k; ++i) knot.push_back(0.0);
+        for (int s = 1; s < segs; ++s)
+            for (int r = 0; r < deg; ++r) knot.push_back((double)s);
+        for (int i = 0; i < k; ++i) knot.push_back((double)segs);
+        while ((int)knot.size() < m + k) knot.push_back((double)segs);
+        knot.resize((std::size_t)(m + k));
+    } else if (!sp.closed && sp.nurbsEndpoint) {
+        for (int i = 0; i < k; ++i) knot.push_back(0.0);
+        for (int i = 1; i <= m - k; ++i) knot.push_back((double)i);
+        for (int i = 0; i < k; ++i) knot.push_back((double)(m - k + 1));
+    } else {
+        for (int i = 0; i < m + k; ++i) knot.push_back((double)i);
+    }
+    const double u0 = knot[(std::size_t)deg];
+    const double u1 = knot[(std::size_t)m];
+
+    auto deBoor = [&](double u) -> DVec2 {
+        int s = deg;
+        while (s < m - 1 && u >= knot[(std::size_t)(s + 1)]) ++s;
+        H d[16];   // order clamped well below 16
+        for (int j = 0; j <= deg; ++j) d[j] = P[(std::size_t)(s - deg + j)];
+        for (int r = 1; r <= deg; ++r)
+            for (int j = deg; j >= r; --j) {
+                const int i = s - deg + j;
+                const double denom =
+                    knot[(std::size_t)(i + k - r)] - knot[(std::size_t)i];
+                const double a =
+                    denom > 1e-12 ? (u - knot[(std::size_t)i]) / denom : 0.0;
+                const H& lo = d[j - 1];
+                H& hi = d[j];
+                hi = { lo.x * (1.0 - a) + hi.x * a,
+                       lo.y * (1.0 - a) + hi.y * a,
+                       lo.w * (1.0 - a) + hi.w * a };
+            }
+        const H& r = d[deg];
+        const double w = std::abs(r.w) > 1e-12 ? r.w : 1.0;
+        return { r.x / w, r.y / w };
+    };
+
+    // Coarse uniform seed (≈2 per control point) + adaptive refinement on the
+    // evaluated chord error, iterative for bounded depth.
+    startOut = deBoor(u0);
+    const int seed = std::clamp((m - 1) * 2, 8, 512);
+    struct Seg { double ua, ub; DVec2 pa, pb; int depth; };
+    for (int i = 0; i < seed; ++i) {
+        const double ua = u0 + (u1 - u0) * (double)i / (double)seed;
+        const double ub = u0 + (u1 - u0) * (double)(i + 1) / (double)seed;
+        const DVec2 pa = i == 0 ? startOut : out.empty() ? startOut : out.back();
+        const DVec2 pb = deBoor(ub);
+        Seg stack[16];
+        int spN = 0;
+        stack[spN++] = { ua, ub, pa, pb, 0 };
+        while (spN > 0) {
+            const Seg s = stack[--spN];
+            bool split = false;
+            if (s.depth < 12) {
+                const double um = 0.5 * (s.ua + s.ub);
+                const DVec2 pm = deBoor(um);
+                const DVec2 mid{ 0.5 * (s.pa.x + s.pb.x), 0.5 * (s.pa.y + s.pb.y) };
+                const double dx = pm.x - mid.x, dy = pm.y - mid.y;
+                if (std::sqrt(dx * dx + dy * dy) > tol) {
+                    stack[spN++] = { um, s.ub, pm, s.pb, s.depth + 1 };
+                    stack[spN++] = { s.ua, um, s.pa, pm, s.depth + 1 };
+                    split = true;
+                }
+            }
+            if (!split) out.push_back(s.pb);
+        }
+    }
+}
+
 } // namespace
 
 std::vector<Polyline> Flatten(const PathData& path, double tolerance) {
@@ -59,11 +169,21 @@ std::vector<Polyline> Flatten(const PathData& path, double tolerance) {
         if (sp.anchors.size() < 2) continue;
         Polyline pl;
         pl.closed = sp.closed;
-        pl.points.push_back(sp.anchors.front().pos);
-        for (std::size_t i = 1; i < sp.anchors.size(); ++i)
-            FlattenSegment(sp.anchors[i - 1], sp.anchors[i], tol, pl.points);
-        if (sp.closed)
-            FlattenSegment(sp.anchors.back(), sp.anchors.front(), tol, pl.points);
+        if (sp.spline == SplineType::Nurbs) {
+            DVec2 start{ 0, 0 };
+            FlattenNurbs(sp, tol, pl.points, start);
+            if (pl.points.empty()) continue;
+            pl.points.insert(pl.points.begin(), start);
+        } else if (sp.spline == SplineType::Poly) {
+            for (const Anchor& a : sp.anchors) pl.points.push_back(a.pos);
+            if (sp.closed) pl.points.push_back(sp.anchors.front().pos);
+        } else {
+            pl.points.push_back(sp.anchors.front().pos);
+            for (std::size_t i = 1; i < sp.anchors.size(); ++i)
+                FlattenSegment(sp.anchors[i - 1], sp.anchors[i], tol, pl.points);
+            if (sp.closed)
+                FlattenSegment(sp.anchors.back(), sp.anchors.front(), tol, pl.points);
+        }
         // A closed polyline keeps first != last (the seam segment's end point
         // duplicates the start — drop it).
         if (pl.closed && pl.points.size() > 1) {
@@ -96,9 +216,16 @@ LocalBounds ComputeBounds(const std::vector<Polyline>& polylines,
     }
     if (!b.valid) return b;
     double inflate = 0.0;
-    for (const Stroke& s : style.strokes)
-        if (s.enabled) inflate = std::max(inflate, s.width);   // full width:
-    // covers Center (w/2) and the Lot 3 Inside/Outside bands (w) alike.
+    for (const Stroke& s : style.strokes) {
+        if (!s.enabled) continue;
+        inflate = std::max(inflate, s.width);   // full width:
+        // covers Center (w/2) and the Lot 3 Inside/Outside bands (w) alike.
+        // Mark glyphs reach past the band (ticks/brackets stick out `size`,
+        // gaps shift their end bars) — extend by a conservative envelope.
+        for (const StrokeMark& m : s.marks)
+            inflate = std::max(inflate,
+                               s.width + m.size * 1.6 + m.gap * 0.5);
+    }
     b.min.x -= inflate; b.min.y -= inflate;
     b.max.x += inflate; b.max.y += inflate;
     return b;
