@@ -10,16 +10,19 @@
 #include <vector>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Line-mark tool (tool.linemark) — the legacy mark workflow on Ink strokes
-//  (docs/Ink/IOF_CORE_PLAN.md Phase A): hovering a stroked line shows a
-//  translucent GHOST of the would-be mark (kind = markPlaceKind_); clicking
-//  drops it. A click on an existing handle selects it (Shift toggles, Alt
-//  deletes) and ARMS a drag ALONG the curve (relative Δt, no teleport; the
-//  side follows the cursor). Empty click starts a box-select. G slides the
-//  selected marks, R flips their side (instant), S scales a crossing's gap —
-//  all with Shift precision. Marks are style data → one SetStyle undo command
-//  per gesture. Handles/ghosts draw ONLY while the tool is active, into the
-//  Vulkan overlay list (never ImGui in the canvas).
+//  Line-mark tool (tool.linemark) — the GENERIC core mark workflow
+//  (docs/Ink/IOF_CORE_PLAN.md Phase A). A mark is an arc-length anchor on a
+//  stroked line that (a) optionally re-phases the dash run and (b) carries a
+//  list of objects (SVG-marker shapes / node instances, added or subtracted).
+//  This tool PLACES marks and edits their POSITION on the curve; the object
+//  list, phase, side and offset are edited in the Properties "Marks" panel.
+//
+//  Hovering a stroked line shows a ghost dot; clicking drops a neutral mark
+//  with one default object (the top-bar shape). A click on a mark handle
+//  selects it (Shift toggles, Alt deletes) and arms a slide ALONG the curve;
+//  G slides the selection, R cycles its side (Center→Left→Right), X deletes.
+//  All edits go through SetStyle (one undo command each). Handles/ghosts draw
+//  only while the tool is active, into the Vulkan overlay list.
 // ─────────────────────────────────────────────────────────────────────────────
 
 namespace App {
@@ -37,9 +40,19 @@ Ink::Color MkCol(Tok t, float a) {
     }
 }
 
-// A document paint is LINEAR straight — premultiply it for the overlay list.
-Ink::Color Premul(const Ink::Color& c, float a) {
-    return { c.r * a, c.g * a, c.b * a, a };
+// A dashed segment (view px) on the overlay list.
+void DashLine(Ink::OverlayList& ov, Ink::Vec2 a, Ink::Vec2 b,
+              const Ink::Color& col, float th, float dash = 5.0f,
+              float gap = 4.0f) {
+    const float dx = b.x - a.x, dy = b.y - a.y;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 1e-3f) return;
+    const float ux = dx / len, uy = dy / len;
+    for (float t = 0.0f; t < len; t += dash + gap) {
+        const float t1 = std::min(t + dash, len);
+        ov.AddLine({ a.x + ux * t, a.y + uy * t },
+                   { a.x + ux * t1, a.y + uy * t1 }, col, th);
+    }
 }
 
 // One flattened subpath of a node, in WORLD space (view tolerance).
@@ -105,54 +118,56 @@ void PointAtT(const WorldPoly& p, double t, Ink::DVec2& outP, Ink::DVec2& outT) 
 
 enum class HState { Normal, Hover, Selected };
 
-// The mark's clickable HANDLE in the legacy geometry-point style: a ringed
-// dot (orange centre when selected, else the TYPE colour — violet dash pin /
-// green gap pin / accent for glyph marks), plus a select/hover overlay: a
-// ring for glyph marks, a tangent-aligned DIAMOND (dash) or SQUARE (gap) for
-// dash anchors. `tv` = curve tangent at the point, view space.
+// A mark's clickable handle: a ringed dot at the mark point. A mark with a
+// phase carries a small diamond (Dash) / square (Gap) around it; a Neutral
+// mark shows just the dot. Selected/hover get an outer ring in the accent /
+// active colour. The point is offset to the mark's side/offset in the caller.
 void DrawHandle(Ink::OverlayList& ov, Ink::Vec2 sp, Ink::Vec2 tv,
                 const Ink::StrokeMark& m, HState state) {
-    const bool anchor = m.kind == Ink::MarkKind::DashAnchor;
-    const bool dashMode = m.side >= 0;
-    const Ink::Color typeCol = anchor
-        ? MkCol(dashMode ? Tok::C_EditHandle_Vector : Tok::C_EditHandle_Mirrored,
-                1.0f)
+    const bool phased = m.phase != Ink::MarkPhase::Neutral;
+    const bool dash = m.phase == Ink::MarkPhase::Dash;
+    const Ink::Color typeCol = phased
+        ? MkCol(dash ? Tok::C_EditHandle_Vector : Tok::C_EditHandle_Mirrored, 1.0f)
         : MkCol(Tok::S_Color_Accent_Default, 1.0f);
     const Ink::Color centre =
         state == HState::Selected ? MkCol(Tok::S_State_Active_OnPage, 1.0f)
                                   : typeCol;
     ov.AddCircleFilled(sp, 3.5f, centre);
     ov.AddCircle(sp, 3.5f, MkCol(Tok::C_EditHandle_VertexRing, 1.0f), 1.0f);
-    if (state == HState::Normal) return;
 
+    if (phased) {
+        // Tangent-aligned diamond (Dash) / square (Gap) — the phase indicator.
+        float tx = tv.x, ty = tv.y;
+        const float tl = std::sqrt(tx * tx + ty * ty);
+        if (tl < 1e-4f) { tx = 1.0f; ty = 0.0f; } else { tx /= tl; ty /= tl; }
+        const float nx = -ty, ny = tx, r = 6.0f;
+        auto P = [&](float a, float b) {
+            return Ink::Vec2{ sp.x + tx * a + nx * b, sp.y + ty * a + ny * b };
+        };
+        if (dash) {
+            ov.AddLine(P(r, 0), P(0, r), typeCol, 1.2f);
+            ov.AddLine(P(0, r), P(-r, 0), typeCol, 1.2f);
+            ov.AddLine(P(-r, 0), P(0, -r), typeCol, 1.2f);
+            ov.AddLine(P(0, -r), P(r, 0), typeCol, 1.2f);
+        } else {
+            const float h = r * 0.72f;
+            ov.AddLine(P(h, h), P(-h, h), typeCol, 1.2f);
+            ov.AddLine(P(-h, h), P(-h, -h), typeCol, 1.2f);
+            ov.AddLine(P(-h, -h), P(h, -h), typeCol, 1.2f);
+            ov.AddLine(P(h, -h), P(h, h), typeCol, 1.2f);
+        }
+    }
+    if (state == HState::Normal) return;
     const float r = state == HState::Selected ? 8.0f : 7.0f;
     const float th = state == HState::Selected ? 2.0f : 1.5f;
-    if (!anchor) { ov.AddCircle(sp, r, typeCol, th); return; }
-    float tx = tv.x, ty = tv.y;
-    const float tl = std::sqrt(tx * tx + ty * ty);
-    if (tl < 1e-4f) { tx = 1.0f; ty = 0.0f; }
-    else { tx /= tl; ty /= tl; }
-    const float nx = -ty, ny = tx;
-    auto P = [&](float a, float b) {
-        return Ink::Vec2{ sp.x + tx * a + nx * b, sp.y + ty * a + ny * b };
-    };
-    if (dashMode) {   // diamond: vertices along ±tangent and ±normal
-        ov.AddLine(P(r, 0), P(0, r), typeCol, th);
-        ov.AddLine(P(0, r), P(-r, 0), typeCol, th);
-        ov.AddLine(P(-r, 0), P(0, -r), typeCol, th);
-        ov.AddLine(P(0, -r), P(r, 0), typeCol, th);
-    } else {          // square aligned to the curve
-        const float h = r * 0.72f;
-        ov.AddLine(P(h, h), P(-h, h), typeCol, th);
-        ov.AddLine(P(-h, h), P(-h, -h), typeCol, th);
-        ov.AddLine(P(-h, -h), P(h, -h), typeCol, th);
-        ov.AddLine(P(h, -h), P(h, h), typeCol, th);
-    }
+    ov.AddCircle(sp, r, state == HState::Selected
+                            ? MkCol(Tok::S_State_Active_OnPage, 1.0f)
+                            : MkCol(Tok::S_Color_Accent_Default, 1.0f), th);
 }
 
 } // namespace
 
-// Tool active + marks selected → G/R/S/X act on the marks, not the objects.
+// Tool active + marks selected → G/R/X act on the marks, not the objects.
 bool Application::MarkToolArmed() const {
     return Shortcuts::Tools::ToolManager::Instance().GetActiveTool() ==
                "tool.linemark" &&
@@ -168,7 +183,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
     const ImVec2 mp = io.MousePos;
     const Ink::DVec2 mdoc = cam.ScreenToDoc(mp.x, mp.y);
     const void* self = &st;
-    const double precision = io.KeyShift ? 0.1 : 1.0;   // Shift precision-drag
+    const double precision = io.KeyShift ? 0.1 : 1.0;
 
     auto d2v = [&](Ink::DVec2 p) { return cam.DocToView(p.x, p.y); };
 
@@ -197,17 +212,23 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         if (r.index < 0 || r.index >= (int)mk.size()) return nullptr;
         return &mk[(std::size_t)r.index];
     };
-    // World point + tangent of a mark (flattens its subpath).
+    // World point (accounting for side/offset) + tangent of a mark.
     auto markWorld = [&](const EditContext::MarkRef& r, Ink::DVec2& p,
                          Ink::DVec2& tn) -> bool {
         const Ink::StrokeMark* m = markOf(r);
         if (!m) return false;
         auto polys = FlattenWorld(doc, r.node, zoom);
         if (m->sub < 0 || m->sub >= (int)polys.size()) return false;
-        PointAtT(polys[(std::size_t)m->sub], m->t, p, tn);
+        Ink::DVec2 base;
+        PointAtT(polys[(std::size_t)m->sub], m->t, base, tn);
+        const Ink::DVec2 nrm{ -tn.y, tn.x };
+        double off = 0.0;
+        if (m->side == Ink::MarkSide::Left)  off =  m->offset;
+        if (m->side == Ink::MarkSide::Right) off = -m->offset;
+        p = { base.x + nrm.x * off, base.y + nrm.y * off };
         return true;
     };
-    // One undo command over a set of touched nodes (style before → after).
+
     struct StylePair { Ink::NodeId id; Ink::Style before, after; };
     auto commitStyles = [&](std::vector<StylePair> ps, const char* label) {
         if (ps.empty()) return;
@@ -222,7 +243,6 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             });
         LogInfoAction(label);
     };
-    // Snapshot the styles of every node in `refs` (unique), BEFORE mutating.
     auto snapshotStyles = [&](const std::vector<EditContext::MarkRef>& refs) {
         std::vector<StylePair> ps;
         for (const EditContext::MarkRef& r : refs) {
@@ -234,109 +254,38 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         }
         return ps;
     };
-    // Translucent GHOST of a mark: the stroke's own colour at the placement
-    // preview alpha, shapes mirroring the tessellator (curve-following ends).
+    // A ghost of a mark being placed / dragged: the point dot + a faint ring
+    // for each of its objects (radius ≈ object size in view px).
     auto drawGhost = [&](Ink::NodeId nodeId, int strokeIdx,
                          const Ink::StrokeMark& m, const WorldPoly& poly) {
         const Ink::Node* n = doc.Find(nodeId);
         if (!n || strokeIdx < 0 || strokeIdx >= (int)n->style.strokes.size())
             return;
-        const Ink::Stroke& sk = n->style.strokes[(std::size_t)strokeIdx];
-        float alpha = 0.5f;
-        try {
-            alpha = std::max(0.35f, DS::DesignSystem::Instance().GetFloat(
-                                        Tok::S_Config_PlacementPreviewAlpha));
-        } catch (...) {}
-        const Ink::Color col = Premul(sk.paint.color, alpha);
         const Ink::DMat23 w = doc.WorldTransform(nodeId);
         const double wsc =
             std::max(1e-6, std::sqrt(std::abs(w.m[0]*w.m[4] - w.m[1]*w.m[3])));
-        const float thPx = (float)std::max(1.5,
-            (m.thickness > 1e-9 ? m.thickness : sk.width) * wsc * zoom);
         const double total = PolyTotal(poly);
         if (total < 1e-9) return;
-        const double d0 = (m.t < 0.0 ? 0.0 : (m.t > 1.0 ? 1.0 : m.t)) * total;
-        auto sampleOff = [&](double off, Ink::DVec2& p, Ink::DVec2& tn) {
-            double d = d0 + off;
-            d = d < 0.0 ? 0.0 : (d > total ? total : d);
-            PointAtArc(poly, d, p, tn);
-        };
-        auto seg = [&](Ink::DVec2 a, Ink::DVec2 b) {
-            ov.AddLine(d2v(a), d2v(b), col, thPx);
-        };
-        Ink::DVec2 q, qt;
-        sampleOff(0.0, q, qt);
-        const Ink::DVec2 nrm{ -qt.y, qt.x };
-        const double sgn = m.side >= 0 ? 1.0 : -1.0;
-        // Mark params are node-local units → world via the node scale.
-        const double size = m.size * wsc, gap = m.gap * wsc;
-        const double baseW = sk.width * wsc;
-        switch (m.kind) {
-        case Ink::MarkKind::SlopeTick: {
-            const double len = m.outsideMeasure ? (baseW * 0.5 + size) : size;
-            seg(q, { q.x + nrm.x * len * sgn, q.y + nrm.y * len * sgn });
-            break;
+        Ink::DVec2 base, tn;
+        PointAtArc(poly, (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total, base, tn);
+        const Ink::DVec2 nrm{ -tn.y, tn.x };
+        double off = 0.0;
+        if (m.side == Ink::MarkSide::Left)  off =  m.offset;
+        if (m.side == Ink::MarkSide::Right) off = -m.offset;
+        const Ink::DVec2 at{ base.x + nrm.x * off, base.y + nrm.y * off };
+        const Ink::Color col = MkCol(Tok::S_Color_Accent_Default, 0.7f);
+        const Ink::Vec2 c = d2v(at);
+        // A guide from the line to the offset point.
+        if (m.side != Ink::MarkSide::Center)
+            DashLine(ov, d2v(base), c, MkCol(Tok::S_Color_Text_Subtle, 0.6f), 1.0f);
+        for (const Ink::MarkObject& o : m.objects) {
+            const float rad = (float)(o.size * wsc * zoom);
+            ov.AddCircle(c, std::max(2.0f, rad), col, 1.2f);
         }
-        case Ink::MarkKind::Crossing: {
-            for (double s2 : { -1.0, 1.0 }) {
-                Ink::DVec2 e, et;
-                sampleOff(s2 * gap * 0.5, e, et);
-                const Ink::DVec2 en{ -et.y, et.x };
-                seg({ e.x - en.x * size, e.y - en.y * size },
-                    { e.x + en.x * size, e.y + en.y * size });
-            }
-            // Hint the erased span by tracing the curve translucently.
-            const Ink::Color cut = Premul(sk.paint.color, 0.18f);
-            Ink::DVec2 prev, pt;
-            sampleOff(-gap * 0.5, prev, pt);
-            for (int i = 1; i <= 12; ++i) {
-                Ink::DVec2 cur, ct;
-                sampleOff(-gap * 0.5 + gap * (double)i / 12.0, cur, ct);
-                ov.AddLine(d2v(prev), d2v(cur), cut,
-                           (float)std::max(1.0, baseW * zoom));
-                prev = cur;
-            }
-            break;
-        }
-        case Ink::MarkKind::Bridge: {
-            for (double s2 : { -1.0, 1.0 }) {
-                Ink::DVec2 e, et;
-                sampleOff(s2 * gap * 0.5, e, et);
-                const Ink::DVec2 en{ -et.y, et.x };
-                const Ink::DVec2 inward{ et.x * -s2, et.y * -s2 };
-                const Ink::DVec2 top{ e.x + en.x * size, e.y + en.y * size };
-                const Ink::DVec2 bot{ e.x - en.x * size, e.y - en.y * size };
-                const double stub = size * 0.6;
-                seg({ top.x + inward.x * stub, top.y + inward.y * stub }, top);
-                seg(top, bot);
-                seg(bot, { bot.x + inward.x * stub, bot.y + inward.y * stub });
-            }
-            break;
-        }
-        case Ink::MarkKind::Pylon: {
-            seg({ q.x - nrm.x * size, q.y - nrm.y * size },
-                { q.x + nrm.x * size, q.y + nrm.y * size });
-            if (m.square && gap > 1e-6) {
-                const double h = gap * 0.5;
-                const Ink::DVec2 c0{ q.x - qt.x*h - nrm.x*h, q.y - qt.y*h - nrm.y*h };
-                const Ink::DVec2 c1{ q.x + qt.x*h - nrm.x*h, q.y + qt.y*h - nrm.y*h };
-                const Ink::DVec2 c2{ q.x + qt.x*h + nrm.x*h, q.y + qt.y*h + nrm.y*h };
-                const Ink::DVec2 c3{ q.x - qt.x*h + nrm.x*h, q.y - qt.y*h + nrm.y*h };
-                seg(c0, c1); seg(c1, c2); seg(c2, c3); seg(c3, c0);
-            }
-            break;
-        }
-        case Ink::MarkKind::DashAnchor: {
-            // A phase pin has no geometry — show the handle in Hover state.
-            const Ink::Vec2 c2 = d2v(q);
-            const Ink::Vec2 t2 = d2v({ q.x + qt.x, q.y + qt.y });
-            DrawHandle(ov, c2, { t2.x - c2.x, t2.y - c2.y }, m, HState::Hover);
-            break;
-        }
-        }
+        ov.AddCircleFilled(c, 3.0f, col);
     };
 
-    // ── Modal G (slide along curve) / S (scale crossing gap) ─────────────────
+    // ── Modal G (slide along curve) ──────────────────────────────────────────
     if (markGrab_.Active() && markGrab_.owner == nullptr && hovered)
         markGrab_.owner = self;
     if (markGrab_.Active() && markGrab_.owner == self) {
@@ -345,28 +294,8 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                             ImGui::IsKeyPressed(ImGuiKey_KeypadEnter);
         const bool cancel = ImGui::IsKeyPressed(ImGuiKey_Escape) ||
                             ImGui::IsMouseClicked(ImGuiMouseButton_Right);
-
-        // Scale pivot = the anchor mark's centre (screen space).
-        ImVec2 pivotS = markGrab_.startMouse;
-        if (!markGrab_.refs.empty()) {
-            Ink::DVec2 pp, ptn;
-            if (markWorld(markGrab_.refs.front(), pp, ptn)) {
-                const Ink::Vec2 v = d2v(pp);
-                pivotS = ImVec2(v.x + cam.canvasMin.x, v.y + cam.canvasMin.y);
-            }
-        }
-        double scaleF = 1.0;
-        if (markGrab_.op == 2) {
-            const double dA = std::hypot(markGrab_.startMouse.x - pivotS.x,
-                                         markGrab_.startMouse.y - pivotS.y);
-            const double dB = std::hypot(mp.x - pivotS.x, mp.y - pivotS.y);
-            const double raw = dA > 1e-3 ? dB / dA : 1.0;
-            scaleF = std::clamp(1.0 + (raw - 1.0) * precision, 0.05, 20.0);
-        }
-        // RELATIVE slide: Δt = mouse displacement since press, projected onto
-        // the anchor mark's tangent, over its subpath arc length (no teleport).
         double deltaT = 0.0;
-        if (markGrab_.op == 1 && !markGrab_.refs.empty()) {
+        if (!markGrab_.refs.empty()) {
             const EditContext::MarkRef& a = markGrab_.refs.front();
             if (const Ink::StrokeMark* am = markOf(a)) {
                 auto polys = FlattenWorld(doc, a.node, zoom);
@@ -387,38 +316,16 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         auto previewT = [&](std::size_t k) {
             return std::clamp(markGrab_.t0[k] + deltaT, 0.0, 1.0);
         };
-
-        // Ghost each affected mark at its preview value (real marks stay).
         for (std::size_t k = 0; k < markGrab_.refs.size(); ++k) {
             const EditContext::MarkRef& r = markGrab_.refs[k];
             const Ink::StrokeMark* m = markOf(r);
             if (!m) continue;
             Ink::StrokeMark ghost = *m;
-            if (markGrab_.op == 1) ghost.t = previewT(k);
-            else if (ghost.kind == Ink::MarkKind::Crossing)
-                ghost.gap = std::max(0.05, markGrab_.gap0[k] * scaleF);
+            ghost.t = previewT(k);
             auto polys = FlattenWorld(doc, r.node, zoom);
             if (ghost.sub < 0 || ghost.sub >= (int)polys.size()) continue;
             drawGhost(r.node, r.stroke, ghost, polys[(std::size_t)ghost.sub]);
         }
-        // Scale gizmo: pivot ring + dashed pivot→cursor line (accent).
-        if (markGrab_.op == 2) {
-            const Ink::Color gz = MkCol(Tok::S_Color_Accent_Default, 1.0f);
-            const Ink::Vec2 pv{ pivotS.x - cam.canvasMin.x,
-                                pivotS.y - cam.canvasMin.y };
-            const Ink::Vec2 mv{ mp.x - cam.canvasMin.x, mp.y - cam.canvasMin.y };
-            ov.AddCircle(pv, 5.0f, gz, 1.5f);
-            const float len = std::hypot(mv.x - pv.x, mv.y - pv.y);
-            const int segs = std::max(1, (int)(len / 8.0f));
-            for (int i = 0; i < segs; i += 2) {
-                const float t0 = (float)i / segs;
-                const float t1 = (float)std::min(i + 1, segs) / segs;
-                ov.AddLine({ pv.x + (mv.x - pv.x) * t0, pv.y + (mv.y - pv.y) * t0 },
-                           { pv.x + (mv.x - pv.x) * t1, pv.y + (mv.y - pv.y) * t1 },
-                           gz, 1.5f);
-            }
-        }
-
         if (cancel) { markGrab_.Reset(); return; }
         if (commit) {
             std::vector<StylePair> ps = snapshotStyles(markGrab_.refs);
@@ -430,20 +337,16 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 if (r.stroke < 0 || r.stroke >= (int)sty.strokes.size()) continue;
                 auto& mk = sty.strokes[(std::size_t)r.stroke].marks;
                 if (r.index < 0 || r.index >= (int)mk.size()) continue;
-                Ink::StrokeMark& m = mk[(std::size_t)r.index];
-                if (markGrab_.op == 1) m.t = previewT(k);
-                else if (m.kind == Ink::MarkKind::Crossing)
-                    m.gap = std::max(0.05, markGrab_.gap0[k] * scaleF);
+                mk[(std::size_t)r.index].t = previewT(k);
                 doc.SetStyle(r.node, sty);
             }
-            commitStyles(std::move(ps), markGrab_.op == 1 ? "Move Line Marks"
-                                                          : "Scale Crossing");
+            commitStyles(std::move(ps), "Move Line Marks");
             markGrab_.Reset();
         }
         return;
     }
 
-    // ── Click-drag of a grabbed mark (armed by the press below) ──────────────
+    // ── Click-drag of a grabbed mark ─────────────────────────────────────────
     if (markDrag_.armed || markDrag_.active) {
         const Ink::StrokeMark* m = markOf(markDrag_.ref);
         if (!m) { markDrag_ = {}; return; }
@@ -466,17 +369,9 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                                   (mdoc.y - sd.y) * mtan.y) * precision;
             if (total > 1e-6) deltaT = along / total;
             markDrag_.dragT = std::clamp(m->t + deltaT, 0.0, 1.0);
-            // The mark's geometric side follows the cursor's side of the line
-            // (never rewritten for dash anchors — side there means dash/gap).
-            const double cross = mtan.x * (mdoc.y - mpos.y) -
-                                 mtan.y * (mdoc.x - mpos.x);
-            markDrag_.dragSide = cross >= 0.0 ? +1 : -1;
             Ink::StrokeMark ghost = *m;
             ghost.t = markDrag_.dragT;
-            if (m->kind != Ink::MarkKind::DashAnchor)
-                ghost.side = markDrag_.dragSide;
             drawGhost(markDrag_.ref.node, markDrag_.ref.stroke, ghost, poly);
-            // Every OTHER selected mark ghosts shifted by the same Δt.
             for (const EditContext::MarkRef& r : edit_.markSel) {
                 if (r == markDrag_.ref) continue;
                 const Ink::StrokeMark* om = markOf(r);
@@ -490,7 +385,6 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         }
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
             if (markDrag_.active) {
-                // Commit the group move: one undo command.
                 std::vector<StylePair> ps = snapshotStyles(edit_.markSel);
                 for (const EditContext::MarkRef& r : edit_.markSel) {
                     const Ink::Node* n = doc.Find(r.node);
@@ -501,52 +395,31 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                     auto& mk = sty.strokes[(std::size_t)r.stroke].marks;
                     if (r.index < 0 || r.index >= (int)mk.size()) continue;
                     Ink::StrokeMark& sm = mk[(std::size_t)r.index];
-                    if (r == markDrag_.ref) {
-                        sm.t = markDrag_.dragT;
-                        if (sm.kind != Ink::MarkKind::DashAnchor)
-                            sm.side = markDrag_.dragSide;
-                    } else {
-                        sm.t = std::clamp(sm.t + deltaT, 0.0, 1.0);
-                    }
+                    sm.t = (r == markDrag_.ref)
+                               ? markDrag_.dragT
+                               : std::clamp(sm.t + deltaT, 0.0, 1.0);
                     doc.SetStyle(r.node, sty);
                 }
                 commitStyles(std::move(ps),
                              edit_.markSel.size() > 1 ? "Move Line Marks"
                                                       : "Move Line Mark");
-            } else if (markDrag_.pendingToggle) {
-                // Plain click on an already-sole-selected dash anchor: toggle
-                // what it centres (dash ⇄ gap).
-                std::vector<StylePair> ps = snapshotStyles({ markDrag_.ref });
-                const Ink::Node* n = doc.Find(markDrag_.ref.node);
-                if (n) {
-                    Ink::Style sty = n->style;
-                    auto& mk =
-                        sty.strokes[(std::size_t)markDrag_.ref.stroke].marks;
-                    Ink::StrokeMark& sm = mk[(std::size_t)markDrag_.ref.index];
-                    sm.side = -sm.side;
-                    doc.SetStyle(markDrag_.ref.node, sty);
-                    commitStyles(std::move(ps), "Toggle Dash Anchor");
-                }
             }
             markDrag_ = {};
         }
         return;
     }
 
-    // ── Hit-test EXISTING marks (nearest handle within 9 px) ─────────────────
+    // ── Hit-test existing marks (nearest handle within 9 px) ─────────────────
     const float kMarkPx = 9.0f;
     EditContext::MarkRef hit;
     float hitD = kMarkPx + 1.0f;
     for (Ink::NodeId id : pathNodes) {
         const Ink::Node* n = doc.Find(id);
-        auto polys = FlattenWorld(doc, id, zoom);
         for (int si = 0; si < (int)n->style.strokes.size(); ++si) {
             const auto& mk = n->style.strokes[(std::size_t)si].marks;
             for (int mi = 0; mi < (int)mk.size(); ++mi) {
-                const Ink::StrokeMark& m = mk[(std::size_t)mi];
-                if (m.sub < 0 || m.sub >= (int)polys.size()) continue;
                 Ink::DVec2 p, tn;
-                PointAtT(polys[(std::size_t)m.sub], m.t, p, tn);
+                if (!markWorld({ id, si, mi }, p, tn)) continue;
                 const Ink::Vec2 v = d2v(p);
                 const float dpx = std::hypot(mp.x - (v.x + cam.canvasMin.x),
                                              mp.y - (v.y + cam.canvasMin.y));
@@ -555,33 +428,28 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         }
     }
 
-    // ── Handles for every mark: dash anchors always (invisible geometry),
-    //    glyph marks when selected; hovered gets the Hover state. ─────────────
+    // ── Handles for every mark (dot + phase indicator + selection ring) ──────
     for (Ink::NodeId id : pathNodes) {
         const Ink::Node* n = doc.Find(id);
-        auto polys = FlattenWorld(doc, id, zoom);
         for (int si = 0; si < (int)n->style.strokes.size(); ++si) {
             const auto& mk = n->style.strokes[(std::size_t)si].marks;
             for (int mi = 0; mi < (int)mk.size(); ++mi) {
-                const Ink::StrokeMark& m = mk[(std::size_t)mi];
-                if (m.sub < 0 || m.sub >= (int)polys.size()) continue;
                 const EditContext::MarkRef ref{ id, si, mi };
+                Ink::DVec2 p, tn;
+                if (!markWorld(ref, p, tn)) continue;
                 const bool seld = edit_.MarkSelected(ref);
                 const bool hov = ref == hit;
-                if (m.kind != Ink::MarkKind::DashAnchor && !seld && !hov)
-                    continue;
-                Ink::DVec2 p, tn;
-                PointAtT(polys[(std::size_t)m.sub], m.t, p, tn);
                 const Ink::Vec2 c = d2v(p);
                 const Ink::Vec2 t2 = d2v({ p.x + tn.x, p.y + tn.y });
-                DrawHandle(ov, c, { t2.x - c.x, t2.y - c.y }, m,
+                DrawHandle(ov, c, { t2.x - c.x, t2.y - c.y },
+                           mk[(std::size_t)mi],
                            seld ? HState::Selected
                                 : hov ? HState::Hover : HState::Normal);
             }
         }
     }
 
-    // ── Box-select in progress ────────────────────────────────────────────────
+    // ── Box-select ───────────────────────────────────────────────────────────
     if (markBox_.active && markBox_.owner == self) {
         const Ink::Vec2 a = d2v(markBox_.start);
         const Ink::Vec2 b{ mp.x - cam.canvasMin.x, mp.y - cam.canvasMin.y };
@@ -596,14 +464,11 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             if (!markBox_.additive) edit_.markSel.clear();
             for (Ink::NodeId id : pathNodes) {
                 const Ink::Node* n = doc.Find(id);
-                auto polys = FlattenWorld(doc, id, zoom);
                 for (int si = 0; si < (int)n->style.strokes.size(); ++si) {
                     const auto& mk = n->style.strokes[(std::size_t)si].marks;
                     for (int mi = 0; mi < (int)mk.size(); ++mi) {
-                        const Ink::StrokeMark& m = mk[(std::size_t)mi];
-                        if (m.sub < 0 || m.sub >= (int)polys.size()) continue;
                         Ink::DVec2 p, tn;
-                        PointAtT(polys[(std::size_t)m.sub], m.t, p, tn);
+                        if (!markWorld({ id, si, mi }, p, tn)) continue;
                         const EditContext::MarkRef r{ id, si, mi };
                         if (p.x >= mn.x && p.x <= mx.x && p.y >= mn.y &&
                             p.y <= mx.y && !edit_.MarkSelected(r))
@@ -618,11 +483,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
 
     if (hit.node != Ink::kNullNode) {
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            const bool soleSelected = edit_.MarkSelected(hit) &&
-                                      edit_.markSel.size() == 1;
-            const Ink::StrokeMark* hm = markOf(hit);
             if (io.KeyAlt) {
-                // Alt+click DELETES the mark.
                 std::vector<StylePair> ps = snapshotStyles({ hit });
                 const Ink::Node* n = doc.Find(hit.node);
                 if (n) {
@@ -643,12 +504,9 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 markDrag_.armed = true;
                 markDrag_.ref = hit;
                 markDrag_.pressPos = mp;
-                markDrag_.pendingToggle =
-                    soleSelected && hm &&
-                    hm->kind == Ink::MarkKind::DashAnchor;
             }
         }
-        return;   // a mark is under the cursor → don't also place a new one
+        return;
     }
 
     // ── Nearest stroked line → ghost + click places a NEW mark ───────────────
@@ -656,7 +514,6 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         Ink::NodeId id = Ink::kNullNode;
         int stroke = -1, sub = -1;
         double t = 0.5;
-        int side = +1;
         float dpx = 1e9f;
     } best;
     for (Ink::NodeId id : pathNodes) {
@@ -685,13 +542,10 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 const Ink::Vec2 v = d2v(proj);
                 const float dpx = std::hypot(mp.x - (v.x + cam.canvasMin.x),
                                              mp.y - (v.y + cam.canvasMin.y));
-                if (dpx < best.dpx) {
-                    const double cross = abx * (mdoc.y - a.y) -
-                                         aby * (mdoc.x - a.x);
+                if (dpx < best.dpx)
                     best = { id, strokeIdx, sub,
                              total > 1e-6 ? (acc + segLen * u) / total : 0.0,
-                             cross >= 0.0 ? +1 : -1, dpx };
-                }
+                             dpx };
                 acc += segLen;
             }
         }
@@ -701,43 +555,21 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
     if (best.id != Ink::kNullNode && best.dpx <= kPickPx) {
         const Ink::Node* n = doc.Find(best.id);
         const Ink::Stroke& sk = n->style.strokes[(std::size_t)best.stroke];
-        // Sensible defaults scale with the stroke width (the module presets
-        // the ISOM dimensions later).
+        // A neutral mark with one default object (the top-bar shape).
         Ink::StrokeMark m;
-        m.kind = markPlaceKind_;
         m.sub = best.sub;
         m.t = best.t;
-        m.side = best.side;
-        m.size = std::max(4.0, sk.width * 3.0);
-        m.gap = std::max(6.0, sk.width * 4.0);
+        m.side = Ink::MarkSide::Center;
+        Ink::MarkObject obj;
+        obj.shape = markPlaceShape_;
+        obj.mode = markPlaceSubtract_ ? Ink::MarkObjectMode::Subtract
+                                      : Ink::MarkObjectMode::Add;
+        obj.size = std::max(4.0, sk.width * 3.0);
+        m.objects.push_back(obj);
         auto polys = FlattenWorld(doc, best.id, zoom);
         if (best.sub >= 0 && best.sub < (int)polys.size())
             drawGhost(best.id, best.stroke, m, polys[(std::size_t)best.sub]);
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-            // A DashAnchor placed near a control point PINS to it (it then
-            // tracks that point as the curve is edited).
-            if (m.kind == Ink::MarkKind::DashAnchor) {
-                const Ink::DMat23 w = doc.WorldTransform(best.id);
-                float bestNodeD = 12.0f;
-                int bestNode = -1, srcSub = -1, seen = 0;
-                for (int sp = 0; sp < (int)n->path.subpaths.size(); ++sp) {
-                    if (n->path.subpaths[(std::size_t)sp].anchors.size() < 2)
-                        continue;
-                    if (seen++ == best.sub) { srcSub = sp; break; }
-                }
-                if (srcSub >= 0) {
-                    const auto& an = n->path.subpaths[(std::size_t)srcSub].anchors;
-                    for (int ni = 0; ni < (int)an.size(); ++ni) {
-                        const Ink::DVec2 wp = w.Apply(an[(std::size_t)ni].pos);
-                        const Ink::Vec2 v = d2v(wp);
-                        const float dnp =
-                            std::hypot(mp.x - (v.x + cam.canvasMin.x),
-                                       mp.y - (v.y + cam.canvasMin.y));
-                        if (dnp < bestNodeD) { bestNodeD = dnp; bestNode = ni; }
-                    }
-                }
-                if (bestNode >= 0) m.nodeAnchor = bestNode;
-            }
             std::vector<StylePair> ps =
                 snapshotStyles({ { best.id, best.stroke, 0 } });
             Ink::Style sty = n->style;
@@ -759,17 +591,15 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
     }
 }
 
-// G slides / R flips (instant) / S scales the crossing gap of the selection.
+// G slides the selection along the curve; R cycles its side; X deletes.
 void Application::BeginMarkTransform(TransformOp::Kind kind) {
     if (!project_.document || edit_.markSel.empty()) return;
     Ink::Document& doc = *project_.document;
 
     if (kind == TransformOp::Kind::Rotate) {
-        // Instantaneous: flip the side of every FLIPPABLE selected mark
-        // (only one-sided slope ticks — centred marks are unaffected).
+        // Instant: cycle the side of every selected mark Center→Left→Right.
         struct StylePair { Ink::NodeId id; Ink::Style before, after; };
         std::vector<StylePair> ps;
-        bool any = false;
         for (const EditContext::MarkRef& r : edit_.markSel) {
             const Ink::Node* n = doc.Find(r.node);
             if (!n || r.stroke < 0 || r.stroke >= (int)n->style.strokes.size())
@@ -780,29 +610,30 @@ void Application::BeginMarkTransform(TransformOp::Kind kind) {
             Ink::Style sty = n->style;
             auto& mk = sty.strokes[(std::size_t)r.stroke].marks;
             if (r.index < 0 || r.index >= (int)mk.size()) continue;
-            Ink::StrokeMark& m = mk[(std::size_t)r.index];
-            if (m.kind != Ink::MarkKind::SlopeTick) continue;
-            m.side = -m.side;
+            Ink::MarkSide& sd = mk[(std::size_t)r.index].side;
+            sd = sd == Ink::MarkSide::Center ? Ink::MarkSide::Left
+               : sd == Ink::MarkSide::Left   ? Ink::MarkSide::Right
+                                             : Ink::MarkSide::Center;
             doc.SetStyle(r.node, sty);
-            any = true;
         }
-        if (!any) return;
+        if (ps.empty()) return;
         for (StylePair& p : ps)
             if (const Ink::Node* n = doc.Find(p.id)) p.after = n->style;
-        PushDocCommand("Flip Mark Side",
+        PushDocCommand("Cycle Mark Side",
             [ps](Ink::Document& d) {
                 for (const StylePair& p : ps) d.SetStyle(p.id, p.before);
             },
             [ps](Ink::Document& d) {
                 for (const StylePair& p : ps) d.SetStyle(p.id, p.after);
             });
-        LogInfoAction("Flip Mark Side");
+        LogInfoAction("Cycle Mark Side");
         return;
     }
+    if (kind != TransformOp::Kind::Move) return;   // no S on marks
 
-    // Move / Scale → arm the modal op (driven by the first hovered leaf).
+    // Move → arm the modal slide (driven by the first hovered leaf).
     markGrab_.Reset();
-    markGrab_.op = (kind == TransformOp::Kind::Scale) ? 2 : 1;
+    markGrab_.op = 1;
     markGrab_.owner = nullptr;
     markGrab_.startMouse = ImGui::GetIO().MousePos;
     for (const EditContext::MarkRef& r : edit_.markSel) {
@@ -811,13 +642,8 @@ void Application::BeginMarkTransform(TransformOp::Kind kind) {
             continue;
         const auto& mk = n->style.strokes[(std::size_t)r.stroke].marks;
         if (r.index < 0 || r.index >= (int)mk.size()) continue;
-        // Scale only affects crossings; skip others so mixed selections work.
-        if (markGrab_.op == 2 &&
-            mk[(std::size_t)r.index].kind != Ink::MarkKind::Crossing)
-            continue;
         markGrab_.refs.push_back(r);
         markGrab_.t0.push_back(mk[(std::size_t)r.index].t);
-        markGrab_.gap0.push_back(mk[(std::size_t)r.index].gap);
     }
     if (markGrab_.refs.empty()) markGrab_.Reset();
 }
@@ -825,7 +651,6 @@ void Application::BeginMarkTransform(TransformOp::Kind kind) {
 void Application::DeleteSelectedMarks() {
     if (!project_.document || edit_.markSel.empty()) return;
     Ink::Document& doc = *project_.document;
-    // Group per node; erase in DESCENDING mark index so indices stay valid.
     std::vector<EditContext::MarkRef> refs = edit_.markSel;
     std::sort(refs.begin(), refs.end(),
               [](const EditContext::MarkRef& a, const EditContext::MarkRef& b) {

@@ -1,5 +1,6 @@
 #include "Application.h"
 
+#include "ViewportShapes.h"
 #include <Ink/Geometry/Geometry.h>
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ToolManager.h>
@@ -229,16 +230,41 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
         if (penNode_ != Ink::kNullNode) {
             if (const Ink::Node* pn = doc.Find(penNode_);
                 pn && !pn->path.subpaths.empty()) {
-                const auto& an = pn->path.subpaths.front().anchors;
+                const Ink::Subpath& sub = pn->path.subpaths.front();
+                const auto& an = sub.anchors;
                 for (std::size_t i = 0; i < an.size(); ++i) {
                     const Ink::Vec2 v = cam.DocToView(an[i].pos.x, an[i].pos.y);
                     const bool first = i == 0 && an.size() >= 3;
                     ov.AddCircleFilled(v, first ? 4.5f : 3.0f,
                                        first ? activeCol : selCol);
                 }
-                const Ink::Vec2 lastV = cam.DocToView(an.back().pos.x,
-                                                      an.back().pos.y);
-                DashLine(ov, lastV, mv, subtleCol, 1.0f);
+                // For a spline WITHOUT handles (NURBS / Poly), show the LIVE
+                // curve up to the cursor — the drag has no effect there, so
+                // the preview must track the mouse directly (a phantom control
+                // point at the cursor, flattened like the real path).
+                const Ink::DVec2 md = cam.ScreenToDoc(mp.x, mp.y);
+                if (sub.spline != Ink::SplineType::Bezier && !an.empty()) {
+                    Ink::PathData preview = pn->path;
+                    Ink::Anchor ghost; ghost.pos = md;
+                    preview.subpaths.front().anchors.push_back(ghost);
+                    preview.subpaths.front().closed = false;
+                    const double tol = std::max(1e-4, 0.25 / std::max(1e-6, cam.zoom));
+                    for (const auto& pl : Ink::geom::Flatten(preview, tol)) {
+                        for (std::size_t i = 0; i + 1 < pl.points.size(); ++i)
+                            ov.AddLine(
+                                cam.DocToView(pl.points[i].x, pl.points[i].y),
+                                cam.DocToView(pl.points[i+1].x, pl.points[i+1].y),
+                                activeCol, 1.5f);
+                    }
+                    // Also hint the raw control polygon to the cursor.
+                    const Ink::Vec2 lastV = cam.DocToView(an.back().pos.x,
+                                                          an.back().pos.y);
+                    DashLine(ov, lastV, mv, subtleCol, 1.0f);
+                } else {
+                    const Ink::Vec2 lastV = cam.DocToView(an.back().pos.x,
+                                                          an.back().pos.y);
+                    DashLine(ov, lastV, mv, subtleCol, 1.0f);
+                }
             }
         }
         // Crosshair at the pen tip.
@@ -320,6 +346,32 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
             const Ink::Vec2 ctr{ (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f };
             ov.AddCircle(ctr, std::max(std::abs(b.x-a.x), std::abs(b.y-a.y)) * 0.5f, activeCol, 1.5f);
         }
+    } else if (canvasDrag_.kind == CanvasDrag::Kind::DrawShape) {
+        // Draw-on-create ghost: the shape flattened at the dragged box size,
+        // plus a subtle box outline (the placement rect).
+        const Ink::DVec2 sa = canvasDrag_.startDoc, sb = canvasDrag_.curDoc;
+        const double cx = (sa.x + sb.x) * 0.5, cy = (sa.y + sb.y) * 0.5;
+        const double hw = std::max(1.0, std::abs(sb.x - sa.x) * 0.5);
+        const double hh = std::max(1.0, std::abs(sb.y - sa.y) * 0.5);
+        std::string nm;
+        Ink::PathData gp = BuildShapeGeometry(canvasDrag_.shapeKind.c_str(),
+                                              hw, hh, nm);
+        const double localTol = std::max(1e-4, 0.25 / std::max(1e-6, cam.zoom));
+        for (const auto& pl : Ink::geom::Flatten(gp, localTol)) {
+            const std::size_t m = pl.points.size();
+            if (m < 2) continue;
+            const std::size_t last = pl.closed ? m : m - 1;
+            for (std::size_t i = 0; i < last; ++i) {
+                const Ink::DVec2 p0 = pl.points[i];
+                const Ink::DVec2 p1 = pl.points[(i + 1) % m];
+                ov.AddLine(cam.DocToView(cx + p0.x, cy + p0.y),
+                           cam.DocToView(cx + p1.x, cy + p1.y), activeCol, 1.5f);
+            }
+        }
+        const Ink::Vec2 a = cam.DocToView(sa.x, sa.y);
+        const Ink::Vec2 b = cam.DocToView(sb.x, sb.y);
+        ov.AddRect({ std::min(a.x,b.x), std::min(a.y,b.y) },
+                   { std::max(a.x,b.x), std::max(a.y,b.y) }, subtleCol, 1.0f);
     }
     // ── Line-mark tool: handles + ghosts + its own mouse handling (it needs
     //    the overlay list, so it drives from the overlay phase). ─────────────

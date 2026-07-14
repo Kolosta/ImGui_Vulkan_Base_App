@@ -134,6 +134,17 @@ void Application::ToolMousePress(EditorState& st, const ViewCam& cam,
                                  Ink::DVec2 doc, bool shift) {
     const std::string tool = Shortcuts::Tools::ToolManager::Instance().GetActiveTool();
 
+    // Draw-on-create shape armed (a Shapes/circle Add-menu pick while Draw on
+    // Create is on): press-drag defines the box, release builds the shape.
+    if (!pendingDrawKind_.empty()) {
+        canvasDrag_ = CanvasDrag{};
+        canvasDrag_.kind = CanvasDrag::Kind::DrawShape;
+        canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
+        canvasDrag_.leaf = &st;
+        canvasDrag_.shapeKind = pendingDrawKind_;
+        return;
+    }
+
     // 2D cursor tool: click places the cursor (Blender's Shift-RMB equivalent).
     if (tool == "tool.cursor") {
         edit_.cursor2D = doc;
@@ -341,6 +352,21 @@ void Application::ToolMouseRelease(EditorState& st, const ViewCam& cam, Ink::DVe
                 [snap](Ink::Document& doc) { doc.RestoreSubtree(snap); });
             LogInfoAction(std::string("Draw ") + nm);
         }
+    } else if (canvasDrag_.kind == CanvasDrag::Kind::DrawShape) {
+        // Draw-on-create: build the armed shape kind in the dragged box. A
+        // near-zero drag (a plain click) falls back to a preset at the click.
+        const Ink::DVec2 a = canvasDrag_.startDoc, b = canvasDrag_.curDoc;
+        const std::string kind = canvasDrag_.shapeKind;
+        const double w = std::abs(a.x - b.x), h = std::abs(a.y - b.y);
+        if (w > 1.0 && h > 1.0)
+            SpawnShapeInRect(kind.c_str(),
+                             { std::min(a.x, b.x), std::min(a.y, b.y) },
+                             { std::max(a.x, b.x), std::max(a.y, b.y) });
+        else {
+            edit_.cursor2D = a; edit_.cursor2DValid = true;
+            SpawnShape(kind.c_str());
+        }
+        pendingDrawKind_.clear();   // one placement per menu pick
     }
     canvasDrag_ = CanvasDrag{};
 }

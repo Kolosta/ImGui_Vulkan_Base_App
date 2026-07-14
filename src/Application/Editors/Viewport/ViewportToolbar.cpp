@@ -6,6 +6,7 @@
 #include <VectorGraphics/IconManager.h>
 #include <UI/Widgets/Dropdown.h>
 #include <UI/Widgets/ButtonGroup.h>
+#include <UI/Widgets/Checkbox.h>
 #include <UI/Widgets/DragValue.h>
 #include <UI/Widgets/PopupMenu.h>
 #include <UI/Widgets/ToolPalette.h>
@@ -255,29 +256,31 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
         }
         ImGui::SameLine(0.0f, 8.0f * gs);
         DrawDefaultColorSwatches(bh);
-        // The mark KIND placed by the line-mark tool (the module presets the
-        // ISOM dimensions later; here the user picks the glyph type).
+        // The default OBJECT a click drops on the line: an SVG-marker shape
+        // and whether it ADDS to or SUBTRACTS from the stroke. Phase, side,
+        // offset and the full object list are edited in Properties.
         if (markTool) {
             ImGui::SameLine(0.0f, 8.0f * gs);
-            static const char* kKinds[] = { "Slope Tick", "Crossing", "Bridge",
-                                            "Pylon", "Dash Anchor" };
-            static const char* kKindTips[] = {
-                "A short downhill tick on one side of the line",
-                "A gap cut in the line with two ticks across the ends",
-                "A gap with two facing brackets (bridge / tunnel)",
-                "A crossbar across the line (power-line pylon)",
-                "A phase pin: forces a dash element or gap to land here" };
-            UI::DropdownConfig cfg; cfg.id = "##markkind";
+            static const char* kShapes[] = {
+                "Circle", "Rectangle", "Diamond",
+                "Inverted Circle", "Inverted Rectangle", "Inverted Diamond" };
+            UI::DropdownConfig cfg; cfg.id = "##markshape";
             cfg.triggerIcon = "line-end-diamond";
-            cfg.triggerLabel = kKinds[(int)markPlaceKind_];
-            for (int i = 0; i < 5; ++i) {
-                UI::DropdownItem it; it.label = kKinds[i];
-                it.tooltip = kKindTips[i]; cfg.items.push_back(it);
+            cfg.triggerLabel = kShapes[(int)markPlaceShape_];
+            for (int i = 0; i < 6; ++i) {
+                UI::DropdownItem it; it.label = kShapes[i];
+                cfg.items.push_back(it);
             }
-            cfg.selectedIndex = (int)markPlaceKind_;
+            cfg.selectedIndex = (int)markPlaceShape_;
             UI::DropdownResult r = UI::Dropdown(cfg);
-            if (r.changed && r.selected >= 0 && r.selected < 5)
-                markPlaceKind_ = (Ink::MarkKind)r.selected;
+            if (r.changed && r.selected >= 0 && r.selected < 6)
+                markPlaceShape_ = (Ink::MarkShape)r.selected;
+            ImGui::SameLine(0.0f, 6.0f * gs);
+            bool sub = markPlaceSubtract_;
+            if (UI::CheckboxBox("##marksub", &sub)) markPlaceSubtract_ = sub;
+            if (ImGui::IsItemHovered())
+                UI::DrawTooltip("Subtract: the object cuts the stroke instead "
+                                "of adding to it", ImGui::GetIO().MousePos);
         }
         (void)pst;
     };
@@ -379,22 +382,33 @@ void Application::RenderAddMenu() {
     // The legacy two-column split: SHAPES (filled primitives) and CURVES
     // (Bézier / NURBS / Poly, with their circle forms) as submenus.
     std::vector<UI::MenuEntry> entries;
+    // A SHAPE / circle leaf: when Draw on Create is on it arms a drag-to-place
+    // (the canvas builds the shape in the dragged box); otherwise it spawns a
+    // preset at the 2D cursor.
     auto leaf = [&](std::vector<UI::MenuEntry>& dst, const char* label,
                     const char* kind, const char* tip) {
         UI::MenuEntry e; e.label = label; e.tooltip = tip;
-        e.onClick = [this, kind]() { SpawnShape(kind); addMenuOpen_ = false; };
+        e.onClick = [this, kind]() {
+            if (addDrawOnCreate_) pendingDrawKind_ = kind;
+            else                  SpawnShape(kind);
+            addMenuOpen_ = false;
+        };
         dst.push_back(std::move(e));
     };
     {
         UI::MenuEntry shapes; shapes.label = "Shapes"; shapes.icon = "shape-category";
-        leaf(shapes.submenu, "Rectangle", "rect",     "Add a rectangle at the 2D cursor");
-        leaf(shapes.submenu, "Ellipse",   "ellipse",  "Add an ellipse at the 2D cursor");
-        leaf(shapes.submenu, "Triangle",  "triangle", "Add a triangle at the 2D cursor");
+        leaf(shapes.submenu, "Rectangle", "rect",
+             "Rectangle (drag to place when Draw on Create is on)");
+        leaf(shapes.submenu, "Ellipse",   "ellipse",
+             "Ellipse (drag to place when Draw on Create is on)");
+        leaf(shapes.submenu, "Triangle",  "triangle",
+             "Triangle (drag to place when Draw on Create is on)");
         entries.push_back(std::move(shapes));
     }
     {
-        // Open curve kinds honour "Draw on Create" (the pen); the circle
-        // forms are complete shapes and always spawn.
+        // Open curve kinds honour "Draw on Create" via the PEN (per-point
+        // construction); the circle forms use the drag-to-place box like the
+        // shapes.
         auto curveLeaf = [&](std::vector<UI::MenuEntry>& dst, const char* label,
                              const char* kind, const char* tip) {
             UI::MenuEntry e; e.label = label; e.tooltip = tip;
@@ -409,11 +423,12 @@ void Application::RenderAddMenu() {
         curveLeaf(curves.submenu, "Bézier",     "curve",
                   "Add an open Bézier curve (pen when Draw on Create is on)");
         leaf(curves.submenu, "Bézier Circle",   "beziercircle",
-             "Add a four-arc Bézier circle at the 2D cursor");
+             "Four-arc Bézier circle (drag to place when Draw on Create is on)");
         curveLeaf(curves.submenu, "NURBS Path", "nurbs",
                   "Add an open NURBS path (pen when Draw on Create is on)");
         leaf(curves.submenu, "NURBS Circle",    "nurbscircle",
-             "Add an EXACT rational-NURBS circle (8-point square hull)");
+             "Exact rational-NURBS circle (drag to place when Draw on Create "
+             "is on)");
         curveLeaf(curves.submenu, "Poly Line",  "poly",
                   "Add a straight polyline (pen when Draw on Create is on)");
         entries.push_back(std::move(curves));

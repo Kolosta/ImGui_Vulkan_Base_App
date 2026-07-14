@@ -199,31 +199,33 @@ private:
     bool           penDragging_ = false;       // pulling the new anchor's handles
     Ink::NodeId    penNode_     = Ink::kNullNode;
     Ink::SplineType penSpline_  = Ink::SplineType::Bezier;
-    // ── Line-mark tool (tool.linemark) — the legacy mark editing on strokes ──
-    // Handles/ghosts only render while the tool is active. Click places a mark
-    // of `markPlaceKind_` on the nearest stroked line; a click on an existing
-    // handle selects (Shift toggles, Alt deletes) and arms a drag ALONG the
-    // curve; G/R/S act on the selected marks (slide / flip side / scale gap);
-    // X deletes them. All edits go through SetStyle (one undo command each).
+    // ── Line-mark tool (tool.linemark) — the generic mark editing on strokes ─
+    // Handles/ghosts only render while the tool is active. Click places a
+    // neutral mark (default object = `markPlaceShape_`) on the nearest stroked
+    // line; a click on an existing handle selects (Shift toggles, Alt deletes)
+    // and arms a drag ALONG the curve; G slides / R cycles side / X deletes the
+    // selected marks. All edits go through SetStyle (one undo command each).
     void HandleMarkTool(EditorState& st, const ViewCam& cam,
                         Ink::OverlayList& ov, bool hovered);
     void BeginMarkTransform(TransformOp::Kind kind);
     void DeleteSelectedMarks();
-    bool MarkToolArmed() const;   // tool active + marks selected (redirect G/R/S/X)
-    Ink::MarkKind markPlaceKind_ = Ink::MarkKind::SlopeTick;
+    bool MarkToolArmed() const;   // tool active + marks selected (redirect G/R/X)
+    // The default object a click drops on the line (top-bar picker): a shape
+    // and whether it ADDS to or SUBTRACTS from the stroke.
+    Ink::MarkShape markPlaceShape_ = Ink::MarkShape::Circle;
+    bool           markPlaceSubtract_ = false;
     struct MarkDrag {           // click-drag of one grabbed mark (+ group Δt)
         bool armed = false, active = false;
         EditContext::MarkRef ref;
         ImVec2 pressPos{};
-        double dragT = 0.0; int dragSide = +1;
-        bool pendingToggle = false;   // sole-selected dash anchor: flip on release
+        double dragT = 0.0;
     } markDrag_;
-    struct MarkGrab {           // modal G (slide) / S (crossing gap) over markSel
-        int op = 0;             // 0 = none, 1 = grab, 2 = scale
+    struct MarkGrab {           // modal G (slide along the curve) over markSel
+        int op = 0;             // 0 = none, 1 = grab
         const void* owner = nullptr;
         ImVec2 startMouse{};
         std::vector<EditContext::MarkRef> refs;
-        std::vector<double> t0, gap0;
+        std::vector<double> t0;
         bool Active() const { return op != 0; }
         void Reset() { *this = MarkGrab{}; }
     } markGrab_;
@@ -267,6 +269,12 @@ private:
     void   Action_DuplicateGrab();       // Shift+D: deep copy + grab
     // Create a shape at the 2D cursor / view centre and select it.
     Ink::NodeId SpawnShape(const char* kind);
+    // Draw-on-create: build `kind` to fill the dragged box (doc space).
+    Ink::NodeId SpawnShapeInRect(const char* kind, Ink::DVec2 mn, Ink::DVec2 mx);
+    Ink::NodeId FinishSpawn(Ink::NodeId id, const std::string& name);
+    // The shape kind armed by the Add menu when Draw on Create is on: the next
+    // canvas drag builds it in the dragged box (empty = nothing armed).
+    std::string pendingDrawKind_;
     // Build the default Style (fill+stroke) from the EditContext swatches.
     Ink::Style DefaultStyle() const;
     // Push an already-applied reversible command onto the doc undo stack.

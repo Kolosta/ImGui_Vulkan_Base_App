@@ -1,6 +1,7 @@
 #include "Application.h"
 
 #include "ViewportMath.h"
+#include "ViewportShapes.h"
 #include <Shortcuts/ToolManager.h>
 #include <cmath>
 
@@ -68,7 +69,6 @@ Ink::NodeId Application::SpawnShape(const char* kind) {
     // Spawn at the 2D cursor (its default is the first page centre), so the new
     // shape lands where the user placed the cursor — Blender's Add semantics.
     const Ink::Page& page = doc.Pages().front();
-    const Ink::NodeId parent = page.id;
     Ink::DVec2 at = edit_.cursor2D;
     if (!edit_.cursor2DValid)
         at = { page.pos.x + page.size.x * 0.5, page.pos.y + page.size.y * 0.5 };
@@ -76,65 +76,39 @@ Ink::NodeId Application::SpawnShape(const char* kind) {
     // Geometry is built around the LOCAL ORIGIN (0,0) and the node's transform
     // places it at the cursor — so the object's origin sits ON the object
     // (Blender), never left behind at the world origin.
-    const double r = 80.0;
-    Ink::PathData path;
     std::string name;
-    if (!std::strcmp(kind, "rect")) {
-        path = Ink::PathData::Rect(-r, -r, r * 2, r * 2);
-        name = "Rectangle";
-    } else if (!std::strcmp(kind, "ellipse")) {
-        path = Ink::PathData::Ellipse(0, 0, r, r);
-        name = "Ellipse";
-    } else if (!std::strcmp(kind, "triangle")) {
-        path = Ink::PathData::Polygon({ { 0, -r }, { r, r }, { -r, r } });
-        name = "Triangle";
-    } else if (!std::strcmp(kind, "curve")) {
-        // An open Bézier curve: three smooth anchors with tangent handles.
-        Ink::Subpath sp; sp.closed = false;
-        auto anchor = [&](double x, double y, double ix, double iy) {
-            Ink::Anchor an; an.pos = { x, y };
-            an.in = { -ix, -iy }; an.out = { ix, iy };
-            an.hasIn = an.hasOut = true; an.kind = Ink::AnchorKind::Symmetric;
-            sp.anchors.push_back(an);
-        };
-        anchor(-r, 0,        0,  r * 0.6);
-        anchor(0,  -r * 0.6, r * 0.6, 0);
-        anchor(r,  0,        0, -r * 0.6);
-        path.subpaths.push_back(std::move(sp));
-        name = "Bézier";
-    } else if (!std::strcmp(kind, "beziercircle")) {
-        path = Ink::PathData::Ellipse(0, 0, r, r);   // four kappa cubic arcs
-        name = "Bézier Circle";
-    } else if (!std::strcmp(kind, "nurbs")) {
-        // An open uniform NURBS path (order 4, clamped ends): a gentle S of
-        // four control points around the cursor.
-        path = Ink::PathData::Nurbs({ { -r, 0 }, { -r * 0.33, -r * 0.8 },
-                                      { r * 0.33, r * 0.8 }, { r, 0 } });
-        name = "NURBS Path";
-    } else if (!std::strcmp(kind, "nurbscircle")) {
-        path = Ink::PathData::NurbsCircle(0, 0, r);
-        name = "NURBS Circle";
-    } else if (!std::strcmp(kind, "poly")) {
-        Ink::PathData pp =
-            Ink::PathData::Polygon({ { -r, 0 }, { 0, -r * 0.6 }, { r, 0 } },
-                                   /*closed=*/false);
-        pp.subpaths.front().spline = Ink::SplineType::Poly;
-        path = std::move(pp);
-        name = "Poly Line";
-    } else {
-        path = Ink::PathData::Rect(-r, -r, r * 2, r * 2);
-        name = "Shape";
-    }
-
-    const Ink::NodeId id = doc.AddPath(parent, path, DefaultStyle(), name);
+    Ink::PathData path = BuildShapeGeometry(kind, 80.0, 80.0, name);
+    const Ink::NodeId id = doc.AddPath(page.id, path, DefaultStyle(), name);
     if (id == Ink::kNullNode) return id;
-    {
-        Ink::Transform2D t;
-        t.tx = at.x;
-        t.ty = at.y;
-        doc.SetTransform(id, t);
-    }
+    Ink::Transform2D t; t.tx = at.x; t.ty = at.y;
+    doc.SetTransform(id, t);
+    return FinishSpawn(id, name);
+}
 
+// Draw-on-create: build the shape to fill the dragged BOX (min..max in doc
+// space) instead of a preset square at the cursor. The origin re-bases to the
+// box centre so the object behaves like a spawned one.
+Ink::NodeId Application::SpawnShapeInRect(const char* kind, Ink::DVec2 mn,
+                                          Ink::DVec2 mx) {
+    if (!project_.document) return Ink::kNullNode;
+    Ink::Document& doc = *project_.document;
+    if (doc.Pages().empty()) return Ink::kNullNode;
+    const double cx = (mn.x + mx.x) * 0.5, cy = (mn.y + mx.y) * 0.5;
+    const double hw = std::max(1.0, std::abs(mx.x - mn.x) * 0.5);
+    const double hh = std::max(1.0, std::abs(mx.y - mn.y) * 0.5);
+    std::string name;
+    Ink::PathData path = BuildShapeGeometry(kind, hw, hh, name);
+    const Ink::NodeId id =
+        doc.AddPath(doc.Pages().front().id, path, DefaultStyle(), name);
+    if (id == Ink::kNullNode) return id;
+    Ink::Transform2D t; t.tx = cx; t.ty = cy;
+    doc.SetTransform(id, t);
+    return FinishSpawn(id, name);
+}
+
+// Commit a freshly built shape node: select it and push the add/undo command.
+Ink::NodeId Application::FinishSpawn(Ink::NodeId id, const std::string& name) {
+    Ink::Document& doc = *project_.document;
     edit_.SelectOnly(id);
     // Undo restores the whole subtree verbatim; redo re-adds a fresh one is
     // wrong (ids differ) — so redo restores the SAME snapshot too.

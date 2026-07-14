@@ -166,12 +166,15 @@ struct TransformOp {
 // ── Canvas drag gestures (select tool) ───────────────────────────────────────
 struct CanvasDrag {
     enum class Kind : uint8_t { None = 0, BoxSelect, DrawRect, DrawEllipse,
-                                MoveVerts };
+                                MoveVerts, DrawShape };
     Kind kind = Kind::None;
     Ink::DVec2 startDoc{};
     Ink::DVec2 curDoc{};
     const void* leaf = nullptr;
     bool  extend = false;                // Shift held at press (box select)
+    // DrawShape (draw-on-create): the shape kind to build in the dragged box
+    // (rect/ellipse/triangle/beziercircle/nurbscircle/…). See SpawnShapeInRect.
+    std::string shapeKind;
 };
 
 // ── The shared editing context ───────────────────────────────────────────────
