@@ -1296,13 +1296,39 @@ void TestStrokeMarks() {
         CHECK(sawErase);
     }
 
-    // Offset percentage resolves to a fraction of the stroke width.
+    // Offset / size percentage resolves to a fraction of the stroke width.
     {
         StrokeMark pm; pm.side = MarkSide::Left; pm.offset = 50.0;
         pm.offsetPercent = true;
         CHECK_NEAR(pm.OffsetUnits(8.0), 4.0, 1e-9);   // 50 % of 8 = 4
         pm.offsetPercent = false; pm.offset = 3.0;
         CHECK_NEAR(pm.OffsetUnits(8.0), 3.0, 1e-9);
+        MarkObject mo; mo.size = 100.0; mo.width = 200.0; mo.sizePercent = true;
+        CHECK_NEAR(mo.SizeUnits(8.0), 8.0, 1e-9);     // 100 % of 8
+        CHECK_NEAR(mo.WidthUnits(8.0), 16.0, 1e-9);   // 200 % of 8
+    }
+
+    // A primitive mark shape is PARAMETRIC (re-tessellates per tier): a circle
+    // radius 100 % of an 8-unit stroke is an ellipse of radius 8.
+    {
+        MarkObject mo; mo.shape = MarkShape::Circle;
+        mo.size = 100.0; mo.sizePercent = true;
+        const PathData shape = geom::MarkPrimitiveShape(mo, 8.0);
+        CHECK(!shape.Empty());
+        double maxR = 0.0;
+        for (const auto& pl : geom::Flatten(shape, 0.01))
+            for (const DVec2& p : pl.points)
+                maxR = std::max(maxR, std::hypot(p.x, p.y));
+        CHECK_NEAR(maxR, 8.0, 0.1);
+
+        // Follow mode curves the outline: a straight spine gives a valid ring.
+        geom::Polyline sp; sp.points = { { 0, 0 }, { 100, 0 } };
+        StrokeMark m; m.sub = 0; m.t = 0.5;
+        MarkObject fo; fo.shape = MarkShape::Rectangle; fo.bend = MarkBend::Follow;
+        fo.size = 100.0; fo.width = 50.0; fo.sizePercent = true;
+        std::vector<DVec2> ring;
+        CHECK(geom::MarkFollowContour(sp, m, fo, 8.0, 0.1, ring));
+        CHECK(ring.size() >= 4);
     }
 }
 
