@@ -119,37 +119,58 @@ enum class MarkShape : std::uint8_t {
 //   Fusion   — the object's geometry is FUSED into the stroke's own mesh
 //              (one drawing, one alpha): translucent strokes don't double up,
 //              exactly like the legacy slope ticks. The default.
-//   Blend    — the object is a SEPARATE drawable composited over the stroke's
-//              isolation layer with its own blend mode (so it can Multiply /
-//              Screen / … against the stroke below).
+//   Blend    — the object is a SEPARATE drawable composited against the
+//              stroke's isolation layer with its own blend mode.
 //   Subtract — an absolute geometric erase (dst-out): the shape CUTS the
 //              stroke layer (RENDER_GRAPH.md §Erase).
 enum class MarkObjectMode : std::uint8_t { Fusion = 0, Blend = 1, Subtract = 2 };
 
-// Whether an object's geometry BENDS to follow the curve at the mark, or stays
-// a hard (rigid) shape merely rotated to the tangent.
-enum class MarkBend : std::uint8_t { Hard = 0, Bend = 1 };
+// How the object's geometry relates to the curve:
+//   Hard   — a rigid shape merely rotated to the tangent.
+//   Bend   — the shape is skewed along the tangent frame (a shear that
+//            approximates the local slope).
+//   Follow — the shape's outline is RESAMPLED along the curve so it truly
+//            bends with the line (a rectangle's long edges curve).
+enum class MarkBend : std::uint8_t { Hard = 0, Bend = 1, Follow = 2 };
 
 struct MarkObject {
     MarkShape       shape = MarkShape::Circle;
     MarkObjectMode  mode  = MarkObjectMode::Fusion;
     MarkBend        bend  = MarkBend::Hard;
     BlendMode       blend = BlendMode::Normal;   // BLEND mode only
-    // node-local units. `size` = radius (circle/diamond) or HALF-LENGTH along
+    // Size, in % of the stroke width (default) or in node-local doc-units.
+    // `size` = radius (circle) / diagonal-half (diamond) / HALF-LENGTH along
     // the tangent (rectangle); `width` = the rectangle's HALF-height across it.
-    double          size  = 6.0;
-    double          width = 6.0;    // Rectangle only (half-height)
+    double          size  = 100.0;
+    double          width = 100.0;  // Rectangle only
+    bool            sizePercent = true;
     double          rotation = 0.0; // extra spin about the mark point (radians)
     NodeId          nodeRef = kNullNode;   // shape == Instance
+    // Blend mode: draw the object IN FRONT of the stroke (default — the blend
+    // puts the mark over the stroke) or BEHIND it (front = false — the stroke
+    // then composites over the mark, the reverse blend order). Since the blend
+    // operator is not symmetric, `front` is exactly the "which is over which"
+    // choice.
+    bool            front = true;
     // Fill colour of a primitive object (linear straight). Instance objects use
     // the referenced node's own style, so this is ignored for them.
     Color           color{ 0, 0, 0, 1 };
     bool            useStrokeColor = true;    // primitive: inherit stroke paint
 
+    // Size / width resolved to node-local doc-units for a stroke width.
+    double SizeUnits(double w) const {
+        return sizePercent ? size * 0.01 * w : size;
+    }
+    double WidthUnits(double w) const {
+        return sizePercent ? width * 0.01 * w : width;
+    }
+
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[5] = { (std::uint8_t)shape, (std::uint8_t)mode,
-                                         (std::uint8_t)bend, (std::uint8_t)blend,
-                                         (std::uint8_t)(useStrokeColor ? 1 : 0) };
+        const std::uint8_t packed[7] = {
+            (std::uint8_t)shape, (std::uint8_t)mode, (std::uint8_t)bend,
+            (std::uint8_t)blend, (std::uint8_t)(sizePercent ? 1 : 0),
+            (std::uint8_t)(front ? 1 : 0),
+            (std::uint8_t)(useStrokeColor ? 1 : 0) };
         h = HashBytes(packed, sizeof packed, h);
         h = HashDouble(size, h);
         h = HashDouble(width, h);

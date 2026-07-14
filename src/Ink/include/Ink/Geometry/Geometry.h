@@ -53,14 +53,26 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                       const Stroke& stroke, double tolerance,
                       const PathData* source = nullptr);
 
-// The node-local CONTOUR of one mark object placed on the (aligned) `spine`
-// polyline of subpath `mark.sub`: a closed ring ready to triangulate (Fusion,
-// in the stroke mesh) or to feed a PathData (Blend/Subtract drawables). Honours
-// the mark's side + resolved offset, the object's size/width/rotation, and its
-// Hard-vs-Bend setting (Bend samples the ring along the curve). Returns false
-// for an Instance object (it has no primitive contour — the Scene routes the
-// referenced node instead). `strokeWidth` resolves a percentage offset.
-bool MarkObjectContour(const Polyline& spine, const StrokeMark& mark,
+// The node-local, ORIGIN-CENTRED PARAMETRIC PathData of a primitive mark object
+// (Circle → Ellipse, Rectangle → Rect, Diamond → Polygon) at its resolved size
+// (`strokeWidth` resolves a percentage). Placed by MarkPlaceMatrix and
+// re-tessellated per zoom tier by the GeometryCache — vector-exact at any zoom.
+// Empty for an Instance (routed as a node instead).
+PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth);
+
+// The node-local placement matrix of a mark on the (aligned) `spine` of subpath
+// `mark.sub`: translate to the mark point (honouring side + resolved offset),
+// rotate to the tangent + the object's own rotation, and — for Bend — shear
+// along the tangent to lean with the local slope. `strokeWidth` resolves the
+// offset. Returns identity if the spine is degenerate.
+DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
+                       const MarkObject& obj, double strokeWidth);
+
+// Follow-mode geometry: the primitive's outline RESAMPLED along the curve so it
+// truly bends with the line (a rectangle's long edges curve). A dense ring in
+// node-local space (already placed) — used when obj.bend == Follow. Returns
+// false for a non-Follow object or an Instance. `tolerance` bounds the sampling.
+bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
                        const MarkObject& obj, double strokeWidth,
                        double tolerance, std::vector<DVec2>& outRing);
 

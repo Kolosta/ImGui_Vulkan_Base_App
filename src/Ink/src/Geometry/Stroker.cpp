@@ -409,17 +409,30 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                 CenterStroke(piece, stroke, w * 0.5, tol, em);
         }
 
-        // Fusion mark objects → triangulated INTO the stroke mesh (one alpha).
+        // Fusion mark objects → triangulated INTO the stroke mesh at THIS
+        // tier's tolerance (one alpha, vector-smooth at any zoom).
         for (const StrokeMark& m : stroke.marks) {
             if (m.sub != (std::int32_t)subI) continue;
             for (const MarkObject& obj : m.objects) {
+                // Only a Fusion object that INHERITS the stroke colour is baked
+                // into the stroke mesh (one alpha). A recoloured Fusion object
+                // is emitted as its own drawable by the Scene instead.
                 if (obj.mode != MarkObjectMode::Fusion ||
-                    obj.shape == MarkShape::Instance) continue;
+                    obj.shape == MarkShape::Instance ||
+                    !obj.useStrokeColor) continue;
                 std::vector<DVec2> ring;
-                if (!MarkObjectContour(spine, m, obj, w, tol, ring) ||
-                    ring.size() < 3) continue;
-                // Fan-triangulate the (convex or star-convex about its own
-                // centroid) ring.
+                if (obj.bend == MarkBend::Follow) {
+                    if (!MarkFollowContour(spine, m, obj, w, tol, ring)) continue;
+                } else {
+                    // Parametric primitive → flatten at tier tolerance → place.
+                    const PathData shape = MarkPrimitiveShape(obj, w);
+                    if (shape.Empty()) continue;
+                    const DMat23 place = MarkPlaceMatrix(spine, m, obj, w);
+                    for (const Polyline& pl : Flatten(shape, tol))
+                        for (const DVec2& q : pl.points)
+                            ring.push_back(place.Apply(q));
+                }
+                if (ring.size() < 3) continue;
                 DVec2 c{ 0, 0 };
                 for (const DVec2& p : ring) { c.x += p.x; c.y += p.y; }
                 c.x /= (double)ring.size(); c.y /= (double)ring.size();
@@ -436,17 +449,29 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
     return out;
 }
 
-bool MarkObjectContour(const Polyline& spine, const StrokeMark& mark,
-                       const MarkObject& obj, double strokeWidth,
-                       double tolerance, std::vector<DVec2>& outRing) {
-    outRing.clear();
-    if (obj.shape == MarkShape::Instance) return false;
-    if (spine.points.size() < 2) return false;
-    const double total = PolyTotal(spine);
-    if (total < 1e-9) return false;
+PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth) {
+    if (obj.shape == MarkShape::Instance) return PathData{};
+    // `size` is HALF-extent along the tangent (rectangle length / circle radius
+    // / diamond diagonal-half); `width` the rectangle half-height. The geometry
+    // is parametric so the GeometryCache re-tessellates it per zoom tier.
+    const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
+    if (obj.shape == MarkShape::Circle)
+        return PathData::Ellipse(0, 0, hu, hu);
+    if (obj.shape == MarkShape::Rectangle) {
+        const double hv = std::max(1e-6, obj.WidthUnits(strokeWidth));
+        return PathData::Rect(-hu, -hv, hu * 2.0, hv * 2.0);
+    }
+    // Diamond: a 4-point polygon, `size` = the half-diagonal.
+    return PathData::Polygon({ { hu, 0 }, { 0, hu }, { -hu, 0 }, { 0, -hu } },
+                             true);
+}
 
-    // The mark point + tangent on the spine, and the side offset (resolved to
-    // node-local units — percentage of stroke width or plain doc-units).
+DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
+                       const MarkObject& obj, double strokeWidth) {
+    DMat23 id;
+    if (spine.points.size() < 2) return id;
+    const double total = PolyTotal(spine);
+    if (total < 1e-9) return id;
     const double d0 = (mark.t < 0 ? 0 : mark.t > 1 ? 1 : mark.t) * total;
     DVec2 p0; V2 t0;
     ArcSampleAt(spine, d0, p0, t0);
@@ -454,60 +479,94 @@ bool MarkObjectContour(const Polyline& spine, const StrokeMark& mark,
     double off = 0.0;
     if (mark.side == MarkSide::Left)  off =  mark.OffsetUnits(strokeWidth);
     if (mark.side == MarkSide::Right) off = -mark.OffsetUnits(strokeWidth);
+    const DVec2 at{ p0.x + n0.x * off, p0.y + n0.y * off };
+    // Frame: local +x → tangent, local +y → left normal, then object rotation.
+    const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
+    // basisU = R(rot)·tangent, basisV = R(rot)·normal
+    const double ux = t0.x * ca - n0.x * sa, uy = t0.y * ca - n0.y * sa;
+    const double vx = t0.x * sa + n0.x * ca, vy = t0.y * sa + n0.y * ca;
+    DMat23 m;
+    m.m[0] = ux;  m.m[1] = vx;  m.m[2] = at.x;
+    m.m[3] = uy;  m.m[4] = vy;  m.m[5] = at.y;
+    // Bend: shear the frame along the tangent by the local curvature slope so
+    // the shape leans with the line (a cheap approximation of Follow).
+    if (obj.bend == MarkBend::Bend) {
+        const double ds = std::max(1e-3, total * 0.02);
+        DVec2 pf, pb; V2 tf, tb;
+        ArcSampleAt(spine, std::min(total, d0 + ds), pf, tf);
+        ArcSampleAt(spine, std::max(0.0, d0 - ds), pb, tb);
+        // Slope = change of the normal direction across the tangent step.
+        const double slope = (Dot(Perp(tf), t0) - Dot(Perp(tb), t0)) /
+                             (2.0 * ds);
+        // Shear x by slope·y: m' = m · [[1,slope],[0,1]].
+        m.m[1] += m.m[0] * slope;
+        m.m[4] += m.m[3] * slope;
+    }
+    return m;
+}
 
-    // Local contour in the object frame: u along the tangent, v across it.
-    // size = radius / half-length; width = rectangle half-height.
+bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
+                       const MarkObject& obj, double strokeWidth,
+                       double tolerance, std::vector<DVec2>& outRing) {
+    outRing.clear();
+    if (obj.bend != MarkBend::Follow || obj.shape == MarkShape::Instance)
+        return false;
+    if (spine.points.size() < 2) return false;
+    const double total = PolyTotal(spine);
+    if (total < 1e-9) return false;
+    const double d0 = (mark.t < 0 ? 0 : mark.t > 1 ? 1 : mark.t) * total;
+    double off = 0.0;
+    if (mark.side == MarkSide::Left)  off =  mark.OffsetUnits(strokeWidth);
+    if (mark.side == MarkSide::Right) off = -mark.OffsetUnits(strokeWidth);
     const double tol = tolerance > 0.0 ? tolerance : 0.25;
-    std::vector<DVec2> local;   // (u, v)
+    const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
+    const double hv = obj.shape == MarkShape::Rectangle
+                          ? std::max(1e-6, obj.WidthUnits(strokeWidth)) : hu;
+
+    // A point placed on the curve: walk `u` along the arc from the mark, then
+    // step `v` along the LOCAL normal — so `u` follows the bend.
+    auto place = [&](double u, double v) -> DVec2 {
+        // Apply the object rotation in the (u,v) frame first.
+        const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
+        const double ur = u * ca - v * sa, vr = u * sa + v * ca;
+        double du = d0 + ur;
+        du = du < 0 ? 0 : (du > total ? total : du);
+        DVec2 pu; V2 tu;
+        ArcSampleAt(spine, du, pu, tu);
+        const V2 nu = Perp(tu);
+        const double vv = vr + off;
+        return { pu.x + nu.x * vv, pu.y + nu.y * vv };
+    };
+    // Resample each side of the shape along u so the long edges curve.
+    auto edge = [&](double u0, double v0, double u1, double v1) {
+        const double len = std::hypot(u1 - u0, v1 - v0);
+        int n = (int)std::ceil(len / std::max(tol * 4.0, 0.5));
+        n = n < 1 ? 1 : (n > 256 ? 256 : n);
+        for (int i = 0; i < n; ++i) {
+            const double f = (double)i / (double)n;
+            outRing.push_back(place(u0 + (u1 - u0) * f, v0 + (v1 - v0) * f));
+        }
+    };
     if (obj.shape == MarkShape::Circle) {
-        const double r = std::max(1e-6, obj.size);
         int steps = (int)std::ceil(6.28318530717958 /
-                                   (r > tol ? 2.0 * std::acos(1.0 - tol / r) : 1.0));
-        steps = steps < 8 ? 8 : (steps > 128 ? 128 : steps);
+            (hu > tol ? 2.0 * std::acos(1.0 - tol / hu) : 1.0));
+        steps = steps < 12 ? 12 : (steps > 256 ? 256 : steps);
         for (int i = 0; i < steps; ++i) {
             const double a = 6.28318530717958 * (double)i / (double)steps;
-            local.push_back({ std::cos(a) * r, std::sin(a) * r });
+            outRing.push_back(place(std::cos(a) * hu, std::sin(a) * hu));
         }
     } else if (obj.shape == MarkShape::Rectangle) {
-        const double hu = std::max(1e-6, obj.size);   // half-length (tangent)
-        const double hv = std::max(1e-6, obj.width);  // half-height (normal)
-        local = { { hu, -hv }, { hu, hv }, { -hu, hv }, { -hu, -hv } };
+        edge( hu, -hv,  hu,  hv);
+        edge( hu,  hv, -hu,  hv);
+        edge(-hu,  hv, -hu, -hv);
+        edge(-hu, -hv,  hu, -hv);
     } else {   // Diamond
-        const double hu = std::max(1e-6, obj.size);
-        const double hv = std::max(1e-6, obj.size);
-        local = { { hu, 0 }, { 0, hv }, { -hu, 0 }, { 0, -hv } };
+        edge( hu, 0, 0,  hu);
+        edge( 0, hu, -hu, 0);
+        edge(-hu, 0, 0, -hu);
+        edge( 0, -hu, hu, 0);
     }
-
-    // Optional per-object rotation about the mark point (in the object frame).
-    if (std::abs(obj.rotation) > 1e-12) {
-        const double c = std::cos(obj.rotation), s = std::sin(obj.rotation);
-        for (DVec2& q : local) {
-            const double u = q.x * c - q.y * s, v = q.x * s + q.y * c;
-            q = { u, v };
-        }
-    }
-
-    outRing.reserve(local.size());
-    for (const DVec2& q : local) {
-        // v is the same in both modes (offset across the line); u differs:
-        //   Hard — a rigid frame at the mark point (u along t0, v along n0).
-        //   Bend — walk `u` along the curve from the mark point, take the
-        //          LOCAL tangent/normal there so the shape follows the bend.
-        if (obj.bend == MarkBend::Bend) {
-            double du = d0 + q.x;
-            du = du < 0 ? 0 : (du > total ? total : du);
-            DVec2 pu; V2 tu;
-            ArcSampleAt(spine, du, pu, tu);
-            const V2 nu = Perp(tu);
-            const double vv = q.y + off;
-            outRing.push_back({ pu.x + nu.x * vv, pu.y + nu.y * vv });
-        } else {
-            const double vv = q.y + off;
-            outRing.push_back({ p0.x + t0.x * q.x + n0.x * vv,
-                                p0.y + t0.y * q.x + n0.y * vv });
-        }
-    }
-    return true;
+    return outRing.size() >= 3;
 }
 
 } // namespace Ink::geom

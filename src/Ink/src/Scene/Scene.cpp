@@ -671,18 +671,18 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
     for (std::size_t i = 0; i < n.style.strokes.size(); ++i) {
         const Stroke& s = n.style.strokes[i];
         if (!s.enabled || s.width <= 0.0) continue;
-        // A stroke whose marks carry SEPARATE objects (Blend / Subtract /
-        // Instance) renders through EmitStrokeMarks (its own isolation scope +
-        // the object drawables). Fusion objects are already in the stroke mesh
-        // (the stroker triangulated them), so a plain / Fusion-only stroke
-        // takes the normal path below.
-        bool needsMarkScope = false;
+        // A stroke whose marks carry SEPARATE objects (Blend / Cut / Instance,
+        // or a recoloured Fusion primitive) renders through EmitStrokeMarks.
+        // Stroke-coloured Fusion primitives are already in the stroke mesh
+        // (the stroker triangulated them), so a plain / stroke-coloured-Fusion
+        // stroke takes the normal path below.
+        bool needsMarkEmit = false;
         for (const StrokeMark& m : s.marks)
             for (const MarkObject& o : m.objects)
-                if (o.mode != MarkObjectMode::Fusion ||
-                    o.shape == MarkShape::Instance)
-                    needsMarkScope = true;
-        if (needsMarkScope && !pinClip) {
+                if (o.shape == MarkShape::Instance ||
+                    o.mode != MarkObjectMode::Fusion || !o.useStrokeColor)
+                    needsMarkEmit = true;
+        if (needsMarkEmit && !pinClip) {
             EmitStrokeMarks(doc, n, s, i, geo, world, scope, owner, 0);
             continue;
         }
@@ -712,62 +712,27 @@ PathData RingToPath(const std::vector<DVec2>& ring) {
     return p;
 }
 
-// The mark point + tangent on subpath `m.sub` in node-local space (for an
-// INSTANCE object, whose contour is the referenced node, not a primitive).
-bool MarkPoint(const std::vector<geom::Polyline>& flat, const StrokeMark& m,
-               double strokeWidth, DVec2& outAt, double& outAngle) {
-    if (m.sub < 0 || m.sub >= (int)flat.size()) return false;
-    const geom::Polyline& pl = flat[(std::size_t)m.sub];
-    const std::size_t n = pl.points.size();
-    if (n < 2) return false;
-    const std::size_t sc = pl.closed ? n : n - 1;
-    double total = 0.0;
-    for (std::size_t i = 0; i < sc; ++i)
-        total += std::hypot(pl.points[(i+1)%n].x - pl.points[i].x,
-                            pl.points[(i+1)%n].y - pl.points[i].y);
-    if (total < 1e-9) return false;
-    double d = (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total, acc = 0.0;
-    DVec2 p = pl.points[n - 1], tan{ 1, 0 };
-    for (std::size_t i = 0; i < sc; ++i) {
-        const DVec2 a = pl.points[i], b = pl.points[(i + 1) % n];
-        const double L = std::hypot(b.x - a.x, b.y - a.y);
-        if (L < 1e-12) continue;
-        if (d <= acc + L) {
-            const double u = (d - acc) / L;
-            p = { a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u };
-            tan = { (b.x - a.x) / L, (b.y - a.y) / L };
-            break;
-        }
-        acc += L;
-    }
-    const DVec2 nrm{ -tan.y, tan.x };
-    double off = 0.0;
-    if (m.side == MarkSide::Left)  off =  m.OffsetUnits(strokeWidth);
-    if (m.side == MarkSide::Right) off = -m.OffsetUnits(strokeWidth);
-    outAt = { p.x + nrm.x * off, p.y + nrm.y * off };
-    outAngle = std::atan2(tan.y, tan.x);
-    return true;
-}
-
 } // namespace
 
 void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                             std::size_t strokeIndex, const PathData* geo,
                             const DMat23& world, ScopeId scope, NodeId owner,
                             int instDepth) {
-    // Does this stroke carry any object that needs a SEPARATE drawable
-    // (Blend / Subtract / Instance)? Fusion objects live in the stroke mesh, so
-    // a stroke with only Fusion objects needs no isolation scope at all.
+    // An object needs a SEPARATE drawable when it is NOT a stroke-coloured
+    // Fusion primitive: Blend / Cut / Instance, OR a RECOLOURED Fusion object
+    // (it can't share the stroke's single-colour mesh). A stroke that only
+    // fuses stroke-coloured primitives needs no isolation scope.
+    auto separate = [](const MarkObject& o) {
+        return o.shape == MarkShape::Instance ||
+               o.mode != MarkObjectMode::Fusion ||
+               !o.useStrokeColor;
+    };
     bool needsScope = false;
     for (const StrokeMark& m : s.marks)
         for (const MarkObject& o : m.objects)
-            if (o.mode != MarkObjectMode::Fusion ||
-                o.shape == MarkShape::Instance)
-                needsScope = true;
+            if (separate(o) && o.mode != MarkObjectMode::Fusion)
+                needsScope = true;   // only Blend/Cut/Instance need isolation
 
-    // 1. The base stroke (its Fusion objects are already in its mesh via the
-    //    stroker). It goes in an ISOLATION scope only when separate objects
-    //    must resolve against it first; otherwise straight into `scope`.
     ScopeId strokeScope = scope;
     int isoDepth = scopes_[scope].depth;
     if (needsScope) {
@@ -780,6 +745,87 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         strokeScope = (ScopeId)scopes_.size();
         scopes_.push_back(iso);
     }
+
+    // Emit one separate object (Blend / Subtract / Instance). Placed with the
+    // SAME helpers the stroker used for Fusion, and — for Hard/Bend primitives —
+    // as PARAMETRIC geometry placed by a transform, so the GeometryCache
+    // re-tessellates it per zoom tier (vector-exact at any zoom).
+    auto flat = geom::Flatten(*geo, 0.5);
+    auto emitObject = [&](const StrokeMark& m, const MarkObject& obj) {
+        if (m.sub < 0 || m.sub >= (int)flat.size()) return;
+        const geom::Polyline& spine = flat[(std::size_t)m.sub];
+
+        // A non-Normal Blend object composites through its OWN nested scope.
+        ScopeId objScope = strokeScope;
+        if (obj.mode == MarkObjectMode::Blend && obj.blend != BlendMode::Normal) {
+            CompositeScope bs;
+            bs.node = n.id;  bs.parent = strokeScope;  bs.opacity = 1.0f;
+            bs.blend = obj.blend;  bs.isolate = true;
+            bs.depth = isoDepth + 1;
+            maxDepth_ = std::max(maxDepth_, bs.depth);
+            objScope = (ScopeId)scopes_.size();
+            scopes_.push_back(bs);
+        }
+
+        if (obj.shape == MarkShape::Instance) {
+            const Node* target = doc.Find(obj.nodeRef);
+            if (!target || target == &n || instDepth >= 6) return;
+            const DMat23 place = geom::MarkPlaceMatrix(spine, m, obj, s.width);
+            // Cancel the target's OWN transform so its geometry lands at the
+            // mark point (it usually lives elsewhere on the page) — the same
+            // decoupling as a linked instance.
+            const DMat23 corr =
+                place.Compose(InvertAffine(target->transform.Matrix()));
+            EmitNode(doc, *target, world.Compose(corr), objScope,
+                     instDepth + 1, owner, /*forceVisible=*/true);
+            return;
+        }
+
+        const bool erase = obj.mode == MarkObjectMode::Subtract;
+        Drawable d;
+        d.node = n.id;  d.owner = owner;
+        d.isStroke = false;  d.rule = FillRule::NonZero;
+        d.pieceIndex = (std::uint8_t)strokeIndex;
+        d.ownerPiece = (std::uint8_t)strokeIndex;  d.ownerPieceStroke = true;
+        d.scope = objScope;
+        if (obj.bend == MarkBend::Follow) {
+            // Follow bends the outline along the curve → a dense derived ring
+            // (node-local, so d.world = the node world).
+            std::vector<DVec2> ring;
+            if (!geom::MarkFollowContour(spine, m, obj, s.width, 0.5, ring))
+                return;
+            markShapes_.push_back(RingToPath(ring));
+            const PathData* g = &markShapes_.back();
+            if (g->Empty()) { markShapes_.pop_back(); return; }
+            d.world = world;  d.path = g;  d.pathHash = g->Hash();
+        } else {
+            // Hard / Bend: a PARAMETRIC primitive placed by a transform →
+            // re-tessellated per tier (vector-smooth).
+            markShapes_.push_back(geom::MarkPrimitiveShape(obj, s.width));
+            const PathData* g = &markShapes_.back();
+            if (g->Empty()) { markShapes_.pop_back(); return; }
+            const DMat23 place = geom::MarkPlaceMatrix(spine, m, obj, s.width);
+            d.world = world.Compose(place);  d.path = g;  d.pathHash = g->Hash();
+        }
+        if (erase) {
+            d.color = Color{ 0, 0, 0, 1 };
+            d.clip = ClipRole::EraseWrite;
+            d.clipPinned = true;
+        } else {
+            d.color = obj.useStrokeColor ? s.paint.color : obj.color;
+        }
+        drawables_.push_back(std::move(d));
+    };
+
+    // BEHIND objects (front == false) paint before the stroke; the stroke then
+    // composites over them (the reverse blend order). Stroke-coloured Fusion
+    // primitives are in the stroke mesh already, so they are skipped here.
+    for (const StrokeMark& m : s.marks)
+        for (const MarkObject& obj : m.objects)
+            if (separate(obj) && !obj.front)
+                emitObject(m, obj);
+
+    // The base stroke.
     {
         Drawable d;
         d.node = n.id;  d.owner = owner;  d.world = world;
@@ -790,77 +836,12 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         d.scope = strokeScope;
         drawables_.push_back(std::move(d));
     }
-    if (!needsScope) return;
 
-    // 2. The separate objects (Blend / Subtract / Instance), placed with the
-    //    SAME formula the stroker used for Fusion so all modes line up. The
-    //    aligned spine is close enough at scene tolerance; the render path
-    //    re-tessellates per tier.
-    auto flat = geom::Flatten(*geo, 0.5);
-    for (const StrokeMark& m : s.marks) {
-        if (m.objects.empty() || m.sub < 0 || m.sub >= (int)flat.size())
-            continue;
-        const geom::Polyline& spine = flat[(std::size_t)m.sub];
-        for (const MarkObject& obj : m.objects) {
-            if (obj.mode == MarkObjectMode::Fusion &&
-                obj.shape != MarkShape::Instance)
-                continue;   // already fused into the stroke mesh
-
-            // A non-Normal Blend object composites through its OWN nested scope.
-            ScopeId objScope = strokeScope;
-            if (obj.mode == MarkObjectMode::Blend &&
-                obj.blend != BlendMode::Normal) {
-                CompositeScope bs;
-                bs.node = n.id;  bs.parent = strokeScope;  bs.opacity = 1.0f;
-                bs.blend = obj.blend;  bs.isolate = true;
-                bs.depth = isoDepth + 1;
-                maxDepth_ = std::max(maxDepth_, bs.depth);
-                objScope = (ScopeId)scopes_.size();
-                scopes_.push_back(bs);
-            }
-
-            if (obj.shape == MarkShape::Instance) {
-                const Node* target = doc.Find(obj.nodeRef);
-                if (!target || target == &n || instDepth >= 6) continue;
-                DVec2 at; double ang;
-                if (!MarkPoint(flat, m, s.width, at, ang)) continue;
-                ang += obj.rotation;
-                const double c = std::cos(ang), sn = std::sin(ang);
-                DMat23 place;
-                place.m[0] = c; place.m[1] = -sn; place.m[2] = at.x;
-                place.m[3] = sn; place.m[4] = c;  place.m[5] = at.y;
-                EmitNode(doc, *target, world.Compose(place), objScope,
-                         instDepth + 1, owner, /*forceVisible=*/true);
-                continue;
-            }
-
-            // A primitive shape → its placed contour as generated geometry
-            // (node-local, so d.world == the node world; no place matrix).
-            std::vector<DVec2> ring;
-            if (!geom::MarkObjectContour(spine, m, obj, s.width, 0.5, ring) ||
-                ring.size() < 3)
-                continue;
-            markShapes_.push_back(RingToPath(ring));
-            const PathData* shapeGeo = &markShapes_.back();
-            if (shapeGeo->Empty()) { markShapes_.pop_back(); continue; }
-            Drawable d;
-            d.node = n.id;  d.owner = owner;  d.world = world;
-            d.pathHash = shapeGeo->Hash();  d.path = shapeGeo;
-            d.isStroke = false;  d.rule = FillRule::NonZero;
-            d.pieceIndex = (std::uint8_t)strokeIndex;
-            d.ownerPiece = (std::uint8_t)strokeIndex;
-            d.ownerPieceStroke = true;
-            d.scope = objScope;
-            if (obj.mode == MarkObjectMode::Subtract) {
-                d.color = Color{ 0, 0, 0, 1 };
-                d.clip = ClipRole::EraseWrite;
-                d.clipPinned = true;
-            } else {
-                d.color = obj.useStrokeColor ? s.paint.color : obj.color;
-            }
-            drawables_.push_back(std::move(d));
-        }
-    }
+    // FRONT objects (default) paint over the stroke.
+    for (const StrokeMark& m : s.marks)
+        for (const MarkObject& obj : m.objects)
+            if (separate(obj) && obj.front)
+                emitObject(m, obj);
 }
 
 void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,

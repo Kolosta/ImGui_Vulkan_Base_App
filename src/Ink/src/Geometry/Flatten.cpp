@@ -225,7 +225,8 @@ LocalBounds ComputeBounds(const std::vector<Polyline>& polylines,
         for (const StrokeMark& m : s.marks) {
             double reach = std::abs(m.OffsetUnits(s.width));
             for (const MarkObject& o : m.objects)
-                reach = std::max(reach, std::max(o.size, o.width) * 1.6);
+                reach = std::max(reach, std::max(o.SizeUnits(s.width),
+                                                 o.WidthUnits(s.width)) * 1.6);
             inflate = std::max(inflate, s.width + reach);
         }
     }
