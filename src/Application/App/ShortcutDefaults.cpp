@@ -240,6 +240,10 @@ void Application::RegisterDefaultShortcuts() {
     viewportKey("edit.addMenu", "Add", "Open the Add menu at the cursor",
                 [this]{ Action_OpenAddMenu(); }, { sigKey(ImGuiKey_A, false, true) },
                 false, false, idle);
+    viewportKey("view.snapMenu", "Snap",
+                "Open the snap pie (move the selection / 2D cursor to targets)",
+                [this]{ Action_OpenSnapMenu(); },
+                { sigKey(ImGuiKey_S, false, true) }, false, false, idle);
     viewportKey("edit.parentToActive", "Parent to Active",
                 "Parent the other selected objects to the active one",
                 [this]{ Action_ParentToActive(); }, { sigKey(ImGuiKey_P, true) },

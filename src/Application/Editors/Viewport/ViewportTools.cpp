@@ -1,5 +1,6 @@
 #include "Application.h"
 
+#include "ViewportMath.h"
 #include <Shortcuts/ToolManager.h>
 #include <cmath>
 
@@ -72,19 +73,20 @@ Ink::NodeId Application::SpawnShape(const char* kind) {
     if (!edit_.cursor2DValid)
         at = { page.pos.x + page.size.x * 0.5, page.pos.y + page.size.y * 0.5 };
 
+    // Geometry is built around the LOCAL ORIGIN (0,0) and the node's transform
+    // places it at the cursor — so the object's origin sits ON the object
+    // (Blender), never left behind at the world origin.
     const double r = 80.0;
     Ink::PathData path;
     std::string name;
     if (!std::strcmp(kind, "rect")) {
-        path = Ink::PathData::Rect(at.x - r, at.y - r, r * 2, r * 2);
+        path = Ink::PathData::Rect(-r, -r, r * 2, r * 2);
         name = "Rectangle";
     } else if (!std::strcmp(kind, "ellipse")) {
-        path = Ink::PathData::Ellipse(at.x, at.y, r, r);
+        path = Ink::PathData::Ellipse(0, 0, r, r);
         name = "Ellipse";
     } else if (!std::strcmp(kind, "triangle")) {
-        path = Ink::PathData::Polygon({ { at.x, at.y - r },
-                                        { at.x + r, at.y + r },
-                                        { at.x - r, at.y + r } });
+        path = Ink::PathData::Polygon({ { 0, -r }, { r, r }, { -r, r } });
         name = "Triangle";
     } else if (!std::strcmp(kind, "curve")) {
         // An open Bézier curve: three smooth anchors with tangent handles.
@@ -95,18 +97,24 @@ Ink::NodeId Application::SpawnShape(const char* kind) {
             an.hasIn = an.hasOut = true; an.kind = Ink::AnchorKind::Symmetric;
             sp.anchors.push_back(an);
         };
-        anchor(at.x - r,      at.y,        0,  r * 0.6);
-        anchor(at.x,          at.y - r*0.6, r*0.6, 0);
-        anchor(at.x + r,      at.y,        0, -r * 0.6);
+        anchor(-r, 0,        0,  r * 0.6);
+        anchor(0,  -r * 0.6, r * 0.6, 0);
+        anchor(r,  0,        0, -r * 0.6);
         path.subpaths.push_back(std::move(sp));
         name = "Curve";
     } else {
-        path = Ink::PathData::Rect(at.x - r, at.y - r, r * 2, r * 2);
+        path = Ink::PathData::Rect(-r, -r, r * 2, r * 2);
         name = "Shape";
     }
 
     const Ink::NodeId id = doc.AddPath(parent, path, DefaultStyle(), name);
     if (id == Ink::kNullNode) return id;
+    {
+        Ink::Transform2D t;
+        t.tx = at.x;
+        t.ty = at.y;
+        doc.SetTransform(id, t);
+    }
 
     edit_.SelectOnly(id);
     // Undo restores the whole subtree verbatim; redo re-adds a fresh one is
@@ -477,6 +485,118 @@ void Application::Action_OpenAddMenu() {
     // OpenPopup and renders it, so open/render share one window scope.
     addMenuRequested_ = true;
     addMenuPos_ = ImGui::GetIO().MousePos;
+}
+
+// ── Snap pie actions (Shift+S) ────────────────────────────────────────────────
+// The legacy 2D snap pie: objects snap BY THEIR ORIGIN (the transform's
+// translation), the grid step is the snap move increment.
+
+namespace {
+// A node's origin in document space (the translation of its world transform).
+Ink::DVec2 NodeOriginWorld(const Ink::Document& doc, Ink::NodeId id) {
+    const Ink::DMat23 w = doc.WorldTransform(id);
+    return { w.m[2], w.m[5] };
+}
+} // namespace
+
+// Translate `id` so its ORIGIN lands on the document point `to` (the delta
+// converts through the parent's linear transform, so nested nodes land true).
+void Application::SnapNodeOriginTo(Ink::NodeId id, Ink::DVec2 to) {
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(id);
+    if (!n) return;
+    const Ink::DVec2 cur = NodeOriginWorld(doc, id);
+    const Ink::DMat23 w  = doc.WorldTransform(id);
+    Ink::DMat23 parentW  = w.Compose(vpm::InvertAffine(n->transform.Matrix()));
+    parentW.m[2] = parentW.m[5] = 0.0;                 // linear part only
+    const Ink::DVec2 dp =
+        vpm::InvertAffine(parentW).Apply({ to.x - cur.x, to.y - cur.y });
+    Ink::Transform2D t = n->transform;
+    t.tx += dp.x;
+    t.ty += dp.y;
+    doc.SetTransform(id, t);
+}
+
+// Move every selected node's origin to targetFor(id), as ONE undo command.
+void Application::SnapSelection(const char* label,
+                                std::function<Ink::DVec2(Ink::NodeId)> targetFor) {
+    if (!project_.document || edit_.selection.empty()) return;
+    Ink::Document& doc = *project_.document;
+    std::vector<std::pair<Ink::NodeId, Ink::Transform2D>> before;
+    for (Ink::NodeId id : edit_.selection)
+        if (const Ink::Node* n = doc.Find(id))
+            before.emplace_back(id, n->transform);
+    for (Ink::NodeId id : edit_.selection)
+        SnapNodeOriginTo(id, targetFor(id));
+    std::vector<std::pair<Ink::NodeId, Ink::Transform2D>> after;
+    for (auto& [id, t] : before)
+        if (const Ink::Node* n = doc.Find(id)) after.emplace_back(id, n->transform);
+    PushDocCommand(label,
+        [before](Ink::Document& d) {
+            for (auto& [id, t] : before) d.SetTransform(id, t);
+        },
+        [after](Ink::Document& d) {
+            for (auto& [id, t] : after) d.SetTransform(id, t);
+        });
+    LogInfoAction(label);
+}
+
+void Application::Action_SelectionToCursor() {
+    const Ink::DVec2 c = edit_.cursor2D;
+    SnapSelection("Selection to Cursor", [c](Ink::NodeId) { return c; });
+}
+
+void Application::Action_SelectionToActive() {
+    if (!project_.document || edit_.active == Ink::kNullNode ||
+        edit_.selection.size() < 2)
+        return;
+    const Ink::DVec2 a = NodeOriginWorld(*project_.document, edit_.active);
+    const Ink::NodeId act = edit_.active;
+    SnapSelection("Selection to Active", [a, act, this](Ink::NodeId id) {
+        return id == act ? NodeOriginWorld(*project_.document, id) : a;
+    });
+}
+
+double Application::SnapGridStep() const {
+    const double inc = edit_.snap.moveIncrement;
+    return inc > 1e-9 ? inc : 50.0;
+}
+
+void Application::Action_SelectionToGrid() {
+    const double g = SnapGridStep();
+    Application* app = this;
+    SnapSelection("Selection to Grid", [g, app](Ink::NodeId id) {
+        const Ink::DVec2 o = NodeOriginWorld(*app->project_.document, id);
+        return Ink::DVec2{ std::round(o.x / g) * g, std::round(o.y / g) * g };
+    });
+}
+
+void Application::Action_Cursor2DToActive() {
+    if (!project_.document || edit_.active == Ink::kNullNode) return;
+    edit_.cursor2D = NodeOriginWorld(*project_.document, edit_.active);
+    edit_.cursor2DValid = true;
+    LogInfoAction("Cursor to Active");
+}
+
+void Application::Action_Cursor2DToWorldOrigin() {
+    edit_.cursor2D = { 0, 0 };
+    edit_.cursor2DValid = true;
+    LogInfoAction("Cursor to World Origin");
+}
+
+void Application::Action_Cursor2DToGrid() {
+    const double g = SnapGridStep();
+    edit_.cursor2D = { std::round(edit_.cursor2D.x / g) * g,
+                       std::round(edit_.cursor2D.y / g) * g };
+    edit_.cursor2DValid = true;
+    LogInfoAction("Cursor to Grid");
+}
+
+void Application::Action_OpenSnapMenu() {
+    // Only ARM the menu here — Update() (root window scope) issues the single
+    // OpenPopup and renders it (the same rule as the Add menu).
+    snapMenuRequested_ = true;
+    snapMenuPos_ = ImGui::GetIO().MousePos;
 }
 
 void Application::Action_Cursor2DToOrigin() {

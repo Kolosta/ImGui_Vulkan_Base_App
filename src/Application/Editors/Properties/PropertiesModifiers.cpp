@@ -59,10 +59,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
             if (r.changed && r.selected >= 0 && r.selected < (int)defs.size()) {
                 Ink::Modifier m;
                 m.kind = defs[(std::size_t)r.selected].kind;
-                if (m.kind == Ink::ModifierKind::Array) {
-                    m.step.tx = 20.0;
-                    m.stepSpace = Ink::ArrayStepSpace::Parent;
-                }
+                if (m.kind == Ink::ModifierKind::Array) m.step.tx = 20.0;
                 mods.push_back(m);
                 structural = true; structLabel = "Add Modifier";
             }
@@ -177,17 +174,6 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         }
                         if (dx || dy) liveApply("Array Scale", true);
 
-                        if (m.arrayMode == Ink::ArrayMode::Transform) {
-                            pr::GroupGap();
-                            static const char* kSpace[] = { "Local", "Parent" };
-                            int space = (int)m.stepSpace;
-                            if (pr::ButtonGroupRow("Step space", kSpace, 2,
-                                                   &space)) {
-                                m.stepSpace = (Ink::ArrayStepSpace)space;
-                                structural = true;
-                                structLabel = "Array Step Space";
-                            }
-                        }
                     } else {   // Circle
                         static const char* kMeth[] = { "Count", "Angle" };
                         int meth = (int)m.circleMethod;

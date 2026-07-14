@@ -363,6 +363,45 @@ void Application::RenderAddMenu() {
     if (!open) addMenuOpen_ = false;
 }
 
+// The Shift+S snap pie — the legacy 2D adaptation of Blender's: the SELECTION
+// snaps by each object's ORIGIN; the grid is the snap move increment.
+// Rendered unconditionally like the Add menu.
+void Application::RenderSnapPieMenu() {
+    if (snapMenuRequested_) {
+        snapMenuRequested_ = false;
+        snapMenuOpen_ = true;
+        ImGui::OpenPopup("##snapPie");
+    }
+    if (!snapMenuOpen_) return;
+    const bool hasSel = !edit_.selection.empty();
+    std::vector<UI::MenuEntry> entries;
+    auto add = [&](const char* lbl, const char* tip, bool enabled, auto fn) {
+        UI::MenuEntry e; e.label = lbl; e.tooltip = tip; e.enabled = enabled;
+        e.onClick = [this, fn]{ fn(this); snapMenuOpen_ = false; };
+        entries.push_back(std::move(e));
+    };
+    add("Selection to Cursor", "Move each selected object's origin to the 2D cursor",
+        hasSel, [](Application* a) { a->Action_SelectionToCursor(); });
+    add("Selection to Active", "Move the other selected origins onto the active one",
+        edit_.selection.size() >= 2,
+        [](Application* a) { a->Action_SelectionToActive(); });
+    add("Selection to Grid", "Snap each selected origin to the nearest grid crossing",
+        hasSel, [](Application* a) { a->Action_SelectionToGrid(); });
+    add("Cursor to Active", "Place the 2D cursor on the active object's origin",
+        edit_.active != Ink::kNullNode,
+        [](Application* a) { a->Action_Cursor2DToActive(); });
+    add("Cursor to Selected", "Place the 2D cursor at the selection's centre",
+        hasSel, [](Application* a) { a->Action_Cursor2DToSelection(); });
+    add("Cursor to World Origin", "Place the 2D cursor at (0, 0)",
+        true, [](Application* a) { a->Action_Cursor2DToWorldOrigin(); });
+    add("Cursor to Page Origin", "Place the 2D cursor at the page's top-left",
+        true, [](Application* a) { a->Action_Cursor2DToOrigin(); });
+    add("Cursor to Grid", "Snap the 2D cursor to the nearest grid crossing",
+        true, [](Application* a) { a->Action_Cursor2DToGrid(); });
+    const bool open = UI::ContextMenu("##snapPie", snapMenuPos_, entries, "Snap");
+    if (!open) snapMenuOpen_ = false;
+}
+
 // The Edit-mode "Set Handle Type" menu (V) — restores the legacy vertex-type
 // chooser. Rendered unconditionally like the Add menu.
 void Application::RenderHandleTypeMenu() {

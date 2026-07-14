@@ -245,6 +245,7 @@ void Application::Update() {
     RenderAddMenu();
     RenderViewportContextMenu();
     RenderHandleTypeMenu();
+    RenderSnapPieMenu();
     RenderFloatingWindows();
     RenderSplash();        // start screen overlay (and the logo-menu re-open)
     RenderAbout();         // "About Carto" popup

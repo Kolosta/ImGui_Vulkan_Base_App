@@ -186,6 +186,26 @@ private:
     void Action_DeleteVertices();
     bool   handleMenuOpen_ = false, handleMenuRequested_ = false;
     ImVec2 handleMenuPos_{};
+    // Snap pie (Shift+S — the legacy 2D adaptation of Blender's snap pie):
+    // move the SELECTION to targets (cursor / active / grid) or the 2D CURSOR
+    // to references (active / selected / world origin / page origin / grid).
+    void Action_OpenSnapMenu();
+    void RenderSnapPieMenu();
+    // Translate a node so its ORIGIN lands on a document point / snap every
+    // selected node as one undo command / the snap grid step (the move
+    // increment, 50 doc-units fallback).
+    void   SnapNodeOriginTo(Ink::NodeId id, Ink::DVec2 to);
+    void   SnapSelection(const char* label,
+                         std::function<Ink::DVec2(Ink::NodeId)> targetFor);
+    double SnapGridStep() const;
+    void Action_SelectionToCursor();
+    void Action_SelectionToActive();
+    void Action_SelectionToGrid();
+    void Action_Cursor2DToActive();
+    void Action_Cursor2DToWorldOrigin();
+    void Action_Cursor2DToGrid();
+    bool   snapMenuOpen_ = false, snapMenuRequested_ = false;
+    ImVec2 snapMenuPos_{};
     bool   show2DCursor_ = true;   // draw the 2D cursor overlay
     // Reset the 2D cursor to the document/page origin, or to the selection.
     void   Action_Cursor2DToOrigin();
