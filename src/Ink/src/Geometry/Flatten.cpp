@@ -221,11 +221,11 @@ LocalBounds ComputeBounds(const std::vector<Polyline>& polylines,
         inflate = std::max(inflate, s.width);   // full width:
         // covers Center (w/2) and the Lot 3 Inside/Outside bands (w) alike.
         // A mark's OBJECTS reach past the band (a shape sticks out ~size, an
-        // off-line mark by its offset) — extend by a conservative envelope.
+        // off-line mark by its resolved offset) — a conservative envelope.
         for (const StrokeMark& m : s.marks) {
-            double reach = std::abs(m.offset);
+            double reach = std::abs(m.OffsetUnits(s.width));
             for (const MarkObject& o : m.objects)
-                reach = std::max(reach, o.size * 1.6);
+                reach = std::max(reach, std::max(o.size, o.width) * 1.6);
             inflate = std::max(inflate, s.width + reach);
         }
     }

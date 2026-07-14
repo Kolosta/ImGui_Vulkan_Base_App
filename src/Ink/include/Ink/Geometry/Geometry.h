@@ -43,14 +43,26 @@ Mesh TriangulateFill(const std::vector<Polyline>& polylines, FillRule rule);
 // Miter(limit)/Round/Bevel joins, dash patterns. `tolerance` (node-local
 // units) bounds the arc-flattening error of round caps/joins. Stroke width is
 // taken as-is (WidthSpace resolution happens in the GeometryCache).
-// Stroke MARKS (IOF_CORE_PLAN Phase A) are applied here: Crossing/Bridge
-// marks CUT the spine (the line is interrupted at their gap), a DashAnchor
-// re-phases the dash run of its kept run, and tick/bracket/bar glyphs are
-// emitted into the same mesh. `source` (optional) is the un-flattened path,
-// used only to resolve node-PINNED dash anchors; polyline index == mark.sub.
+// Stroke MARKS (IOF_CORE_PLAN Phase A): a non-Neutral mark re-phases the dash
+// run, and each of a mark's Fusion-mode OBJECTS is triangulated INTO this mesh
+// (one drawing, one alpha — no double transparency, like the legacy ticks).
+// Blend / Subtract objects are handled by the Scene (their own drawables).
+// `source` (optional) is the un-flattened path, used only to resolve
+// node-PINNED marks; polyline index == mark.sub.
 Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                       const Stroke& stroke, double tolerance,
                       const PathData* source = nullptr);
+
+// The node-local CONTOUR of one mark object placed on the (aligned) `spine`
+// polyline of subpath `mark.sub`: a closed ring ready to triangulate (Fusion,
+// in the stroke mesh) or to feed a PathData (Blend/Subtract drawables). Honours
+// the mark's side + resolved offset, the object's size/width/rotation, and its
+// Hard-vs-Bend setting (Bend samples the ring along the curve). Returns false
+// for an Instance object (it has no primitive contour — the Scene routes the
+// referenced node instead). `strokeWidth` resolves a percentage offset.
+bool MarkObjectContour(const Polyline& spine, const StrokeMark& mark,
+                       const MarkObject& obj, double strokeWidth,
+                       double tolerance, std::vector<DVec2>& outRing);
 
 // AABB of the flattened points alone (style-independent; the caller inflates
 // by stroke bands — used by view culling).

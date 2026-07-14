@@ -105,31 +105,40 @@ enum class MarkPhase : std::uint8_t {
 // Left/Right offset by `offset` doc-units along the ±normal).
 enum class MarkSide : std::uint8_t { Center = 0, Left = 1, Right = 2 };
 
-// A mark object's shape (SVG-markers vocabulary, w3.org/TR/svg-markers):
-// the plain forms sit ON the line; the INVERTED forms are the plain form
-// rotated 180° about the line tangent (the "notch" points the other way — a
-// half-disc bay vs a half-disc bump, etc.). `Instance` stamps an existing
-// node's geometry at the mark instead of a primitive.
+// A mark object's shape (SVG-markers vocabulary, w3.org/TR/svg-markers).
+// `Instance` stamps an existing node's geometry at the mark instead of a
+// primitive.
 enum class MarkShape : std::uint8_t {
-    Circle           = 0,
-    Rectangle        = 1,
-    Diamond          = 2,   // SVG "triangle" per the user's mapping
-    InvertedCircle   = 3,
-    InvertedRectangle= 4,
-    InvertedDiamond  = 5,
-    Instance         = 6,   // instance of `nodeRef`
+    Circle    = 0,
+    Rectangle = 1,
+    Diamond   = 2,
+    Instance  = 3,   // instance of `nodeRef`
 };
 
-// How a mark object combines with the stroke: ADD paints it on top of the
-// isolated stroke layer (optionally with its own blend); SUBTRACT cuts it out
-// of that layer (an absolute geometric erase — see RENDER_GRAPH.md §Erase).
-enum class MarkObjectMode : std::uint8_t { Add = 0, Subtract = 1 };
+// How a mark object combines with the stroke:
+//   Fusion   — the object's geometry is FUSED into the stroke's own mesh
+//              (one drawing, one alpha): translucent strokes don't double up,
+//              exactly like the legacy slope ticks. The default.
+//   Blend    — the object is a SEPARATE drawable composited over the stroke's
+//              isolation layer with its own blend mode (so it can Multiply /
+//              Screen / … against the stroke below).
+//   Subtract — an absolute geometric erase (dst-out): the shape CUTS the
+//              stroke layer (RENDER_GRAPH.md §Erase).
+enum class MarkObjectMode : std::uint8_t { Fusion = 0, Blend = 1, Subtract = 2 };
+
+// Whether an object's geometry BENDS to follow the curve at the mark, or stays
+// a hard (rigid) shape merely rotated to the tangent.
+enum class MarkBend : std::uint8_t { Hard = 0, Bend = 1 };
 
 struct MarkObject {
     MarkShape       shape = MarkShape::Circle;
-    MarkObjectMode  mode  = MarkObjectMode::Add;
-    BlendMode       blend = BlendMode::Normal;   // ADD only (Subtract ignores)
-    double          size  = 6.0;    // node-local units (radius / half-extent)
+    MarkObjectMode  mode  = MarkObjectMode::Fusion;
+    MarkBend        bend  = MarkBend::Hard;
+    BlendMode       blend = BlendMode::Normal;   // BLEND mode only
+    // node-local units. `size` = radius (circle/diamond) or HALF-LENGTH along
+    // the tangent (rectangle); `width` = the rectangle's HALF-height across it.
+    double          size  = 6.0;
+    double          width = 6.0;    // Rectangle only (half-height)
     double          rotation = 0.0; // extra spin about the mark point (radians)
     NodeId          nodeRef = kNullNode;   // shape == Instance
     // Fill colour of a primitive object (linear straight). Instance objects use
@@ -138,11 +147,12 @@ struct MarkObject {
     bool            useStrokeColor = true;    // primitive: inherit stroke paint
 
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[4] = { (std::uint8_t)shape, (std::uint8_t)mode,
-                                         (std::uint8_t)blend,
+        const std::uint8_t packed[5] = { (std::uint8_t)shape, (std::uint8_t)mode,
+                                         (std::uint8_t)bend, (std::uint8_t)blend,
                                          (std::uint8_t)(useStrokeColor ? 1 : 0) };
         h = HashBytes(packed, sizeof packed, h);
         h = HashDouble(size, h);
+        h = HashDouble(width, h);
         h = HashDouble(rotation, h);
         h = HashBytes(&nodeRef, sizeof nodeRef, h);
         return h;   // color excluded (a paint edit must NOT re-tessellate)
@@ -155,15 +165,18 @@ struct StrokeMark {
     MarkPhase    phase = MarkPhase::Neutral;
     MarkSide     side  = MarkSide::Center;
     double       offset = 0.0;  // Left/Right: signed distance to the line
-                                // (doc-units; may be negative)
+    bool         offsetPercent = true;  // offset is a % of the stroke width
+                                        // (100 % = one full width) vs doc-units
     // If ≥ 0 the mark is PINNED to that control point of its subpath (t is
     // recomputed from the point as the curve is edited); −1 = free at `t`.
     std::int32_t nodeAnchor = -1;
-    // The objects stamped at this mark (SVG-marker shapes / node instances).
+    // The objects stamped at this mark (may be EMPTY — a pure dash/gap
+    // re-phaser). SVG-marker shapes / node instances.
     std::vector<MarkObject> objects;
 
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[2] = { (std::uint8_t)phase, (std::uint8_t)side };
+        const std::uint8_t packed[3] = { (std::uint8_t)phase, (std::uint8_t)side,
+                                         (std::uint8_t)(offsetPercent ? 1 : 0) };
         h = HashBytes(packed, sizeof packed, h);
         h = HashBytes(&sub, sizeof sub, h);
         h = HashBytes(&nodeAnchor, sizeof nodeAnchor, h);
@@ -174,6 +187,10 @@ struct StrokeMark {
     }
     // Does this mark re-phase the dash run? (Neutral marks don't.)
     bool RePhases() const { return phase != MarkPhase::Neutral; }
+    // The offset resolved to node-local doc-units for a given stroke width.
+    double OffsetUnits(double strokeWidth) const {
+        return offsetPercent ? offset * 0.01 * strokeWidth : offset;
+    }
 };
 
 struct Stroke {
