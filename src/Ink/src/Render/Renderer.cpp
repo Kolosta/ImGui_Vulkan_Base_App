@@ -178,6 +178,13 @@ bool CreatePipelines(RendererImpl& r) {
         r.strokeDedupPipeline = rhi::CreateGraphicsPipeline(r.device, d);
         d.stencil    = rhi::StencilMode::None;
         d.stencilRef = 1;
+        // Content erase: an absolute dst-out (out = dst·(1−src.a)). A
+        // subtractive mark object rasterises opaque here to CUT its coverage
+        // out of the stroke's isolation layer, so the layer above shows a hole
+        // (docs/Ink/RENDER_GRAPH.md §Erase). Same content vertex program.
+        d.blend = rhi::BlendKind::Erase;
+        r.contentErasePipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        d.blend = rhi::BlendKind::PremultipliedOver;
 
         d.vert         = primV;
         d.frag         = primF;
@@ -196,7 +203,7 @@ bool CreatePipelines(RendererImpl& r) {
         d.attributes.clear();
         d.colorFormat        = kContentFormat;
         d.samples            = VK_SAMPLE_COUNT_1_BIT;
-        d.blendPremultiplied = false;
+        d.blend              = rhi::BlendKind::OpaqueOverwrite;
         d.layout             = r.compositeLayout;
         r.compositePipeline = rhi::CreateGraphicsPipeline(r.device, d);
 
@@ -208,6 +215,7 @@ bool CreatePipelines(RendererImpl& r) {
 
         ok = r.contentPipeline && r.contentClipPipeline && r.clipMaskPipeline &&
              r.clipClearPipeline && r.strokeDedupPipeline &&
+             r.contentErasePipeline &&
              r.overlayPipeline && r.compositePipeline && r.presentPipeline;
     }
     for (VkShaderModule m : all)
@@ -515,6 +523,7 @@ void Renderer::Shutdown() {
         destroyPipeline(r.clipMaskPipeline);
         destroyPipeline(r.clipClearPipeline);
         destroyPipeline(r.strokeDedupPipeline);
+        destroyPipeline(r.contentErasePipeline);
         destroyPipeline(r.overlayPipeline);
         destroyPipeline(r.compositePipeline);
         destroyPipeline(r.presentPipeline);

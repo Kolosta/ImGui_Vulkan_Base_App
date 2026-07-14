@@ -206,6 +206,7 @@ struct RendererImpl {
     VkPipeline clipMaskPipeline    = VK_NULL_HANDLE;  // stencil WriteMask ← 1
     VkPipeline clipClearPipeline   = VK_NULL_HANDLE;  // stencil WriteMask ← 0
     VkPipeline strokeDedupPipeline = VK_NULL_HANDLE;  // TestNotEqualWrite (dyn ref)
+    VkPipeline contentErasePipeline= VK_NULL_HANDLE;  // dst-out (subtractive marks)
     VkPipeline overlayPipeline     = VK_NULL_HANDLE;
     VkPipeline presentPipeline     = VK_NULL_HANDLE;
     VkPipeline compositePipeline   = VK_NULL_HANDLE;  // iso composite (blend)

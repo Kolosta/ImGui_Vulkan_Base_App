@@ -220,11 +220,14 @@ LocalBounds ComputeBounds(const std::vector<Polyline>& polylines,
         if (!s.enabled) continue;
         inflate = std::max(inflate, s.width);   // full width:
         // covers Center (w/2) and the Lot 3 Inside/Outside bands (w) alike.
-        // Mark glyphs reach past the band (ticks/brackets stick out `size`,
-        // gaps shift their end bars) — extend by a conservative envelope.
-        for (const StrokeMark& m : s.marks)
-            inflate = std::max(inflate,
-                               s.width + m.size * 1.6 + m.gap * 0.5);
+        // A mark's OBJECTS reach past the band (a shape sticks out ~size, an
+        // off-line mark by its offset) — extend by a conservative envelope.
+        for (const StrokeMark& m : s.marks) {
+            double reach = std::abs(m.offset);
+            for (const MarkObject& o : m.objects)
+                reach = std::max(reach, o.size * 1.6);
+            inflate = std::max(inflate, s.width + reach);
+        }
     }
     b.min.x -= inflate; b.min.y -= inflate;
     b.max.x += inflate; b.max.y += inflate;

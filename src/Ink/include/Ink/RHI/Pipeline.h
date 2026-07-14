@@ -36,6 +36,17 @@ struct VertexAttribute {
 // set `stencilFormat` on every pipeline that renders into such a pass.
 enum class StencilMode { None, WriteMask, TestEqual, TestNotEqualWrite };
 
+// How a pipeline writes colour into its target:
+//   PremultipliedOver — out = src + dst·(1−src.a): the engine's one "over"
+//                       operator inside an isolation target.
+//   Erase             — out = dst·(1−src.a): an absolute geometric erase
+//                       (dst-out) — the covered area is CLEARED from an
+//                       isolated layer regardless of what colour it was
+//                       (a subtractive mark object cuts the stroke layer;
+//                       docs/Ink/RENDER_GRAPH.md §Erase).
+//   OpaqueOverwrite   — out = src: no blending (the present pass).
+enum class BlendKind { PremultipliedOver, Erase, OpaqueOverwrite };
+
 struct GraphicsPipelineDesc {
     VkShaderModule vert = VK_NULL_HANDLE;
     VkShaderModule frag = VK_NULL_HANDLE;
@@ -45,11 +56,9 @@ struct GraphicsPipelineDesc {
     VkFormat              colorFormat   = VK_FORMAT_UNDEFINED;
     VkFormat              stencilFormat = VK_FORMAT_UNDEFINED;  // pass has stencil
     VkSampleCountFlagBits samples       = VK_SAMPLE_COUNT_1_BIT;
-    // Premultiplied-alpha "over" blending (src=ONE, dst=ONE_MINUS_SRC_ALPHA);
-    // false = opaque overwrite (present pass).
-    bool          blendPremultiplied = true;
-    StencilMode   stencil            = StencilMode::None;
-    std::uint32_t stencilRef         = 1;   // WriteMask value / TestEqual ref
+    BlendKind     blend                = BlendKind::PremultipliedOver;
+    StencilMode   stencil              = StencilMode::None;
+    std::uint32_t stencilRef           = 1;   // WriteMask value / TestEqual ref
     VkPipelineLayout layout = VK_NULL_HANDLE;
 };
 

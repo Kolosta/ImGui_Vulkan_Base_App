@@ -82,57 +82,98 @@ enum class JoinStyle   : std::uint8_t { Miter = 0, Round = 1, Bevel = 2 };
 // annotations; resolved per zoom tier by the GeometryCache).
 enum class WidthSpace  : std::uint8_t { Document = 0, Viewport = 1 };
 
-// ── Stroke marks (the legacy LineMark — docs/Ink/IOF_CORE_PLAN.md Phase A):
-// a MANUAL glyph or phase pin the user places at an arc-length position on
-// one subpath of the stroked path. It decorates or re-phases the line
-// WITHOUT touching the path geometry, and is tessellated with the stroke
-// (same mesh, same paint) so it rides the normal content pass.
-enum class MarkKind : std::uint8_t {
-    SlopeTick  = 0,   // short downhill tick on one side (contour slope hint)
-    Crossing   = 1,   // a gap cut in the line + two ticks across the ends
-    Bridge     = 2,   // a gap + two facing brackets (bridge/tunnel entrances)
-    Pylon      = 3,   // crossbar across the line (optional box variant)
-    DashAnchor = 4,   // NO geometry: forces a dash ELEMENT (side +1) or GAP
-                      // (side −1) to land centred here — re-phases the run
+// ── Stroke marks (docs/Ink/IOF_CORE_PLAN.md Phase A — the GENERIC core model):
+// a MANUAL annotation the user places at an arc-length position on one subpath
+// of the stroked path. A mark does TWO independent things (both optional):
+//   1. re-PHASES the dash run — it forces a dash ELEMENT, a GAP, or nothing
+//      (Neutral) to land centred on it (the legacy DashAnchor generalised);
+//   2. carries a list of MARK OBJECTS stamped at its position — SVG-marker-like
+//      shapes (circle / rectangle / diamond + their inverted forms) or an
+//      INSTANCE of an existing node, each either ADDED to the stroke layer or
+//      SUBTRACTED from it (a geometric erase — the shape cuts the stroke).
+// The IOF-specific glyphs (slope ticks, bridges, pylons…) are NOT core: the
+// module rebuilds them from these primitives (Phase C).
+
+// Where the phase re-phasing lands (or none).
+enum class MarkPhase : std::uint8_t {
+    Neutral = 0,   // no dash re-phasing (a plain object anchor)
+    Dash    = 1,   // force a dash ELEMENT centre here
+    Gap     = 2,   // force a GAP centre here
+};
+
+// Which side of the line the objects sit on (Center straddles the line;
+// Left/Right offset by `offset` doc-units along the ±normal).
+enum class MarkSide : std::uint8_t { Center = 0, Left = 1, Right = 2 };
+
+// A mark object's shape (SVG-markers vocabulary, w3.org/TR/svg-markers):
+// the plain forms sit ON the line; the INVERTED forms are the plain form
+// rotated 180° about the line tangent (the "notch" points the other way — a
+// half-disc bay vs a half-disc bump, etc.). `Instance` stamps an existing
+// node's geometry at the mark instead of a primitive.
+enum class MarkShape : std::uint8_t {
+    Circle           = 0,
+    Rectangle        = 1,
+    Diamond          = 2,   // SVG "triangle" per the user's mapping
+    InvertedCircle   = 3,
+    InvertedRectangle= 4,
+    InvertedDiamond  = 5,
+    Instance         = 6,   // instance of `nodeRef`
+};
+
+// How a mark object combines with the stroke: ADD paints it on top of the
+// isolated stroke layer (optionally with its own blend); SUBTRACT cuts it out
+// of that layer (an absolute geometric erase — see RENDER_GRAPH.md §Erase).
+enum class MarkObjectMode : std::uint8_t { Add = 0, Subtract = 1 };
+
+struct MarkObject {
+    MarkShape       shape = MarkShape::Circle;
+    MarkObjectMode  mode  = MarkObjectMode::Add;
+    BlendMode       blend = BlendMode::Normal;   // ADD only (Subtract ignores)
+    double          size  = 6.0;    // node-local units (radius / half-extent)
+    double          rotation = 0.0; // extra spin about the mark point (radians)
+    NodeId          nodeRef = kNullNode;   // shape == Instance
+    // Fill colour of a primitive object (linear straight). Instance objects use
+    // the referenced node's own style, so this is ignored for them.
+    Color           color{ 0, 0, 0, 1 };
+    bool            useStrokeColor = true;    // primitive: inherit stroke paint
+
+    std::uint64_t Hash(std::uint64_t h) const {
+        const std::uint8_t packed[4] = { (std::uint8_t)shape, (std::uint8_t)mode,
+                                         (std::uint8_t)blend,
+                                         (std::uint8_t)(useStrokeColor ? 1 : 0) };
+        h = HashBytes(packed, sizeof packed, h);
+        h = HashDouble(size, h);
+        h = HashDouble(rotation, h);
+        h = HashBytes(&nodeRef, sizeof nodeRef, h);
+        return h;   // color excluded (a paint edit must NOT re-tessellate)
+    }
 };
 
 struct StrokeMark {
-    MarkKind     kind = MarkKind::SlopeTick;
     std::int32_t sub  = 0;    // which FLATTENED subpath the mark lives on
     double       t    = 0.5;  // arc-length position along it, in [0,1]
-    std::int32_t side = +1;   // tick side: +1 = left of travel, −1 = right
-                              // (DashAnchor: +1 = dash centred, −1 = gap)
-    // Geometry params (node-local units); meaning depends on `kind`:
-    //   SlopeTick : size = tick length.
-    //   Crossing  : gap  = the cut length, size = tick half-length.
-    //   Bridge    : gap  = the opening, size = bracket half-height.
-    //   Pylon     : size = bar half-length; square+gap = box side.
-    double gap       = 8.0;
-    double size      = 6.0;
-    double thickness = 0.0;   // 0 → reuse the base stroke width
-    // SlopeTick: `size` measured from the stroke's OUTER edge (drawn length =
-    // halfWidth + size) — the ISOM "outside measure" (OM) convention.
-    bool outsideMeasure = false;
-    // Pylon: a small square box (side = `gap`) centred on the bar.
-    bool square = false;
-    // DashAnchor: if ≥ 0 the anchor is PINNED to that control point of its
-    // subpath (t recomputed from the point as the curve is edited); −1 = free.
+    MarkPhase    phase = MarkPhase::Neutral;
+    MarkSide     side  = MarkSide::Center;
+    double       offset = 0.0;  // Left/Right: signed distance to the line
+                                // (doc-units; may be negative)
+    // If ≥ 0 the mark is PINNED to that control point of its subpath (t is
+    // recomputed from the point as the curve is edited); −1 = free at `t`.
     std::int32_t nodeAnchor = -1;
+    // The objects stamped at this mark (SVG-marker shapes / node instances).
+    std::vector<MarkObject> objects;
 
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[3] = { (std::uint8_t)kind,
-                                         (std::uint8_t)(outsideMeasure ? 1 : 0),
-                                         (std::uint8_t)(square ? 1 : 0) };
+        const std::uint8_t packed[2] = { (std::uint8_t)phase, (std::uint8_t)side };
         h = HashBytes(packed, sizeof packed, h);
         h = HashBytes(&sub, sizeof sub, h);
-        h = HashBytes(&side, sizeof side, h);
         h = HashBytes(&nodeAnchor, sizeof nodeAnchor, h);
         h = HashDouble(t, h);
-        h = HashDouble(gap, h);
-        h = HashDouble(size, h);
-        h = HashDouble(thickness, h);
+        h = HashDouble(offset, h);
+        for (const MarkObject& o : objects) h = o.Hash(h);
         return h;
     }
+    // Does this mark re-phase the dash run? (Neutral marks don't.)
+    bool RePhases() const { return phase != MarkPhase::Neutral; }
 };
 
 struct Stroke {

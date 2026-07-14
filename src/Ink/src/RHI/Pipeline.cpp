@@ -76,7 +76,7 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
     VkPipelineColorBlendAttachmentState blend{};
     blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                            VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-    if (desc.blendPremultiplied) {
+    if (desc.blend == BlendKind::PremultipliedOver) {
         // Premultiplied over: out = src + dst·(1−src.a) — the engine's one
         // compositing operator inside a target (docs/Ink/RENDER_GRAPH.md).
         blend.blendEnable         = VK_TRUE;
@@ -86,7 +86,20 @@ VkPipeline CreateGraphicsPipeline(Device& dev, const GraphicsPipelineDesc& desc)
         blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
         blend.alphaBlendOp        = VK_BLEND_OP_ADD;
+    } else if (desc.blend == BlendKind::Erase) {
+        // Absolute geometric erase (dst-out): out = dst·(1−src.a). Rendering
+        // an opaque coverage (src.a = 1) CLEARS the destination — used to cut a
+        // subtractive mark object out of the stroke's isolation layer, so it
+        // resolves as a hole in the layer above (RENDER_GRAPH.md §Erase).
+        blend.blendEnable         = VK_TRUE;
+        blend.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.colorBlendOp        = VK_BLEND_OP_ADD;
+        blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend.alphaBlendOp        = VK_BLEND_OP_ADD;
     }
+    // BlendKind::OpaqueOverwrite leaves blendEnable = FALSE (out = src).
     // A mask-writing pipeline emits no colour (only the stencil is touched).
     if (desc.stencil == StencilMode::WriteMask)
         blend.colorWriteMask = 0;

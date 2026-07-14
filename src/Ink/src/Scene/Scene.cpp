@@ -671,6 +671,16 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
     for (std::size_t i = 0; i < n.style.strokes.size(); ++i) {
         const Stroke& s = n.style.strokes[i];
         if (!s.enabled || s.width <= 0.0) continue;
+        // A stroke carrying mark OBJECTS renders in its own isolation scope so
+        // the subtractive objects can cut it before it composites up. A plain
+        // stroke (or one with only phase re-phasing) goes straight to `scope`.
+        bool hasObjects = false;
+        for (const StrokeMark& m : s.marks)
+            hasObjects = hasObjects || !m.objects.empty();
+        if (hasObjects && !pinClip) {
+            EmitStrokeMarks(doc, n, s, i, geo, world, scope, owner, 0);
+            continue;
+        }
         Drawable d;
         d.node = n.id;  d.owner = owner;  d.world = world;
         d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
@@ -680,6 +690,188 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         d.scope = scope;
         if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
         drawables_.push_back(std::move(d));
+    }
+}
+
+namespace {
+
+// A primitive mark-object shape as a closed PathData, centred on the origin,
+// its half-extent = `size` (the placement transform orients/positions it).
+// The INVERTED forms are the plain form spun 180° about the tangent — for the
+// symmetric primitives that only flips a Rectangle/Diamond's long axis, which
+// is what the SVG-marker "inverted" set expresses.
+PathData MakeMarkShape(MarkShape shape, double size) {
+    switch (shape) {
+    case MarkShape::Circle:
+    case MarkShape::InvertedCircle:
+        return PathData::Ellipse(0, 0, size, size);
+    case MarkShape::Rectangle:
+        return PathData::Rect(-size, -size * 0.6, size * 2.0, size * 1.2);
+    case MarkShape::InvertedRectangle:
+        return PathData::Rect(-size * 0.6, -size, size * 1.2, size * 2.0);
+    case MarkShape::Diamond:
+        return PathData::Polygon({ { size, 0 }, { 0, size },
+                                   { -size, 0 }, { 0, -size } }, true);
+    case MarkShape::InvertedDiamond:
+        return PathData::Polygon({ { size * 0.6, 0 }, { 0, size * 1.4 },
+                                   { -size * 0.6, 0 }, { 0, -size * 1.4 } },
+                                 true);
+    default:
+        return PathData{};
+    }
+}
+
+// Point + unit tangent at fraction `t` (arc length) of a flattened polyline.
+void SampleAt(const std::vector<DVec2>& pts, bool closed, double t,
+              DVec2& outP, DVec2& outT) {
+    const std::size_t n = pts.size();
+    if (n < 2) { outP = n ? pts[0] : DVec2{}; outT = { 1, 0 }; return; }
+    const std::size_t sc = closed ? n : n - 1;
+    double total = 0.0;
+    for (std::size_t i = 0; i < sc; ++i) {
+        const DVec2 a = pts[i], b = pts[(i + 1) % n];
+        total += std::hypot(b.x - a.x, b.y - a.y);
+    }
+    double d = (t < 0 ? 0 : t > 1 ? 1 : t) * total, acc = 0.0;
+    for (std::size_t i = 0; i < sc; ++i) {
+        const DVec2 a = pts[i], b = pts[(i + 1) % n];
+        const double L = std::hypot(b.x - a.x, b.y - a.y);
+        if (L < 1e-12) continue;
+        if (d <= acc + L) {
+            const double u = (d - acc) / L;
+            outP = { a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u };
+            outT = { (b.x - a.x) / L, (b.y - a.y) / L };
+            return;
+        }
+        acc += L;
+    }
+    outP = pts[n - 1];
+    const DVec2 e{ pts[n - 1].x - pts[n >= 2 ? n - 2 : 0].x,
+                   pts[n - 1].y - pts[n >= 2 ? n - 2 : 0].y };
+    const double el = std::hypot(e.x, e.y);
+    outT = el > 1e-12 ? DVec2{ e.x / el, e.y / el } : DVec2{ 1, 0 };
+}
+
+} // namespace
+
+void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
+                            std::size_t strokeIndex, const PathData* geo,
+                            const DMat23& world, ScopeId scope, NodeId owner,
+                            int instDepth) {
+    // 1. Open an isolation scope for this stroke (Normal composite into the
+    //    parent) — the subtractive objects cut it before it resolves up.
+    CompositeScope iso;
+    iso.node    = n.id;
+    iso.parent  = scope;
+    iso.opacity = 1.0f;
+    iso.blend   = BlendMode::Normal;
+    iso.isolate = true;
+    iso.depth   = scopes_[scope].depth + 1;
+    maxDepth_ = std::max(maxDepth_, iso.depth);
+    const ScopeId strokeScope = (ScopeId)scopes_.size();
+    scopes_.push_back(iso);
+
+    // 2. The base stroke inside the isolated scope.
+    {
+        std::uint64_t pathHash = geo->Hash();
+        Drawable d;
+        d.node = n.id;  d.owner = owner;  d.world = world;
+        d.pathHash = pathHash;  d.path = geo;
+        d.isStroke = true;  d.pieceIndex = (std::uint8_t)strokeIndex;
+        d.ownerPiece = (std::uint8_t)strokeIndex;  d.ownerPieceStroke = true;
+        d.stroke = s;  d.color = s.paint.color;
+        d.scope = strokeScope;
+        drawables_.push_back(std::move(d));
+    }
+
+    // 3. Flatten each subpath ONCE (coarse tolerance for placement — the
+    //    render path re-tessellates the objects per tier anyway).
+    auto flat = geom::Flatten(*geo, 0.5);
+
+    // 4. Every mark object, stamped at its mark point. Subtractive objects
+    //    (EraseWrite) come out first would be simplest, but painter order must
+    //    interleave add/subtract as authored — the erase pipeline is absolute,
+    //    so a later Add repaints over an earlier erase correctly.
+    for (const StrokeMark& m : s.marks) {
+        if (m.objects.empty()) continue;
+        if (m.sub < 0 || m.sub >= (int)flat.size()) continue;
+        const geom::Polyline& pl = flat[(std::size_t)m.sub];
+        DVec2 p, tan;
+        SampleAt(pl.points, pl.closed, m.t, p, tan);
+        const DVec2 nrm{ -tan.y, tan.x };   // left normal
+        // Side offset: Center = on the line; Left/Right = ±offset along nrm.
+        double off = 0.0;
+        if (m.side == MarkSide::Left)  off =  m.offset;
+        if (m.side == MarkSide::Right) off = -m.offset;
+        const DVec2 at{ p.x + nrm.x * off, p.y + nrm.y * off };
+
+        for (const MarkObject& obj : m.objects) {
+            // Orientation: align the object's local +x with the tangent, then
+            // the object's own extra rotation; inverted forms add π.
+            double ang = std::atan2(tan.y, tan.x) + obj.rotation;
+            if (obj.shape == MarkShape::InvertedCircle ||
+                obj.shape == MarkShape::InvertedRectangle ||
+                obj.shape == MarkShape::InvertedDiamond)
+                ang += 3.14159265358979;
+            const double c = std::cos(ang), sn = std::sin(ang);
+            // place = translate(at) · rotate(ang)  (object-local → world-local)
+            DMat23 place;
+            place.m[0] = c;  place.m[1] = -sn; place.m[2] = at.x;
+            place.m[3] = sn; place.m[4] = c;   place.m[5] = at.y;
+            const DMat23 objWorld = world.Compose(place);
+
+            // An ADD object with a non-Normal blend composites through its OWN
+            // nested scope (into the stroke layer); Subtract and plain Normal
+            // Add paint straight into the stroke scope.
+            ScopeId objScope = strokeScope;
+            if (obj.mode == MarkObjectMode::Add &&
+                obj.blend != BlendMode::Normal) {
+                CompositeScope bs;
+                bs.node    = n.id;
+                bs.parent  = strokeScope;
+                bs.opacity = 1.0f;
+                bs.blend   = obj.blend;
+                bs.isolate = true;
+                bs.depth   = iso.depth + 1;
+                maxDepth_ = std::max(maxDepth_, bs.depth);
+                objScope = (ScopeId)scopes_.size();
+                scopes_.push_back(bs);
+            }
+
+            if (obj.shape == MarkShape::Instance) {
+                // Stamp an existing node's geometry at the mark. The subtree is
+                // owned (selection-wise) by the host stroke's owner. A
+                // subtractive instance is not supported (an instance carries
+                // its own paints); it paints as an Add.
+                const Node* target = doc.Find(obj.nodeRef);
+                if (!target || target == &n || instDepth >= 6) continue;
+                EmitNode(doc, *target, objWorld, objScope, instDepth + 1,
+                         owner, /*forceVisible=*/true);
+                continue;
+            }
+
+            // A primitive shape → generated geometry (stable storage).
+            markShapes_.push_back(MakeMarkShape(obj.shape, obj.size));
+            const PathData* shapeGeo = &markShapes_.back();
+            if (shapeGeo->Empty()) { markShapes_.pop_back(); continue; }
+            Drawable d;
+            d.node = n.id;  d.owner = owner;  d.world = objWorld;
+            d.pathHash = shapeGeo->Hash();  d.path = shapeGeo;
+            d.isStroke = false;  d.rule = FillRule::NonZero;
+            d.pieceIndex = (std::uint8_t)strokeIndex;
+            d.ownerPiece = (std::uint8_t)strokeIndex;
+            d.ownerPieceStroke = true;
+            d.scope = objScope;
+            if (obj.mode == MarkObjectMode::Subtract) {
+                // Absolute erase: opaque coverage cuts the stroke layer.
+                d.color = Color{ 0, 0, 0, 1 };
+                d.clip = ClipRole::EraseWrite;
+                d.clipPinned = true;
+            } else {
+                d.color = obj.useStrokeColor ? s.paint.color : obj.color;
+            }
+            drawables_.push_back(std::move(d));
+        }
     }
 }
 
@@ -922,6 +1114,7 @@ bool Scene::Compile(Document& doc, bool force) {
     boolPrograms_.clear();
     progByNode_.clear();
     nodeBounds_.clear();
+    markShapes_.clear();
     scopes_.clear();
     maxDepth_ = 0;
     boundsValid_ = false;

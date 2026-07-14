@@ -53,7 +53,12 @@ struct CompositeScope {
 // regions in one pass never leak into each other), Clipped draws colour only
 // where the mask is set. Clipping is resolved at VIEW tolerance by the normal
 // mesh pipeline — vector-exact at any zoom.
-enum class ClipRole : std::uint8_t { None = 0, MaskWrite, MaskClear, Clipped };
+// EraseWrite: the drawable rasterises OPAQUE with the dst-out pipeline, cutting
+// its coverage out of the isolation layer (a subtractive mark object — the
+// stroke layer shows a hole where the shape was; docs/Ink/RENDER_GRAPH.md
+// §Erase). It never reads/writes the stencil.
+enum class ClipRole : std::uint8_t {
+    None = 0, MaskWrite, MaskClear, Clipped, EraseWrite };
 
 struct Drawable {
     NodeId          node = kNullNode;
@@ -155,7 +160,19 @@ private:
     // parent scope when the group is a plain pass-through layer).
     ScopeId OpenScopeIfNeeded(const Document& doc, const Node& group,
                               ScopeId parent, int depth);
+    // A stroke carrying mark OBJECTS renders in its OWN isolation scope so the
+    // subtractive objects (dst-out) cut it cleanly before it composites into
+    // the parent. Emits the base stroke + every mark object (SVG-marker shapes
+    // as generated geometry, or an instance of a node) at the mark points along
+    // the stroke's flattened subpaths.
+    void EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
+                         std::size_t strokeIndex, const PathData* geo,
+                         const DMat23& world, ScopeId scope, NodeId owner,
+                         int instDepth);
     void GrowBounds(DVec2 p);
+    // Stable storage for the primitive mark-object shapes (circle/rect/diamond)
+    // the Scene generates — drawables borrow these until the next compile.
+    std::deque<PathData> markShapes_;
 
     std::vector<Drawable>       drawables_;
     std::vector<CompositeScope> scopes_;

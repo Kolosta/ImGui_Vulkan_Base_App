@@ -36,9 +36,10 @@ void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
         if (seg.cmdCount == 0) continue;
         VkPipeline pipe = r.contentPipeline;
         switch (seg.role) {
-            case ClipRole::MaskWrite: pipe = r.clipMaskPipeline; break;
-            case ClipRole::MaskClear: pipe = r.clipClearPipeline; break;
-            case ClipRole::Clipped:   pipe = r.contentClipPipeline; break;
+            case ClipRole::MaskWrite:  pipe = r.clipMaskPipeline; break;
+            case ClipRole::MaskClear:  pipe = r.clipClearPipeline; break;
+            case ClipRole::Clipped:    pipe = r.contentClipPipeline; break;
+            case ClipRole::EraseWrite: pipe = r.contentErasePipeline; break;
             case ClipRole::None: default: break;
         }
         // Translucent-stroke self-overlap dedup: the segment is one stroke,
