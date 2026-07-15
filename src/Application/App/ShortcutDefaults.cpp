@@ -257,9 +257,15 @@ void Application::RegisterDefaultShortcuts() {
     viewportKey("edit.applyScale", "Apply Scale",
                 "Bake the selection's scale into its geometry",
                 [this]{ Action_ApplyScale(); }, {});
+    // V opens the handle menu in EDIT mode; the SAME key cycles the mark side
+    // in Line-Mark mode (disambiguated by the mode poll so they never collide).
     viewportKey("edit.handleMenu", "Set Handle Type",
                 "Open the vertex handle-type menu (Edit mode)",
-                [this]{ Action_OpenHandleMenu(); }, { sigKey(ImGuiKey_V) }, false, false, idle);
+                [this]{ Action_OpenHandleMenu(); }, { sigKey(ImGuiKey_V) },
+                false, false, [this]{
+                    return edit_.mode == EditorMode::Edit &&
+                           !transformOp_.Active() && !markGrab_.Active();
+                });
     viewportKey("edit.addMenu", "Add", "Open the Add menu at the cursor",
                 [this]{ Action_OpenAddMenu(); }, { sigKey(ImGuiKey_A, false, true) },
                 false, false, idle);

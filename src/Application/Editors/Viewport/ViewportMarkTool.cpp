@@ -414,10 +414,10 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 }
                 continue;
             }
-            // The real filled shape (as it renders): a Follow object bends its
-            // outline along the curve; Hard/Bend place a parametric primitive.
+            // The real filled shape (as it renders): Bend/Follow curve the
+            // outline along the line; Hard places a parametric primitive.
             std::vector<Ink::DVec2> ring;
-            if (o.bend == Ink::MarkBend::Follow) {
+            if (Ink::geom::BendsAlongCurve(o.bend)) {
                 if (!Ink::geom::MarkFollowContour(spine, m, o, sk.width,
                                                   localTol, ring))
                     continue;
@@ -432,15 +432,19 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                         ring.push_back(place.Apply(q));
             }
             if (ring.size() < 3) continue;
-            // Fan-fill in view space.
-            Ink::DVec2 cen{ 0, 0 };
-            for (const Ink::DVec2& p : ring) { cen.x += p.x; cen.y += p.y; }
-            cen.x /= (double)ring.size(); cen.y /= (double)ring.size();
-            const Ink::Vec2 cv = d2v(w.Apply(cen));
-            for (std::size_t i = 0; i < ring.size(); ++i) {
-                const Ink::DVec2 aw = w.Apply(ring[i]);
-                const Ink::DVec2 bw = w.Apply(ring[(i + 1) % ring.size()]);
-                ov.AddTriangle(cv, d2v(aw), d2v(bw), col);
+            // Triangulate the ring PROPERLY (a centroid fan double-covers a
+            // concave Bend/Follow ring and doubles the transparency); draw the
+            // resulting triangles in view space.
+            Ink::geom::Polyline rp; rp.points = ring; rp.closed = true;
+            const Ink::geom::Mesh rm =
+                Ink::geom::TriangulateFill({ rp }, Ink::FillRule::NonZero);
+            for (std::size_t i = 0; i + 2 < rm.indices.size(); i += 3) {
+                auto vp = [&](std::uint32_t idx) {
+                    const Ink::DVec2 lp{ rm.positions[idx*2], rm.positions[idx*2+1] };
+                    return d2v(w.Apply(lp));
+                };
+                ov.AddTriangle(vp(rm.indices[i]), vp(rm.indices[i+1]),
+                               vp(rm.indices[i+2]), col);
             }
         }
     };
