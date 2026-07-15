@@ -322,9 +322,11 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         const double wsc =
             std::max(1e-6, std::sqrt(std::abs(w.m[0]*w.m[4] - w.m[1]*w.m[3])));
         const double localTol = std::max(1e-4, 0.5 / (std::max(1e-6, zoom) * wsc));
-        auto localPolys = Ink::geom::Flatten(n->path, localTol);
-        if (m.sub < 0 || m.sub >= (int)localPolys.size()) return;
-        const Ink::geom::Polyline& spine = localPolys[(std::size_t)m.sub];
+        // The PLACEMENT spine uses the same fixed fine tolerance as the render
+        // (kMarkPlaceTolerance) so the ghost lands exactly where the object will.
+        auto placePolys = Ink::geom::Flatten(n->path, Ink::geom::kMarkPlaceTolerance);
+        if (m.sub < 0 || m.sub >= (int)placePolys.size()) return;
+        const Ink::geom::Polyline& spine = placePolys[(std::size_t)m.sub];
         // The stroke paint (or the object's own) at a preview alpha.
         const float alpha = 0.55f;
         const Ink::Color base = sk.paint.color;
@@ -353,11 +355,45 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 col = { o.color.r * alpha, o.color.g * alpha,
                         o.color.b * alpha, alpha };
             if (o.shape == Ink::MarkShape::Instance) {
-                // No contour for an instance — hint it with a ring at the point.
-                if (haveMarkW)
-                    ov.AddCircle(d2v(markW), std::max(4.0f,
-                                 (float)(o.SizeUnits(sk.width) * wsc * zoom)),
-                                 MkCol(Tok::S_Color_Accent_Default, 0.7f), 1.5f);
+                // A translucent preview of the referenced node's geometry placed
+                // at the mark (frame · scale · cancel-target-transform), exactly
+                // as the Scene will render it.
+                const Ink::Node* tgt = doc.Find(o.nodeRef);
+                if (!tgt || tgt->kind != Ink::NodeKind::Path ||
+                    tgt->path.Empty()) {
+                    if (haveMarkW)
+                        ov.AddCircle(d2v(markW), 6.0f,
+                                     MkCol(Tok::S_Color_Accent_Default, 0.7f), 1.5f);
+                    continue;
+                }
+                const Ink::DMat23 frame =
+                    Ink::geom::MarkPlaceMatrix(spine, m, o, sk.width);
+                const double k = o.sizePercent ? o.size * 0.01
+                                               : std::max(1e-6, o.size);
+                Ink::DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
+                // The target's OWN transform is cancelled by the Scene, so its
+                // local geometry lands under place = frame · scale.
+                const Ink::DMat23 place = frame.Compose(scaleM);
+                Ink::Color tcol = tgt->style.fills.empty()
+                    ? MkCol(Tok::S_Color_Accent_Default, alpha)
+                    : Ink::Color{ tgt->style.fills.front().paint.color.r * alpha,
+                                  tgt->style.fills.front().paint.color.g * alpha,
+                                  tgt->style.fills.front().paint.color.b * alpha,
+                                  alpha };
+                for (const auto& pl : Ink::geom::Flatten(tgt->path, localTol)) {
+                    if (pl.points.size() < 3) continue;
+                    Ink::DVec2 cn{ 0, 0 };
+                    for (const Ink::DVec2& p : pl.points) { cn.x+=p.x; cn.y+=p.y; }
+                    cn.x /= (double)pl.points.size();
+                    cn.y /= (double)pl.points.size();
+                    const Ink::Vec2 cvv = d2v(w.Apply(place.Apply(cn)));
+                    for (std::size_t i = 0; i < pl.points.size(); ++i) {
+                        const Ink::DVec2 aw = w.Apply(place.Apply(pl.points[i]));
+                        const Ink::DVec2 bw = w.Apply(place.Apply(
+                            pl.points[(i + 1) % pl.points.size()]));
+                        ov.AddTriangle(cvv, d2v(aw), d2v(bw), tcol);
+                    }
+                }
                 continue;
             }
             // The real filled shape (as it renders): a Follow object bends its

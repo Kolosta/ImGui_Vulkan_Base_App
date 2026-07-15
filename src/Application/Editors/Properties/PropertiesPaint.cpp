@@ -660,7 +660,15 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                         ImGui::PushID((int)(50 + oi));
                         int shp = (int)o.shape;
                         if (pr::DropdownRow("Object", kShape, 4, &shp)) {
-                            o.shape = (Ink::MarkShape)shp;
+                            const Ink::MarkShape ns = (Ink::MarkShape)shp;
+                            // Switching TO a rectangle applies its default
+                            // proportions (length 200 %, width 100 %) when the
+                            // dimensions still hold the shared 100 % default.
+                            if (ns == Ink::MarkShape::Rectangle &&
+                                o.shape != Ink::MarkShape::Rectangle &&
+                                o.sizePercent && std::abs(o.size - 100.0) < 1e-6)
+                                o.size = 200.0;
+                            o.shape = ns;
                             structural = true; structLabel = "Mark Object";
                         }
                         // Mode: Fusion (part of the stroke) / Blend / Subtract.
@@ -700,6 +708,27 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                                         project_.document->SetStyle(id, after);
                                         CommitStyleEdit(id, before, "Mark Instance");
                                     });
+                            }
+                            // Scale: `size` is the instance factor (100 % = ×1
+                            // when in percent, or a raw multiplier in units).
+                            float sc = (float)o.size;
+                            if (pr::DragFloat("Scale", &sc, o.sizePercent ? 1.0f : 0.01f,
+                                              0.0f, 1000000.0f, 2,
+                                              o.sizePercent ? "%" : "\xC3\x97")) {
+                                o.size = sc; liveApply("Mark Scale", false);
+                            }
+                            if (ImGui::IsItemDeactivatedAfterEdit())
+                                liveApply("Mark Scale", true);
+                            static const char* kUnit2[] = { "%", "\xC3\x97" };
+                            int un2 = o.sizePercent ? 0 : 1;
+                            if (pr::ButtonGroupRow("Unit", kUnit2, 2, &un2)) {
+                                const bool toPct = (un2 == 0);
+                                if (toPct != o.sizePercent) {
+                                    // %→× : 100 %% = ×1.
+                                    o.size = toPct ? o.size * 100.0 : o.size * 0.01;
+                                    o.sizePercent = toPct;
+                                    structural = true; structLabel = "Mark Unit";
+                                }
                             }
                         } else {
                             // A size field (in % of stroke width or doc-units,
