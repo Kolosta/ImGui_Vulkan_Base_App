@@ -733,12 +733,28 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                o.mode != MarkObjectMode::Fusion ||
                !o.useStrokeColor;
     };
+    // `front` is a BLEND-ONLY choice (which side of the stroke a blend composites
+    // on). A Cut MUST sit over the stroke to erase it, and an Instance/recoloured
+    // object has no reverse order — so anything that is NOT a Blend is always
+    // FRONT, regardless of a stale `front` flag left over from a former Blend.
+    auto effFront = [](const MarkObject& o) {
+        return o.mode == MarkObjectMode::Blend ? o.front : true;
+    };
+    // Blend/Cut objects need the stroke's isolation scope (a Cut erases it, a
+    // Blend composites against it). This is true for a top-level object OR a
+    // gap's start/end SUB-object.
+    auto wantsScope = [](const MarkObject& o) {
+        return o.shape != MarkShape::Gap && o.mode != MarkObjectMode::Fusion;
+    };
     bool needsScope = false;
     for (const StrokeMark& m : s.marks)
-        for (const MarkObject& o : m.objects)
-            if (o.shape != MarkShape::Gap && separate(o) &&
-                o.mode != MarkObjectMode::Fusion)
-                needsScope = true;   // only Blend/Cut/Instance need isolation
+        for (const MarkObject& o : m.objects) {
+            if (wantsScope(o)) needsScope = true;
+            if (o.shape == MarkShape::Gap)
+                for (const auto* lst : { &o.gapStartObjects, &o.gapEndObjects })
+                    for (const MarkObject& so : *lst)
+                        if (wantsScope(so)) needsScope = true;
+        }
 
     ScopeId strokeScope = scope;
     int isoDepth = scopes_[scope].depth;
@@ -791,6 +807,12 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                 vm.objects.clear();
                 for (const MarkObject& so : objs) {
                     if (so.shape == MarkShape::Gap) continue;  // no nested gaps
+                    // A stroke-coloured Fusion sub-object is already baked INTO
+                    // the stroke mesh by the stroker (like any Fusion object);
+                    // emitting it here too would draw it twice (double alpha).
+                    if (so.mode == MarkObjectMode::Fusion &&
+                        so.shape != MarkShape::Instance && so.useStrokeColor)
+                        continue;
                     emitObject(vm, so);
                 }
             };
@@ -814,8 +836,13 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         if (obj.shape == MarkShape::Instance) {
             const Node* target = doc.Find(obj.nodeRef);
             if (!target || target == &n || instDepth >= 6) return;
-            // place = frame at the mark (translate + rotate to the tangent).
-            const DMat23 frame = geom::MarkPlaceMatrix(spine, m, obj, s.width);
+            // place = frame at the mark (translate + rotate to the tangent, plus
+            // the Bend shear). A single node's arbitrary geometry can't be truly
+            // Follow-bent, so an Instance set to Follow uses the Bend shear as its
+            // curve-lean — an instance now always gets a real bend transform.
+            MarkObject pobj = obj;
+            if (pobj.bend == MarkBend::Follow) pobj.bend = MarkBend::Bend;
+            const DMat23 frame = geom::MarkPlaceMatrix(spine, m, pobj, s.width);
             // Uniform scale: `size` is the factor (100 % = ×1, or the raw
             // doc-unit value read as a multiplier).
             const double k = obj.sizePercent ? obj.size * 0.01
@@ -840,9 +867,10 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         d.ownerPiece = (std::uint8_t)strokeIndex;  d.ownerPieceStroke = true;
         d.scope = objScope;
         if (geom::BendsAlongCurve(obj.bend)) {
-            // Bend / Follow curve the outline along the line → a dense derived
-            // ring (node-local, so d.world = the node world). Sampled fine so
-            // the curved edges read as smooth.
+            // Bend / Follow bend the outline along the line → a derived ring built
+            // ONCE at a fixed fine tolerance (node-local, so d.world = the node
+            // world). Cheap and stable; the ring is dense enough to read smooth at
+            // normal zoom (a documented figée limit at extreme zoom).
             std::vector<DVec2> ring;
             if (!geom::MarkFollowContour(spine, m, obj, s.width,
                                          geom::kMarkPlaceTolerance, ring))
@@ -852,8 +880,8 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
             if (g->Empty()) { markShapes_.pop_back(); return; }
             d.world = world;  d.path = g;  d.pathHash = g->Hash();
         } else {
-            // Hard: a PARAMETRIC primitive placed by a transform →
-            // re-tessellated per tier (vector-smooth).
+            // Hard: a PARAMETRIC primitive placed by an affine transform →
+            // re-tessellated per tier, vector-smooth.
             markShapes_.push_back(geom::MarkPrimitiveShape(obj, s.width));
             const PathData* g = &markShapes_.back();
             if (g->Empty()) { markShapes_.pop_back(); return; }
@@ -870,12 +898,12 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         drawables_.push_back(std::move(d));
     };
 
-    // BEHIND objects (front == false) paint before the stroke; the stroke then
-    // composites over them (the reverse blend order). Stroke-coloured Fusion
-    // primitives are in the stroke mesh already, so they are skipped here.
+    // BEHIND objects (a Blend explicitly set Behind) paint before the stroke; the
+    // stroke then composites over them (the reverse blend order). Stroke-coloured
+    // Fusion primitives are in the stroke mesh already, so they are skipped here.
     for (const StrokeMark& m : s.marks)
         for (const MarkObject& obj : m.objects)
-            if (separate(obj) && !obj.front)
+            if (separate(obj) && !effFront(obj))
                 emitObject(m, obj);
 
     // The base stroke.
@@ -890,10 +918,11 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         drawables_.push_back(std::move(d));
     }
 
-    // FRONT objects (default) paint over the stroke.
+    // FRONT objects (default; and anything non-Blend, e.g. Cut/Instance) paint
+    // over the stroke.
     for (const StrokeMark& m : s.marks)
         for (const MarkObject& obj : m.objects)
-            if (separate(obj) && obj.front)
+            if (separate(obj) && effFront(obj))
                 emitObject(m, obj);
 }
 

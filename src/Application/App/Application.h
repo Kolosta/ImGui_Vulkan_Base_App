@@ -212,6 +212,7 @@ private:
     void BeginMarkTransform(TransformOp::Kind kind);
     void DeleteSelectedMarks();
     void Action_CycleMarkSide();  // V: Center → Left → Right on the selection
+    void Action_CycleMarkPhase(); // P: Neutral → Dash → Gap on the selection
     void Action_CopyMarks();      // Ctrl+C the selected marks
     void Action_PasteMarks();     // Ctrl+V: arm the translucent paste
     bool MarkModeActive() const;  // the Line-Mark editor mode is active

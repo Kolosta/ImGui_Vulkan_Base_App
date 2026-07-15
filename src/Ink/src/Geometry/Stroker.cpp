@@ -175,6 +175,10 @@ std::vector<Polyline> DashSplit(const Polyline& pl,
 struct PhaseAnchor { double at; bool elementCentred; };
 struct GapSpan { double from, to; GapCap capFrom, capTo; bool cutsObjects; };
 
+// One stroked "on" interval [from,to] of the spine, each end tagged with its cap
+// and whether it abuts a GAP (so the gap's cap wins over the stroke's own cap).
+struct Iv { double from, to; GapCap capFrom, capTo; bool gapFrom, gapTo; };
+
 double PolyTotal(const Polyline& pl) {
     const std::size_t n = pl.points.size();
     if (n < 2) return 0.0;
@@ -391,8 +395,83 @@ void CenterStroke(const Polyline& pl, const Stroke& st, double halfW,
     }
 }
 
+// Strokes `spine` (arc length `total`) with the stroke's OWN dash pattern, then
+// opens the given `gaps` on top WITHOUT re-phasing the dashes: the dash motif's
+// "on" intervals are computed over the whole spine, the gaps are subtracted, and
+// each surviving run is stroked BUTT with an explicit per-end cap — the gap ends
+// carry the GAP's cap (independent of the stroke), the other ends the stroke's
+// own cap. A free function so `TessellateStroke` stays small and readable.
+void StrokeDashesWithGaps(const Polyline& spine, const Stroke& stroke,
+                          double w, double tol, double total, double offset,
+                          const std::vector<GapSpan>& gaps, Emitter& em) {
+    // On-intervals carry, per END, whether that end abuts a GAP (its cap is the
+    // GAP's, independent of the stroke) or is an ordinary dash/spine end (the
+    // stroke's own cap). Every interval is stroked BUTT, then each end gets
+    // exactly one explicit cap — so a Butt gap shows no round bleeding in.
+    std::vector<Iv> onIv;
+    for (const auto& p : DashIntervals(total, stroke.dashPattern, offset))
+        onIv.push_back({ p.first, p.second, GapCap::Butt, GapCap::Butt,
+                         false, false });
+    std::vector<GapSpan> sorted = gaps;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const GapSpan& a, const GapSpan& b) { return a.from < b.from; });
+    for (const GapSpan& g : sorted) {
+        std::vector<Iv> next;
+        for (const Iv& iv : onIv) {
+            if (g.to <= iv.from || g.from >= iv.to) { next.push_back(iv); continue; }
+            if (iv.from < g.from)
+                next.push_back({ iv.from, g.from, iv.capFrom, g.capFrom,
+                                 iv.gapFrom, true });
+            if (g.to < iv.to)
+                next.push_back({ g.to, iv.to, g.capTo, iv.capTo,
+                                 true, iv.gapTo });
+        }
+        onIv.swap(next);
+    }
+    // The stroke's own cap style (for the non-gap ends).
+    const GapCap strokeCap =
+        stroke.cap == CapStyle::Round ? GapCap::Round
+      : stroke.cap == CapStyle::Square ? GapCap::Square : GapCap::Butt;
+    // Draw one cap at arc `at`, extending on the `intoSign` side.
+    auto emitCap = [&](double at, double intoSign, GapCap cap) {
+        if (cap == GapCap::Butt) return;
+        DVec2 p; V2 t;
+        ArcSampleAt(spine, std::clamp(at, 0.0, total), p, t);
+        const V2 dir{ t.x * intoSign, t.y * intoSign };
+        const V2 nrm = Perp(t);
+        const double h = w * 0.5;
+        if (cap == GapCap::Round) {
+            em.Arc(p, nrm, { -nrm.x, -nrm.y }, h,
+                   Cross(nrm, dir) > 0.0 ? 1 : -1, tol);
+        } else {
+            const DVec2 a{ p.x + nrm.x * h, p.y + nrm.y * h };
+            const DVec2 b{ p.x - nrm.x * h, p.y - nrm.y * h };
+            const DVec2 a2{ a.x + dir.x * h, a.y + dir.y * h };
+            const DVec2 b2{ b.x + dir.x * h, b.y + dir.y * h };
+            const std::uint32_t ia = em.V(a.x, a.y), ib = em.V(b.x, b.y);
+            const std::uint32_t ia2 = em.V(a2.x, a2.y), ib2 = em.V(b2.x, b2.y);
+            em.Tri(ia, ia2, ib2); em.Tri(ia, ib2, ib);
+        }
+    };
+    for (const Iv& iv : onIv) {
+        if (iv.to - iv.from < 1e-9) continue;
+        Polyline run = ExtractRun(spine, iv.from, iv.to);
+        if (run.points.size() < 2) continue;
+        Stroke bs = stroke; bs.cap = CapStyle::Butt;   // caps added below
+        CenterStroke(run, bs, w * 0.5, tol, em);
+        // FROM end extends backwards (−1); TO end forwards (+1).
+        emitCap(iv.from, -1.0, iv.gapFrom ? iv.capFrom : strokeCap);
+        emitCap(iv.to,   +1.0, iv.gapTo   ? iv.capTo   : strokeCap);
+    }
+}
+
 } // namespace
 
+// True when a PRIMITIVE object is built as a DERIVED ring bent along the line —
+// Bend and Follow both do (their corners sit on the curve with perpendicular
+// transverse ends; Follow additionally resamples the long edges to the curve).
+// Hard is a rigid primitive. Instances can't be ring-bent: they use an affine
+// frame with a shear instead (see MarkPlaceMatrix / the Scene's instance path).
 bool BendsAlongCurve(MarkBend b) {
     return b == MarkBend::Bend || b == MarkBend::Follow;
 }
@@ -511,12 +590,9 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
             }
         } else {
             // A Gap object opens the line LOCALLY, ON TOP of the stroke's own
-            // dashing — it does NOT re-phase the dashes. So: compute the
-            // stroke's dash intervals over the WHOLE spine (motif intact, its
-            // phase possibly re-anchored by a Dash/Gap PHASE mark), then
-            // SUBTRACT the gaps from them. Each surviving interval is stroked
-            // with the stroke's own caps; the gap caps are drawn at the gap
-            // ends only.
+            // dashing — it does NOT re-phase the dashes. Compute the dash motif's
+            // phase (possibly re-anchored by a Dash/Gap PHASE mark) and delegate
+            // the interval subtraction + capping to StrokeDashesWithGaps.
             double offset = stroke.dashOffset;
             if (!anchors.empty())
                 offset = AnchorDashOffset(stroke.dashPattern.empty()
@@ -524,58 +600,7 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                                               : stroke.dashPattern,
                                           anchors.front().elementCentred,
                                           anchors.front().at, offset);
-            auto onIv = DashIntervals(total, stroke.dashPattern, offset);
-            std::sort(gaps.begin(), gaps.end(),
-                      [](const GapSpan& a, const GapSpan& b) { return a.from < b.from; });
-            // Subtract every gap span from the on-intervals.
-            for (const GapSpan& g : gaps) {
-                std::vector<std::pair<double,double>> next;
-                for (auto& iv : onIv) {
-                    if (g.to <= iv.first || g.from >= iv.second) { next.push_back(iv); continue; }
-                    if (iv.first < g.from) next.push_back({ iv.first, g.from });
-                    if (g.to < iv.second) next.push_back({ g.to, iv.second });
-                }
-                onIv.swap(next);
-            }
-            for (auto& iv : onIv) {
-                if (iv.second - iv.first < 1e-9) continue;
-                Polyline run = ExtractRun(spine, iv.first, iv.second);
-                if (run.points.size() >= 2)
-                    CenterStroke(run, stroke, w * 0.5, tol, em);
-            }
-            // Gap end caps (into the opening): the two ends of each gap.
-            auto emitGapCap = [&](double at, double intoSign, GapCap cap) {
-                if (cap == GapCap::Butt) return;
-                DVec2 p; V2 t;
-                ArcSampleAt(spine, std::clamp(at, 0.0, total), p, t);
-                const V2 dir{ t.x * intoSign, t.y * intoSign };
-                const V2 nrm = Perp(t);
-                const double h = w * 0.5;
-                if (cap == GapCap::Round) {
-                    em.Arc(p, nrm, { -nrm.x, -nrm.y }, h,
-                           Cross(nrm, dir) > 0.0 ? 1 : -1, tol);
-                } else {
-                    const DVec2 a{ p.x + nrm.x * h, p.y + nrm.y * h };
-                    const DVec2 b{ p.x - nrm.x * h, p.y - nrm.y * h };
-                    const DVec2 a2{ a.x + dir.x * h, a.y + dir.y * h };
-                    const DVec2 b2{ b.x + dir.x * h, b.y + dir.y * h };
-                    const std::uint32_t ia = em.V(a.x, a.y), ib = em.V(b.x, b.y);
-                    const std::uint32_t ia2 = em.V(a2.x, a2.y), ib2 = em.V(b2.x, b2.y);
-                    em.Tri(ia, ia2, ib2); em.Tri(ia, ib2, ib);
-                }
-            };
-            // A gap cap only applies where the line actually REACHED the gap end
-            // (i.e. an "on" interval abutted it) — a butt-capped dash edge that
-            // ends inside a gap gets no gap cap.
-            auto onAt = [&](double x) {
-                for (auto& iv : onIv)
-                    if (x >= iv.first - 1e-6 && x <= iv.second + 1e-6) return true;
-                return false;
-            };
-            for (const GapSpan& g : gaps) {
-                if (onAt(g.from)) emitGapCap(g.from, +1.0, g.capFrom);
-                if (onAt(g.to))   emitGapCap(g.to,   -1.0, g.capTo);
-            }
+            StrokeDashesWithGaps(spine, stroke, w, tol, total, offset, gaps, em);
         }
 
         // Fusion mark objects → triangulated INTO the stroke mesh (one alpha,
@@ -584,6 +609,40 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
         const Polyline& placeSpine =
             (subI < placeSpines.size() && placeSpines[subI].points.size() >= 2)
                 ? placeSpines[subI] : spine;
+        // Arc length of the PLACEMENT spine (for gap-end sub-object placement).
+        const double placeTotal = PolyTotal(placeSpine);
+        // Bake ONE object's ring into the stroke mesh, if it is a stroke-coloured
+        // Fusion primitive (Blend/Cut/Instance/recoloured are separate drawables).
+        auto bakeFusion = [&](const StrokeMark& vm, const MarkObject& obj) {
+            if (obj.mode != MarkObjectMode::Fusion ||
+                obj.shape == MarkShape::Instance ||
+                obj.shape == MarkShape::Gap ||
+                !obj.useStrokeColor) return;
+            std::vector<DVec2> ring;
+            if (BendsAlongCurve(obj.bend)) {
+                if (!MarkFollowContour(placeSpine, vm, obj, w, tol, ring))
+                    return;
+            } else {
+                // Parametric primitive → flatten at tier tolerance → place.
+                const PathData shape = MarkPrimitiveShape(obj, w);
+                if (shape.Empty()) return;
+                const DMat23 place = MarkPlaceMatrix(placeSpine, vm, obj, w);
+                for (const Polyline& pl : Flatten(shape, tol))
+                    for (const DVec2& q : pl.points)
+                        ring.push_back(place.Apply(q));
+            }
+            if (ring.size() < 3) return;
+            // Triangulate the (possibly CONCAVE for Follow) ring PROPERLY — a
+            // centroid fan double-covers a concave ring and leaves residual
+            // overlapping triangles. Merge into the stroke mesh with an offset.
+            Polyline rp; rp.points = ring; rp.closed = true;
+            const Mesh rm = TriangulateFill({ rp }, FillRule::NonZero);
+            const std::uint32_t base = out.VertexCount();
+            for (std::size_t i = 0; i + 1 < rm.positions.size(); i += 2)
+                em.V(rm.positions[i], rm.positions[i + 1]);
+            for (std::uint32_t idx : rm.indices)
+                out.indices.push_back(base + idx);
+        };
         for (const StrokeMark& m : stroke.marks) {
             if (m.sub != (std::int32_t)subI) continue;
             const double md = (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total;
@@ -594,39 +653,27 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                 if (g.cutsObjects && md >= g.from && md <= g.to)
                     inCuttingGap = true;
             for (const MarkObject& obj : m.objects) {
-                if (obj.shape == MarkShape::Gap) continue;
-                if (inCuttingGap) continue;
-                // Only a Fusion object that INHERITS the stroke colour is baked
-                // into the stroke mesh (one alpha). A recoloured Fusion object
-                // is emitted as its own drawable by the Scene instead.
-                if (obj.mode != MarkObjectMode::Fusion ||
-                    obj.shape == MarkShape::Instance ||
-                    !obj.useStrokeColor) continue;
-                std::vector<DVec2> ring;
-                if (BendsAlongCurve(obj.bend)) {
-                    if (!MarkFollowContour(placeSpine, m, obj, w, tol, ring))
-                        continue;
-                } else {
-                    // Parametric primitive → flatten at tier tolerance → place.
-                    const PathData shape = MarkPrimitiveShape(obj, w);
-                    if (shape.Empty()) continue;
-                    const DMat23 place = MarkPlaceMatrix(placeSpine, m, obj, w);
-                    for (const Polyline& pl : Flatten(shape, tol))
-                        for (const DVec2& q : pl.points)
-                            ring.push_back(place.Apply(q));
+                if (obj.shape == MarkShape::Gap) {
+                    // A Gap draws no fill, but bakes its stroke-coloured Fusion
+                    // START/END marker sub-objects at the gap ends (virtual marks
+                    // at tc±half), so they merge into the stroke mesh like any
+                    // Fusion object — no double transparency.
+                    if (placeTotal < 1e-9) continue;
+                    const double half =
+                        std::max(1e-4, obj.SizeUnits(w)) * 0.5;
+                    const double tc = std::clamp(m.t, 0.0, 1.0) * placeTotal;
+                    auto bakeEnd = [&](double endArc,
+                                       const std::vector<MarkObject>& objs) {
+                        StrokeMark vm = m;
+                        vm.t = std::clamp(endArc / placeTotal, 0.0, 1.0);
+                        for (const MarkObject& so : objs) bakeFusion(vm, so);
+                    };
+                    bakeEnd(tc - half, obj.gapStartObjects);
+                    bakeEnd(tc + half, obj.gapEndObjects);
+                    continue;
                 }
-                if (ring.size() < 3) continue;
-                // Triangulate the (possibly CONCAVE for Bend/Follow) ring
-                // PROPERLY — a centroid fan double-covers a concave ring and
-                // leaves residual overlapping triangles. Merge the result into
-                // the stroke mesh with an index offset.
-                Polyline rp; rp.points = ring; rp.closed = true;
-                const Mesh rm = TriangulateFill({ rp }, FillRule::NonZero);
-                const std::uint32_t base = out.VertexCount();
-                for (std::size_t i = 0; i + 1 < rm.positions.size(); i += 2)
-                    em.V(rm.positions[i], rm.positions[i + 1]);
-                for (std::uint32_t idx : rm.indices)
-                    out.indices.push_back(base + idx);
+                if (inCuttingGap) continue;
+                bakeFusion(m, obj);
             }
         }
     }
@@ -657,8 +704,11 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
     const double total = PolyTotal(spine);
     if (total < 1e-9) return id;
     // The along-offset shifts the sample point up/down the curve; the side
-    // offset shifts it across. (Hard/Bend both use this rigid frame; the
-    // curved bending is done by MarkFollowContour.)
+    // offset shifts it across. Hard = a rigid frame. The Bend branch (a shear
+    // that leans the shape with the local slope) is used ONLY by INSTANCES —
+    // a node's arbitrary geometry can't be ring-bent, so it leans by an affine
+    // instead. PRIMITIVE Bend/Follow objects never reach here (they build a
+    // derived ring in MarkFollowContour with perpendicular transverse ends).
     double d0 = (mark.t < 0 ? 0 : mark.t > 1 ? 1 : mark.t) * total
                 + obj.AlongUnits(strokeWidth);
     d0 = d0 < 0 ? 0 : (d0 > total ? total : d0);
@@ -674,10 +724,25 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
     if (sd == MarkSide::Left)  off =  soff;
     if (sd == MarkSide::Right) off = -soff;
     const DVec2 at{ p0.x + n0.x * off, p0.y + n0.y * off };
-    // Frame: local +x → tangent, local +y → left normal, then object rotation.
+    // Frame axes: local +x → tangent, local +y → left normal, then object spin.
     const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
-    const double ux = t0.x * ca - n0.x * sa, uy = t0.y * ca - n0.y * sa;
-    const double vx = t0.x * sa + n0.x * ca, vy = t0.y * sa + n0.y * ca;
+    double ux = t0.x * ca - n0.x * sa, uy = t0.y * ca - n0.y * sa;   // +x axis
+    double vx = t0.x * sa + n0.x * ca, vy = t0.y * sa + n0.y * ca;   // +y axis
+    // BEND: shear the transverse axis along the tangent by the slope the curve
+    // gains over the shape's half-extent — the long edges lean with the line
+    // while the shape stays affine. `shear = tan(Δθ)` where Δθ is the tangent
+    // rotation from the mark point to the shape's leading end (arc d0+hu).
+    if (obj.bend == MarkBend::Bend) {
+        const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
+        DVec2 pa; V2 ta;
+        ArcSampleAt(spine, std::clamp(d0 + hu, 0.0, total), pa, ta);
+        double dth = std::atan2(Cross(t0, ta), Dot(t0, ta));   // signed turn
+        dth = std::clamp(dth, -1.3, 1.3);                      // < 90°, stable
+        const double shear = std::tan(dth);
+        // v' = v + shear · (component of v along the ORIGINAL tangent axis) — add
+        // a tangential lean proportional to how far across the line the point is.
+        vx += shear * ux;  vy += shear * uy;
+    }
     DMat23 m;
     m.m[0] = ux;  m.m[1] = vx;  m.m[2] = at.x;
     m.m[3] = uy;  m.m[4] = vy;  m.m[5] = at.y;
@@ -688,8 +753,13 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
                        const MarkObject& obj, double strokeWidth,
                        double tolerance, std::vector<DVec2>& outRing) {
     outRing.clear();
+    // Bend AND Follow build a derived ring. BEND: corners sit on the curve so
+    // the two TRANSVERSE ends stay perpendicular to the line, but the long edges
+    // are STRAIGHT between corners. FOLLOW: the long edges are additionally
+    // resampled to curve with the line. Instances never come here.
     if (!BendsAlongCurve(obj.bend) || obj.shape == MarkShape::Instance)
         return false;
+    const bool follow = obj.bend == MarkBend::Follow;
     if (spine.points.size() < 2) return false;
     const double total = PolyTotal(spine);
     if (total < 1e-9) return false;
@@ -702,46 +772,51 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
     double off = 0.0;
     if (sd == MarkSide::Left)  off =  soff;
     if (sd == MarkSide::Right) off = -soff;
-    // A VERY fine, fixed sampling step so the curved edges read as smooth at
-    // any practical zoom — the derived ring is figée (a boolean-like limit at
-    // extreme zoom), so it must be dense enough up front.
-    const double tol = std::min(tolerance > 0.0 ? tolerance : 0.25, 0.03);
+    // A fixed fine sampling step so the curved edges read smooth at normal zoom.
+    // The derived ring is figée (built ONCE, not per zoom tier), so the tolerance
+    // is FLOORED — it must stay bounded (a tiny tolerance would build a huge ring
+    // and the O(n²) fill triangulation would stall). A documented boolean-like
+    // limit at extreme zoom.
+    const double tol = std::max(std::min(tolerance > 0.0 ? tolerance : 0.25, 0.05),
+                                0.02);
     const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
     const double hv = obj.shape == MarkShape::Rectangle
                           ? std::max(1e-6, obj.WidthUnits(strokeWidth)) : hu;
 
-    const bool follow = obj.bend == MarkBend::Follow;
-    // Place a local shape point (u along the tangent, v across it): sample the
-    // curve at arc d0+u and step v along the LOCAL normal there — so the sample
-    // frame is perpendicular to the curve at THAT position (this gives Bend its
-    // perpendicular ends). The concave-side offset is clamped to just inside
-    // the local radius of curvature so it never folds past the curvature centre.
-    const double ds = std::max(1e-4, total * 0.01);
+    // Place a LOCAL shape point (u along the tangent, v across it): the point's
+    // ALONG coordinate `u` maps to a real arc-length step d0+u on the curve, and
+    // its ACROSS coordinate `v` steps along the LOCAL normal at THAT arc — so the
+    // whole outline bends WITH the line. The object's own rotation is applied in
+    // local (u,v) space first. A soft clamp keeps the concave side from folding
+    // past the curvature centre (which would invert triangles).
+    const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
     auto place = [&](double u, double v) -> DVec2 {
-        const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
         const double ur = u * ca - v * sa, vr = u * sa + v * ca;
-        double du = std::clamp(d0 + ur, 0.0, total);
+        const double du = std::clamp(d0 + ur, 0.0, total);
         DVec2 pu; V2 tu;
         ArcSampleAt(spine, du, pu, tu);
         const V2 nu = Perp(tu);
         double vv = vr + off;
-        DVec2 pa, pb2; V2 ta, tb2;
-        ArcSampleAt(spine, std::min(total, du + ds), pa, ta);
-        ArcSampleAt(spine, std::max(0.0, du - ds), pb2, tb2);
-        const double dTheta = std::atan2(Cross(tb2, ta), Dot(tb2, ta));
+        // Local curvature (central difference) → clamp the across-offset to just
+        // inside the radius so the ring never crosses the curvature centre.
+        const double ds = std::max(1e-4, hu * 0.5);
+        DVec2 pA, pB; V2 tA, tB;
+        ArcSampleAt(spine, std::min(total, du + ds), pA, tA);
+        ArcSampleAt(spine, std::max(0.0,   du - ds), pB, tB);
+        const double dTheta = std::atan2(Cross(tB, tA), Dot(tB, tA));
         const double curv = dTheta / (2.0 * ds);
         if (std::abs(curv) > 1e-9) {
             const double R = 1.0 / curv;
-            if (R > 0.0 && vv > 0.9 * R)  vv = 0.9 * R;
-            if (R < 0.0 && vv < 0.9 * R)  vv = 0.9 * R;
+            if (R > 0.0 && vv >  0.95 * R) vv =  0.95 * R;
+            if (R < 0.0 && vv <  0.95 * R) vv =  0.95 * R;
         }
         return { pu.x + nu.x * vv, pu.y + nu.y * vv };
     };
     // A shape EDGE from local (u0,v0) to (u1,v1). FOLLOW resamples it densely so
-    // it curves with the line; BEND keeps it a straight segment between the two
-    // (already-curve-placed) corners. The last point is NOT emitted (the next
+    // its curved image stays smooth; BEND keeps it a STRAIGHT segment between the
+    // two (already curve-placed) corners. The last point is NOT emitted (the next
     // edge's first point continues the ring) — avoids a duplicate seam vertex.
-    const double step = std::max(tol, 0.05);
+    const double step = std::max(tol, 0.04);
     auto edge = [&](double u0, double v0, double u1, double v1) {
         int n = 1;
         if (follow) {
@@ -755,19 +830,18 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
         }
     };
     if (obj.shape == MarkShape::Circle) {
-        // A circle is one closed loop; sample its outline (fine for Follow,
-        // still smooth for Bend since every point uses its local frame).
+        // One closed loop; sample its outline so the bent circle reads smooth.
+        // Each point is placed through the curve frame at its own arc.
         int steps = (int)std::ceil(6.28318530717958 /
             (hu > tol ? 2.0 * std::acos(1.0 - tol / hu) : 1.0));
-        steps = steps < 32 ? 32 : (steps > 512 ? 512 : steps);
+        steps = steps < 48 ? 48 : (steps > 512 ? 512 : steps);
         for (int i = 0; i < steps; ++i) {
             const double a = 6.28318530717958 * (double)i / (double)steps;
             outRing.push_back(place(std::cos(a) * hu, std::sin(a) * hu));
         }
     } else if (obj.shape == MarkShape::Rectangle) {
-        // Corners CCW; the two TRANSVERSE edges (constant u) are straight in
-        // both modes (perpendicular to the curve there); the two LONGITUDINAL
-        // edges follow the curve in Follow, straight in Bend.
+        // Corners CCW; every edge is resampled so both the transverse and the
+        // longitudinal sides curve smoothly with the line.
         edge( hu, -hv,  hu,  hv);   // right transverse
         edge( hu,  hv, -hu,  hv);   // top longitudinal
         edge(-hu,  hv, -hu, -hv);   // left transverse

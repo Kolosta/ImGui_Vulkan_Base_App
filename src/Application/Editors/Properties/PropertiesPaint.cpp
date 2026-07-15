@@ -388,10 +388,12 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
     if (pr::ButtonGroupRow("Side", kSide, 3, &sd)) { o.side = (Ink::MarkSide)sd; S("Marker Side"); }
     if (o.side != Ink::MarkSide::Center) {
         float off = (float)o.sideOffset;
+        // Mark `structural` (the caller commits the edited style COPY). A direct
+        // doc.SetStyle here would write the document's OLD, unedited style back
+        // over the change — that is what reset the value.
         if (pr::DragFloat("Distance", &off, o.sizePercent ? 1.0f : 0.1f,
                           -100000.0f, 100000.0f, 2, o.sizePercent ? "%" : "")) {
-            o.sideOffset = off; doc.SetStyle(hostId, doc.Find(hostId)->style); }
-        if (ImGui::IsItemDeactivatedAfterEdit()) S("Marker Distance");
+            o.sideOffset = off; S("Marker Distance"); }
     }
 
     if (o.shape == Ink::MarkShape::Instance) {
@@ -428,6 +430,12 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
         if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f, 1, "\xC2\xB0")) {
             o.rotation = rot * 3.14159265358979 / 180.0; S("Marker Rotation"); }
     }
+    {   // Along the line (before/after the gap end).
+        float ao = (float)o.alongOffset;
+        if (pr::DragFloat("Along", &ao, o.sizePercent ? 1.0f : 0.1f,
+                          -100000.0f, 100000.0f, 2, o.sizePercent ? "%" : "")) {
+            o.alongOffset = ao; S("Marker Along"); }
+    }
     int bd = (int)o.bend;
     if (pr::ButtonGroupRow("Shape", kBend, 3, &bd)) { o.bend = (Ink::MarkBend)bd; S("Marker Bend"); }
     if (o.mode == Ink::MarkObjectMode::Blend) {
@@ -437,14 +445,21 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
         static const char* kOrder[] = { "Behind", "Front" };
         if (pr::ButtonGroupRow("Order", kOrder, 2, &fr)) { o.front = (fr == 1); S("Marker Order"); }
     }
-    if (o.shape != Ink::MarkShape::Instance && o.mode != Ink::MarkObjectMode::Subtract) {
+    // Colour: only Blend exposes a custom fill. A Fusion object is baked into the
+    // stroke mesh, so it is ALWAYS the stroke colour; Cut ignores colour.
+    if (o.shape != Ink::MarkShape::Instance && o.mode == Ink::MarkObjectMode::Blend) {
         bool inh = o.useStrokeColor;
         if (pr::CheckRow("Stroke colour", &inh)) { o.useStrokeColor = inh; S("Marker Colour"); }
         if (!o.useStrokeColor) {
             bool rel = false;
-            if (pr::ColorRow("Colour", &o.color, true, &rel)) doc.SetStyle(hostId, doc.Find(hostId)->style);
+            // Edit the style COPY and mark it structural; the caller commits it.
+            // (A doc.SetStyle here re-applied the OLD style, resetting to black.)
+            if (pr::ColorRow("Colour", &o.color, true, &rel)) S("Marker Colour");
             if (rel) S("Marker Colour");
         }
+    } else if (o.mode == Ink::MarkObjectMode::Fusion && !o.useStrokeColor) {
+        o.useStrokeColor = true;   // Fusion is always stroke-coloured
+        S("Marker Colour");
     }
     return changed;
 }
@@ -758,14 +773,14 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                         int shp = (int)o.shape;
                         if (pr::DropdownRow("Object", kShape, 5, &shp)) {
                             const Ink::MarkShape ns = (Ink::MarkShape)shp;
-                            // Switching TO a rectangle applies its default
-                            // proportions (length 200 %) when the dimensions
-                            // still hold the shared 100 % default.
-                            if (ns == Ink::MarkShape::Rectangle &&
-                                o.shape != Ink::MarkShape::Rectangle &&
-                                o.sizePercent && std::abs(o.size - 100.0) < 1e-6)
+                            // Switching TO a rectangle or a gap applies the
+                            // default length (200 %) when the size still holds
+                            // the shared 100 % default.
+                            if ((ns == Ink::MarkShape::Rectangle ||
+                                 ns == Ink::MarkShape::Gap) &&
+                                o.shape != ns && o.sizePercent &&
+                                std::abs(o.size - 100.0) < 1e-6)
                                 o.size = 200.0;
-                            // Give the new shape its default bend.
                             o.bend = Ink::DefaultBendFor(ns);
                             o.shape = ns;
                             structural = true; structLabel = "Mark Object";
@@ -1026,10 +1041,12 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                                     "(the reverse blend order).",
                                     ImGui::GetIO().MousePos, 1.0f);
                         }
-                        // Colour (primitives; Cut ignores colour). Available in
-                        // every non-Cut mode, Fusion included.
+                        // Colour (primitives only). A FUSION object is baked into
+                        // the stroke mesh, so it is ALWAYS the stroke colour — no
+                        // colour choice. Cut ignores colour. Only Blend exposes a
+                        // custom fill.
                         if (o.shape != Ink::MarkShape::Instance &&
-                            o.mode != Ink::MarkObjectMode::Subtract) {
+                            o.mode == Ink::MarkObjectMode::Blend) {
                             bool inh = o.useStrokeColor;
                             if (pr::CheckRow("Stroke colour", &inh)) {
                                 o.useStrokeColor = inh;
@@ -1041,6 +1058,10 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                                     liveApply("Mark Colour", false);
                                 if (rel) liveApply("Mark Colour", true);
                             }
+                        } else if (o.mode == Ink::MarkObjectMode::Fusion &&
+                                   !o.useStrokeColor) {
+                            o.useStrokeColor = true;   // Fusion is stroke-coloured
+                            structural = true; structLabel = "Mark Colour";
                         }
                         pr::ControlColumn();
                         if (ImGui::SmallButton("Remove object")) removeObj = (int)oi;

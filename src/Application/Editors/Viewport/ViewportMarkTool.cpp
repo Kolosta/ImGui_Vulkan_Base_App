@@ -7,6 +7,7 @@
 #include <imgui.h>
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <vector>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -49,7 +50,9 @@ Ink::MarkObject DefaultMarkObject(Ink::MarkShape shape) {
     o.shape = shape;
     o.sizePercent = true;
     o.bend = Ink::DefaultBendFor(shape);
+    // Rectangle length 200 %; a Gap opens 200 % of the stroke width by default.
     if (shape == Ink::MarkShape::Rectangle) { o.size = 200.0; o.width = 100.0; }
+    else if (shape == Ink::MarkShape::Gap)  { o.size = 200.0; }
     else                                    { o.size = 100.0; o.width = 100.0; }
     return o;
 }
@@ -171,7 +174,7 @@ void DrawHandle(Ink::OverlayList& ov, Ink::Vec2 sp, Ink::Vec2 tv,
         dash ? MkCol(Tok::C_EditHandle_Vector, 1.0f)     // violet
       : gap  ? MkCol(Tok::C_EditHandle_Mirrored, 1.0f)   // green
              : MkCol(Tok::S_Color_Accent_Default, 1.0f); // Neutral = accent
-    const Ink::Color grey = MkCol(Tok::S_Color_Text_Subtle, 1.0f);
+    const Ink::Color blue = MkCol(Tok::C_EditHandle_Free, 1.0f);  // Neutral dot
     const Ink::Color ring = MkCol(Tok::C_EditHandle_VertexRing, 1.0f);
     const Ink::Color orange = MkCol(Tok::S_State_Active_OnPage, 1.0f);
 
@@ -197,8 +200,8 @@ void DrawHandle(Ink::OverlayList& ov, Ink::Vec2 sp, Ink::Vec2 tv,
         ov.AddLine(P(-h, h), P(-h, -h), ring, 1.0f);
         ov.AddLine(P(-h, -h), P(h, -h), ring, 1.0f);
         ov.AddLine(P(h, -h), P(h, h), ring, 1.0f);
-    } else {                    // Neutral: plain ringed dot in grey
-        ov.AddCircleFilled(sp, 3.5f, grey);
+    } else {                    // Neutral: plain ringed dot in blue
+        ov.AddCircleFilled(sp, 3.5f, blue);
         ov.AddCircle(sp, 3.5f, ring, 1.0f);
     }
     // Selected: an orange centre dot over the glyph (only the dot turns orange).
@@ -348,71 +351,51 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         // The stroke paint (or the object's own) at a preview alpha.
         const float alpha = 0.55f;
         const Ink::Color base = sk.paint.color;
-        // The mark point (with side/offset) in world space, for guides/hints.
-        Ink::DVec2 markW{ 0, 0 }; bool haveMarkW = false;
-        {
+        // The side/offset guide: a dashed line from the spine point to the
+        // offset mark point (world space).
+        if (m.side != Ink::MarkSide::Center) {
             const double total = PolyTotal(worldPoly);
             if (total > 1e-9) {
                 Ink::DVec2 bp, bt;
                 PointAtArc(worldPoly,
                            (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total, bp, bt);
                 const Ink::DVec2 nrm{ -bt.y, bt.x };
-                double off = 0.0;
-                if (m.side == Ink::MarkSide::Left)  off =  m.OffsetUnits(sk.width);
-                if (m.side == Ink::MarkSide::Right) off = -m.OffsetUnits(sk.width);
-                markW = { bp.x + nrm.x * off * wsc, bp.y + nrm.y * off * wsc };
-                haveMarkW = true;
-                if (m.side != Ink::MarkSide::Center)
-                    DashLine(ov, d2v(bp), d2v(markW),
-                             MkCol(Tok::S_Color_Text_Subtle, 0.6f), 1.0f);
+                const double off = m.side == Ink::MarkSide::Left
+                    ?  m.OffsetUnits(sk.width) : -m.OffsetUnits(sk.width);
+                const Ink::DVec2 markW{ bp.x + nrm.x * off * wsc,
+                                        bp.y + nrm.y * off * wsc };
+                DashLine(ov, d2v(bp), d2v(markW),
+                         MkCol(Tok::S_Color_Text_Subtle, 0.6f), 1.0f);
             }
         }
-        for (const Ink::MarkObject& o : m.objects) {
+        // Draws ONE object (not a Gap) as a translucent preview of exactly what
+        // the Scene will render at mark `mk`. Recursed for gap start/end markers.
+        std::function<void(const Ink::StrokeMark&, const Ink::MarkObject&)>
+        drawObject = [&](const Ink::StrokeMark& mk, const Ink::MarkObject& o) {
             Ink::Color col{ base.r * alpha, base.g * alpha, base.b * alpha, alpha };
             if (!o.useStrokeColor && o.shape != Ink::MarkShape::Instance)
                 col = { o.color.r * alpha, o.color.g * alpha,
                         o.color.b * alpha, alpha };
-            if (o.shape == Ink::MarkShape::Gap) {
-                // Preview a Gap by DARKENING the stroke over the future opening
-                // zone (a band along the line ± half the gap length), rather
-                // than drawing a filled shape.
-                const double total = PolyTotal(worldPoly);
-                if (total < 1e-9) continue;
-                const double half = std::max(1e-4, o.SizeUnits(sk.width)) * wsc * 0.5;
-                const double dc = (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total;
-                const double bw = sk.width * wsc * 0.5 + 1.0;
-                const Ink::Color dark{ 0, 0, 0, 0.45f };   // premultiplied
-                const int N = std::max(2, (int)(2.0 * half / std::max(1.0, 2.0)));
-                Ink::DVec2 prevA, prevB; bool have = false;
-                for (int i = 0; i <= N; ++i) {
-                    double d = dc - half + (2.0 * half) * (double)i / (double)N;
-                    d = d < 0 ? 0 : (d > total ? total : d);
-                    Ink::DVec2 p, tn; PointAtArc(worldPoly, d, p, tn);
-                    const Ink::DVec2 nb{ -tn.y * bw, tn.x * bw };
-                    const Ink::DVec2 a{ p.x + nb.x, p.y + nb.y };
-                    const Ink::DVec2 b{ p.x - nb.x, p.y - nb.y };
-                    if (have) {
-                        ov.AddTriangle(d2v(prevA), d2v(prevB), d2v(b), dark);
-                        ov.AddTriangle(d2v(prevA), d2v(b), d2v(a), dark);
-                    }
-                    prevA = a; prevB = b; have = true;
-                }
-                continue;
-            }
             if (o.shape == Ink::MarkShape::Instance) {
                 // A translucent preview of the referenced node's geometry placed
                 // at the mark (frame · scale · cancel-target-transform), exactly
-                // as the Scene will render it.
+                // as the Scene will render it. Follow falls back to the Bend shear
+                // (a node's geometry can't be truly Follow-bent).
+                Ink::MarkObject po = o;
+                if (po.bend == Ink::MarkBend::Follow) po.bend = Ink::MarkBend::Bend;
                 const Ink::Node* tgt = doc.Find(o.nodeRef);
                 if (!tgt || tgt->kind != Ink::NodeKind::Path ||
                     tgt->path.Empty()) {
-                    if (haveMarkW)
-                        ov.AddCircle(d2v(markW), 6.0f,
-                                     MkCol(Tok::S_Color_Accent_Default, 0.7f), 1.5f);
-                    continue;
+                    // No geometry: mark the placement with a ring at the frame
+                    // origin (world), so a missing Instance is still visible.
+                    const Ink::DMat23 fr =
+                        Ink::geom::MarkPlaceMatrix(spine, mk, po, sk.width);
+                    ov.AddCircle(d2v(w.Apply(fr.Apply({ 0, 0 }))), 6.0f,
+                                 MkCol(Tok::S_Color_Accent_Default, 0.7f), 1.5f);
+                    return;
                 }
                 const Ink::DMat23 frame =
-                    Ink::geom::MarkPlaceMatrix(spine, m, o, sk.width);
+                    Ink::geom::MarkPlaceMatrix(spine, mk, po, sk.width);
                 const double k = o.sizePercent ? o.size * 0.01
                                                : std::max(1e-6, o.size);
                 Ink::DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
@@ -439,26 +422,27 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                         ov.AddTriangle(cvv, d2v(aw), d2v(bw), tcol);
                     }
                 }
-                continue;
+                return;
             }
-            // The real filled shape (as it renders): Bend/Follow curve the
-            // outline along the line; Hard places a parametric primitive.
+            // The real filled shape (as it renders): Follow curves the outline
+            // along the line (derived ring); Hard/Bend place a parametric
+            // primitive by an affine transform (Bend adds a shear).
             std::vector<Ink::DVec2> ring;
             if (Ink::geom::BendsAlongCurve(o.bend)) {
-                if (!Ink::geom::MarkFollowContour(spine, m, o, sk.width,
+                if (!Ink::geom::MarkFollowContour(spine, mk, o, sk.width,
                                                   localTol, ring))
-                    continue;
+                    return;
             } else {
                 const Ink::PathData shape =
                     Ink::geom::MarkPrimitiveShape(o, sk.width);
-                if (shape.Empty()) continue;
+                if (shape.Empty()) return;
                 const Ink::DMat23 place =
-                    Ink::geom::MarkPlaceMatrix(spine, m, o, sk.width);
+                    Ink::geom::MarkPlaceMatrix(spine, mk, o, sk.width);
                 for (const auto& pl : Ink::geom::Flatten(shape, localTol))
                     for (const Ink::DVec2& q : pl.points)
                         ring.push_back(place.Apply(q));
             }
-            if (ring.size() < 3) continue;
+            if (ring.size() < 3) return;
             // Triangulate the ring PROPERLY (a centroid fan double-covers a
             // concave Bend/Follow ring and doubles the transparency); draw the
             // resulting triangles in view space.
@@ -473,12 +457,72 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 ov.AddTriangle(vp(rm.indices[i]), vp(rm.indices[i+1]),
                                vp(rm.indices[i+2]), col);
             }
+        };
+
+        for (const Ink::MarkObject& o : m.objects) {
+            if (o.shape == Ink::MarkShape::Gap) {
+                // Preview a Gap by DARKENING the stroke over EXACTLY the future
+                // opening (band = the stroke's own half-width, length = the gap
+                // length), then previewing its start/end marker sub-objects as
+                // translucent shapes at the gap ends — a complete result view.
+                const double total = PolyTotal(worldPoly);
+                if (total < 1e-9) continue;
+                const double half = std::max(1e-4, o.SizeUnits(sk.width)) * wsc * 0.5;
+                const double dc = (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total;
+                const double bw = sk.width * wsc * 0.5;    // exact stroke half-width
+                const Ink::Color dark{ 0, 0, 0, 0.45f };   // premultiplied
+                const double lo = std::max(0.0, dc - half);
+                const double hi = std::min(total, dc + half);
+                const int N = std::max(2, (int)((hi - lo) / 2.0));
+                Ink::DVec2 prevA, prevB; bool have = false;
+                for (int i = 0; i <= N; ++i) {
+                    const double d = lo + (hi - lo) * (double)i / (double)N;
+                    Ink::DVec2 p, tn; PointAtArc(worldPoly, d, p, tn);
+                    const Ink::DVec2 nb{ -tn.y * bw, tn.x * bw };
+                    const Ink::DVec2 a{ p.x + nb.x, p.y + nb.y };
+                    const Ink::DVec2 b{ p.x - nb.x, p.y - nb.y };
+                    if (have) {
+                        ov.AddTriangle(d2v(prevA), d2v(prevB), d2v(b), dark);
+                        ov.AddTriangle(d2v(prevA), d2v(b), d2v(a), dark);
+                    }
+                    prevA = a; prevB = b; have = true;
+                }
+                // Start/end marker sub-objects: place a virtual mark at each gap
+                // end (local spine arc tc±half) and preview each sub-object there,
+                // matching the Scene's stampEnd (arc length of the LOCAL spine).
+                double sTot = 0.0;
+                {
+                    const auto& pts = spine.points;
+                    const std::size_t nn = pts.size();
+                    const std::size_t sc = spine.closed ? nn : (nn ? nn - 1 : 0);
+                    for (std::size_t i = 0; i < sc; ++i)
+                        sTot += std::hypot(pts[(i+1)%nn].x - pts[i].x,
+                                           pts[(i+1)%nn].y - pts[i].y);
+                }
+                if (sTot > 1e-9) {
+                    const double sHalf =
+                        std::max(1e-4, o.SizeUnits(sk.width)) * 0.5;
+                    const double stc = std::clamp(m.t, 0.0, 1.0) * sTot;
+                    auto stampEnd = [&](double endArc,
+                                        const std::vector<Ink::MarkObject>& objs) {
+                        Ink::StrokeMark vm = m;
+                        vm.t = std::clamp(endArc / sTot, 0.0, 1.0);
+                        for (const Ink::MarkObject& so : objs)
+                            if (so.shape != Ink::MarkShape::Gap)
+                                drawObject(vm, so);
+                    };
+                    stampEnd(stc - sHalf, o.gapStartObjects);
+                    stampEnd(stc + sHalf, o.gapEndObjects);
+                }
+                continue;
+            }
+            drawObject(m, o);
         }
     };
 
     // Find the nearest stroked line to the cursor → (node, stroke, sub, t).
     auto nearestLine = [&](Ink::NodeId& outId, int& outStroke, int& outSub,
-                           double& outT) -> bool {
+                           double& outT, float maxPx = 14.0f) -> bool {
         float bestD = 1e9f; bool found = false;
         for (Ink::NodeId id : pathNodes) {
             const Ink::Node* n = doc.Find(id);
@@ -515,7 +559,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 }
             }
         }
-        return found && bestD <= 14.0f;
+        return found && bestD <= maxPx;
     };
 
     // ── Ctrl+V paste: a translucent preview of the clipboard marks follows the
@@ -527,7 +571,9 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             return;
         }
         Ink::NodeId id; int si, sub; double t;
-        const bool onLine = nearestLine(id, si, sub, t);
+        // Paste snaps to the nearest stroke at ANY distance (like move), so the
+        // preview always follows the cursor.
+        const bool onLine = nearestLine(id, si, sub, t, 1e9f);
         if (onLine) {
             // Anchor the paste on the clipboard's first mark; keep the others'
             // relative t so a multi-mark paste preserves its spacing.
@@ -1091,6 +1137,37 @@ void Application::Action_CycleMarkSide() {
         [ps](Ink::Document& d) { for (const StylePair& p : ps) d.SetStyle(p.id, p.before); },
         [ps](Ink::Document& d) { for (const StylePair& p : ps) d.SetStyle(p.id, p.after); });
     LogInfoAction("Cycle Mark Side");
+}
+
+// Cycles the dash re-phasing of the selected marks Neutral -> Dash -> Gap.
+void Application::Action_CycleMarkPhase() {
+    if (!MarkModeActive() || !project_.document || edit_.markSel.empty()) return;
+    Ink::Document& doc = *project_.document;
+    struct StylePair { Ink::NodeId id; Ink::Style before, after; };
+    std::vector<StylePair> ps;
+    for (const EditContext::MarkRef& r : edit_.markSel) {
+        const Ink::Node* n = doc.Find(r.node);
+        if (!n || r.stroke < 0 || r.stroke >= (int)n->style.strokes.size())
+            continue;
+        bool seen = false;
+        for (const StylePair& p : ps) seen = seen || p.id == r.node;
+        if (!seen) ps.push_back({ r.node, n->style, n->style });
+        Ink::Style sty = n->style;
+        auto& mk = sty.strokes[(std::size_t)r.stroke].marks;
+        if (r.index < 0 || r.index >= (int)mk.size()) continue;
+        Ink::MarkPhase& ph = mk[(std::size_t)r.index].phase;
+        ph = ph == Ink::MarkPhase::Neutral ? Ink::MarkPhase::Dash
+           : ph == Ink::MarkPhase::Dash    ? Ink::MarkPhase::Gap
+                                           : Ink::MarkPhase::Neutral;
+        doc.SetStyle(r.node, sty);
+    }
+    if (ps.empty()) return;
+    for (StylePair& p : ps)
+        if (const Ink::Node* n = doc.Find(p.id)) p.after = n->style;
+    PushDocCommand("Cycle Mark Phase",
+        [ps](Ink::Document& d) { for (const StylePair& p : ps) d.SetStyle(p.id, p.before); },
+        [ps](Ink::Document& d) { for (const StylePair& p : ps) d.SetStyle(p.id, p.after); });
+    LogInfoAction("Cycle Mark Phase");
 }
 
 // Ctrl+C copies the selected marks (their full data) into the mark clipboard.

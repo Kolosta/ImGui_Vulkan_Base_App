@@ -238,6 +238,10 @@ void Application::RegisterDefaultShortcuts() {
                 "Cycle the selected marks Center / Left / Right",
                 [this]{ Action_CycleMarkSide(); }, { sigKey(ImGuiKey_V) },
                 false, false, markIdle);
+    viewportKey("mark.cyclePhase", "Cycle Mark Phase",
+                "Cycle the selected marks Neutral / Dash / Gap",
+                [this]{ Action_CycleMarkPhase(); }, { sigKey(ImGuiKey_P) },
+                false, false, markIdle);
     viewportKey("mark.copy", "Copy Marks", "Copy the selected line marks",
                 [this]{ Action_CopyMarks(); },
                 { sigKey(ImGuiKey_C, /*ctrl=*/true) }, false, false, markIdle);
