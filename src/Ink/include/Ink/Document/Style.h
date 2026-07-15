@@ -160,6 +160,12 @@ struct MarkObject {
     // (in % of the stroke width when sizePercent, else doc-units) — a lateral
     // nudge to fine-tune its position on the stroke.
     double          alongOffset = 0.0;
+    // Per-object side + offset ACROSS the line. `sideInherit` uses the mark's
+    // own side; otherwise `side`/`sideOffset` override it (used by the gap-end
+    // markers, whose objects each place independently).
+    bool            sideInherit = true;
+    MarkSide        side = MarkSide::Center;
+    double          sideOffset = 50.0;  // % of stroke width (or doc-units)
     NodeId          nodeRef = kNullNode;   // shape == Instance
     // Blend mode: draw the object IN FRONT of the stroke (default — the blend
     // puts the mark over the stroke) or BEHIND it (front = false — the stroke
@@ -167,21 +173,21 @@ struct MarkObject {
     // operator is not symmetric, `front` is exactly the "which is over which"
     // choice.
     bool            front = true;
-    // Gap only: the end caps of the OPENING (not of the surrounding runs) and
-    // whether the gap also cuts the OTHER mark objects it overlaps. Optionally
-    // a MARKER shape/instance is stamped at each gap end (a virtual mark there).
+    // Gap only: the end caps of the OPENING (not of the surrounding runs), the
+    // cut-objects toggle, and the two independent lists of MARKER OBJECTS
+    // stamped at the gap's START and END ends (full sub-marks — every object
+    // field, but no nested gaps).
     GapCap          gapStart = GapCap::Butt;
     GapCap          gapEnd   = GapCap::Butt;
     bool            gapCutsObjects = false;
-    MarkShape       gapMarker = MarkShape::Circle;   // shape stamped at gap ends
-    bool            gapHasMarker = false;            // enable the end markers
-    NodeId          gapMarkerRef = kNullNode;        // gapMarker == Instance
+    std::vector<MarkObject> gapStartObjects;
+    std::vector<MarkObject> gapEndObjects;
     // Fill colour of a primitive object (linear straight). Instance objects use
     // the referenced node's own style, so this is ignored for them.
     Color           color{ 0, 0, 0, 1 };
     bool            useStrokeColor = true;    // primitive: inherit stroke paint
 
-    // Size / width / along-offset resolved to node-local doc-units.
+    // Size / width / along-offset / side-offset resolved to node-local units.
     double SizeUnits(double w) const {
         return sizePercent ? size * 0.01 * w : size;
     }
@@ -191,22 +197,28 @@ struct MarkObject {
     double AlongUnits(double w) const {
         return sizePercent ? alongOffset * 0.01 * w : alongOffset;
     }
+    double SideOffsetUnits(double w) const {
+        return sizePercent ? sideOffset * 0.01 * w : sideOffset;
+    }
 
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[12] = {
+        const std::uint8_t packed[11] = {
             (std::uint8_t)shape, (std::uint8_t)mode, (std::uint8_t)bend,
             (std::uint8_t)blend, (std::uint8_t)(sizePercent ? 1 : 0),
             (std::uint8_t)(front ? 1 : 0), (std::uint8_t)gapStart,
             (std::uint8_t)gapEnd, (std::uint8_t)(gapCutsObjects ? 1 : 0),
-            (std::uint8_t)gapMarker, (std::uint8_t)(gapHasMarker ? 1 : 0),
-            (std::uint8_t)(useStrokeColor ? 1 : 0) };
+            (std::uint8_t)(sideInherit ? 1 : 0), (std::uint8_t)side };
         h = HashBytes(packed, sizeof packed, h);
+        const std::uint8_t uc = useStrokeColor ? 1 : 0;
+        h = HashBytes(&uc, 1, h);
+        h = HashDouble(sideOffset, h);
+        h = HashDouble(alongOffset, h);
         h = HashDouble(size, h);
         h = HashDouble(width, h);
         h = HashDouble(rotation, h);
-        h = HashDouble(alongOffset, h);
         h = HashBytes(&nodeRef, sizeof nodeRef, h);
-        h = HashBytes(&gapMarkerRef, sizeof gapMarkerRef, h);
+        for (const MarkObject& o : gapStartObjects) h = o.Hash(h);
+        for (const MarkObject& o : gapEndObjects)   h = o.Hash(h);
         return h;   // color excluded (a paint edit must NOT re-tessellate)
     }
 };

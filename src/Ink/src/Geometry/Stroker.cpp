@@ -75,6 +75,42 @@ struct Emitter {
 };
 
 // ── 1. Dash split ────────────────────────────────────────────────────────────
+// The "on" (dash) INTERVALS in arc length over a spine of length `total` for a
+// dash pattern + offset — the same phase DashSplit uses, but as [from,to]
+// ranges so a gap can be subtracted from them WITHOUT re-phasing the pattern.
+// An empty pattern → one interval [0,total] (solid).
+std::vector<std::pair<double,double>>
+DashIntervals(double total, const std::vector<double>& patternIn, double offset) {
+    std::vector<std::pair<double,double>> out;
+    std::vector<double> pattern;
+    double period = 0.0;
+    for (double d : patternIn) if (d > 1e-9) { pattern.push_back(d); period += d; }
+    if (pattern.empty() || period <= 0.0 || total <= 0.0) {
+        out.push_back({ 0.0, total }); return out;
+    }
+    if (pattern.size() % 2 == 1) {
+        const std::size_t n = pattern.size();
+        for (std::size_t i = 0; i < n; ++i) pattern.push_back(pattern[i]);
+        period *= 2.0;
+    }
+    double phase = std::fmod(offset, period);
+    if (phase < 0.0) phase += period;
+    std::size_t seg = 0;
+    while (phase >= pattern[seg]) { phase -= pattern[seg]; seg = (seg + 1) % pattern.size(); }
+    double remain = pattern[seg] - phase;
+    bool on = (seg % 2) == 0;
+    double at = 0.0;
+    while (at < total - 1e-9) {
+        const double step = std::min(remain, total - at);
+        if (on) out.push_back({ at, at + step });
+        at += step;
+        on = !on;
+        seg = (seg + 1) % pattern.size();
+        remain = pattern[seg];
+    }
+    return out;
+}
+
 // Cut the spine into "on" pieces by arc length. Closed spines walk the seam
 // once (the wrap point may split a dash — v1 seam behaviour).
 std::vector<Polyline> DashSplit(const Polyline& pl,
@@ -457,50 +493,6 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
             }
         }
 
-        // Stroke a run [from,to] of the spine with the STROKE's own cap/dash —
-        // the gap caps are drawn separately at the gap ends, so they never
-        // override the dash pattern of the whole run.
-        auto strokeRun = [&](double from, double to) {
-            Polyline run = ExtractRun(spine, from, to);
-            if (run.points.size() < 2) return;
-            if (stroke.dashPattern.empty()) {
-                CenterStroke(run, stroke, w * 0.5, tol, em);
-            } else {
-                double offset = stroke.dashOffset;
-                if (!anchors.empty())
-                    offset = AnchorDashOffset(stroke.dashPattern,
-                                              anchors.front().elementCentred,
-                                              anchors.front().at - from, offset);
-                for (const Polyline& piece :
-                     DashSplit(run, stroke.dashPattern, offset))
-                    CenterStroke(piece, stroke, w * 0.5, tol, em);
-            }
-        };
-        // Draw ONE gap cap at arc position `at`, whose stroke lies on the side
-        // `intoSign` (+1 = the line continues past `at` in the +arc direction).
-        // Round = a half-disc bulging INTO the gap; Square = a half-square.
-        auto emitGapCap = [&](double at, double intoSign, GapCap cap) {
-            if (cap == GapCap::Butt) return;
-            DVec2 p; V2 t;
-            ArcSampleAt(spine, std::clamp(at, 0.0, total), p, t);
-            const V2 dir{ t.x * intoSign, t.y * intoSign };  // toward the gap
-            const V2 nrm = Perp(t);
-            const double h = w * 0.5;
-            if (cap == GapCap::Round) {
-                // Half-disc sweeping from +normal to −normal through `dir`.
-                em.Arc(p, nrm, { -nrm.x, -nrm.y }, h,
-                       Cross(nrm, dir) > 0.0 ? 1 : -1, tol);
-            } else {   // Square: a rectangle h deep into the gap.
-                const DVec2 a{ p.x + nrm.x * h, p.y + nrm.y * h };
-                const DVec2 b{ p.x - nrm.x * h, p.y - nrm.y * h };
-                const DVec2 a2{ a.x + dir.x * h, a.y + dir.y * h };
-                const DVec2 b2{ b.x + dir.x * h, b.y + dir.y * h };
-                const std::uint32_t ia = em.V(a.x, a.y), ib = em.V(b.x, b.y);
-                const std::uint32_t ia2 = em.V(a2.x, a2.y), ib2 = em.V(b2.x, b2.y);
-                em.Tri(ia, ia2, ib2); em.Tri(ia, ib2, ib);
-            }
-        };
-
         if (gaps.empty()) {
             // No gaps → stroke the whole (possibly CLOSED) spine directly, so a
             // cyclic path keeps its start/end seam joined. ExtractRun would drop
@@ -518,17 +510,72 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                     CenterStroke(piece, stroke, w * 0.5, tol, em);
             }
         } else {
+            // A Gap object opens the line LOCALLY, ON TOP of the stroke's own
+            // dashing — it does NOT re-phase the dashes. So: compute the
+            // stroke's dash intervals over the WHOLE spine (motif intact, its
+            // phase possibly re-anchored by a Dash/Gap PHASE mark), then
+            // SUBTRACT the gaps from them. Each surviving interval is stroked
+            // with the stroke's own caps; the gap caps are drawn at the gap
+            // ends only.
+            double offset = stroke.dashOffset;
+            if (!anchors.empty())
+                offset = AnchorDashOffset(stroke.dashPattern.empty()
+                                              ? std::vector<double>{ 1, 0 }
+                                              : stroke.dashPattern,
+                                          anchors.front().elementCentred,
+                                          anchors.front().at, offset);
+            auto onIv = DashIntervals(total, stroke.dashPattern, offset);
             std::sort(gaps.begin(), gaps.end(),
                       [](const GapSpan& a, const GapSpan& b) { return a.from < b.from; });
-            double cursor = 0.0;
+            // Subtract every gap span from the on-intervals.
             for (const GapSpan& g : gaps) {
-                if (g.from > cursor + 1e-9) strokeRun(cursor, g.from);
-                // Cap the two ends of the opening (the runs keep their own cap).
-                emitGapCap(g.from, +1.0, g.capFrom);   // left run end → into gap
-                emitGapCap(g.to,   -1.0, g.capTo);     // right run start → into gap
-                cursor = std::max(cursor, g.to);
+                std::vector<std::pair<double,double>> next;
+                for (auto& iv : onIv) {
+                    if (g.to <= iv.first || g.from >= iv.second) { next.push_back(iv); continue; }
+                    if (iv.first < g.from) next.push_back({ iv.first, g.from });
+                    if (g.to < iv.second) next.push_back({ g.to, iv.second });
+                }
+                onIv.swap(next);
             }
-            if (cursor < total - 1e-9) strokeRun(cursor, total);
+            for (auto& iv : onIv) {
+                if (iv.second - iv.first < 1e-9) continue;
+                Polyline run = ExtractRun(spine, iv.first, iv.second);
+                if (run.points.size() >= 2)
+                    CenterStroke(run, stroke, w * 0.5, tol, em);
+            }
+            // Gap end caps (into the opening): the two ends of each gap.
+            auto emitGapCap = [&](double at, double intoSign, GapCap cap) {
+                if (cap == GapCap::Butt) return;
+                DVec2 p; V2 t;
+                ArcSampleAt(spine, std::clamp(at, 0.0, total), p, t);
+                const V2 dir{ t.x * intoSign, t.y * intoSign };
+                const V2 nrm = Perp(t);
+                const double h = w * 0.5;
+                if (cap == GapCap::Round) {
+                    em.Arc(p, nrm, { -nrm.x, -nrm.y }, h,
+                           Cross(nrm, dir) > 0.0 ? 1 : -1, tol);
+                } else {
+                    const DVec2 a{ p.x + nrm.x * h, p.y + nrm.y * h };
+                    const DVec2 b{ p.x - nrm.x * h, p.y - nrm.y * h };
+                    const DVec2 a2{ a.x + dir.x * h, a.y + dir.y * h };
+                    const DVec2 b2{ b.x + dir.x * h, b.y + dir.y * h };
+                    const std::uint32_t ia = em.V(a.x, a.y), ib = em.V(b.x, b.y);
+                    const std::uint32_t ia2 = em.V(a2.x, a2.y), ib2 = em.V(b2.x, b2.y);
+                    em.Tri(ia, ia2, ib2); em.Tri(ia, ib2, ib);
+                }
+            };
+            // A gap cap only applies where the line actually REACHED the gap end
+            // (i.e. an "on" interval abutted it) — a butt-capped dash edge that
+            // ends inside a gap gets no gap cap.
+            auto onAt = [&](double x) {
+                for (auto& iv : onIv)
+                    if (x >= iv.first - 1e-6 && x <= iv.second + 1e-6) return true;
+                return false;
+            };
+            for (const GapSpan& g : gaps) {
+                if (onAt(g.from)) emitGapCap(g.from, +1.0, g.capFrom);
+                if (onAt(g.to))   emitGapCap(g.to,   -1.0, g.capTo);
+            }
         }
 
         // Fusion mark objects → triangulated INTO the stroke mesh (one alpha,
@@ -618,9 +665,14 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
     DVec2 p0; V2 t0;
     ArcSampleAt(spine, d0, p0, t0);
     const V2 n0 = Perp(t0);
+    // Side across the line: the object's own side/offset when it overrides,
+    // else the mark's.
+    const MarkSide sd = obj.sideInherit ? mark.side : obj.side;
+    const double soff = obj.sideInherit ? mark.OffsetUnits(strokeWidth)
+                                        : obj.SideOffsetUnits(strokeWidth);
     double off = 0.0;
-    if (mark.side == MarkSide::Left)  off =  mark.OffsetUnits(strokeWidth);
-    if (mark.side == MarkSide::Right) off = -mark.OffsetUnits(strokeWidth);
+    if (sd == MarkSide::Left)  off =  soff;
+    if (sd == MarkSide::Right) off = -soff;
     const DVec2 at{ p0.x + n0.x * off, p0.y + n0.y * off };
     // Frame: local +x → tangent, local +y → left normal, then object rotation.
     const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
@@ -644,9 +696,12 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
     const double d0 = std::clamp(
         (mark.t < 0 ? 0 : mark.t > 1 ? 1 : mark.t) * total
             + obj.AlongUnits(strokeWidth), 0.0, total);
+    const MarkSide sd = obj.sideInherit ? mark.side : obj.side;
+    const double soff = obj.sideInherit ? mark.OffsetUnits(strokeWidth)
+                                        : obj.SideOffsetUnits(strokeWidth);
     double off = 0.0;
-    if (mark.side == MarkSide::Left)  off =  mark.OffsetUnits(strokeWidth);
-    if (mark.side == MarkSide::Right) off = -mark.OffsetUnits(strokeWidth);
+    if (sd == MarkSide::Left)  off =  soff;
+    if (sd == MarkSide::Right) off = -soff;
     // A VERY fine, fixed sampling step so the curved edges read as smooth at
     // any practical zoom — the derived ring is figée (a boolean-like limit at
     // extreme zoom), so it must be dense enough up front.

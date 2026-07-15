@@ -680,7 +680,8 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         bool needsMarkEmit = false;
         for (const StrokeMark& m : s.marks)
             for (const MarkObject& o : m.objects)
-                if ((o.shape == MarkShape::Gap && o.gapHasMarker) ||
+                if ((o.shape == MarkShape::Gap &&
+                     (!o.gapStartObjects.empty() || !o.gapEndObjects.empty())) ||
                     (o.shape != MarkShape::Gap &&
                      (o.shape == MarkShape::Instance ||
                       o.mode != MarkObjectMode::Fusion || !o.useStrokeColor)))
@@ -726,7 +727,8 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
     // a Gap that stamps end markers. A stroke that only fuses stroke-coloured
     // primitives needs no isolation scope.
     auto separate = [](const MarkObject& o) {
-        if (o.shape == MarkShape::Gap) return o.gapHasMarker;
+        if (o.shape == MarkShape::Gap)
+            return !o.gapStartObjects.empty() || !o.gapEndObjects.empty();
         return o.shape == MarkShape::Instance ||
                o.mode != MarkObjectMode::Fusion ||
                !o.useStrokeColor;
@@ -774,27 +776,26 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         const geom::Polyline& spine = flat[(std::size_t)m.sub];
 
         // A Gap cut the base line in the stroker. It draws no fill, but it can
-        // stamp a MARKER shape/instance at each of its two ends (a virtual mark
-        // there) — emitted through this same path.
+        // stamp full MARKER SUB-OBJECTS at its START and END ends (each a
+        // virtual mark there) — emitted through this same path.
         if (obj.shape == MarkShape::Gap) {
-            if (!obj.gapHasMarker) return;
             const double tot = subTotal(m.sub);
             if (tot < 1e-9) return;
             const double half = std::max(1e-4, obj.SizeUnits(s.width)) * 0.5;
             const double tc = std::clamp(m.t, 0.0, 1.0) * tot;
-            for (double end : { tc - half, tc + half }) {
+            auto stampEnd = [&](double endArc,
+                                const std::vector<MarkObject>& objs) {
+                if (objs.empty()) return;
                 StrokeMark vm = m;
-                vm.t = std::clamp(end / tot, 0.0, 1.0);
+                vm.t = std::clamp(endArc / tot, 0.0, 1.0);
                 vm.objects.clear();
-                MarkObject mo;
-                mo.shape = obj.gapMarker;
-                mo.nodeRef = obj.gapMarkerRef;
-                mo.mode = MarkObjectMode::Fusion;
-                mo.bend = MarkBend::Hard;
-                mo.useStrokeColor = true;
-                if (mo.shape == MarkShape::Gap) continue;   // no nested gaps
-                emitObject(vm, mo);
-            }
+                for (const MarkObject& so : objs) {
+                    if (so.shape == MarkShape::Gap) continue;  // no nested gaps
+                    emitObject(vm, so);
+                }
+            };
+            stampEnd(tc - half, obj.gapStartObjects);
+            stampEnd(tc + half, obj.gapEndObjects);
             return;
         }
 
