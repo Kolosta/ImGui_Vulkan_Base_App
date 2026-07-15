@@ -156,6 +156,10 @@ struct MarkObject {
     double          width = 100.0;  // Rectangle only
     bool            sizePercent = true;
     double          rotation = 0.0; // extra spin about the mark point (radians)
+    // Shift the object ALONG the line, before (−) or after (+) the mark point
+    // (in % of the stroke width when sizePercent, else doc-units) — a lateral
+    // nudge to fine-tune its position on the stroke.
+    double          alongOffset = 0.0;
     NodeId          nodeRef = kNullNode;   // shape == Instance
     // Blend mode: draw the object IN FRONT of the stroke (default — the blend
     // puts the mark over the stroke) or BEHIND it (front = false — the stroke
@@ -163,37 +167,46 @@ struct MarkObject {
     // operator is not symmetric, `front` is exactly the "which is over which"
     // choice.
     bool            front = true;
-    // Gap only: the end caps and whether the gap also cuts the OTHER mark
-    // objects it overlaps (its own mark's siblings + other marks) or just the
-    // base line.
+    // Gap only: the end caps of the OPENING (not of the surrounding runs) and
+    // whether the gap also cuts the OTHER mark objects it overlaps. Optionally
+    // a MARKER shape/instance is stamped at each gap end (a virtual mark there).
     GapCap          gapStart = GapCap::Butt;
     GapCap          gapEnd   = GapCap::Butt;
     bool            gapCutsObjects = false;
+    MarkShape       gapMarker = MarkShape::Circle;   // shape stamped at gap ends
+    bool            gapHasMarker = false;            // enable the end markers
+    NodeId          gapMarkerRef = kNullNode;        // gapMarker == Instance
     // Fill colour of a primitive object (linear straight). Instance objects use
     // the referenced node's own style, so this is ignored for them.
     Color           color{ 0, 0, 0, 1 };
     bool            useStrokeColor = true;    // primitive: inherit stroke paint
 
-    // Size / width resolved to node-local doc-units for a stroke width.
+    // Size / width / along-offset resolved to node-local doc-units.
     double SizeUnits(double w) const {
         return sizePercent ? size * 0.01 * w : size;
     }
     double WidthUnits(double w) const {
         return sizePercent ? width * 0.01 * w : width;
     }
+    double AlongUnits(double w) const {
+        return sizePercent ? alongOffset * 0.01 * w : alongOffset;
+    }
 
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[10] = {
+        const std::uint8_t packed[12] = {
             (std::uint8_t)shape, (std::uint8_t)mode, (std::uint8_t)bend,
             (std::uint8_t)blend, (std::uint8_t)(sizePercent ? 1 : 0),
             (std::uint8_t)(front ? 1 : 0), (std::uint8_t)gapStart,
             (std::uint8_t)gapEnd, (std::uint8_t)(gapCutsObjects ? 1 : 0),
+            (std::uint8_t)gapMarker, (std::uint8_t)(gapHasMarker ? 1 : 0),
             (std::uint8_t)(useStrokeColor ? 1 : 0) };
         h = HashBytes(packed, sizeof packed, h);
         h = HashDouble(size, h);
         h = HashDouble(width, h);
         h = HashDouble(rotation, h);
+        h = HashDouble(alongOffset, h);
         h = HashBytes(&nodeRef, sizeof nodeRef, h);
+        h = HashBytes(&gapMarkerRef, sizeof gapMarkerRef, h);
         return h;   // color excluded (a paint edit must NOT re-tessellate)
     }
 };

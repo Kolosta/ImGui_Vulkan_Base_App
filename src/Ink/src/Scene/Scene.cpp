@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 
 namespace Ink {
 
@@ -679,8 +680,10 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         bool needsMarkEmit = false;
         for (const StrokeMark& m : s.marks)
             for (const MarkObject& o : m.objects)
-                if (o.shape == MarkShape::Instance ||
-                    o.mode != MarkObjectMode::Fusion || !o.useStrokeColor)
+                if ((o.shape == MarkShape::Gap && o.gapHasMarker) ||
+                    (o.shape != MarkShape::Gap &&
+                     (o.shape == MarkShape::Instance ||
+                      o.mode != MarkObjectMode::Fusion || !o.useStrokeColor)))
                     needsMarkEmit = true;
         if (needsMarkEmit && !pinClip) {
             EmitStrokeMarks(doc, n, s, i, geo, world, scope, owner, 0);
@@ -719,10 +722,11 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                             const DMat23& world, ScopeId scope, NodeId owner,
                             int instDepth) {
     // An object needs a SEPARATE drawable when it is NOT a stroke-coloured
-    // Fusion primitive: Blend / Cut / Instance, OR a RECOLOURED Fusion object
-    // (it can't share the stroke's single-colour mesh). A stroke that only
-    // fuses stroke-coloured primitives needs no isolation scope.
+    // Fusion primitive: Blend / Cut / Instance, a RECOLOURED Fusion object, or
+    // a Gap that stamps end markers. A stroke that only fuses stroke-coloured
+    // primitives needs no isolation scope.
     auto separate = [](const MarkObject& o) {
+        if (o.shape == MarkShape::Gap) return o.gapHasMarker;
         return o.shape == MarkShape::Instance ||
                o.mode != MarkObjectMode::Fusion ||
                !o.useStrokeColor;
@@ -730,7 +734,8 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
     bool needsScope = false;
     for (const StrokeMark& m : s.marks)
         for (const MarkObject& o : m.objects)
-            if (separate(o) && o.mode != MarkObjectMode::Fusion)
+            if (o.shape != MarkShape::Gap && separate(o) &&
+                o.mode != MarkObjectMode::Fusion)
                 needsScope = true;   // only Blend/Cut/Instance need isolation
 
     ScopeId strokeScope = scope;
@@ -752,12 +757,46 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
     // geometry placed by a transform, so the GeometryCache re-tessellates them
     // per zoom tier (vector-exact at any zoom).
     auto flat = geom::Flatten(*geo, geom::kMarkPlaceTolerance);
-    auto emitObject = [&](const StrokeMark& m, const MarkObject& obj) {
+    // Total arc length of a flattened subpath (for gap-end marker placement).
+    auto subTotal = [&](int sub) -> double {
+        if (sub < 0 || sub >= (int)flat.size()) return 0.0;
+        const auto& pts = flat[(std::size_t)sub].points;
+        const bool cl = flat[(std::size_t)sub].closed;
+        const std::size_t nn = pts.size(), sc = cl ? nn : nn - 1;
+        double tot = 0.0;
+        for (std::size_t i = 0; i < sc; ++i)
+            tot += std::hypot(pts[(i+1)%nn].x - pts[i].x, pts[(i+1)%nn].y - pts[i].y);
+        return tot;
+    };
+    std::function<void(const StrokeMark&, const MarkObject&)> emitObject;
+    emitObject = [&](const StrokeMark& m, const MarkObject& obj) {
         if (m.sub < 0 || m.sub >= (int)flat.size()) return;
         const geom::Polyline& spine = flat[(std::size_t)m.sub];
 
-        // A Gap is not a drawn object — it cut the base line in the stroker.
-        if (obj.shape == MarkShape::Gap) return;
+        // A Gap cut the base line in the stroker. It draws no fill, but it can
+        // stamp a MARKER shape/instance at each of its two ends (a virtual mark
+        // there) — emitted through this same path.
+        if (obj.shape == MarkShape::Gap) {
+            if (!obj.gapHasMarker) return;
+            const double tot = subTotal(m.sub);
+            if (tot < 1e-9) return;
+            const double half = std::max(1e-4, obj.SizeUnits(s.width)) * 0.5;
+            const double tc = std::clamp(m.t, 0.0, 1.0) * tot;
+            for (double end : { tc - half, tc + half }) {
+                StrokeMark vm = m;
+                vm.t = std::clamp(end / tot, 0.0, 1.0);
+                vm.objects.clear();
+                MarkObject mo;
+                mo.shape = obj.gapMarker;
+                mo.nodeRef = obj.gapMarkerRef;
+                mo.mode = MarkObjectMode::Fusion;
+                mo.bend = MarkBend::Hard;
+                mo.useStrokeColor = true;
+                if (mo.shape == MarkShape::Gap) continue;   // no nested gaps
+                emitObject(vm, mo);
+            }
+            return;
+        }
 
         // A non-Normal Blend object composites through its OWN nested scope.
         ScopeId objScope = strokeScope;
@@ -799,18 +838,20 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         d.pieceIndex = (std::uint8_t)strokeIndex;
         d.ownerPiece = (std::uint8_t)strokeIndex;  d.ownerPieceStroke = true;
         d.scope = objScope;
-        if (obj.bend == MarkBend::Follow) {
-            // Follow bends the outline along the curve → a dense derived ring
-            // (node-local, so d.world = the node world).
+        if (geom::BendsAlongCurve(obj.bend)) {
+            // Bend / Follow curve the outline along the line → a dense derived
+            // ring (node-local, so d.world = the node world). Sampled fine so
+            // the curved edges read as smooth.
             std::vector<DVec2> ring;
-            if (!geom::MarkFollowContour(spine, m, obj, s.width, 0.5, ring))
+            if (!geom::MarkFollowContour(spine, m, obj, s.width,
+                                         geom::kMarkPlaceTolerance, ring))
                 return;
             markShapes_.push_back(RingToPath(ring));
             const PathData* g = &markShapes_.back();
             if (g->Empty()) { markShapes_.pop_back(); return; }
             d.world = world;  d.path = g;  d.pathHash = g->Hash();
         } else {
-            // Hard / Bend: a PARAMETRIC primitive placed by a transform →
+            // Hard: a PARAMETRIC primitive placed by a transform →
             // re-tessellated per tier (vector-smooth).
             markShapes_.push_back(geom::MarkPrimitiveShape(obj, s.width));
             const PathData* g = &markShapes_.back();

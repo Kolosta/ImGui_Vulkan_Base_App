@@ -76,6 +76,10 @@ PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth);
 DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
                        const MarkObject& obj, double strokeWidth);
 
+// True for the mark bend modes that CURVE the outline along the line (Bend and
+// Follow); Hard keeps a rigid placed primitive.
+bool BendsAlongCurve(MarkBend b);
+
 // Follow-mode geometry: the primitive's outline RESAMPLED along the curve so it
 // truly bends with the line (a rectangle's long edges curve). A dense ring in
 // node-local space (already placed) — used when obj.bend == Follow. Returns
