@@ -40,12 +40,11 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 7;   // v3: subpath spline params +
+constexpr std::uint32_t kDocVersion = 8;   // v3: subpath spline params +
                                            //     anchor weight (+ dead marks)
-                                           // v4/v5/v6: generic marks (dead)
-                                           // v7: marks + Gap object (length,
-                                           //     end caps, cut-objects) and the
-                                           //     rest of the v6 mark fields
+                                           // v4-v7: generic marks (dead)
+                                           // v8: marks — along-offset + gap end
+                                           //     markers, Gap object, the rest
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -255,11 +254,15 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
                 w.f64(o.width);
                 w.u8(o.sizePercent ? 1 : 0);
                 w.f64(o.rotation);
+                w.f64(o.alongOffset);
                 w.u64(o.nodeRef);
                 w.u8(o.front ? 1 : 0);
                 w.u8((std::uint8_t)o.gapStart);
                 w.u8((std::uint8_t)o.gapEnd);
                 w.u8(o.gapCutsObjects ? 1 : 0);
+                w.u8((std::uint8_t)o.gapMarker);
+                w.u8(o.gapHasMarker ? 1 : 0);
+                w.u64(o.gapMarkerRef);
                 WriteColor(w, o.color);
                 w.u8(o.useStrokeColor ? 1 : 0);
             }
@@ -344,7 +347,19 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
                     r.f64(); r.u64(); r.u8(); ReadColor(r); r.u8();
                 }
             }
-        } else if (ver >= 7) {
+        } else if (ver == 7) {
+            // v7 lacked the along-offset + gap end markers — drain it.
+            const std::uint32_t nMk = r.u32();
+            for (std::uint32_t j = 0; j < nMk && r.ok; ++j) {
+                r.u32(); r.f64(); r.u8(); r.u8(); r.f64(); r.u8(); r.u32();
+                const std::uint32_t nObj = r.u32();
+                for (std::uint32_t k = 0; k < nObj && r.ok; ++k) {
+                    r.u8(); r.u8(); r.u8(); r.u8(); r.f64(); r.f64(); r.u8();
+                    r.f64(); r.u64(); r.u8(); r.u8(); r.u8(); r.u8();
+                    ReadColor(r); r.u8();
+                }
+            }
+        } else if (ver >= 8) {
             const std::uint32_t nMk = r.u32();
             for (std::uint32_t j = 0; j < nMk && r.ok; ++j) {
                 Ink::StrokeMark m;
@@ -367,11 +382,15 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
                     o.width = r.f64();
                     o.sizePercent = r.u8() != 0;
                     o.rotation = r.f64();
+                    o.alongOffset = r.f64();
                     o.nodeRef = r.u64();
                     o.front = r.u8() != 0;
                     o.gapStart = (Ink::GapCap)std::min<std::uint8_t>(r.u8(), 2);
                     o.gapEnd   = (Ink::GapCap)std::min<std::uint8_t>(r.u8(), 2);
                     o.gapCutsObjects = r.u8() != 0;
+                    o.gapMarker = (Ink::MarkShape)std::min<std::uint8_t>(r.u8(), 4);
+                    o.gapHasMarker = r.u8() != 0;
+                    o.gapMarkerRef = r.u64();
                     o.color = ReadColor(r);
                     o.useStrokeColor = r.u8() != 0;
                     m.objects.push_back(o);

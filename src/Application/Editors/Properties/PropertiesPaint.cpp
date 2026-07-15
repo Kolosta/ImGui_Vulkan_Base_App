@@ -716,6 +716,47 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                                     "Also remove the other mark objects that "
                                     "fall inside the gap (not just the line).",
                                     ImGui::GetIO().MousePos, 1.0f);
+                            // End markers: stamp a shape / instance at each end.
+                            bool hasM = o.gapHasMarker;
+                            if (pr::CheckRow("End markers", &hasM)) {
+                                o.gapHasMarker = hasM;
+                                structural = true; structLabel = "Gap Markers";
+                            }
+                            if (o.gapHasMarker) {
+                                static const char* kMShape[] = {
+                                    "Circle", "Rectangle", "Diamond", "Instance" };
+                                int ms = std::min((int)o.gapMarker, 3);
+                                if (pr::DropdownRow("Marker", kMShape, 4, &ms)) {
+                                    o.gapMarker = (Ink::MarkShape)ms;
+                                    structural = true; structLabel = "Gap Marker";
+                                }
+                                if (o.gapMarker == Ink::MarkShape::Instance) {
+                                    bool pr2 = false;
+                                    if (pr::NodePickerRow("Marker node", doc,
+                                            &o.gapMarkerRef, id, true, false, &pr2)) {
+                                        structural = true; structLabel = "Gap Marker Node";
+                                    }
+                                    if (pr2) {
+                                        const std::size_t mmi = mi, ooi = oi;
+                                        const int sIdx = strokeIdx;
+                                        BeginObjectPick(nullptr,
+                                            [this, id, sIdx, mmi, ooi](Ink::NodeId picked) {
+                                                if (!project_.document) return;
+                                                const Ink::Node* nn = project_.document->Find(id);
+                                                if (!nn || sIdx < 0 ||
+                                                    sIdx >= (int)nn->style.strokes.size())
+                                                    return;
+                                                Ink::Style before = nn->style, after = before;
+                                                auto& mks = after.strokes[(std::size_t)sIdx].marks;
+                                                if (mmi >= mks.size() ||
+                                                    ooi >= mks[mmi].objects.size()) return;
+                                                mks[mmi].objects[ooi].gapMarkerRef = picked;
+                                                project_.document->SetStyle(id, after);
+                                                CommitStyleEdit(id, before, "Gap Marker Node");
+                                            });
+                                    }
+                                }
+                            }
                             pr::ControlColumn();
                             if (ImGui::SmallButton("Remove object")) removeObj = (int)oi;
                             ImGui::Separator();
@@ -822,16 +863,36 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                                     "100 % = one full stroke width",
                                     ImGui::GetIO().MousePos, 1.0f);
                         }
-                        float rot = (float)(o.rotation * 180.0 / 3.14159265358979);
-                        if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f,
-                                          1, "\xC2\xB0")) {
-                            o.rotation = rot * 3.14159265358979 / 180.0;
-                            liveApply("Mark Object Rotation", false);
+                        // Rotation — a circle has no orientation, so skip it.
+                        if (o.shape != Ink::MarkShape::Circle) {
+                            float rot = (float)(o.rotation * 180.0 / 3.14159265358979);
+                            if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f,
+                                              360.0f, 1, "\xC2\xB0")) {
+                                o.rotation = rot * 3.14159265358979 / 180.0;
+                                liveApply("Mark Object Rotation", false);
+                            }
+                            if (ImGui::IsItemDeactivatedAfterEdit())
+                                liveApply("Mark Object Rotation", true);
                         }
-                        if (ImGui::IsItemDeactivatedAfterEdit())
-                            liveApply("Mark Object Rotation", true);
-                        // Hard shape / Bend (lean) / Follow (curve the outline).
-                        // Available for instances too (they lean / warp with it).
+                        // Along-offset: shift the object before/after the mark
+                        // along the line (percent of stroke width or doc-units).
+                        {
+                            float ao = (float)o.alongOffset;
+                            if (pr::DragFloat("Along", &ao,
+                                    o.sizePercent ? 1.0f : 0.1f, -100000.0f,
+                                    100000.0f, 2, o.sizePercent ? "%" : "")) {
+                                o.alongOffset = ao; liveApply("Mark Along", false);
+                            }
+                            if (ImGui::IsItemDeactivatedAfterEdit())
+                                liveApply("Mark Along", true);
+                            if (ImGui::IsItemHovered())
+                                UI::DrawTooltipTranslucent(
+                                    "Nudge the object along the line, before (−) "
+                                    "or after (+) the mark point.",
+                                    ImGui::GetIO().MousePos, 1.0f);
+                        }
+                        // Hard shape / Bend / Follow — all bend along the curve
+                        // except Hard (Bend and Follow curve the outline).
                         {
                             static const char* kBend[] = { "Hard", "Bend",
                                                            "Follow" };
@@ -842,9 +903,8 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                             }
                             if (ImGui::IsItemHovered())
                                 UI::DrawTooltipTranslucent(
-                                    "Hard: a rigid shape. Bend: leans with the "
-                                    "local slope. Follow: the outline curves "
-                                    "along the line.",
+                                    "Hard: a rigid shape. Bend / Follow: the "
+                                    "outline curves along the line.",
                                     ImGui::GetIO().MousePos, 1.0f);
                         }
                         // Blend mode + front/behind ordering (Blend mode only).

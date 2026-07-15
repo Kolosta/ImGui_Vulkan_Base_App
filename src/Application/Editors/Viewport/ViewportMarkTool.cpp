@@ -206,10 +206,24 @@ void DrawHandle(Ink::OverlayList& ov, Ink::Vec2 sp, Ink::Vec2 tv,
         ov.AddCircleFilled(sp, 2.0f, orange);
 
     if (state == HState::Normal) return;
-    // Hover/select ring in the TYPE colour (never a flat orange).
+    // Hover/select ring in the TYPE colour, its SHAPE matching the glyph:
+    // a diamond for Dash, a square for Gap, a circle for Neutral.
     const float rr = state == HState::Selected ? 8.5f : 7.5f;
     const float th = state == HState::Selected ? 2.0f : 1.5f;
-    ov.AddCircle(sp, rr, typeCol, th);
+    if (dash) {
+        ov.AddLine(P(rr, 0), P(0, rr), typeCol, th);
+        ov.AddLine(P(0, rr), P(-rr, 0), typeCol, th);
+        ov.AddLine(P(-rr, 0), P(0, -rr), typeCol, th);
+        ov.AddLine(P(0, -rr), P(rr, 0), typeCol, th);
+    } else if (gap) {
+        const float hh = rr * 0.8f;
+        ov.AddLine(P(hh, hh), P(-hh, hh), typeCol, th);
+        ov.AddLine(P(-hh, hh), P(-hh, -hh), typeCol, th);
+        ov.AddLine(P(-hh, -hh), P(hh, -hh), typeCol, th);
+        ov.AddLine(P(hh, -hh), P(hh, hh), typeCol, th);
+    } else {
+        ov.AddCircle(sp, rr, typeCol, th);
+    }
 }
 
 } // namespace
@@ -431,6 +445,99 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         }
     };
 
+    // Find the nearest stroked line to the cursor → (node, stroke, sub, t).
+    auto nearestLine = [&](Ink::NodeId& outId, int& outStroke, int& outSub,
+                           double& outT) -> bool {
+        float bestD = 1e9f; bool found = false;
+        for (Ink::NodeId id : pathNodes) {
+            const Ink::Node* n = doc.Find(id);
+            int strokeIdx = -1;
+            for (int si = 0; si < (int)n->style.strokes.size(); ++si)
+                if (n->style.strokes[(std::size_t)si].enabled) { strokeIdx = si; break; }
+            if (strokeIdx < 0) continue;
+            auto polys = FlattenWorld(doc, id, zoom);
+            for (int sub = 0; sub < (int)polys.size(); ++sub) {
+                const WorldPoly& poly = polys[(std::size_t)sub];
+                const std::size_t np = poly.pts.size();
+                if (np < 2) continue;
+                const std::size_t sc = poly.closed ? np : np - 1;
+                const double total = PolyTotal(poly);
+                double acc = 0.0;
+                for (std::size_t i = 0; i < sc; ++i) {
+                    const Ink::DVec2 a = poly.pts[i], b = poly.pts[(i + 1) % np];
+                    const double abx = b.x - a.x, aby = b.y - a.y;
+                    const double segLen = std::hypot(abx, aby);
+                    if (segLen < 1e-9) continue;
+                    double u = ((mdoc.x - a.x) * abx + (mdoc.y - a.y) * aby) /
+                               (segLen * segLen);
+                    u = std::clamp(u, 0.0, 1.0);
+                    const Ink::DVec2 proj{ a.x + abx * u, a.y + aby * u };
+                    const Ink::Vec2 v = d2v(proj);
+                    const float dpx = std::hypot(mp.x - (v.x + cam.canvasMin.x),
+                                                 mp.y - (v.y + cam.canvasMin.y));
+                    if (dpx < bestD) {
+                        bestD = dpx; found = true;
+                        outId = id; outStroke = strokeIdx; outSub = sub;
+                        outT = total > 1e-6 ? (acc + segLen * u) / total : 0.0;
+                    }
+                    acc += segLen;
+                }
+            }
+        }
+        return found && bestD <= 14.0f;
+    };
+
+    // ── Ctrl+V paste: a translucent preview of the clipboard marks follows the
+    //    cursor; a click drops them on the nearest line, RMB/Esc cancels. ──────
+    if (markPasteActive_) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+            ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            markPasteActive_ = false;
+            return;
+        }
+        Ink::NodeId id; int si, sub; double t;
+        const bool onLine = nearestLine(id, si, sub, t);
+        if (onLine) {
+            // Anchor the paste on the clipboard's first mark; keep the others'
+            // relative t so a multi-mark paste preserves its spacing.
+            const double baseT = markClipboard_.front().t;
+            auto polys = FlattenWorld(doc, id, zoom);
+            for (const Ink::StrokeMark& cm : markClipboard_) {
+                Ink::StrokeMark g = cm;
+                g.sub = sub;
+                g.t = std::clamp(t + (cm.t - baseT), 0.0, 1.0);
+                if (sub >= 0 && sub < (int)polys.size())
+                    drawGhost(id, si, g, polys[(std::size_t)sub]);
+            }
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                struct SP { Ink::NodeId id; Ink::Style before, after; };
+                const Ink::Node* n = doc.Find(id);
+                if (n && si >= 0 && si < (int)n->style.strokes.size()) {
+                    SP sp{ id, n->style, {} };
+                    Ink::Style sty = n->style;
+                    auto& mk = sty.strokes[(std::size_t)si].marks;
+                    edit_.markSel.clear();
+                    for (const Ink::StrokeMark& cm : markClipboard_) {
+                        Ink::StrokeMark nm = cm;
+                        nm.sub = sub;
+                        nm.t = std::clamp(t + (cm.t - baseT), 0.0, 1.0);
+                        edit_.markSel.push_back({ id, si, (int)mk.size() });
+                        mk.push_back(nm);
+                    }
+                    doc.SetStyle(id, sty);
+                    sp.after = doc.Find(id)->style;
+                    PushDocCommand("Paste Line Marks",
+                        [sp](Ink::Document& d) { d.SetStyle(sp.id, sp.before); },
+                        [sp](Ink::Document& d) { d.SetStyle(sp.id, sp.after); });
+                    LogInfoAction("Paste Line Marks");
+                    edit_.SelectAdd(id);
+                }
+                markPasteActive_ = false;
+            }
+        }
+        return;   // paste owns the input
+    }
+
     // ── Modal G (slide) / R (rotate objects) / S (scale objects) ─────────────
     if (markGrab_.Active() && markGrab_.owner == nullptr && hovered)
         markGrab_.owner = self;
@@ -616,27 +723,27 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 commitStyles(std::move(ps),
                              edit_.markSel.size() > 1 ? "Move Line Marks"
                                                       : "Move Line Mark");
-            } else if (markDrag_.pendingCycle) {
-                // Plain click on the sole-selected mark → cycle its dash phase.
-                std::vector<StylePair> ps = snapshotStyles({ markDrag_.ref });
-                const Ink::Node* n = doc.Find(markDrag_.ref.node);
-                if (n) {
-                    Ink::Style sty = n->style;
-                    auto& mk = sty.strokes[(std::size_t)markDrag_.ref.stroke].marks;
-                    if (markDrag_.ref.index >= 0 &&
-                        markDrag_.ref.index < (int)mk.size()) {
-                        Ink::MarkPhase& ph = mk[(std::size_t)markDrag_.ref.index].phase;
-                        ph = ph == Ink::MarkPhase::Neutral ? Ink::MarkPhase::Dash
-                           : ph == Ink::MarkPhase::Dash    ? Ink::MarkPhase::Gap
-                                                           : Ink::MarkPhase::Neutral;
-                        doc.SetStyle(markDrag_.ref.node, sty);
-                        commitStyles(std::move(ps), "Cycle Dash Phase");
-                    }
-                }
             }
             markDrag_ = {};
         }
         return;
+    }
+
+    // ── Hovered construction line: highlight the nearest curve's outline so it
+    //    reads as a placement target while in Line-Mark mode. ─────────────────
+    if (hovered) {
+        Ink::NodeId hid; int hsi, hsub; double ht;
+        if (nearestLine(hid, hsi, hsub, ht)) {
+            auto polys = FlattenWorld(doc, hid, zoom);
+            const Ink::Color lc = MkCol(Tok::S_State_Active_OnPage, 0.7f);
+            for (const WorldPoly& poly : polys) {
+                const std::size_t np = poly.pts.size();
+                const std::size_t last = poly.closed ? np : np - 1;
+                for (std::size_t i = 0; i < last; ++i)
+                    ov.AddLine(d2v(poly.pts[i]),
+                               d2v(poly.pts[(i + 1) % np]), lc, 1.0f);
+            }
+        }
     }
 
     // ── Hit-test existing marks (nearest handle within 9 px) ─────────────────
@@ -725,15 +832,27 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                     edit_.MarkDeselect(hit);
                     commitStyles(std::move(ps), "Remove Line Mark");
                 }
+            } else if (io.KeyCtrl) {
+                // Ctrl+Click cycles the dash phase (Neutral→Dash→Gap) — a plain
+                // click is reserved for selection.
+                std::vector<StylePair> ps = snapshotStyles({ hit });
+                const Ink::Node* n = doc.Find(hit.node);
+                if (n) {
+                    Ink::Style sty = n->style;
+                    auto& mk = sty.strokes[(std::size_t)hit.stroke].marks;
+                    Ink::MarkPhase& ph = mk[(std::size_t)hit.index].phase;
+                    ph = ph == Ink::MarkPhase::Neutral ? Ink::MarkPhase::Dash
+                       : ph == Ink::MarkPhase::Dash    ? Ink::MarkPhase::Gap
+                                                       : Ink::MarkPhase::Neutral;
+                    doc.SetStyle(hit.node, sty);
+                    commitStyles(std::move(ps), "Cycle Dash Phase");
+                }
             } else if (io.KeyShift) {
                 edit_.MarkToggle(hit);
                 edit_.SelectAdd(hit.node);
             } else {
-                // A plain click on an ALREADY sole-selected mark cycles its
-                // dash phase (Neutral→Dash→Gap) on release; any drag past the
-                // threshold slides it instead.
-                const bool wasSole = edit_.MarkSelected(hit) &&
-                                     edit_.markSel.size() == 1;
+                // Plain click selects + arms a slide (a drag past the threshold
+                // moves the mark along the curve).
                 if (!edit_.MarkSelected(hit)) edit_.MarkSelectOnly(hit);
                 edit_.SelectAdd(hit.node);
                 markDrag_ = {};
@@ -742,7 +861,6 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 markDrag_.pressPos = mp;
                 if (const Ink::StrokeMark* hm = markOf(hit))
                     markDrag_.dragT0 = markDrag_.dragT = hm->t;
-                markDrag_.pendingCycle = wasSole;
             }
         }
         return;
@@ -910,6 +1028,62 @@ void Application::DeleteSelectedMarks() {
             for (const StylePair& p : ps) d.SetStyle(p.id, p.after);
         });
     LogInfoAction("Delete Line Marks");
+}
+
+// V cycles the side of every selected mark Center → Left → Right (moved off R,
+// which now rotates the mark objects).
+void Application::Action_CycleMarkSide() {
+    if (!MarkModeActive() || !project_.document || edit_.markSel.empty()) return;
+    Ink::Document& doc = *project_.document;
+    struct StylePair { Ink::NodeId id; Ink::Style before, after; };
+    std::vector<StylePair> ps;
+    for (const EditContext::MarkRef& r : edit_.markSel) {
+        const Ink::Node* n = doc.Find(r.node);
+        if (!n || r.stroke < 0 || r.stroke >= (int)n->style.strokes.size())
+            continue;
+        bool seen = false;
+        for (const StylePair& p : ps) seen = seen || p.id == r.node;
+        if (!seen) ps.push_back({ r.node, n->style, n->style });
+        Ink::Style sty = n->style;
+        auto& mk = sty.strokes[(std::size_t)r.stroke].marks;
+        if (r.index < 0 || r.index >= (int)mk.size()) continue;
+        Ink::MarkSide& sd = mk[(std::size_t)r.index].side;
+        sd = sd == Ink::MarkSide::Center ? Ink::MarkSide::Left
+           : sd == Ink::MarkSide::Left   ? Ink::MarkSide::Right
+                                         : Ink::MarkSide::Center;
+        doc.SetStyle(r.node, sty);
+    }
+    if (ps.empty()) return;
+    for (StylePair& p : ps)
+        if (const Ink::Node* n = doc.Find(p.id)) p.after = n->style;
+    PushDocCommand("Cycle Mark Side",
+        [ps](Ink::Document& d) { for (const StylePair& p : ps) d.SetStyle(p.id, p.before); },
+        [ps](Ink::Document& d) { for (const StylePair& p : ps) d.SetStyle(p.id, p.after); });
+    LogInfoAction("Cycle Mark Side");
+}
+
+// Ctrl+C copies the selected marks (their full data) into the mark clipboard.
+void Application::Action_CopyMarks() {
+    if (!MarkModeActive() || !project_.document || edit_.markSel.empty()) return;
+    Ink::Document& doc = *project_.document;
+    markClipboard_.clear();
+    for (const EditContext::MarkRef& r : edit_.markSel) {
+        const Ink::Node* n = doc.Find(r.node);
+        if (!n || r.stroke < 0 || r.stroke >= (int)n->style.strokes.size())
+            continue;
+        const auto& mk = n->style.strokes[(std::size_t)r.stroke].marks;
+        if (r.index < 0 || r.index >= (int)mk.size()) continue;
+        markClipboard_.push_back(mk[(std::size_t)r.index]);
+    }
+    if (!markClipboard_.empty())
+        LogInfoAction("Copy Line Marks");
+}
+
+// Ctrl+V arms a paste: the clipboard marks show as a translucent preview under
+// the cursor; a click drops them on the nearest stroke, RMB/Esc cancels.
+void Application::Action_PasteMarks() {
+    if (!MarkModeActive() || markClipboard_.empty()) return;
+    markPasteActive_ = true;
 }
 
 } // namespace App

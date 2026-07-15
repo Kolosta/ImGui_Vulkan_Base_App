@@ -229,6 +229,23 @@ void Application::RegisterDefaultShortcuts() {
     viewportKey("edit.axisY", "Constrain Y", "Constrain the transform to Y",
                 [this]{ Action_ConstrainAxisY(); }, { sigKey(ImGuiKey_Y) },
                 false, false, modal);
+    // Line-Mark mode: V cycles the mark side; Ctrl+C / Ctrl+V copy/paste marks.
+    // Gated on the mode being active AND idle (the actions no-op otherwise).
+    auto markIdle = [this] {
+        return MarkModeActive() && !transformOp_.Active() && !markGrab_.Active();
+    };
+    viewportKey("mark.cycleSide", "Cycle Mark Side",
+                "Cycle the selected marks Center / Left / Right",
+                [this]{ Action_CycleMarkSide(); }, { sigKey(ImGuiKey_V) },
+                false, false, markIdle);
+    viewportKey("mark.copy", "Copy Marks", "Copy the selected line marks",
+                [this]{ Action_CopyMarks(); },
+                { sigKey(ImGuiKey_C, /*ctrl=*/true) }, false, false, markIdle);
+    viewportKey("mark.paste", "Paste Marks",
+                "Paste the copied marks (a translucent preview follows the "
+                "cursor; click to drop, right-click / Esc to cancel)",
+                [this]{ Action_PasteMarks(); },
+                { sigKey(ImGuiKey_V, /*ctrl=*/true) }, false, false, markIdle);
     viewportKey("edit.toggleMode", "Toggle Edit Mode",
                 "Switch between Object and Edit mode",
                 [this]{ Action_ToggleEditMode(); }, { sigKey(ImGuiKey_Tab) },

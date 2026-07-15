@@ -211,8 +211,15 @@ private:
                         Ink::OverlayList& ov, bool hovered);
     void BeginMarkTransform(TransformOp::Kind kind);
     void DeleteSelectedMarks();
+    void Action_CycleMarkSide();  // V: Center → Left → Right on the selection
+    void Action_CopyMarks();      // Ctrl+C the selected marks
+    void Action_PasteMarks();     // Ctrl+V: arm the translucent paste
     bool MarkModeActive() const;  // the Line-Mark editor mode is active
     bool MarkToolArmed() const;   // mode active + marks selected (redirect G/R/S/X)
+    // Mark clipboard + the armed paste (a translucent preview follows the
+    // cursor until a click drops it or RMB/Esc cancels).
+    std::vector<Ink::StrokeMark> markClipboard_;
+    bool markPasteActive_ = false;
     // The default object a click drops on the line (top-bar picker): a shape
     // and whether it ADDS to or SUBTRACTS from the stroke.
     Ink::MarkShape markPlaceShape_ = Ink::MarkShape::Circle;
@@ -223,7 +230,6 @@ private:
         ImVec2 pressPos{};
         double dragT0 = 0.0;    // the grabbed mark's t at press
         double dragT = 0.0;     // its previewed t this frame
-        bool pendingCycle = false;  // a plain click (no drag) cycles the phase
     } markDrag_;
     struct MarkGrab {           // modal G/R/S over the selected marks
         int op = 0;             // 0 none, 1 slide(G), 2 rotate(R), 3 scale(S)
