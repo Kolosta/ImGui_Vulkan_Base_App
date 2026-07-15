@@ -59,18 +59,18 @@ ButtonGroup::Result ButtonGroup::Render() {
                                  ImVec4(0.22f, 0.45f, 0.85f, 1.0f));
     ImVec4 border   = SafeColor(DesignSystem::Tok::C_Toggle_Border,
                                  ImVec4(0.40f, 0.40f, 0.45f, 1.0f));
-    ImVec4 activeBd = SafeColor(DesignSystem::Tok::C_Toggle_BorderSelected,
-                                 ImVec4(0.45f, 0.65f, 1.00f, 1.0f));
     ImVec4 text     = SafeColor(DesignSystem::Tok::C_Toggle_Label,
                                  ImVec4(0.85f, 0.85f, 0.85f, 1.0f));
     ImVec4 activeTx = SafeColor(DesignSystem::Tok::C_Toggle_LabelSelected,
                                  ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
     ImVec4 disabledTx = SafeColor(DesignSystem::Tok::S_Color_Text_Subtle,
                                   ImVec4(0.5f, 0.5f, 0.5f, 1.0f));
-    // Radius / border come from the SAME frame tokens ImGui uses for
-    // every button & input, so the group matches native widgets exactly.
+    // Radius from the frame token (matches native inputs). Border colour +
+    // width come from the TOGGLE tokens — a single neutral outline, never an
+    // accent-coloured perimeter (the selected cell reads by its FILL alone,
+    // like the tab-bar DropdownButtonRow).
     float radius      = SafeFloat(DesignSystem::Tok::C_Frame_CornerRadius, 4.0f) * scale;
-    float borderSize  = SafeFloat(DesignSystem::Tok::C_Frame_BorderWidth, 1.0f) * scale;
+    float borderSize  = SafeFloat(DesignSystem::Tok::C_Toggle_BorderWidth, 1.0f) * scale;
 
     // ── Column / row pixel offsets ──────────────────────────────────────
     std::vector<float> colX(colW_.size() + 1, 0.0f);
@@ -157,7 +157,7 @@ ButtonGroup::Result ButtonGroup::Render() {
     };
     auto cellBorder = [&](const Resolved& r) -> ImVec4 {
         if (!r.enabled) return Lerp(border, disabledBg, 0.55f);
-        return (r.selected || r.active || r.hovered) ? activeBd : border;
+        return border;   // always the neutral border — no accent perimeter
     };
 
     // Outer bounding box for corner rounding decisions.
@@ -233,16 +233,12 @@ ButtonGroup::Result ButtonGroup::Render() {
         }
     }
 
-    // (3) Whole-group rounded perimeter — single AddRect, ImGui-aligned.
-    int topPriority = -1;
-    const Resolved* topCell = &rc[0];
-    for (const auto& r : rc)
-        if (r.priority > topPriority) { topPriority = r.priority; topCell = &r; }
-    ImU32 perimeterCol = (topPriority > 0)
-        ? borderU(*topCell)
-        : ImGui::ColorConvertFloat4ToU32(border);
-    dl->AddRect(groupMn, groupMx, perimeterCol, radius,
-                ImDrawFlags_RoundCornersAll, borderSize);
+    // (3) Whole-group rounded perimeter — single AddRect, ImGui-aligned. Always
+    // the neutral border colour (the selection reads by its fill, not an accent
+    // outline), so nothing frames the group in blue permanently.
+    if (borderSize > 0.01f)
+        dl->AddRect(groupMn, groupMx, ImGui::ColorConvertFloat4ToU32(border),
+                    radius, ImDrawFlags_RoundCornersAll, borderSize);
 
     // ── Pass 6: icon (optional) + label (stripped of "##id") ─────────────
     // Center alignment keeps the classic look; Left alignment makes a

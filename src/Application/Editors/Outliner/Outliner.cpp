@@ -1239,8 +1239,13 @@ void Application::RenderOutliner(EditorState& st) {
         UI::ListRowSetBandScale(1.0f);
         OutlinerDrawGuideLines(st, rows, startY, stripeH);
 
-        // Empty-space clicks (only when the pointer isn't over a row).
-        if (!outlinerSuppressInput_ &&
+        // Empty-space clicks (only when the pointer isn't over a row). Never act
+        // while ANY ImGui popup is open (a colour picker / dropdown from another
+        // editor can OVERFLOW onto this one): the click belongs to that popup, it
+        // must not clear the selection here.
+        const bool anyPopup = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
+                                                          ImGuiPopupFlags_AnyPopupLevel);
+        if (!outlinerSuppressInput_ && !anyPopup &&
             ImGui::IsWindowHovered() && !ImGui::IsAnyItemHovered()) {
             const float my = ImGui::GetMousePos().y - ImGui::GetWindowPos().y + scrollY;
             const bool belowRows = my > startY + (float)rows.size() * stripeH;

@@ -410,6 +410,15 @@ void Application::RenderAddMenu() {
              "Ellipse (drag to place when Draw on Create is on)");
         leaf(shapes.submenu, "Triangle",  "triangle",
              "Triangle (drag to place when Draw on Create is on)");
+        // FREE: a custom-shaped path drawn point by point with the pen — ALWAYS
+        // starts the pen (as if Draw on Create were on, even when it is off).
+        {
+            UI::MenuEntry e; e.label = "Free";
+            e.tooltip = "Draw a free custom shape point by point (the pen); "
+                        "always uses draw-on-create";
+            e.onClick = [this]() { BeginPenDraw("free"); addMenuOpen_ = false; };
+            shapes.submenu.push_back(std::move(e));
+        }
         entries.push_back(std::move(shapes));
     }
     {

@@ -98,7 +98,17 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     }
 
     // ── Camera interactions ──────────────────────────────────────────────────
-    if (hovered && io.MouseWheel != 0.0f) {
+    // A floating overlay (tool palette, the N side panel) owns the pointer over
+    // its rect: don't zoom/pan the canvas underneath, so the wheel scrolls the
+    // panel only and a middle-drag there doesn't move the camera. (These are last
+    // frame's rects, populated at the end of RenderViewport — stable.)
+    const ImVec2 wp = io.MousePos;
+    bool onOverlay = false;
+    for (const ImVec4& r : st.overlayRects)
+        if (wp.x >= r.x && wp.x <= r.z && wp.y >= r.y && wp.y <= r.w) {
+            onOverlay = true; break;
+        }
+    if (hovered && !onOverlay && io.MouseWheel != 0.0f) {
         // Zoom at the cursor: the document point under the mouse stays put.
         const double factor  = std::pow(1.15, (double)io.MouseWheel);
         const double newZoom = st.zoom * factor;
@@ -110,7 +120,7 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
             st.zoom = newZoom;
         }
     }
-    if (hovered && ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
+    if (hovered && !onOverlay && ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
         st.panX -= (double)io.MouseDelta.x / st.zoom;
         st.panY -= (double)io.MouseDelta.y / st.zoom;
     }
@@ -229,6 +239,10 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     // Clear + repopulate the overlay rects HERE (input read last frame's).
     st.overlayRects.clear();
     RenderToolPalette(cMin, st);
+    // The right-side "N" panel (Item / Marks tabs), over the canvas. It records
+    // its occupied band as an overlay rect so clicks on the panel don't also
+    // drive the canvas underneath.
+    RenderViewportSidePanel(st, cMin, ImVec2(cMin.x + size.x, cMin.y + size.y));
     // NB: the Add / context popups are rendered ONCE per frame from Update()
     // (after the whole layout), not here — a popup gated by per-zone hover
     // freezes when the cursor leaves the canvas onto the popup.

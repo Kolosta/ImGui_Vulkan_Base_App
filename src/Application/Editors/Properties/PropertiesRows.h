@@ -136,10 +136,11 @@ inline void GroupTitleInline(const char* title, const char* firstAxis) {
 inline unsigned Vec2Group(const char* title, float v[2], float speed, float mn,
                           float mx, int decimals = 3, const char* unit = "",
                           bool* xDeactivated = nullptr,
-                          bool* yDeactivated = nullptr) {
+                          bool* yDeactivated = nullptr,
+                          bool leadingGap = true) {
     unsigned changed = 0;
     ImGui::PushID(title);
-    GroupGap();
+    if (leadingGap) GroupGap();   // a FIRST group in a panel passes false
     GroupTitleInline(title, "X");
     if (DragFloat("X", &v[0], speed, mn, mx, decimals, unit)) changed |= 1u;
     if (xDeactivated) *xDeactivated = ImGui::IsItemDeactivatedAfterEdit();
@@ -280,14 +281,119 @@ inline bool NodePickerRow(const char* label, const Ink::Document& doc,
     return false;
 }
 
+// ── Vertical reorder rail (dynamic drag & drop, like the modifier panels) ────
+// A uniform vertical stack of fixed-height cells that can be reordered by drag:
+// the grabbed cell floats with the cursor ABOVE its siblings, the others slide
+// out of its way, and the move is committed on release. State lives in the
+// window ImGuiStorage (survives frames), keyed off `id`.
+//
+// Usage per rail:
+//   pr::VReorder rr("##strokeRail", (int)n, cellH);
+//   for (i in [0,n)):
+//       ImVec2 pos = rr.CellScreenPos(i, naturalPosForI);
+//       ... draw the cell's InvisibleButton + visuals at `pos` ...
+//       rr.HandleCell(i, /*itemActivated=*/ImGui::IsItemActivated(),
+//                        /*itemActive=*/ImGui::IsItemActive(),
+//                        cellMinY, cellMaxY);
+//   if (rr.Grabbed()==i) draw that cell LAST (on top).
+//   pr::VReorder::Move mv = rr.Commit();   // {from,to} or {-1,-1}
+struct VReorder {
+    ImGuiStorage* st = nullptr;
+    ImGuiID kDrag, kPress, kGrabDY, kFloatY, kTarget;
+    int   count;
+    float cellH;
+    float mouseY;
+    bool  mouseDown;
+
+    VReorder(const char* id, int count_, float cellH_) : count(count_), cellH(cellH_) {
+        st = ImGui::GetStateStorage();
+        ImGui::PushID(id);
+        kDrag   = ImGui::GetID("##vrDrag");
+        kPress  = ImGui::GetID("##vrPress");
+        kGrabDY = ImGui::GetID("##vrGrabDY");
+        kFloatY = ImGui::GetID("##vrFloatY");
+        kTarget = ImGui::GetID("##vrTarget");
+        ImGui::PopID();
+        mouseY    = ImGui::GetIO().MousePos.y;
+        mouseDown = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+        int d = st->GetInt(kDrag, -1);
+        if (d >= count) { st->SetInt(kDrag, -1); st->SetInt(kTarget, -1); }
+        if (!mouseDown && d < 0) st->SetInt(kPress, -1);   // stray press cleared
+    }
+    int Grabbed() const { return st->GetInt(kDrag, -1); }
+
+    // The vertical offset to apply to cell `index` this frame (float follow for
+    // the grabbed one; slide for the neighbours between origin and target).
+    float CellOffset(int index) {
+        const int drag = st->GetInt(kDrag, -1);
+        if (drag < 0) return 0.0f;
+        const int tgt = std::clamp(st->GetInt(kTarget, drag), 0, count - 1);
+        if (index == drag) return 0.0f;   // handled via absolute float pos
+        if (drag < tgt && index > drag && index <= tgt) return -cellH;
+        if (tgt < drag && index >= tgt && index < drag) return +cellH;
+        return 0.0f;
+    }
+    // Absolute screen Y for the grabbed cell (follows the cursor, clamped to the
+    // rail). `railTopY` = natural screen Y of cell 0.
+    float GrabbedScreenY(float railTopY) {
+        const float grabDY = st->GetFloat(kGrabDY, cellH * 0.5f);
+        float y = mouseY - grabDY;
+        const float lo = railTopY, hi = railTopY + (count - 1) * cellH;
+        return std::clamp(y, lo, hi);
+    }
+    // Called right after the cell's InvisibleButton. Promotes a press to a drag
+    // past the threshold and tracks the insertion slot. `cellTopY` = the cell's
+    // NATURAL screen top (without offset), used to derive the grab point.
+    void HandleCell(int index, bool activated, bool active,
+                    float cellTopY, float railTopY) {
+        int drag = st->GetInt(kDrag, -1);
+        if (activated) {
+            st->SetInt(kPress, index);
+            st->SetFloat(kGrabDY, mouseY - cellTopY);
+        }
+        const int press = st->GetInt(kPress, -1);
+        if (drag < 0 && active && press == index) {
+            if (std::fabs(mouseY - (cellTopY + st->GetFloat(kGrabDY, 0.0f)))
+                    > ImGui::GetIO().MouseDragThreshold) {
+                drag = index;
+                st->SetInt(kDrag, drag);
+                st->SetInt(kTarget, drag);
+            }
+        }
+        if (drag >= 0) {
+            const float fc = GrabbedScreenY(railTopY) + cellH * 0.5f;
+            int slot = (int)std::floor((fc - railTopY) / cellH);
+            slot = std::clamp(slot, 0, count - 1);
+            st->SetInt(kTarget, slot);
+        }
+    }
+    struct Move { int from = -1, to = -1; };
+    // On mouse release while dragging: return the committed move and reset.
+    Move Commit() {
+        Move mv;
+        const int drag = st->GetInt(kDrag, -1);
+        if (drag >= 0 && !mouseDown) {
+            const int tgt = std::clamp(st->GetInt(kTarget, drag), 0, count - 1);
+            if (tgt != drag) { mv.from = drag; mv.to = tgt; }
+            st->SetInt(kDrag, -1);
+            st->SetInt(kPress, -1);
+            st->SetInt(kTarget, -1);
+        }
+        return mv;
+    }
+};
+
 // ── Paint-stack thumbnails (the fill / stroke vignette rails) ────────────────
 
 // A selectable square tile: token chrome, accent border when selected,
 // brighter border on hover. Returns true on click; outMin/outMax receive the
 // CONTENT rect (inside the border) for the caller to draw the preview into.
 inline bool ThumbTile(const char* idstr, float size, bool selected,
-                      ImVec2* outMin, ImVec2* outMax) {
+                      ImVec2* outMin, ImVec2* outMax, const ImVec2* posOverride = nullptr) {
     const float gs = Gs();
+    // A drag rail places the tile explicitly (floating item); otherwise it flows
+    // at the current cursor. The InvisibleButton is submitted at that position.
+    if (posOverride) ImGui::SetCursorScreenPos(*posOverride);
     const ImVec2 mn = ImGui::GetCursorScreenPos();
     const ImVec2 mx(mn.x + size, mn.y + size);
     ImGui::PushID(idstr);
@@ -299,12 +405,14 @@ inline bool ThumbTile(const char* idstr, float size, bool selected,
     // White canvas behind every sample (the same paper the viewport pages
     // show), so colours and alpha read as printed — not against the panel.
     dl->AddRectFilled(mn, mx, IM_COL32(255, 255, 255, 255), r);
-    const ImVec4 bord =
-        selected ? SafeColor(Tok::S_Color_Accent_Default, ImVec4(0.3f, 0.5f, 0.9f, 1))
-        : hovered ? SafeColor(Tok::S_Color_Text_Default, ImVec4(0.9f, 0.9f, 0.9f, 1))
-                  : SafeColor(Tok::S_Color_Border_Default, ImVec4(0.3f, 0.3f, 0.3f, 1));
-    dl->AddRect(mn, mx, ImGui::ColorConvertFloat4ToU32(bord), r, 0,
-                (selected ? 2.0f : 1.0f) * gs);
+    // No border in the normal / hover state (a clean vignette). ONLY the
+    // selected tile carries an outline, in the selection ORANGE (not blue).
+    (void)hovered;
+    if (selected) {
+        const ImVec4 sel = SafeColor(Tok::S_State_Active_OnPage,
+                                     ImVec4(1.0f, 0.55f, 0.1f, 1));
+        dl->AddRect(mn, mx, ImGui::ColorConvertFloat4ToU32(sel), r, 0, 2.0f * gs);
+    }
     const float inset = 3.0f * gs;
     if (outMin) *outMin = ImVec2(mn.x + inset, mn.y + inset);
     if (outMax) *outMax = ImVec2(mx.x - inset, mx.y - inset);

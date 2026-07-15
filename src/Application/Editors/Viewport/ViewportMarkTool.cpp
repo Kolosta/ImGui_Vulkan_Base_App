@@ -247,6 +247,20 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
     ImGuiIO& io = ImGui::GetIO();
     const double zoom = std::max(1e-4, cam.zoom);
     const ImVec2 mp = io.MousePos;
+    // A floating overlay (tool palette, the N side panel) owns the mouse there —
+    // the mark tool must not preview/place/pick under it, so treat it as NOT
+    // hovered. (These are last frame's rects, stable corner/edge anchors.)
+    for (const ImVec4& r : st.overlayRects)
+        if (mp.x >= r.x && mp.x <= r.z && mp.y >= r.y && mp.y <= r.w) {
+            hovered = false;
+            break;
+        }
+    // Any open ImGui popup (a colour picker, dropdown, combo…) can OVERFLOW onto
+    // the canvas: a click on it must not deselect the mark being edited, so the
+    // tool is NOT hovered while a popup is up.
+    if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
+                                    ImGuiPopupFlags_AnyPopupLevel))
+        hovered = false;
     const Ink::DVec2 mdoc = cam.ScreenToDoc(mp.x, mp.y);
     const void* self = &st;
     const double precision = io.KeyShift ? 0.1 : 1.0;

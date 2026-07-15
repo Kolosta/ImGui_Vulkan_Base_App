@@ -1445,6 +1445,7 @@ enum class Tok : std::uint32_t {
     P_Color_Gray_875,
     C_ZoneTab_Gap,
     C_ZoneTab_Padding,
+    C_SidePanel_Margin,
     C_ZoneTab_Background,
     C_ZoneTab_BackgroundActive,
     C_ZoneTab_BackgroundHover,
@@ -2995,6 +2996,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::P_Color_Gray_875: return "primitive.color.gray.875";
         case Tok::C_ZoneTab_Gap: return "component.zone-tab.gap.default";
         case Tok::C_ZoneTab_Padding: return "component.zone-tab.padding.default";
+        case Tok::C_SidePanel_Margin: return "component.side-panel.margin.default";
         case Tok::C_ZoneTab_Background: return "component.zone-tab.background.color.default";
         case Tok::C_ZoneTab_BackgroundActive: return "component.zone-tab.background.color.active";
         case Tok::C_ZoneTab_BackgroundHover: return "component.zone-tab.background.color.hover";

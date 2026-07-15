@@ -1,4 +1,5 @@
 #include <UI/Widgets/SidePanel.h>
+#include <UI/Widgets/ScrollArea.h>
 #include <DesignSystem/DesignSystem.h>
 #include <VectorGraphics/IconManager.h>
 #include <imgui_internal.h>
@@ -89,9 +90,16 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     const float maxPanel = (cMax.x - cMin.x) * 0.7f;
     const float fillet  = std::min(zoneRnd, 8.0f * gs);
     const float A = 0.86f;
+    // The uniform inset (token-driven) of the open panel from the canvas edge
+    // (top/bottom) AND of its content from the panel edges (all four sides). The
+    // tab BAR strip itself spans full height.
+    const float margin = Flt(Tok::C_SidePanel_Margin) * gs;
 
     // ── Colours ──────────────────────────────────────────────────────────────
-    ImU32 panelBg = ColA(Tok::C_Editor_TopBarBackground, A);
+    // The content panel uses the DARKEST recessed surface (Layer1) at the panel
+    // alpha, so it reads clearly darker than the canvas behind it; the tab
+    // silhouettes share it so the selected tab merges seamlessly into the panel.
+    ImU32 panelBg = ColA(Tok::S_Color_Background_Layer1, A);
     ImU32 barBg   = ColA(Tok::C_ZoneTab_BarBackground,   A);
     ImU32 txt     = ImGui::ColorConvertFloat4ToU32(Col(Tok::S_Color_Text_Default));
     ImU32 txtSub  = ImGui::ColorConvertFloat4ToU32(Col(Tok::S_Color_Text_Subtle));
@@ -108,14 +116,18 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     float width = (st.stage == 0) ? 0.0f : (st.stage == 1) ? barW : st.width;
 
     if (st.stage == 0) {
-        const float hw = 14.0f * gs;
-        const float hh = ImGui::GetTextLineHeightWithSpacing() * 1.8f;
+        // A COMPACT handle: just big enough to hold a LARGE chevron, with a thin
+        // padding around it (no oversized grip). Sized off the chevron so the
+        // handle shrinks/grows with it.
+        const float cz  = Flt(Tok::C_Dropdown_ChevronSize) * gs * 1.6f;  // big icon
+        const float padX = 3.0f * gs, padY = 4.0f * gs;
+        const float hw  = cz + padX * 2.0f;
+        const float hh  = cz + padY * 2.0f;
         ImVec2 hmn(cMax.x - hw, cMin.y + ImGui::GetTextLineHeightWithSpacing() * 0.6f);
         ImVec2 hmx(cMax.x, hmn.y + hh);
         dl->AddRectFilled(hmn, hmx, ColA(Tok::C_Editor_TopBarBackground, 0.45f),
                           4.0f * gs, ImDrawFlags_RoundCornersLeft);
         auto& iconMgr = VectorGraphics::IconManager::Instance();
-        float cz = Flt(Tok::C_Dropdown_ChevronSize) * gs;
         auto md = iconMgr.GetDefaultMetadata("chevron-left");
         if (!md.colorZones.empty()) md.colorZones[0].customColor = Col(Tok::S_Color_Text_Subtle);
         iconMgr.RenderIcon(dl, "chevron-left",
@@ -182,7 +194,7 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     struct TabBox { float top, bot; bool sel, hov; };
     std::vector<TabBox> boxes((size_t)nTabs);
     {
-        float y = barMin.y + tabPadY;
+        float y = barMin.y + margin + tabPadY;   // inset the tabs from the top
         for (int i = 0; i < nTabs; ++i) {
             float textLen = AddTextVertical(dl, font, fontSz, 0.f, 0.f, 0,
                                             tabs[(size_t)i].name.c_str());
@@ -221,6 +233,27 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     // uses, so the bar's outer corners follow the SAME rounding as the editor.
     const float er = std::min(zoneRnd, barWpx * 0.5f);   // right (outer) corner radius
     const float cr = r;                                  // left concave fillet radius
+
+    // The open content panel is inset by `margin` top AND bottom, and its height
+    // AUTO-FITS the content: use last frame's measured content height (stable,
+    // the content doesn't jump) clamped to the available band; a scrollbar
+    // appears when it overflows. The tab BAR (barMin..barMax) stays full-height.
+    const ImGuiID contentHKey = ImGui::GetID("##sp_contentH");
+    // The content is inset by `margin` on ALL FOUR sides (uniform). It is applied
+    // by the child's POSITION (top + left) and SIZE (bottom), not by ImGui window
+    // padding — a borderless child ignores WindowPadding unless it is forced, so
+    // positioning is the reliable way to get a consistent frame on every tab.
+    const float innerPad = margin;
+    const float availTop = cMin.y + margin;
+    const float availBot = cMax.y - margin;
+    const float availH   = std::max(uiU, availBot - availTop);
+    float measuredH = store->GetFloat(contentHKey, 0.0f);
+    // First frame (nothing measured yet) → take the full band, then shrink.
+    float panelH = (measuredH <= 0.5f)
+        ? availH
+        : std::min(availH, measuredH + innerPad * 2.0f);
+    conMin.y = availTop;
+    conMax.y = availTop + panelH;
 
     if (st.stage == 2)
         dl->AddRectFilled(conMin, conMax, panelBg, zoneRnd,
@@ -297,11 +330,35 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
 
     dl->PopClipRect();
 
-    // ── Active tab content ────────────────────────────────────────────────────
+    // ── Active tab content — a SCROLLABLE child (the app's overlay scrollbar,
+    //    which floats in the right gutter and reserves no width) so a long body
+    //    scrolls inside the auto-fitted, margin-inset panel. Left AND right
+    //    horizontal margins inset the content from the panel edges. ────────────
     if (st.stage == 2) {
-        ImGui::PushClipRect(conMin, conMax, true);
-        if (tabs[(size_t)st.tab].draw) tabs[(size_t)st.tab].draw(conMin, conMax);
-        ImGui::PopClipRect();
+        // Uniform `margin` inset on all sides: LEFT & TOP via the child position,
+        // BOTTOM via the reduced height. The RIGHT inset is the overlay
+        // scrollbar's own gutter (BeginScroll reserves it inside the child and
+        // floats the grab there — no reserved width), so the scrollbar sits in
+        // the right margin. WindowPadding is zeroed (positioning owns the inset).
+        const ImVec2 childPos(conMin.x + margin, conMin.y + margin);
+        const ImVec2 childSz(std::max(1.0f, (conMax.x - conMin.x) - margin),
+                             std::max(1.0f, (conMax.y - conMin.y) - margin * 2.0f));
+        ImGui::SetCursorScreenPos(childPos);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        UI::BeginScroll("##spContent", childSz, ImGuiChildFlags_None,
+                        ImGuiWindowFlags_NoBackground);
+        const ImVec2 c0 = ImGui::GetCursorScreenPos();
+        const float  y0 = ImGui::GetCursorPosY();   // LOCAL — scroll-independent
+        if (tabs[(size_t)st.tab].draw)
+            tabs[(size_t)st.tab].draw(c0, ImVec2(childPos.x + childSz.x, conMax.y));
+        // Measure the content's natural height (local cursor) for next frame's
+        // auto-fit — independent of the current scroll offset.
+        const float used = ImGui::GetCursorPosY() - y0;
+        UI::EndScroll();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        store->SetFloat(contentHKey, std::max(0.0f, used));
     }
 
     ImGui::PopID();

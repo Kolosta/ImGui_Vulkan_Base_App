@@ -99,85 +99,108 @@ void Application::PropFillsSection(Ink::NodeId id) {
 
         const float thumb = kThumbBase * gs;
 
-        // ── LEFT: the vignette rail (+ the "add" tile) ────────────────────────
-        // A pattern fill's vignette is the REAL pipeline render of the node
-        // (its actual motif/spacing/rotation), minified into the tile; solids
-        // stay plain swatches. Both show a bigger preview on hover-dwell.
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                            ImVec2(ImGui::GetStyle().ItemSpacing.x,
-                                   kRailGap * gs));
+        // ── LEFT: the vignette rail (dynamic drag-reorder + the "add" tile) ───
+        // A pattern fill's vignette is the REAL pipeline render of the node; a
+        // solid stays a plain swatch. Dragging a vignette floats it above the
+        // others (which slide aside) — the modifier-panel behaviour.
+        const float cellH = thumb + kRailGap * gs;
+        const ImVec2 railOrigin = ImGui::GetCursorScreenPos();
         ImGui::BeginGroup();
-        for (std::size_t i = 0; i < style.fills.size(); ++i) {
-            ImGui::PushID((int)i);
-            const Ink::Fill& f = style.fills[i];
-            ImVec2 cmn, cmx;
-            char tid[16];
-            std::snprintf(tid, sizeof tid, "f%d", (int)i);
-            if (pr::ThumbTile(tid, thumb, (int)i == propFillSel_, &cmn, &cmx))
-                propFillSel_ = (int)i;
-            ImTextureID patTex = (ImTextureID)0;
-            if (f.kind == Ink::FillKind::Pattern)
-                patTex = PaintPatternPreview(id, (int)i);
-            if (patTex)
-                ImGui::GetWindowDrawList()->AddImage(patTex, cmn, cmx);
-            else
-                pr::DrawFillSample(ImGui::GetWindowDrawList(), cmn, cmx, f);
-            // Hover-dwell: a bigger sample in a tooltip (like the strokes).
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-                ImGui::PushStyleColor(ImGuiCol_PopupBg,
-                    pr::SafeColor(pr::Tok::S_Color_Background_Layer1,
-                                  ImVec4(0.13f, 0.13f, 0.15f, 1)));
-                ImGui::BeginTooltip();
-                const float big = thumb * 3.2f;
-                const ImVec2 mn = ImGui::GetCursorScreenPos();
-                ImGui::Dummy(ImVec2(big, big));
-                ImDrawList* tdl = ImGui::GetWindowDrawList();
-                tdl->AddRectFilled(mn, ImVec2(mn.x + big, mn.y + big),
-                                   IM_COL32(255, 255, 255, 255));
-                if (patTex)
-                    tdl->AddImage(patTex, mn, ImVec2(mn.x + big, mn.y + big));
-                else
-                    pr::DrawFillSample(tdl, mn, ImVec2(mn.x + big, mn.y + big), f);
-                if (f.kind == Ink::FillKind::Solid) {
-                    const ImVec4 c = pr::ToSrgb(f.paint.color);
-                    ImGui::Text("RGBA %.2f %.2f %.2f %.2f \xC2\xB7 opacity %.2f",
-                                c.x, c.y, c.z, c.w, f.opacity);
-                } else {
-                    ImGui::TextUnformatted("Pattern fill");
+        {
+            const int nF = (int)style.fills.size();
+            pr::VReorder rr("##fillRail", nF, cellH);
+            const int grabbed = rr.Grabbed();
+            for (int i = 0; i < nF; ++i) {
+                ImGui::PushID(i);
+                const Ink::Fill& f = style.fills[(std::size_t)i];
+                const bool isGrab = (i == grabbed);
+                float posY = railOrigin.y + (float)i * cellH + rr.CellOffset(i);
+                if (isGrab) posY = rr.GrabbedScreenY(railOrigin.y);
+                const ImVec2 pos(railOrigin.x, posY);
+                ImVec2 cmn, cmx;
+                char tid[16];
+                std::snprintf(tid, sizeof tid, "f%d", i);
+                const bool clicked =
+                    pr::ThumbTile(tid, thumb, i == propFillSel_, &cmn, &cmx, &pos);
+                rr.HandleCell(i, ImGui::IsItemActivated(), ImGui::IsItemActive(),
+                              railOrigin.y + (float)i * cellH, railOrigin.y);
+                if (clicked && rr.Grabbed() < 0) propFillSel_ = i;
+                ImTextureID patTex = (ImTextureID)0;
+                if (f.kind == Ink::FillKind::Pattern)
+                    patTex = PaintPatternPreview(id, i);
+                if (!isGrab) {
+                    if (patTex)
+                        ImGui::GetWindowDrawList()->AddImage(patTex, cmn, cmx);
+                    else
+                        pr::DrawFillSample(ImGui::GetWindowDrawList(), cmn, cmx, f);
                 }
-                ImGui::EndTooltip();
-                ImGui::PopStyleColor();
-            }
-            // Drag the vignette up/down to reorder the DRAW ORDER of the
-            // stack (a plain click still selects — the swap needs a real
-            // vertical drag past the neighbouring tile). Selection follows
-            // the moved fill; the whole drag folds into ONE undo command.
-            if (ImGui::IsItemActive() &&
-                std::fabs(ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y) >
-                    (thumb + kRailGap * gs) * 0.6f) {
-                const float dy =
-                    ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y;
-                const int nxt = (int)i + (dy < 0.0f ? -1 : 1);
-                if (nxt >= 0 && nxt < (int)style.fills.size()) {
-                    std::swap(style.fills[i], style.fills[(std::size_t)nxt]);
-                    if (propFillSel_ == (int)i) propFillSel_ = nxt;
-                    else if (propFillSel_ == nxt) propFillSel_ = (int)i;
-                    ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
-                    liveApply("Reorder Fills", false);
+                // Hover-dwell preview (only when nothing is being dragged).
+                if (grabbed < 0 &&
+                    ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                    ImGui::PushStyleColor(ImGuiCol_PopupBg,
+                        pr::SafeColor(pr::Tok::S_Color_Background_Layer1,
+                                      ImVec4(0.13f, 0.13f, 0.15f, 1)));
+                    ImGui::BeginTooltip();
+                    const float big = thumb * 3.2f;
+                    const ImVec2 mn = ImGui::GetCursorScreenPos();
+                    ImGui::Dummy(ImVec2(big, big));
+                    ImDrawList* tdl = ImGui::GetWindowDrawList();
+                    tdl->AddRectFilled(mn, ImVec2(mn.x + big, mn.y + big),
+                                       IM_COL32(255, 255, 255, 255));
+                    if (patTex)
+                        tdl->AddImage(patTex, mn, ImVec2(mn.x + big, mn.y + big));
+                    else
+                        pr::DrawFillSample(tdl, mn, ImVec2(mn.x + big, mn.y + big), f);
+                    if (f.kind == Ink::FillKind::Solid) {
+                        const ImVec4 c = pr::ToSrgb(f.paint.color);
+                        ImGui::Text("RGBA %.2f %.2f %.2f %.2f \xC2\xB7 opacity %.2f",
+                                    c.x, c.y, c.z, c.w, f.opacity);
+                    } else {
+                        ImGui::TextUnformatted("Pattern fill");
+                    }
+                    ImGui::EndTooltip();
+                    ImGui::PopStyleColor();
                 }
+                ImGui::PopID();
             }
-            if (ImGui::IsItemDeactivated())
+            // The grabbed tile's sample on top (foreground draw list).
+            if (grabbed >= 0 && grabbed < nF) {
+                const Ink::Fill& gf = style.fills[(std::size_t)grabbed];
+                const float posY = rr.GrabbedScreenY(railOrigin.y);
+                const float ins = 3.0f * gs;
+                const ImVec2 gmn(railOrigin.x + ins, posY + ins);
+                const ImVec2 gmx(railOrigin.x + thumb - ins, posY + thumb - ins);
+                ImDrawList* fdl = ImGui::GetForegroundDrawList();
+                ImTextureID patTex = gf.kind == Ink::FillKind::Pattern
+                                         ? PaintPatternPreview(id, grabbed)
+                                         : (ImTextureID)0;
+                if (patTex) fdl->AddImage(patTex, gmn, gmx);
+                else        pr::DrawFillSample(fdl, gmn, gmx, gf);
+            }
+            ImGui::SetCursorScreenPos(
+                ImVec2(railOrigin.x, railOrigin.y + (float)nF * cellH));
+            if (pr::ThumbAddTile(thumb)) {
+                Ink::Fill f; f.paint.color = pr::ToLinear(edit_.defaultFill);
+                style.fills.push_back(f);
+                propFillSel_ = (int)style.fills.size() - 1;
+                structural = true; structLabel = "Add Fill";
+            }
+            pr::VReorder::Move mv = rr.Commit();
+            if (mv.from >= 0 && mv.to >= 0 && mv.from != mv.to &&
+                mv.from < (int)style.fills.size() &&
+                mv.to < (int)style.fills.size()) {
+                Ink::Fill moved = style.fills[(std::size_t)mv.from];
+                style.fills.erase(style.fills.begin() + mv.from);
+                style.fills.insert(style.fills.begin() + mv.to, moved);
+                if (propFillSel_ == mv.from) propFillSel_ = mv.to;
+                else if (mv.from < mv.to && propFillSel_ > mv.from &&
+                         propFillSel_ <= mv.to) --propFillSel_;
+                else if (mv.to < mv.from && propFillSel_ >= mv.to &&
+                         propFillSel_ < mv.from) ++propFillSel_;
                 liveApply("Reorder Fills", true);
-            ImGui::PopID();
-        }
-        if (pr::ThumbAddTile(thumb)) {
-            Ink::Fill f; f.paint.color = pr::ToLinear(edit_.defaultFill);
-            style.fills.push_back(f);
-            propFillSel_ = (int)style.fills.size() - 1;
-            structural = true; structLabel = "Add Fill";
+            }
         }
         ImGui::EndGroup();
-        ImGui::PopStyleVar();
         ImGui::SameLine(0.0f, 8.0f * gs);
 
         // ── RIGHT: the selected fill's properties ─────────────────────────────
@@ -497,73 +520,101 @@ void Application::PropStrokesSection(Ink::NodeId id) {
 
         const float thumb = kThumbBase * gs;
 
-        // ── LEFT: the vignette rail (line samples + tooltip preview) ──────────
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
-                            ImVec2(ImGui::GetStyle().ItemSpacing.x,
-                                   kRailGap * gs));
+        // ── LEFT: the vignette rail (line samples, dynamic drag-reorder) ──────
+        // Fixed-height cells stacked vertically; dragging a vignette floats it
+        // with the cursor above the others, which slide out of its way (the
+        // modifier-panel behaviour). Placement is absolute so the grabbed tile
+        // can move independently of the flow.
+        const float cellH = thumb + kRailGap * gs;
+        const ImVec2 railOrigin = ImGui::GetCursorScreenPos();
         ImGui::BeginGroup();
-        for (std::size_t i = 0; i < style.strokes.size(); ++i) {
-            ImGui::PushID((int)(100 + i));
-            ImVec2 cmn, cmx;
-            char tid[16];
-            std::snprintf(tid, sizeof tid, "s%d", (int)i);
-            if (pr::ThumbTile(tid, thumb, (int)i == propStrokeSel_, &cmn, &cmx))
-                propStrokeSel_ = (int)i;
-            pr::DrawStrokeSample(ImGui::GetWindowDrawList(), cmn, cmx,
-                                 style.strokes[i]);
-            // Hover-dwell: a BIGGER sample in a tooltip (Blender-style).
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
-                ImGui::PushStyleColor(ImGuiCol_PopupBg,
-                    pr::SafeColor(pr::Tok::S_Color_Background_Layer1,
-                                  ImVec4(0.13f, 0.13f, 0.15f, 1)));
-                ImGui::BeginTooltip();
-                const ImVec2 sz(thumb * 4.0f, thumb * 1.6f);
-                const ImVec2 mn = ImGui::GetCursorScreenPos();
-                ImGui::Dummy(sz);
-                ImDrawList* tdl = ImGui::GetWindowDrawList();
-                tdl->AddRectFilled(mn, ImVec2(mn.x + sz.x, mn.y + sz.y),
-                                   IM_COL32(255, 255, 255, 255));
-                pr::DrawStrokeSample(tdl, mn,
-                                     ImVec2(mn.x + sz.x, mn.y + sz.y),
-                                     style.strokes[i]);
-                ImGui::Text("%.2f %s%s", style.strokes[i].width,
-                            style.strokes[i].widthSpace ==
-                                    Ink::WidthSpace::Viewport
-                                ? "px" : "doc",
-                            style.strokes[i].dashPattern.empty() ? ""
-                                                                 : " \xC2\xB7 dashed");
-                ImGui::EndTooltip();
-                ImGui::PopStyleColor();
-            }
-            // Drag the vignette up/down to reorder the stack's draw order
-            // (click still selects; the swap needs a real vertical drag).
-            if (ImGui::IsItemActive() &&
-                std::fabs(ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y) >
-                    (thumb + kRailGap * gs) * 0.6f) {
-                const float dy =
-                    ImGui::GetMouseDragDelta(ImGuiMouseButton_Left).y;
-                const int nxt = (int)i + (dy < 0.0f ? -1 : 1);
-                if (nxt >= 0 && nxt < (int)style.strokes.size()) {
-                    std::swap(style.strokes[i], style.strokes[(std::size_t)nxt]);
-                    if (propStrokeSel_ == (int)i) propStrokeSel_ = nxt;
-                    else if (propStrokeSel_ == nxt) propStrokeSel_ = (int)i;
-                    ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
-                    liveApply("Reorder Strokes", false);
+        {
+            const int nS = (int)style.strokes.size();
+            pr::VReorder rr("##strokeRail", nS, cellH);
+            const int grabbed = rr.Grabbed();
+            for (int i = 0; i < nS; ++i) {
+                ImGui::PushID(100 + i);
+                const bool isGrab = (i == grabbed);
+                float posY = railOrigin.y + (float)i * cellH + rr.CellOffset(i);
+                if (isGrab) posY = rr.GrabbedScreenY(railOrigin.y);
+                const ImVec2 pos(railOrigin.x, posY);
+                ImVec2 cmn, cmx;
+                char tid[16];
+                std::snprintf(tid, sizeof tid, "s%d", i);
+                const bool clicked =
+                    pr::ThumbTile(tid, thumb, i == propStrokeSel_, &cmn, &cmx, &pos);
+                rr.HandleCell(i, ImGui::IsItemActivated(), ImGui::IsItemActive(),
+                              railOrigin.y + (float)i * cellH, railOrigin.y);
+                // A plain click (no drag this hold) selects.
+                if (clicked && rr.Grabbed() < 0) propStrokeSel_ = i;
+                // The grabbed tile's sample is drawn LAST (foreground) so it sits
+                // over its neighbours; the rest draw inline.
+                if (!isGrab)
+                    pr::DrawStrokeSample(ImGui::GetWindowDrawList(), cmn, cmx,
+                                         style.strokes[(std::size_t)i]);
+                // Hover-dwell preview (only when nothing is being dragged).
+                if (grabbed < 0 &&
+                    ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
+                    ImGui::PushStyleColor(ImGuiCol_PopupBg,
+                        pr::SafeColor(pr::Tok::S_Color_Background_Layer1,
+                                      ImVec4(0.13f, 0.13f, 0.15f, 1)));
+                    ImGui::BeginTooltip();
+                    const ImVec2 sz(thumb * 4.0f, thumb * 1.6f);
+                    const ImVec2 mn = ImGui::GetCursorScreenPos();
+                    ImGui::Dummy(sz);
+                    ImDrawList* tdl = ImGui::GetWindowDrawList();
+                    tdl->AddRectFilled(mn, ImVec2(mn.x + sz.x, mn.y + sz.y),
+                                       IM_COL32(255, 255, 255, 255));
+                    pr::DrawStrokeSample(tdl, mn,
+                                         ImVec2(mn.x + sz.x, mn.y + sz.y),
+                                         style.strokes[(std::size_t)i]);
+                    ImGui::Text("%.2f %s%s", style.strokes[(std::size_t)i].width,
+                                style.strokes[(std::size_t)i].widthSpace ==
+                                        Ink::WidthSpace::Viewport
+                                    ? "px" : "doc",
+                                style.strokes[(std::size_t)i].dashPattern.empty()
+                                    ? "" : " \xC2\xB7 dashed");
+                    ImGui::EndTooltip();
+                    ImGui::PopStyleColor();
                 }
+                ImGui::PopID();
             }
-            if (ImGui::IsItemDeactivated())
+            // Draw the grabbed tile's sample on top (foreground draw list).
+            if (grabbed >= 0 && grabbed < nS) {
+                const float posY = rr.GrabbedScreenY(railOrigin.y);
+                const float ins = 3.0f * gs;
+                const ImVec2 gmn(railOrigin.x + ins, posY + ins);
+                const ImVec2 gmx(railOrigin.x + thumb - ins, posY + thumb - ins);
+                pr::DrawStrokeSample(ImGui::GetForegroundDrawList(), gmn, gmx,
+                                     style.strokes[(std::size_t)grabbed]);
+            }
+            // Reserve the rail's flow footprint (nS cells), then the "+" tile.
+            ImGui::SetCursorScreenPos(
+                ImVec2(railOrigin.x, railOrigin.y + (float)nS * cellH));
+            if (pr::ThumbAddTile(thumb)) {
+                Ink::Stroke s; s.paint.color = pr::ToLinear(edit_.defaultStroke);
+                s.width = edit_.defaultStrokeWidth;
+                style.strokes.push_back(s);
+                propStrokeSel_ = (int)style.strokes.size() - 1;
+                structural = true; structLabel = "Add Stroke";
+            }
+            // Apply a committed drag move (reorder the stack + follow selection).
+            pr::VReorder::Move mv = rr.Commit();
+            if (mv.from >= 0 && mv.to >= 0 && mv.from != mv.to &&
+                mv.from < (int)style.strokes.size() &&
+                mv.to < (int)style.strokes.size()) {
+                Ink::Stroke moved = style.strokes[(std::size_t)mv.from];
+                style.strokes.erase(style.strokes.begin() + mv.from);
+                style.strokes.insert(style.strokes.begin() + mv.to, moved);
+                if (propStrokeSel_ == mv.from) propStrokeSel_ = mv.to;
+                else if (mv.from < mv.to && propStrokeSel_ > mv.from &&
+                         propStrokeSel_ <= mv.to) --propStrokeSel_;
+                else if (mv.to < mv.from && propStrokeSel_ >= mv.to &&
+                         propStrokeSel_ < mv.from) ++propStrokeSel_;
                 liveApply("Reorder Strokes", true);
-            ImGui::PopID();
-        }
-        if (pr::ThumbAddTile(thumb)) {
-            Ink::Stroke s; s.paint.color = pr::ToLinear(edit_.defaultStroke);
-            s.width = edit_.defaultStrokeWidth;
-            style.strokes.push_back(s);
-            propStrokeSel_ = (int)style.strokes.size() - 1;
-            structural = true; structLabel = "Add Stroke";
+            }
         }
         ImGui::EndGroup();
-        ImGui::PopStyleVar();
         ImGui::SameLine(0.0f, 8.0f * gs);
 
         // ── RIGHT: the selected stroke's properties ───────────────────────────
@@ -677,11 +728,10 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     liveApply("Dash Offset", true);
             }
 
-            // ── Marks (docs/Ink/IOF_CORE_PLAN.md Phase A — the generic model):
-            //    a mark is a point on the line that re-phases the dash run
-            //    (Neutral/Dash/Gap) and carries a list of OBJECTS (SVG-marker
-            //    shapes or node instances, added or subtracted). The line-mark
-            //    tool drops marks on the canvas; this panel edits them. ───────
+            // Line MARKS are no longer edited here — they moved to the viewport
+            // "Marks" side-panel tab (visible in Line-Mark mode). Select one or
+            // more marks on the canvas and edit the active one there.
+#if 0
             pr::GroupGap();
             {
                 const int strokeIdx = propStrokeSel_;
@@ -1103,6 +1153,7 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     structural = true; structLabel = "Add Dash Tick";
                 }
             }
+#endif
 
             pr::GroupGap();
             pr::ControlColumn();
@@ -1123,6 +1174,316 @@ void Application::PropStrokesSection(Ink::NodeId id) {
         }
     }
     UI::EndPanel();
+}
+
+// ── Single-mark editor (viewport "Marks" side-panel tab) ────────────────────
+// The full editor for ONE mark: position / side / phase and its object list
+// (shapes, gap + start/end markers, modes, colours). Edits go through a style
+// COPY committed as one undo command, mirroring PropStrokesSection.
+void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(node);
+    if (!n || strokeIdx < 0 || strokeIdx >= (int)n->style.strokes.size()) return;
+    const auto& marks0 = n->style.strokes[(std::size_t)strokeIdx].marks;
+    if (markIdx < 0 || markIdx >= (int)marks0.size()) return;
+
+    const Ink::NodeId id = node;
+    Ink::Style style = n->style;
+    Ink::Stroke& s = style.strokes[(std::size_t)strokeIdx];
+    Ink::StrokeMark& m = s.marks[(std::size_t)markIdx];
+    bool structural = false;
+    const char* structLabel = "Edit Mark";
+
+    auto liveApply = [&](const char* releaseLabel, bool released) {
+        if (!propEditActive_) {
+            propEditActive_ = true; propEditNode_ = id;
+            propEditBefore_ = n->style;
+        }
+        doc.SetStyle(id, style);
+        if (released && propEditActive_ && propEditNode_ == id) {
+            CommitStyleEdit(id, propEditBefore_, releaseLabel);
+            propEditActive_ = false;
+        }
+    };
+
+    static const char* kBlend[] = {
+        "Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
+        "Color Dodge", "Color Burn", "Hard Light", "Soft Light", "Difference",
+        "Exclusion", "Erase" };
+    static const char* kShape[] = {
+        "Circle", "Rectangle", "Diamond", "Instance", "Gap" };
+
+    // Position along the line.
+    float t = (float)m.t;
+    if (pr::DragFloat("Position", &t, 0.002f, 0.0f, 1.0f, 3)) {
+        m.t = t; liveApply("Mark Position", false);
+    }
+    if (ImGui::IsItemDeactivatedAfterEdit()) liveApply("Mark Position", true);
+
+    // Side + distance.
+    static const char* kSide[] = { "Center", "Left", "Right" };
+    int sd = (int)m.side;
+    if (pr::ButtonGroupRow("Side", kSide, 3, &sd)) {
+        m.side = (Ink::MarkSide)sd; structural = true; structLabel = "Mark Side";
+    }
+    if (m.side != Ink::MarkSide::Center) {
+        float off = (float)m.offset;
+        if (pr::DragFloat("Distance", &off, m.offsetPercent ? 0.5f : 0.1f,
+                          -100000.0f, 100000.0f, 2, m.offsetPercent ? "%" : "")) {
+            m.offset = off; liveApply("Mark Distance", false);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit()) liveApply("Mark Distance", true);
+        static const char* kUnit[] = { "%", "px" };
+        int un = m.offsetPercent ? 0 : 1;
+        if (pr::ButtonGroupRow("Unit", kUnit, 2, &un)) {
+            const bool toPercent = (un == 0);
+            if (toPercent != m.offsetPercent) {
+                const double w = s.width > 1e-9 ? s.width : 1.0;
+                if (toPercent) m.offset = m.offset / w * 100.0;
+                else           m.offset = m.offset * 0.01 * w;
+                m.offsetPercent = toPercent;
+                structural = true; structLabel = "Mark Unit";
+            }
+        }
+    }
+
+    // Dash phase.
+    static const char* kPhase[] = { "Neutral", "Dash", "Gap" };
+    int ph = (int)m.phase;
+    if (pr::ButtonGroupRow("Dash phase", kPhase, 3, &ph)) {
+        m.phase = (Ink::MarkPhase)ph; structural = true; structLabel = "Mark Phase";
+    }
+
+    // ── Objects on this mark ──────────────────────────────────────────────────
+    int removeObj = -1;
+    for (std::size_t oi = 0; oi < m.objects.size(); ++oi) {
+        Ink::MarkObject& o = m.objects[oi];
+        ImGui::PushID((int)(50 + oi));
+        int shp = (int)o.shape;
+        if (pr::DropdownRow("Object", kShape, 5, &shp)) {
+            const Ink::MarkShape ns = (Ink::MarkShape)shp;
+            if ((ns == Ink::MarkShape::Rectangle || ns == Ink::MarkShape::Gap) &&
+                o.shape != ns && o.sizePercent && std::abs(o.size - 100.0) < 1e-6)
+                o.size = 200.0;
+            o.bend = Ink::DefaultBendFor(ns);
+            o.shape = ns;
+            structural = true; structLabel = "Mark Object";
+        }
+        const bool isGap = o.shape == Ink::MarkShape::Gap;
+        if (isGap) {
+            float len = (float)o.size;
+            if (pr::DragFloat("Length", &len, o.sizePercent ? 1.0f : 0.1f, 0.0f,
+                              1000000.0f, 2, o.sizePercent ? "%" : "")) {
+                o.size = len; structural = true; structLabel = "Gap Length";
+            }
+            static const char* kUnitG[] = { "%", "px" };
+            const double sw = s.width > 1e-9 ? s.width : 1.0;
+            int un = o.sizePercent ? 0 : 1;
+            if (pr::ButtonGroupRow("Unit", kUnitG, 2, &un)) {
+                const bool toPct = (un == 0);
+                if (toPct != o.sizePercent) {
+                    o.size = toPct ? o.size / sw * 100.0 : o.size * 0.01 * sw;
+                    o.sizePercent = toPct;
+                    structural = true; structLabel = "Gap Unit";
+                }
+            }
+            static const char* kCap[] = { "Butt", "Round", "Square" };
+            int cs = (int)o.gapStart;
+            if (pr::DropdownRow("Start cap", kCap, 3, &cs)) {
+                o.gapStart = (Ink::GapCap)cs; structural = true; structLabel = "Gap Cap";
+            }
+            int ce = (int)o.gapEnd;
+            if (pr::DropdownRow("End cap", kCap, 3, &ce)) {
+                o.gapEnd = (Ink::GapCap)ce; structural = true; structLabel = "Gap Cap";
+            }
+            bool cut = o.gapCutsObjects;
+            if (pr::CheckRow("Cut objects", &cut)) {
+                o.gapCutsObjects = cut; structural = true;
+                structLabel = "Gap Cut Objects";
+            }
+            auto markerList = [&](const char* label,
+                                  std::vector<Ink::MarkObject>& lst) {
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                    pr::SafeColor(pr::Tok::S_Color_Text_Subtle,
+                                  ImVec4(0.6f, 0.6f, 0.6f, 1)));
+                ImGui::Text("%s (%d)", label, (int)lst.size());
+                ImGui::PopStyleColor();
+                int rm = -1;
+                for (std::size_t k = 0; k < lst.size(); ++k) {
+                    ImGui::PushID((int)(400 + k));
+                    PropMarkObjectCompact(lst[k], s.width, doc, id, structural,
+                                          structLabel);
+                    pr::ControlColumn();
+                    if (ImGui::SmallButton("Remove")) rm = (int)k;
+                    ImGui::Separator();
+                    ImGui::PopID();
+                }
+                if (rm >= 0) {
+                    lst.erase(lst.begin() + rm);
+                    structural = true; structLabel = "Gap Marker";
+                }
+                pr::ControlColumn();
+                if (ImGui::SmallButton("Add")) {
+                    lst.push_back(Ink::MarkObject{});
+                    structural = true; structLabel = "Gap Marker";
+                }
+            };
+            pr::GroupGap();
+            ImGui::PushID("gapStart");
+            markerList("Start markers", o.gapStartObjects);
+            ImGui::PopID();
+            pr::GroupGap();
+            ImGui::PushID("gapEnd");
+            markerList("End markers", o.gapEndObjects);
+            ImGui::PopID();
+            pr::GroupGap();
+            pr::ControlColumn();
+            if (ImGui::SmallButton("Remove object")) removeObj = (int)oi;
+            ImGui::Separator();
+            ImGui::PopID();
+            continue;
+        }
+        static const char* kMode[] = { "Fusion", "Blend", "Cut" };
+        int md = (int)o.mode;
+        if (pr::ButtonGroupRow("Mode", kMode, 3, &md)) {
+            o.mode = (Ink::MarkObjectMode)md; structural = true;
+            structLabel = "Mark Object Mode";
+        }
+        if (o.shape == Ink::MarkShape::Instance) {
+            bool pickReq = false;
+            if (pr::NodePickerRow("Node", doc, &o.nodeRef, id, true, false, &pickReq)) {
+                structural = true; structLabel = "Mark Instance";
+            }
+            if (pickReq) {
+                const std::size_t ooi = oi; const int sIdx = strokeIdx;
+                const int mmi = markIdx;
+                BeginObjectPick(nullptr,
+                    [this, id, sIdx, mmi, ooi](Ink::NodeId picked) {
+                        if (!project_.document) return;
+                        const Ink::Node* nn = project_.document->Find(id);
+                        if (!nn || sIdx < 0 ||
+                            sIdx >= (int)nn->style.strokes.size()) return;
+                        Ink::Style before = nn->style, after = before;
+                        auto& mks = after.strokes[(std::size_t)sIdx].marks;
+                        if ((std::size_t)mmi >= mks.size() ||
+                            ooi >= mks[(std::size_t)mmi].objects.size()) return;
+                        mks[(std::size_t)mmi].objects[ooi].nodeRef = picked;
+                        project_.document->SetStyle(id, after);
+                        CommitStyleEdit(id, before, "Mark Instance");
+                    });
+            }
+            float sc = (float)o.size;
+            if (pr::DragFloat("Scale", &sc, o.sizePercent ? 1.0f : 0.01f, 0.0f,
+                              1000000.0f, 2, o.sizePercent ? "%" : "\xC3\x97")) {
+                o.size = sc; liveApply("Mark Scale", false);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) liveApply("Mark Scale", true);
+            static const char* kUnit2[] = { "%", "\xC3\x97" };
+            int un2 = o.sizePercent ? 0 : 1;
+            if (pr::ButtonGroupRow("Unit", kUnit2, 2, &un2)) {
+                const bool toPct = (un2 == 0);
+                if (toPct != o.sizePercent) {
+                    o.size = toPct ? o.size * 100.0 : o.size * 0.01;
+                    o.sizePercent = toPct; structural = true; structLabel = "Mark Unit";
+                }
+            }
+        } else {
+            const double sw = s.width > 1e-9 ? s.width : 1.0;
+            auto sizeField = [&](const char* label, double* v) {
+                float f = (float)*v;
+                if (pr::DragFloat(label, &f, o.sizePercent ? 1.0f : 0.1f, 0.0f,
+                                  1000000.0f, 2, o.sizePercent ? "%" : "")) {
+                    *v = f; liveApply("Mark Object Size", false);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    liveApply("Mark Object Size", true);
+            };
+            if (o.shape == Ink::MarkShape::Circle) sizeField("Radius", &o.size);
+            else if (o.shape == Ink::MarkShape::Rectangle) {
+                sizeField("Length", &o.size); sizeField("Width", &o.width);
+            } else sizeField("Diagonal", &o.size);
+            static const char* kUnit[] = { "%", "px" };
+            int un = o.sizePercent ? 0 : 1;
+            if (pr::ButtonGroupRow("Unit", kUnit, 2, &un)) {
+                const bool toPct = (un == 0);
+                if (toPct != o.sizePercent) {
+                    if (toPct) { o.size = o.size / sw * 100.0; o.width = o.width / sw * 100.0; }
+                    else       { o.size = o.size * 0.01 * sw; o.width = o.width * 0.01 * sw; }
+                    o.sizePercent = toPct; structural = true; structLabel = "Mark Unit";
+                }
+            }
+        }
+        if (o.shape != Ink::MarkShape::Circle) {
+            float rot = (float)(o.rotation * 180.0 / 3.14159265358979);
+            if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f, 1, "\xC2\xB0")) {
+                o.rotation = rot * 3.14159265358979 / 180.0;
+                liveApply("Mark Object Rotation", false);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit())
+                liveApply("Mark Object Rotation", true);
+        }
+        {
+            float ao = (float)o.alongOffset;
+            if (pr::DragFloat("Along", &ao, o.sizePercent ? 1.0f : 0.1f,
+                              -100000.0f, 100000.0f, 2, o.sizePercent ? "%" : "")) {
+                o.alongOffset = ao; liveApply("Mark Along", false);
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) liveApply("Mark Along", true);
+        }
+        {
+            static const char* kBend[] = { "Hard", "Bend", "Follow" };
+            int bd = (int)o.bend;
+            if (pr::ButtonGroupRow("Shape", kBend, 3, &bd)) {
+                o.bend = (Ink::MarkBend)bd; structural = true; structLabel = "Mark Bend";
+            }
+        }
+        if (o.mode == Ink::MarkObjectMode::Blend) {
+            int bl = std::min((int)o.blend, 12);
+            if (pr::DropdownRow("Blend mode", kBlend, 13, &bl)) {
+                o.blend = (Ink::BlendMode)bl; structural = true; structLabel = "Mark Blend";
+            }
+            static const char* kOrder[] = { "Behind", "Front" };
+            int fr = o.front ? 1 : 0;
+            if (pr::ButtonGroupRow("Order", kOrder, 2, &fr)) {
+                o.front = (fr == 1); structural = true; structLabel = "Mark Order";
+            }
+        }
+        if (o.shape != Ink::MarkShape::Instance &&
+            o.mode == Ink::MarkObjectMode::Blend) {
+            bool inh = o.useStrokeColor;
+            if (pr::CheckRow("Stroke colour", &inh)) {
+                o.useStrokeColor = inh; structural = true; structLabel = "Mark Colour";
+            }
+            if (!o.useStrokeColor) {
+                bool rel = false;
+                if (pr::ColorRow("Colour", &o.color, true, &rel))
+                    liveApply("Mark Colour", false);
+                if (rel) liveApply("Mark Colour", true);
+            }
+        } else if (o.mode == Ink::MarkObjectMode::Fusion && !o.useStrokeColor) {
+            o.useStrokeColor = true; structural = true; structLabel = "Mark Colour";
+        }
+        pr::ControlColumn();
+        if (ImGui::SmallButton("Remove object")) removeObj = (int)oi;
+        ImGui::Separator();
+        ImGui::PopID();
+    }
+    if (removeObj >= 0) {
+        m.objects.erase(m.objects.begin() + removeObj);
+        structural = true; structLabel = "Remove Mark Object";
+    }
+    pr::ControlColumn();
+    if (ImGui::SmallButton("Add object")) {
+        m.objects.push_back(Ink::MarkObject{});
+        structural = true; structLabel = "Add Mark Object";
+    }
+
+    if (structural) {
+        const Ink::Style before = n->style;
+        doc.SetStyle(id, style);
+        CommitStyleEdit(id, before, structLabel);
+    }
 }
 
 } // namespace App

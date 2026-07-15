@@ -1393,7 +1393,7 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_CaptureField_Padding, TokenLevel::Component, Tok::S_Config_ItemSpacing, "capture field padding"));
     put(Float(Tok::C_CaptureField_MinWidth, TokenLevel::Component, 180.f, "capture field min width", CS::Range(80.0,600.0,"px")));
     put(Float(Tok::C_CaptureField_Height, TokenLevel::Component, 28.f, "capture field height", CS::Range(20.0,64.0,"px")));
-    put(Ref(Tok::C_Toggle_Background, TokenLevel::Component, Tok::S_Color_Background_Layer2, "toggle bg off"));
+    put(Ref(Tok::C_Toggle_Background, TokenLevel::Component, Tok::S_Background_App_Frame, "toggle bg off (matches input/frame surface)"));
     put(Ref(Tok::C_Toggle_BackgroundHover, TokenLevel::Component, Tok::S_Color_Background_Layer1, "toggle bg hover"));
     put(Ref(Tok::C_Toggle_BackgroundSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "toggle bg on"));
     put(Ref(Tok::C_Toggle_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "toggle border off"));
@@ -1493,6 +1493,7 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Color(Tok::P_Color_Gray_875, TokenLevel::Primitive, Hex(0x232323), "gray 875"));
     put(Float(Tok::C_ZoneTab_Gap, TokenLevel::Component, 2.f, "gap between zone tabs", CS::Range(0.0,24.0,"px")));
     put(Vec2(Tok::C_ZoneTab_Padding, TokenLevel::Component, {8.f, 2.f}, "zone tab inset (x=side, y=vertical)", PadXY()));
+    put(Float(Tok::C_SidePanel_Margin, TokenLevel::Component, 8.f, "side-panel content inset (uniform, all four sides)", CS::Range(0.0,32.0,"px")));
     // Tab bar sits a notch DARKER than the menu bar. The ACTIVE tab matches the
     // menu-bar colour so it visually merges with it; inactive tabs match the
     // bar; hover is a hair lighter than the bar but still darker than the menu

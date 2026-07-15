@@ -130,9 +130,14 @@ void Application::BeginPenDraw(const char* kind) {
     penSpline_ = !std::strcmp(kind, "nurbs") ? Ink::SplineType::Nurbs
                : !std::strcmp(kind, "poly")  ? Ink::SplineType::Poly
                                              : Ink::SplineType::Bezier;
+    // "free" = a custom AREA (Bézier spline, keeps a fill); the plain curve
+    // kinds are strokes only.
+    penIsArea_   = !std::strcmp(kind, "free");
+    if (penIsArea_) penSpline_ = Ink::SplineType::Bezier;
     penActive_   = true;
     penDragging_ = false;
-    penNode_     = Ink::kNullNode;   // created on the first click
+    penHasPending_ = false;
+    penNode_     = Ink::kNullNode;   // created on the first frozen anchor
     LogInfoAction("Pen", "Click to place anchors; drag pulls handles; "
                          "Enter finishes, Esc cancels");
 }
@@ -140,11 +145,28 @@ void Application::BeginPenDraw(const char* kind) {
 void Application::CommitPenDraw(bool keep) {
     penActive_ = false;
     penDragging_ = false;
-    if (!project_.document || penNode_ == Ink::kNullNode) {
-        penNode_ = Ink::kNullNode;
-        return;
-    }
+    if (!project_.document) { penNode_ = Ink::kNullNode; penHasPending_ = false; return; }
     Ink::Document& doc = *project_.document;
+    // Freeze the pending anchor into the node (unless we are cancelling) so the
+    // last placed point is part of the finished object.
+    if (keep && penHasPending_) {
+        if (penNode_ == Ink::kNullNode && !doc.Pages().empty()) {
+            Ink::PathData p; Ink::Subpath sp; sp.spline = penSpline_;
+            p.subpaths.push_back(std::move(sp));
+            Ink::Style ps = DefaultStyle();
+            if (!penIsArea_) ps.fills.clear();
+            penNode_ = doc.AddPath(doc.Pages().front().id, std::move(p),
+                                   std::move(ps), penIsArea_ ? "Free" : "Bézier");
+        }
+        if (const Ink::Node* pn = doc.Find(penNode_);
+            pn && !pn->path.subpaths.empty()) {
+            Ink::PathData p = pn->path;
+            p.subpaths.front().anchors.push_back(penPending_);
+            doc.SetPath(penNode_, p);
+        }
+    }
+    penHasPending_ = false;
+    if (penNode_ == Ink::kNullNode) return;
     const Ink::Node* n = doc.Find(penNode_);
     const bool tooShort = !n || n->path.Empty();
     if (!keep || tooShort) {
@@ -187,86 +209,123 @@ bool Application::HandlePenInput(EditorState& st, const ViewCam& cam,
     }
     const Ink::DVec2 docPos = cam.ScreenToDoc(io.MousePos.x, io.MousePos.y);
 
-    // Backspace drops the last anchor (removing the node when empty).
-    if (ImGui::IsKeyPressed(ImGuiKey_Backspace) &&
-        penNode_ != Ink::kNullNode) {
+    // SHIFT engages follow-curve mode: the actual tracing (diamond, preview and
+    // the click that freezes a traced piece) runs in the overlay phase, where the
+    // overlay list is available (UpdatePenFollowCurve). The pen must NOT also
+    // place a free point on that click, so it yields all placement while Shift is
+    // held — the pen only traces along curves in follow mode.
+    if (io.KeyShift) { penDragging_ = false; return true; }
+
+    // Ensures the pen node exists (created lazily on the first frozen anchor).
+    auto ensureNode = [&]() -> bool {
+        if (penNode_ != Ink::kNullNode) return true;
+        if (doc.Pages().empty()) return false;
+        Ink::PathData p; Ink::Subpath sp; sp.spline = penSpline_;
+        p.subpaths.push_back(std::move(sp));
+        Ink::Style ps = DefaultStyle();
+        if (!penIsArea_) ps.fills.clear();   // a curve has no fill
+        penNode_ = doc.AddPath(doc.Pages().front().id, std::move(p), std::move(ps),
+                               penIsArea_ ? "Free"
+                               : penSpline_ == Ink::SplineType::Nurbs ? "NURBS Path"
+                               : penSpline_ == Ink::SplineType::Poly ? "Poly Line"
+                                                                     : "Bézier");
+        return true;
+    };
+    // Push the pending anchor into the node (freeze it — becomes opaque).
+    auto freezePending = [&]() {
+        if (!penHasPending_ || !ensureNode()) return;
         const Ink::Node* n = doc.Find(penNode_);
-        if (n && !n->path.subpaths.empty()) {
-            Ink::PathData p = n->path;
-            auto& an = p.subpaths.front().anchors;
-            if (!an.empty()) an.pop_back();
-            if (an.empty()) {
-                doc.Remove(penNode_);
-                penNode_ = Ink::kNullNode;
-            } else {
-                doc.SetPath(penNode_, p);
+        if (!n || n->path.subpaths.empty()) return;
+        Ink::PathData p = n->path;
+        p.subpaths.front().anchors.push_back(penPending_);
+        doc.SetPath(penNode_, p);
+        penHasPending_ = false;
+    };
+
+    // Backspace drops the last point (the pending, else the last frozen anchor).
+    if (ImGui::IsKeyPressed(ImGuiKey_Backspace)) {
+        if (penHasPending_) { penHasPending_ = false; return true; }
+        if (penNode_ != Ink::kNullNode) {
+            const Ink::Node* n = doc.Find(penNode_);
+            if (n && !n->path.subpaths.empty()) {
+                Ink::PathData p = n->path;
+                auto& an = p.subpaths.front().anchors;
+                if (!an.empty()) {
+                    // The last frozen anchor becomes the pending again (editable).
+                    penPending_ = an.back(); penHasPending_ = true;
+                    an.pop_back();
+                }
+                if (an.empty()) { doc.Remove(penNode_); penNode_ = Ink::kNullNode; }
+                else            doc.SetPath(penNode_, p);
             }
         }
         return true;
     }
 
-    // Pulling the freshly placed anchor's handles (Bézier only).
+    // Dragging the pending anchor's handles (Bézier only): the pending is the
+    // point just placed and is kept OUT of the node so its segment renders as a
+    // TRANSLUCENT preview in the overlay. On RELEASE the pending is FROZEN into
+    // the node (the segment becomes the solid, real stroke). Poly/NURBS take no
+    // handles, so their point freezes immediately (no drag preview needed).
     if (penDragging_) {
-        if (penNode_ != Ink::kNullNode &&
-            penSpline_ == Ink::SplineType::Bezier) {
-            const Ink::Node* n = doc.Find(penNode_);
-            if (n && !n->path.subpaths.empty() &&
-                !n->path.subpaths.front().anchors.empty()) {
-                Ink::PathData p = n->path;
-                Ink::Anchor& a = p.subpaths.front().anchors.back();
-                const Ink::DVec2 d{ docPos.x - a.pos.x, docPos.y - a.pos.y };
-                const bool has = std::abs(d.x) + std::abs(d.y) > 1e-9;
-                a.out = d;
-                a.in  = { -d.x, -d.y };
-                a.hasIn = a.hasOut = has;
-                a.kind  = Ink::AnchorKind::Symmetric;
-                doc.SetPath(penNode_, p);
-            }
+        if (penHasPending_ && penSpline_ == Ink::SplineType::Bezier) {
+            const Ink::DVec2 d{ docPos.x - penPending_.pos.x,
+                                docPos.y - penPending_.pos.y };
+            const bool has = std::abs(d.x) + std::abs(d.y) > 1e-9;
+            penPending_.out = d;
+            penPending_.in  = { -d.x, -d.y };
+            penPending_.hasIn = penPending_.hasOut = has;
+            penPending_.kind  = Ink::AnchorKind::Symmetric;
         }
-        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) penDragging_ = false;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            penDragging_ = false;
+            freezePending();          // release → the segment becomes solid
+        }
         return true;
+    }
+
+    // ── Snap-to-close detection ───────────────────────────────────────────────
+    // Within the FIRST anchor's close zone (≥3 frozen anchors in the node) the
+    // path connects back. Ctrl suppresses it (a point lands near the start). The
+    // preview (closing segment + a Free area's fill) is drawn in the overlay.
+    const double kCloseZonePx = 9.0;
+    bool snapClose = false;
+    if (penNode_ != Ink::kNullNode && !penDragging_ && !io.KeyCtrl && !io.KeyShift) {
+        const Ink::Node* n = doc.Find(penNode_);
+        if (n && !n->path.subpaths.empty() &&
+            n->path.subpaths.front().anchors.size() >= 3) {
+            const Ink::DVec2 f = n->path.subpaths.front().anchors.front().pos;
+            const Ink::Vec2 fv = cam.DocToView(f.x, f.y);
+            const double dpx = std::hypot(io.MousePos.x - cam.canvasMin.x - fv.x,
+                                          io.MousePos.y - cam.canvasMin.y - fv.y);
+            snapClose = dpx <= kCloseZonePx;
+        }
     }
 
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-        if (penNode_ == Ink::kNullNode) {
-            // First click: create the node with one corner anchor.
-            if (doc.Pages().empty()) { penActive_ = false; return true; }
-            Ink::PathData p;
-            Ink::Subpath sp;
-            sp.spline = penSpline_;
-            Ink::Anchor a;
-            a.pos = docPos;
-            sp.anchors.push_back(a);
-            p.subpaths.push_back(std::move(sp));
-            penNode_ = doc.AddPath(doc.Pages().front().id, std::move(p),
-                                   DefaultStyle(),
-                                   penSpline_ == Ink::SplineType::Nurbs
-                                       ? "NURBS Path"
-                                       : penSpline_ == Ink::SplineType::Poly
-                                             ? "Poly Line" : "Bézier");
-            penDragging_ = (penSpline_ == Ink::SplineType::Bezier);
+        // Snap-close: close the path (any pending is already frozen on release),
+        // then commit.
+        if (snapClose) {
+            const Ink::Node* n = doc.Find(penNode_);
+            if (n && !n->path.subpaths.empty()) {
+                Ink::PathData cp = n->path;
+                cp.subpaths.front().closed = true;
+                doc.SetPath(penNode_, cp);
+            }
+            CommitPenDraw(true);
             return true;
         }
-        const Ink::Node* n = doc.Find(penNode_);
-        if (!n || n->path.subpaths.empty()) { penActive_ = false; return true; }
-        Ink::PathData p = n->path;
-        auto& sub = p.subpaths.front();
-        // A click on the FIRST anchor closes the path and commits.
-        if (sub.anchors.size() >= 3) {
-            const Ink::DVec2 f = sub.anchors.front().pos;
-            const double dx = docPos.x - f.x, dy = docPos.y - f.y;
-            if (std::sqrt(dx * dx + dy * dy) * cam.zoom < 8.0) {
-                sub.closed = true;
-                doc.SetPath(penNode_, p);
-                CommitPenDraw(true);
-                return true;
-            }
+        // A normal click starts a NEW pending at the cursor. Bézier begins a drag
+        // to pull its handles (the pending previews translucent, then freezes on
+        // release). Poly/NURBS have no handles → freeze the point immediately.
+        penPending_ = Ink::Anchor{};
+        penPending_.pos = docPos;
+        penHasPending_ = true;
+        if (penSpline_ == Ink::SplineType::Bezier) {
+            penDragging_ = true;
+        } else {
+            freezePending();   // no drag preview for handleless splines
         }
-        Ink::Anchor a;
-        a.pos = docPos;
-        sub.anchors.push_back(a);
-        doc.SetPath(penNode_, p);
-        penDragging_ = (penSpline_ == Ink::SplineType::Bezier);
         return true;
     }
     return true;   // the pen owns viewport input while active

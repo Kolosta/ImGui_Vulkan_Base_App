@@ -133,6 +133,12 @@ private:
     void DrawDefaultColorSwatches(float barHeight);           // fill/stroke chips
     void RenderAddMenu();                                     // Shift+A spawn menu
     void RenderViewportContextMenu();                        // right-click menu
+    // The reusable right-side "N" panel (UI::EditorSidePanel). Item tab (active
+    // object transform) is always present; Marks tab only in Line-Mark mode.
+    // ViewportSidePanel.cpp.
+    void RenderViewportSidePanel(EditorState& st, ImVec2 cMin, ImVec2 cMax);
+    void DrawSidePanelItemTab(ImVec2 cMin, ImVec2 cMax);
+    void DrawSidePanelMarksTab(ImVec2 cMin, ImVec2 cMax);
 
     // ── Editing loop (ViewportInput.cpp / ViewportTools.cpp / ViewportModal.cpp) ─
     // Camera helpers, shared by input + overlay drawing.
@@ -201,6 +207,43 @@ private:
     bool           penDragging_ = false;       // pulling the new anchor's handles
     Ink::NodeId    penNode_     = Ink::kNullNode;
     Ink::SplineType penSpline_  = Ink::SplineType::Bezier;
+    // A FREE shape (an area) keeps a fill and previews it when closing; a plain
+    // curve (Bézier / NURBS / Poly) has NO fill — closing previews only the
+    // closing STROKE segment, never a fill.
+    bool           penIsArea_   = false;
+    // The LAST point is kept OUT of the node while it is being defined: only the
+    // FROZEN anchors live in `penNode_` (rendered opaque); the pending one is
+    // drawn as a TRANSLUCENT preview in the overlay (its segment from the last
+    // frozen anchor, plus the rubber-band to the cursor). A click freezes the
+    // pending into the node and starts a new pending; drag pulls its handles.
+    Ink::Anchor    penPending_{};
+    bool           penHasPending_ = false;
+    // Snap-to-close: the close-zone test + preview are computed locally in the
+    // input / overlay phases; no persistent state is needed here.
+
+    // ── Follow-curve (Shift while the pen is active) — OpenOrienteering-Mapper
+    //    "follow path": trace the drawn path EXACTLY along a target curve.
+    //    ViewportFollowCurve.cpp. Returns true while following (the pen suppresses
+    //    its own placement that frame). `committed` = a click froze a piece.
+    bool UpdatePenFollowCurve(const ViewCam& cam, bool hovered,
+                              Ink::OverlayList& ov, bool& committed);
+    // Append the Bézier anchors of `piece` (node-local, handles relative) onto
+    // the pen node's open subpath; the pen's last anchor adopts the piece's first
+    // OUT handle so the join leaves along the curve. FollowCurve.cpp helper.
+    struct FollowPieceAnchor { Ink::DVec2 pos, in, out; bool hasIn, hasOut; };
+    bool           followLocked_ = false;   // an entry point was placed → tracing
+    Ink::NodeId    followNode_   = Ink::kNullNode;  // the target curve's node
+    int            followSub_    = -1;      // its subpath index
+    double         followAnchorArc_ = 0.0;  // where the last frozen point sits
+    double         followCursorArc_ = 0.0;  // the current cursor projection (unwrapped)
+    // Draw-on-Create feedback: hide the OS cursor and draw a crosshair on the
+    // foreground list, plus a small preview GLYPH of the shape being created at
+    // the bottom-right of the cursor. `kind` = the Add-menu shape/curve id.
+    // ViewportFollowCurve.cpp. Called each frame while a create tool is armed.
+    void DrawCreateCursor(const char* kind);
+    // The kind currently armed for draw-on-create (pen spline or shape drag-box),
+    // or empty. Drives DrawCreateCursor.
+    std::string CreateCursorKind() const;
     // ── Line-Mark MODE (EditorMode::LineMark) — generic mark editing ─────────
     // Handles/ghosts only render while the tool is active. Click places a
     // neutral mark (default object = `markPlaceShape_`) on the nearest stroked
@@ -472,6 +515,10 @@ private:
     bool PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
                                Ink::Document& doc, Ink::NodeId hostId,
                                bool& structural, const char*& structLabel);
+    // Full editor for ONE mark (position/side/phase + its object list, gaps and
+    // markers) — used by the viewport "Marks" side-panel tab. Handles its own
+    // style copy + undo commit. `node`/`strokeIdx`/`markIdx` address the mark.
+    void DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx);
     void PropModifiersSection(Ink::NodeId id);
     void PropInstanceSection(Ink::NodeId id);
     // Commit a whole-style edit as one undoable command (captures before/after).

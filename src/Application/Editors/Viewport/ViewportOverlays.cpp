@@ -227,49 +227,122 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
     if (penActive_ && hovered) {
         const ImVec2 mp = ImGui::GetIO().MousePos;
         const Ink::Vec2 mv{ mp.x - cam.canvasMin.x, mp.y - cam.canvasMin.y };
-        if (penNode_ != Ink::kNullNode) {
-            if (const Ink::Node* pn = doc.Find(penNode_);
-                pn && !pn->path.subpaths.empty()) {
-                const Ink::Subpath& sub = pn->path.subpaths.front();
-                const auto& an = sub.anchors;
-                for (std::size_t i = 0; i < an.size(); ++i) {
-                    const Ink::Vec2 v = cam.DocToView(an[i].pos.x, an[i].pos.y);
-                    const bool first = i == 0 && an.size() >= 3;
-                    ov.AddCircleFilled(v, first ? 4.5f : 3.0f,
-                                       first ? activeCol : selCol);
-                }
-                // For a spline WITHOUT handles (NURBS / Poly), show the LIVE
-                // curve up to the cursor — the drag has no effect there, so
-                // the preview must track the mouse directly (a phantom control
-                // point at the cursor, flattened like the real path).
-                const Ink::DVec2 md = cam.ScreenToDoc(mp.x, mp.y);
-                if (sub.spline != Ink::SplineType::Bezier && !an.empty()) {
-                    Ink::PathData preview = pn->path;
-                    Ink::Anchor ghost; ghost.pos = md;
-                    preview.subpaths.front().anchors.push_back(ghost);
-                    preview.subpaths.front().closed = false;
-                    const double tol = std::max(1e-4, 0.25 / std::max(1e-6, cam.zoom));
-                    for (const auto& pl : Ink::geom::Flatten(preview, tol)) {
-                        for (std::size_t i = 0; i + 1 < pl.points.size(); ++i)
-                            ov.AddLine(
-                                cam.DocToView(pl.points[i].x, pl.points[i].y),
-                                cam.DocToView(pl.points[i+1].x, pl.points[i+1].y),
-                                activeCol, 1.5f);
-                    }
-                    // Also hint the raw control polygon to the cursor.
-                    const Ink::Vec2 lastV = cam.DocToView(an.back().pos.x,
-                                                          an.back().pos.y);
-                    DashLine(ov, lastV, mv, subtleCol, 1.0f);
-                } else {
-                    const Ink::Vec2 lastV = cam.DocToView(an.back().pos.x,
-                                                          an.back().pos.y);
-                    DashLine(ov, lastV, mv, subtleCol, 1.0f);
-                }
+        // Follow-curve (Shift): the blue entry diamond, the traced preview and the
+        // click that freezes a piece onto the pen. When it is following, skip the
+        // normal rubber-band preview (the trace replaces it).
+        bool followCommitted = false;
+        const bool following =
+            UpdatePenFollowCurve(cam, hovered, ov, followCommitted);
+        (void)followCommitted;
+        // The very first point (before its release) has no node yet — just show
+        // its dot at the cursor while it is being placed.
+        if (!following && penNode_ == Ink::kNullNode && penHasPending_)
+            ov.AddCircleFilled(cam.DocToView(penPending_.pos.x, penPending_.pos.y),
+                               3.5f, activeCol);
+        if (!following && penNode_ != Ink::kNullNode) {
+            const Ink::Node* pn = doc.Find(penNode_);
+            if (pn && !pn->path.subpaths.empty()) {
+              const auto& frozen = pn->path.subpaths.front().anchors;
+              const std::size_t nFrozen = frozen.size();
+              const Ink::DVec2 md = cam.ScreenToDoc(mp.x, mp.y);
+              const double tol = std::max(1e-4, 0.25 / std::max(1e-6, cam.zoom));
+
+              // Snap-to-close: cursor in the first anchor's close zone (≥3 frozen,
+              // no pending), Ctrl/Shift suppress it. Matches HandlePenInput.
+              bool closeHover = false;
+              if (!penHasPending_ && nFrozen >= 3 &&
+                  !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeyShift) {
+                  const Ink::Vec2 fv = cam.DocToView(frozen.front().pos.x,
+                                                     frozen.front().pos.y);
+                  closeHover = std::hypot(mv.x - fv.x, mv.y - fv.y) <= 9.0f;
+              }
+
+              // Frozen anchor dots (the node renders their SOLID stroke already);
+              // the closeable first anchor gets a ring.
+              for (std::size_t i = 0; i < nFrozen; ++i) {
+                  const Ink::Vec2 v = cam.DocToView(frozen[i].pos.x, frozen[i].pos.y);
+                  const bool first = i == 0 && nFrozen >= 3;
+                  ov.AddCircleFilled(v, first ? 4.5f : 3.0f,
+                                     first ? activeCol : selCol);
+                  if (first)
+                      ov.AddCircle(v, closeHover ? 8.0f : 6.0f, activeCol,
+                                   closeHover ? 2.5f : 1.5f, 16);
+              }
+              if (penHasPending_)
+                  ov.AddCircleFilled(cam.DocToView(penPending_.pos.x,
+                                                   penPending_.pos.y), 3.5f, activeCol);
+
+              // Preview a stroke SEGMENT as the REAL tessellated stroke at a
+              // translucent alpha (so it reads like the finished object, not a
+              // thin guide). `a`/`b` are the two end anchors (handles relative).
+              const Ink::Stroke* strokeStyle =
+                  pn->style.strokes.empty() ? nullptr : &pn->style.strokes.front();
+              auto previewSeg = [&](const Ink::Anchor& a, const Ink::Anchor& b) {
+                  if (!strokeStyle) return;
+                  Ink::PathData seg; Ink::Subpath sp; sp.spline = Ink::SplineType::Bezier;
+                  sp.anchors = { a, b }; sp.closed = false;
+                  seg.subpaths.push_back(std::move(sp));
+                  const Ink::geom::Mesh m = Ink::geom::TessellateStroke(
+                      Ink::geom::Flatten(seg, tol), *strokeStyle, tol);
+                  Ink::Color k = strokeStyle->paint.color;
+                  const float sa = 0.5f;                 // premultiplied preview
+                  const Ink::Color tc{ k.r * sa, k.g * sa, k.b * sa, sa };
+                  for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
+                      auto vp = [&](std::uint32_t idx) {
+                          return cam.DocToView(m.positions[idx*2], m.positions[idx*2+1]);
+                      };
+                      ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
+                                     vp(m.indices[i+2]), tc);
+                  }
+              };
+
+              // FREE fill preview when snapping closed: the real translucent fill
+              // of the closed area (frozen anchors, closed).
+              if (closeHover && penIsArea_ && !pn->style.fills.empty()) {
+                  Ink::PathData closed = pn->path;
+                  closed.subpaths.front().closed = true;
+                  Ink::Color fc = pn->style.fills.front().paint.color;
+                  const float fa = 0.4f;
+                  Ink::Color tri{ fc.r * fa, fc.g * fa, fc.b * fa, fa };
+                  for (const auto& pl : Ink::geom::Flatten(closed, tol)) {
+                      if (pl.points.size() < 3) continue;
+                      Ink::geom::Polyline rp; rp.points = pl.points; rp.closed = true;
+                      const Ink::geom::Mesh m =
+                          Ink::geom::TriangulateFill({ rp }, Ink::FillRule::NonZero);
+                      for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
+                          auto vp = [&](std::uint32_t idx) {
+                              return cam.DocToView(m.positions[idx*2],
+                                                   m.positions[idx*2+1]);
+                          };
+                          ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
+                                         vp(m.indices[i+2]), tri);
+                      }
+                  }
+              }
+
+              // The LAST/in-progress segment as a translucent REAL stroke:
+              //  • dragging → last frozen anchor → the pending (its handles);
+              //  • hovering closed → last frozen → first frozen (cyclic close);
+              //  • hovering       → last frozen → a ghost anchor at the cursor.
+              if (penHasPending_) {
+                  if (nFrozen >= 1) previewSeg(frozen.back(), penPending_);
+              } else if (nFrozen >= 1) {
+                  if (closeHover) {
+                      previewSeg(frozen.back(), frozen.front());
+                  } else {
+                      Ink::Anchor ghost; ghost.pos = md;
+                      previewSeg(frozen.back(), ghost);
+                  }
+              }
             }
         }
-        // Crosshair at the pen tip.
-        ov.AddLine({ mv.x - 6, mv.y }, { mv.x + 6, mv.y }, activeCol, 1.0f);
-        ov.AddLine({ mv.x, mv.y - 6 }, { mv.x, mv.y + 6 }, activeCol, 1.0f);
+    }
+    // Draw-on-Create cursor: hide the OS cursor and draw a crosshair + a preview
+    // glyph of the shape/curve being created (pen active OR a shape drag-box
+    // armed). Foreground list, so it sits over everything.
+    if (hovered) {
+        const std::string ck = CreateCursorKind();
+        if (!ck.empty()) DrawCreateCursor(ck.c_str());
     }
 
     // ── 2D cursor (legacy design): a red/white ringed crosshair. The four

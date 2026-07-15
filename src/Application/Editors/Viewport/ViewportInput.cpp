@@ -62,8 +62,14 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     if (MarkModeActive()) return;
 
     if (!hovered) return;
-    // A popup is up: don't also drive the canvas underneath it.
-    if (addMenuOpen_ || viewportCtxOpen_ || handleMenuOpen_) return;
+    // A popup is up: don't also drive the canvas underneath it. This includes
+    // ANY open ImGui popup (a colour picker, a dropdown, a combo…), which can
+    // OVERFLOW its editor onto the canvas — a click on it must never fall through
+    // to select/deselect here. (The click belongs to the top-most UI.)
+    if (addMenuOpen_ || viewportCtxOpen_ || handleMenuOpen_ ||
+        ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
+                                    ImGuiPopupFlags_AnyPopupLevel))
+        return;
     // The Outliner's "pick a viewport to synchronise" action owns the mouse:
     // its own block confirms with LMB / cancels with RMB — the canvas tools
     // and the context menu must stay inert for the whole gesture.
