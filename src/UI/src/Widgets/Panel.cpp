@@ -185,7 +185,16 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
     // depth. Level-1 always uses its own body token.
     const Tok bodyTok = (cfg.flatBody && depth > 1) ? BodyTokForDepth(depth - 1)
                                                     : BodyTokForDepth(depth);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(bodyTok));
+    // The GRABBED list panel is raised above its siblings via BeginOrderWithin
+    // Parent. But ImGui paints a child's ChildBg into the PARENT draw list (in
+    // SUBMISSION order), so when it is dragged DOWNWARD its background renders
+    // under the next panel even though its content (child draw list) is raised.
+    // Fix: for the grabbed panel, suppress the native ChildBg and repaint the
+    // body INSIDE the child draw list, so it rises together with the content.
+    const bool isGrabbed = g_list.active &&
+        g_list.st && g_list.st->GetInt(g_list.kDrag, -1) == g_list.index;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                          isGrabbed ? ImVec4(0, 0, 0, 0) : Col(bodyTok));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(Tok::C_Panel_Border));
     ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, level1 ? radius : 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, borderW);
@@ -196,6 +205,19 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
     ImGui::BeginChild("##panel", ImVec2(fullW, 0.0f), childFlags,
                       ImGuiWindowFlags_NoScrollbar |
                       ImGuiWindowFlags_NoScrollWithMouse);
+
+    // Repaint the suppressed body into the CHILD draw list (behind all content),
+    // so the grabbed panel's background travels with it above the siblings. The
+    // child auto-resizes in Y, so its rect here is last frame's size — identical
+    // during a drag (the panel doesn't resize while grabbed), so it is exact.
+    if (isGrabbed) {
+        const ImRect cr = ImGui::GetCurrentWindow()->Rect();
+        if (cr.GetHeight() > 1.0f)
+            ImGui::GetWindowDrawList()->AddRectFilled(
+                cr.Min, cr.Max,
+                ImGui::ColorConvertFloat4ToU32(Col(bodyTok)),
+                level1 ? radius : 0.0f);
+    }
 
     // Inside the child, restore the normal item spacing so the panel's OWN
     // content lays out as usual (the zeroed spacing pushed above only governs
