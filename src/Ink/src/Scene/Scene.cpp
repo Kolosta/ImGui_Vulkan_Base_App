@@ -756,6 +756,9 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         if (m.sub < 0 || m.sub >= (int)flat.size()) return;
         const geom::Polyline& spine = flat[(std::size_t)m.sub];
 
+        // A Gap is not a drawn object — it cut the base line in the stroker.
+        if (obj.shape == MarkShape::Gap) return;
+
         // A non-Normal Blend object composites through its OWN nested scope.
         ScopeId objScope = strokeScope;
         if (obj.mode == MarkObjectMode::Blend && obj.blend != BlendMode::Normal) {

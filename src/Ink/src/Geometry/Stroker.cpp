@@ -131,11 +131,13 @@ std::vector<Polyline> DashSplit(const Polyline& pl,
     return out;   // pieces are OPEN (caps close them visually)
 }
 
-// ── Marks: dash-phase re-phasing (docs/Ink/IOF_CORE_PLAN.md Phase A) ─────────
-// A mark's OBJECTS are emitted by the Scene; the stroker only re-phases the
-// dash run so a dash element / gap lands on a non-Neutral mark.
+// ── Marks: dash-phase re-phasing + Gap cuts (IOF_CORE_PLAN.md Phase A) ───────
+// A mark's OBJECTS are emitted by the Scene; the stroker re-phases the dash run
+// so a dash element / gap lands on a non-Neutral mark, and it CUTS the base
+// line where a mark carries a Gap object (with the chosen end caps).
 
 struct PhaseAnchor { double at; bool elementCentred; };
+struct GapSpan { double from, to; GapCap capFrom, capTo; bool cutsObjects; };
 
 double PolyTotal(const Polyline& pl) {
     const std::size_t n = pl.points.size();
@@ -166,6 +168,38 @@ void ArcSampleAt(const Polyline& pl, double d, DVec2& outP, V2& outTan) {
     }
     outP = pl.points[n - 1];
     outTan = Norm(Sub(pl.points[n - 1], pl.points[n >= 2 ? n - 2 : 0]));
+}
+
+// The OPEN sub-polyline of `pl` between arc lengths [from, to].
+Polyline ExtractRun(const Polyline& pl, double from, double to) {
+    Polyline run;
+    const std::size_t n = pl.points.size();
+    const std::size_t sc = pl.closed ? n : n - 1;
+    double acc = 0.0;
+    bool started = false;
+    for (std::size_t i = 0; i < sc; ++i) {
+        const DVec2 a = pl.points[i], b = pl.points[(i + 1) % n];
+        const double segLen = Len(Sub(b, a));
+        if (segLen < 1e-12) continue;
+        const V2 dir{ (b.x - a.x) / segLen, (b.y - a.y) / segLen };
+        const double segStart = acc, segEnd = acc + segLen;
+        if (!started && from <= segEnd) {
+            const double d = from > segStart ? from : segStart;
+            run.points.push_back({ a.x + dir.x * (d - segStart),
+                                   a.y + dir.y * (d - segStart) });
+            started = true;
+        }
+        if (started) {
+            if (to < segEnd) {
+                run.points.push_back({ a.x + dir.x * (to - segStart),
+                                       a.y + dir.y * (to - segStart) });
+                break;
+            }
+            run.points.push_back(b);
+        }
+        acc = segEnd;
+    }
+    return run;
 }
 
 // Arc-length of the spine point closest to node-local position `p` (projects
@@ -402,19 +436,69 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
             anchors.push_back({ at, m.phase == MarkPhase::Dash });
         }
 
-        // The base line: dashes laid over the whole spine, re-phased by the
-        // first phase anchor (mm dash/gap preserved exactly).
-        if (stroke.dashPattern.empty()) {
-            CenterStroke(spine, stroke, w * 0.5, tol, em);
+        // ── Gap objects → cut the base line ─────────────────────────────────
+        // A Gap mark opens the line over its length, centred on the mark, with
+        // the chosen end caps. The kept runs are the complement of the gaps.
+        std::vector<GapSpan> gaps;
+        for (const StrokeMark& m : stroke.marks) {
+            if (m.sub != (std::int32_t)subI || total < 1e-9) continue;
+            const double tc = m.t < 0.0 ? 0.0 : (m.t > 1.0 ? 1.0 : m.t);
+            const double d = tc * total;
+            for (const MarkObject& o : m.objects) {
+                if (o.shape != MarkShape::Gap) continue;
+                const double half = std::max(1e-4, o.SizeUnits(w)) * 0.5;
+                gaps.push_back({ std::max(0.0, d - half),
+                                 std::min(total, d + half),
+                                 o.gapStart, o.gapEnd, o.gapCutsObjects });
+            }
+        }
+
+        // Stroke a run [from,to] of the spine. `touchesGap` = the run borders a
+        // gap → use the gap cap; otherwise keep the stroke's own cap.
+        auto strokeRun = [&](double from, double to, GapCap gapCap,
+                             bool touchesGap) {
+            Polyline run = ExtractRun(spine, from, to);
+            if (run.points.size() < 2) return;
+            Stroke rs = stroke;
+            if (touchesGap)
+                rs.cap = gapCap == GapCap::Round ? CapStyle::Round
+                       : gapCap == GapCap::Square ? CapStyle::Square
+                                                  : CapStyle::Butt;
+            if (rs.dashPattern.empty()) {
+                CenterStroke(run, rs, w * 0.5, tol, em);
+            } else {
+                double offset = rs.dashOffset;
+                if (!anchors.empty())
+                    offset = AnchorDashOffset(rs.dashPattern,
+                                              anchors.front().elementCentred,
+                                              anchors.front().at - from, offset);
+                for (const Polyline& piece :
+                     DashSplit(run, rs.dashPattern, offset))
+                    CenterStroke(piece, rs, w * 0.5, tol, em);
+            }
+        };
+
+        if (gaps.empty()) {
+            strokeRun(0.0, total, GapCap::Butt, /*touchesGap=*/false);
         } else {
-            double offset = stroke.dashOffset;
-            if (!anchors.empty())
-                offset = AnchorDashOffset(stroke.dashPattern,
-                                          anchors.front().elementCentred,
-                                          anchors.front().at, offset);
-            for (const Polyline& piece :
-                 DashSplit(spine, stroke.dashPattern, offset))
-                CenterStroke(piece, stroke, w * 0.5, tol, em);
+            std::sort(gaps.begin(), gaps.end(),
+                      [](const GapSpan& a, const GapSpan& b) { return a.from < b.from; });
+            double cursor = 0.0;
+            GapCap prevCap = GapCap::Butt;
+            bool prevWasGap = false;
+            for (const GapSpan& g : gaps) {
+                if (g.from > cursor + 1e-9)
+                    // The run before this gap: its END touches the gap (capFrom);
+                    // its START touches the previous gap if there was one.
+                    strokeRun(cursor, g.from,
+                              prevWasGap ? prevCap : g.capFrom,
+                              /*touchesGap=*/true);
+                cursor = std::max(cursor, g.to);
+                prevCap = g.capTo;
+                prevWasGap = true;
+            }
+            if (cursor < total - 1e-9)
+                strokeRun(cursor, total, prevCap, /*touchesGap=*/true);
         }
 
         // Fusion mark objects → triangulated INTO the stroke mesh (one alpha,
@@ -425,7 +509,16 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                 ? placeSpines[subI] : spine;
         for (const StrokeMark& m : stroke.marks) {
             if (m.sub != (std::int32_t)subI) continue;
+            const double md = (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total;
+            // A gap with cutsObjects removes any Fusion object whose mark point
+            // falls inside it (a v1 approximation of "the gap also cuts marks").
+            bool inCuttingGap = false;
+            for (const GapSpan& g : gaps)
+                if (g.cutsObjects && md >= g.from && md <= g.to)
+                    inCuttingGap = true;
             for (const MarkObject& obj : m.objects) {
+                if (obj.shape == MarkShape::Gap) continue;
+                if (inCuttingGap) continue;
                 // Only a Fusion object that INHERITS the stroke colour is baked
                 // into the stroke mesh (one alpha). A recoloured Fusion object
                 // is emitted as its own drawable by the Scene instead.

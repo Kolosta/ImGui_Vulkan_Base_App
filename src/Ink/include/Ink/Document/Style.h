@@ -106,14 +106,18 @@ enum class MarkPhase : std::uint8_t {
 enum class MarkSide : std::uint8_t { Center = 0, Left = 1, Right = 2 };
 
 // A mark object's shape (SVG-markers vocabulary, w3.org/TR/svg-markers).
-// `Instance` stamps an existing node's geometry at the mark instead of a
-// primitive.
+// `Instance` stamps an existing node's geometry; `Gap` cuts the LINE open over
+// a length (not a filled shape) with a chosen end cap.
 enum class MarkShape : std::uint8_t {
     Circle    = 0,
     Rectangle = 1,
     Diamond   = 2,
     Instance  = 3,   // instance of `nodeRef`
+    Gap       = 4,   // an opening cut in the line (length = size)
 };
+
+// The end shape of a Gap opening (mirrors the stroke caps).
+enum class GapCap : std::uint8_t { Butt = 0, Round = 1, Square = 2 };
 
 // How a mark object combines with the stroke:
 //   Fusion   — the object's geometry is FUSED into the stroke's own mesh
@@ -132,6 +136,13 @@ enum class MarkObjectMode : std::uint8_t { Fusion = 0, Blend = 1, Subtract = 2 }
 //   Follow — the shape's outline is RESAMPLED along the curve so it truly
 //            bends with the line (a rectangle's long edges curve).
 enum class MarkBend : std::uint8_t { Hard = 0, Bend = 1, Follow = 2 };
+
+// The default bend for a shape: Rectangle/Diamond follow the curve, Circle and
+// Instance are rigid.
+inline MarkBend DefaultBendFor(MarkShape s) {
+    return (s == MarkShape::Rectangle || s == MarkShape::Diamond)
+               ? MarkBend::Follow : MarkBend::Hard;
+}
 
 struct MarkObject {
     MarkShape       shape = MarkShape::Circle;
@@ -152,6 +163,12 @@ struct MarkObject {
     // operator is not symmetric, `front` is exactly the "which is over which"
     // choice.
     bool            front = true;
+    // Gap only: the end caps and whether the gap also cuts the OTHER mark
+    // objects it overlaps (its own mark's siblings + other marks) or just the
+    // base line.
+    GapCap          gapStart = GapCap::Butt;
+    GapCap          gapEnd   = GapCap::Butt;
+    bool            gapCutsObjects = false;
     // Fill colour of a primitive object (linear straight). Instance objects use
     // the referenced node's own style, so this is ignored for them.
     Color           color{ 0, 0, 0, 1 };
@@ -166,10 +183,11 @@ struct MarkObject {
     }
 
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[7] = {
+        const std::uint8_t packed[10] = {
             (std::uint8_t)shape, (std::uint8_t)mode, (std::uint8_t)bend,
             (std::uint8_t)blend, (std::uint8_t)(sizePercent ? 1 : 0),
-            (std::uint8_t)(front ? 1 : 0),
+            (std::uint8_t)(front ? 1 : 0), (std::uint8_t)gapStart,
+            (std::uint8_t)gapEnd, (std::uint8_t)(gapCutsObjects ? 1 : 0),
             (std::uint8_t)(useStrokeColor ? 1 : 0) };
         h = HashBytes(packed, sizeof packed, h);
         h = HashDouble(size, h);
@@ -185,8 +203,8 @@ struct StrokeMark {
     double       t    = 0.5;  // arc-length position along it, in [0,1]
     MarkPhase    phase = MarkPhase::Neutral;
     MarkSide     side  = MarkSide::Center;
-    double       offset = 40.0;  // Left/Right: signed distance to the line
-                                 // (default 40 % of the stroke width)
+    double       offset = 50.0;  // Left/Right: signed distance to the line
+                                 // (default 50 % of the stroke width)
     bool         offsetPercent = true;  // offset is a % of the stroke width
                                         // (100 % = one full width) vs doc-units
     // If ≥ 0 the mark is PINNED to that control point of its subpath (t is

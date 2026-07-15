@@ -1330,6 +1330,24 @@ void TestStrokeMarks() {
         CHECK(geom::MarkFollowContour(sp, m, fo, 8.0, 0.1, ring));
         CHECK(ring.size() >= 4);
     }
+
+    // A Gap object opens the line: less base-line area than a plain stroke, and
+    // the Gap contributes to the geometry hash.
+    {
+        const double kTol = 0.05;
+        geom::Polyline pl; pl.points = { { 0, 0 }, { 100, 0 } };
+        Stroke plainS; plainS.width = 4.0;
+        const double plainArea = MeshArea(geom::TessellateStroke({ pl }, plainS, kTol));
+        Stroke gapped = plainS;
+        StrokeMark gm; gm.sub = 0; gm.t = 0.5;
+        MarkObject go; go.shape = MarkShape::Gap; go.size = 20.0;
+        go.sizePercent = false;   // 20 doc-units
+        gm.objects.push_back(go);
+        gapped.marks.push_back(gm);
+        const double gapArea = MeshArea(geom::TessellateStroke({ pl }, gapped, kTol));
+        CHECK(gapArea < plainArea - 50.0);   // ~20×4 removed
+        CHECK(gapped.GeometryHash() != plainS.GeometryHash());
+    }
 }
 
 } // namespace
