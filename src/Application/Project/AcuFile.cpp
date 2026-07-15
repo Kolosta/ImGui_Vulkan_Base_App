@@ -40,11 +40,11 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 8;   // v3: subpath spline params +
+constexpr std::uint32_t kDocVersion = 9;   // v3: subpath spline params +
                                            //     anchor weight (+ dead marks)
-                                           // v4-v7: generic marks (dead)
-                                           // v8: marks — along-offset + gap end
-                                           //     markers, Gap object, the rest
+                                           // v4-v8: generic marks (dead)
+                                           // v9: marks — per-object side/offset +
+                                           //     gap start/end sub-object lists
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -203,6 +203,65 @@ Ink::PathData ReadPath(Reader& r, std::uint32_t ver) {
     return p;
 }
 
+// A mark OBJECT (v9): recursive — a Gap object carries start/end marker object
+// lists. `depth` guards against pathological nesting.
+void WriteMarkObject(Writer& w, const Ink::MarkObject& o, int depth = 0) {
+    w.u8((std::uint8_t)o.shape);
+    w.u8((std::uint8_t)o.mode);
+    w.u8((std::uint8_t)o.bend);
+    w.u8((std::uint8_t)o.blend);
+    w.f64(o.size);
+    w.f64(o.width);
+    w.u8(o.sizePercent ? 1 : 0);
+    w.f64(o.rotation);
+    w.f64(o.alongOffset);
+    w.u8(o.sideInherit ? 1 : 0);
+    w.u8((std::uint8_t)o.side);
+    w.f64(o.sideOffset);
+    w.u64(o.nodeRef);
+    w.u8(o.front ? 1 : 0);
+    w.u8((std::uint8_t)o.gapStart);
+    w.u8((std::uint8_t)o.gapEnd);
+    w.u8(o.gapCutsObjects ? 1 : 0);
+    WriteColor(w, o.color);
+    w.u8(o.useStrokeColor ? 1 : 0);
+    const bool nest = depth < 2;
+    w.u32(nest ? (std::uint32_t)o.gapStartObjects.size() : 0);
+    if (nest) for (const Ink::MarkObject& c : o.gapStartObjects) WriteMarkObject(w, c, depth + 1);
+    w.u32(nest ? (std::uint32_t)o.gapEndObjects.size() : 0);
+    if (nest) for (const Ink::MarkObject& c : o.gapEndObjects) WriteMarkObject(w, c, depth + 1);
+}
+Ink::MarkObject ReadMarkObject(Reader& r, int depth = 0) {
+    Ink::MarkObject o;
+    o.shape = (Ink::MarkShape)std::min<std::uint8_t>(r.u8(), 4);
+    o.mode  = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
+    o.bend  = (Ink::MarkBend)std::min<std::uint8_t>(r.u8(), 2);
+    o.blend = (Ink::BlendMode)std::min<std::uint8_t>(r.u8(),
+                                                     (std::uint8_t)Ink::BlendMode::Erase);
+    o.size = r.f64();
+    o.width = r.f64();
+    o.sizePercent = r.u8() != 0;
+    o.rotation = r.f64();
+    o.alongOffset = r.f64();
+    o.sideInherit = r.u8() != 0;
+    o.side = (Ink::MarkSide)std::min<std::uint8_t>(r.u8(), 2);
+    o.sideOffset = r.f64();
+    o.nodeRef = r.u64();
+    o.front = r.u8() != 0;
+    o.gapStart = (Ink::GapCap)std::min<std::uint8_t>(r.u8(), 2);
+    o.gapEnd   = (Ink::GapCap)std::min<std::uint8_t>(r.u8(), 2);
+    o.gapCutsObjects = r.u8() != 0;
+    o.color = ReadColor(r);
+    o.useStrokeColor = r.u8() != 0;
+    const std::uint32_t ns = r.u32();
+    for (std::uint32_t i = 0; i < ns && r.ok; ++i)
+        o.gapStartObjects.push_back(ReadMarkObject(r, depth + 1));
+    const std::uint32_t ne = r.u32();
+    for (std::uint32_t i = 0; i < ne && r.ok; ++i)
+        o.gapEndObjects.push_back(ReadMarkObject(r, depth + 1));
+    return o;
+}
+
 void WriteStyle(Writer& w, const Ink::Style& s) {
     w.u32((std::uint32_t)s.fills.size());
     for (const Ink::Fill& f : s.fills) {
@@ -245,27 +304,7 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
             w.u8(m.offsetPercent ? 1 : 0);
             w.u32((std::uint32_t)m.nodeAnchor);
             w.u32((std::uint32_t)m.objects.size());
-            for (const Ink::MarkObject& o : m.objects) {
-                w.u8((std::uint8_t)o.shape);
-                w.u8((std::uint8_t)o.mode);
-                w.u8((std::uint8_t)o.bend);
-                w.u8((std::uint8_t)o.blend);
-                w.f64(o.size);
-                w.f64(o.width);
-                w.u8(o.sizePercent ? 1 : 0);
-                w.f64(o.rotation);
-                w.f64(o.alongOffset);
-                w.u64(o.nodeRef);
-                w.u8(o.front ? 1 : 0);
-                w.u8((std::uint8_t)o.gapStart);
-                w.u8((std::uint8_t)o.gapEnd);
-                w.u8(o.gapCutsObjects ? 1 : 0);
-                w.u8((std::uint8_t)o.gapMarker);
-                w.u8(o.gapHasMarker ? 1 : 0);
-                w.u64(o.gapMarkerRef);
-                WriteColor(w, o.color);
-                w.u8(o.useStrokeColor ? 1 : 0);
-            }
+            for (const Ink::MarkObject& o : m.objects) WriteMarkObject(w, o);
         }
     }
 }
@@ -359,7 +398,20 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
                     ReadColor(r); r.u8();
                 }
             }
-        } else if (ver >= 8) {
+        } else if (ver == 8) {
+            // v8 objects had no per-object side + gap sub-object lists (the gap
+            // markers were a single shape) — drain it (pre-release).
+            const std::uint32_t nMk = r.u32();
+            for (std::uint32_t j = 0; j < nMk && r.ok; ++j) {
+                r.u32(); r.f64(); r.u8(); r.u8(); r.f64(); r.u8(); r.u32();
+                const std::uint32_t nObj = r.u32();
+                for (std::uint32_t k = 0; k < nObj && r.ok; ++k) {
+                    r.u8(); r.u8(); r.u8(); r.u8(); r.f64(); r.f64(); r.u8();
+                    r.f64(); r.f64(); r.u64(); r.u8(); r.u8(); r.u8(); r.u8();
+                    r.u8(); r.u8(); r.u64(); ReadColor(r); r.u8();
+                }
+            }
+        } else if (ver >= 9) {
             const std::uint32_t nMk = r.u32();
             for (std::uint32_t j = 0; j < nMk && r.ok; ++j) {
                 Ink::StrokeMark m;
@@ -371,30 +423,8 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
                 m.offsetPercent = r.u8() != 0;
                 m.nodeAnchor = (std::int32_t)r.u32();
                 const std::uint32_t nObj = r.u32();
-                for (std::uint32_t k = 0; k < nObj && r.ok; ++k) {
-                    Ink::MarkObject o;
-                    o.shape = (Ink::MarkShape)std::min<std::uint8_t>(r.u8(), 4);
-                    o.mode  = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
-                    o.bend  = (Ink::MarkBend)std::min<std::uint8_t>(r.u8(), 2);
-                    o.blend = (Ink::BlendMode)std::min<std::uint8_t>(
-                        r.u8(), (std::uint8_t)Ink::BlendMode::Erase);
-                    o.size = r.f64();
-                    o.width = r.f64();
-                    o.sizePercent = r.u8() != 0;
-                    o.rotation = r.f64();
-                    o.alongOffset = r.f64();
-                    o.nodeRef = r.u64();
-                    o.front = r.u8() != 0;
-                    o.gapStart = (Ink::GapCap)std::min<std::uint8_t>(r.u8(), 2);
-                    o.gapEnd   = (Ink::GapCap)std::min<std::uint8_t>(r.u8(), 2);
-                    o.gapCutsObjects = r.u8() != 0;
-                    o.gapMarker = (Ink::MarkShape)std::min<std::uint8_t>(r.u8(), 4);
-                    o.gapHasMarker = r.u8() != 0;
-                    o.gapMarkerRef = r.u64();
-                    o.color = ReadColor(r);
-                    o.useStrokeColor = r.u8() != 0;
-                    m.objects.push_back(o);
-                }
+                for (std::uint32_t k = 0; k < nObj && r.ok; ++k)
+                    m.objects.push_back(ReadMarkObject(r));
                 st.marks.push_back(m);
             }
         }

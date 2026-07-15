@@ -465,6 +465,12 @@ private:
     void PropCurveSection(Ink::NodeId id);   // spline type / NURBS params
     void PropFillsSection(Ink::NodeId id);
     void PropStrokesSection(Ink::NodeId id);
+    // Compact editor for a single mark object (shape/mode/bend/size/side/blend/
+    // colour) — shared by the gap start/end marker lists. Sets `structural` and
+    // `structLabel` on a structural edit. No Gap / nested gap.
+    bool PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
+                               Ink::Document& doc, Ink::NodeId hostId,
+                               bool& structural, const char*& structLabel);
     void PropModifiersSection(Ink::NodeId id);
     void PropInstanceSection(Ink::NodeId id);
     // Commit a whole-style edit as one undoable command (captures before/after).

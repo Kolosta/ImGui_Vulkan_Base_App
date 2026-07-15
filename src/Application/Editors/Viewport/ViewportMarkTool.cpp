@@ -372,6 +372,33 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             if (!o.useStrokeColor && o.shape != Ink::MarkShape::Instance)
                 col = { o.color.r * alpha, o.color.g * alpha,
                         o.color.b * alpha, alpha };
+            if (o.shape == Ink::MarkShape::Gap) {
+                // Preview a Gap by DARKENING the stroke over the future opening
+                // zone (a band along the line ± half the gap length), rather
+                // than drawing a filled shape.
+                const double total = PolyTotal(worldPoly);
+                if (total < 1e-9) continue;
+                const double half = std::max(1e-4, o.SizeUnits(sk.width)) * wsc * 0.5;
+                const double dc = (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total;
+                const double bw = sk.width * wsc * 0.5 + 1.0;
+                const Ink::Color dark{ 0, 0, 0, 0.45f };   // premultiplied
+                const int N = std::max(2, (int)(2.0 * half / std::max(1.0, 2.0)));
+                Ink::DVec2 prevA, prevB; bool have = false;
+                for (int i = 0; i <= N; ++i) {
+                    double d = dc - half + (2.0 * half) * (double)i / (double)N;
+                    d = d < 0 ? 0 : (d > total ? total : d);
+                    Ink::DVec2 p, tn; PointAtArc(worldPoly, d, p, tn);
+                    const Ink::DVec2 nb{ -tn.y * bw, tn.x * bw };
+                    const Ink::DVec2 a{ p.x + nb.x, p.y + nb.y };
+                    const Ink::DVec2 b{ p.x - nb.x, p.y - nb.y };
+                    if (have) {
+                        ov.AddTriangle(d2v(prevA), d2v(prevB), d2v(b), dark);
+                        ov.AddTriangle(d2v(prevA), d2v(b), d2v(a), dark);
+                    }
+                    prevA = a; prevB = b; have = true;
+                }
+                continue;
+            }
             if (o.shape == Ink::MarkShape::Instance) {
                 // A translucent preview of the referenced node's geometry placed
                 // at the mark (frame · scale · cancel-target-transform), exactly

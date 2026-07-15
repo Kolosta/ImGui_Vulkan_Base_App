@@ -352,6 +352,103 @@ void Application::PropFillsSection(Ink::NodeId id) {
     UI::EndPanel();
 }
 
+// ── Compact single-object editor (gap start/end markers) ────────────────────
+// The full palette of an object EXCEPT the Gap shape and the per-mark position
+// (each marker object carries its OWN side/offset). Edits apply immediately
+// (one style command each), consistent with the structural edits around it.
+bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
+                                        Ink::Document& doc, Ink::NodeId hostId,
+                                        bool& structural, const char*& structLabel) {
+    static const char* kShape[] = { "Circle", "Rectangle", "Diamond", "Instance" };
+    static const char* kMode[]  = { "Fusion", "Blend", "Cut" };
+    static const char* kBend[]  = { "Hard", "Bend", "Follow" };
+    static const char* kSide[]  = { "Center", "Left", "Right" };
+    static const char* kUnit[]  = { "%", "px" };
+    static const char* kBlend[] = {
+        "Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
+        "Color Dodge", "Color Burn", "Hard Light", "Soft Light", "Difference",
+        "Exclusion", "Erase" };
+    const double sw = strokeWidth > 1e-9 ? strokeWidth : 1.0;
+    bool changed = false;
+    auto S = [&](const char* l) { structural = true; structLabel = l; changed = true; };
+
+    int shp = std::min((int)o.shape, 3);
+    if (pr::DropdownRow("Object", kShape, 4, &shp)) {
+        const Ink::MarkShape ns = (Ink::MarkShape)shp;
+        if (ns == Ink::MarkShape::Rectangle && o.shape != Ink::MarkShape::Rectangle
+            && o.sizePercent && std::abs(o.size - 100.0) < 1e-6) o.size = 200.0;
+        o.bend = Ink::DefaultBendFor(ns); o.shape = ns; S("Marker Object");
+    }
+    int md = (int)o.mode;
+    if (pr::ButtonGroupRow("Mode", kMode, 3, &md)) { o.mode = (Ink::MarkObjectMode)md; S("Marker Mode"); }
+
+    // Its own side + offset (a marker never inherits — it sits at the gap end).
+    o.sideInherit = false;
+    int sd = (int)o.side;
+    if (pr::ButtonGroupRow("Side", kSide, 3, &sd)) { o.side = (Ink::MarkSide)sd; S("Marker Side"); }
+    if (o.side != Ink::MarkSide::Center) {
+        float off = (float)o.sideOffset;
+        if (pr::DragFloat("Distance", &off, o.sizePercent ? 1.0f : 0.1f,
+                          -100000.0f, 100000.0f, 2, o.sizePercent ? "%" : "")) {
+            o.sideOffset = off; doc.SetStyle(hostId, doc.Find(hostId)->style); }
+        if (ImGui::IsItemDeactivatedAfterEdit()) S("Marker Distance");
+    }
+
+    if (o.shape == Ink::MarkShape::Instance) {
+        bool pickReq = false;
+        if (pr::NodePickerRow("Node", doc, &o.nodeRef, hostId, true, false, &pickReq))
+            S("Marker Node");
+        float sc = (float)o.size;
+        if (pr::DragFloat("Scale", &sc, o.sizePercent ? 1.0f : 0.01f, 0.0f,
+                          1000000.0f, 2, o.sizePercent ? "%" : "\xC3\x97")) {
+            o.size = sc; S("Marker Scale"); }
+    } else {
+        auto sizeField = [&](const char* l, double* v) {
+            float f = (float)*v;
+            if (pr::DragFloat(l, &f, o.sizePercent ? 1.0f : 0.1f, 0.0f,
+                              1000000.0f, 2, o.sizePercent ? "%" : "")) { *v = f; S("Marker Size"); }
+        };
+        if (o.shape == Ink::MarkShape::Circle) sizeField("Radius", &o.size);
+        else if (o.shape == Ink::MarkShape::Rectangle) { sizeField("Length", &o.size); sizeField("Width", &o.width); }
+        else sizeField("Diagonal", &o.size);
+    }
+    int un = o.sizePercent ? 0 : 1;
+    if (pr::ButtonGroupRow("Unit", kUnit, 2, &un)) {
+        const bool toPct = (un == 0);
+        if (toPct != o.sizePercent) {
+            if (toPct) { o.size = o.size / sw * 100.0; o.width = o.width / sw * 100.0;
+                         o.sideOffset = o.sideOffset / sw * 100.0; }
+            else       { o.size = o.size * 0.01 * sw; o.width = o.width * 0.01 * sw;
+                         o.sideOffset = o.sideOffset * 0.01 * sw; }
+            o.sizePercent = toPct; S("Marker Unit");
+        }
+    }
+    if (o.shape != Ink::MarkShape::Circle) {
+        float rot = (float)(o.rotation * 180.0 / 3.14159265358979);
+        if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f, 1, "\xC2\xB0")) {
+            o.rotation = rot * 3.14159265358979 / 180.0; S("Marker Rotation"); }
+    }
+    int bd = (int)o.bend;
+    if (pr::ButtonGroupRow("Shape", kBend, 3, &bd)) { o.bend = (Ink::MarkBend)bd; S("Marker Bend"); }
+    if (o.mode == Ink::MarkObjectMode::Blend) {
+        int bl = std::min((int)o.blend, 12);
+        if (pr::DropdownRow("Blend mode", kBlend, 13, &bl)) { o.blend = (Ink::BlendMode)bl; S("Marker Blend"); }
+        int fr = o.front ? 1 : 0;
+        static const char* kOrder[] = { "Behind", "Front" };
+        if (pr::ButtonGroupRow("Order", kOrder, 2, &fr)) { o.front = (fr == 1); S("Marker Order"); }
+    }
+    if (o.shape != Ink::MarkShape::Instance && o.mode != Ink::MarkObjectMode::Subtract) {
+        bool inh = o.useStrokeColor;
+        if (pr::CheckRow("Stroke colour", &inh)) { o.useStrokeColor = inh; S("Marker Colour"); }
+        if (!o.useStrokeColor) {
+            bool rel = false;
+            if (pr::ColorRow("Colour", &o.color, true, &rel)) doc.SetStyle(hostId, doc.Find(hostId)->style);
+            if (rel) S("Marker Colour");
+        }
+    }
+    return changed;
+}
+
 // ── Strokes ───────────────────────────────────────────────────────────────────
 
 void Application::PropStrokesSection(Ink::NodeId id) {
@@ -716,47 +813,49 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                                     "Also remove the other mark objects that "
                                     "fall inside the gap (not just the line).",
                                     ImGui::GetIO().MousePos, 1.0f);
-                            // End markers: stamp a shape / instance at each end.
-                            bool hasM = o.gapHasMarker;
-                            if (pr::CheckRow("End markers", &hasM)) {
-                                o.gapHasMarker = hasM;
-                                structural = true; structLabel = "Gap Markers";
-                            }
-                            if (o.gapHasMarker) {
-                                static const char* kMShape[] = {
-                                    "Circle", "Rectangle", "Diamond", "Instance" };
-                                int ms = std::min((int)o.gapMarker, 3);
-                                if (pr::DropdownRow("Marker", kMShape, 4, &ms)) {
-                                    o.gapMarker = (Ink::MarkShape)ms;
+                            // Start / End marker OBJECT lists — each is a full
+                            // sub-object (shape, mode, bend, size, side, blend,
+                            // colour), edited by the shared compact editor.
+                            auto markerList = [&](const char* label,
+                                                  std::vector<Ink::MarkObject>& lst) {
+                                ImGui::PushStyleColor(ImGuiCol_Text,
+                                    pr::SafeColor(pr::Tok::S_Color_Text_Subtle,
+                                                  ImVec4(0.6f, 0.6f, 0.6f, 1)));
+                                ImGui::Text("%s (%d)", label, (int)lst.size());
+                                ImGui::PopStyleColor();
+                                int rm = -1;
+                                for (std::size_t k = 0; k < lst.size(); ++k) {
+                                    ImGui::PushID((int)(400 + k));
+                                    if (PropMarkObjectCompact(lst[k], s.width, doc,
+                                                              id, structural,
+                                                              structLabel))
+                                        {}
+                                    pr::ControlColumn();
+                                    if (ImGui::SmallButton("Remove")) rm = (int)k;
+                                    ImGui::Separator();
+                                    ImGui::PopID();
+                                }
+                                if (rm >= 0) {
+                                    lst.erase(lst.begin() + rm);
                                     structural = true; structLabel = "Gap Marker";
                                 }
-                                if (o.gapMarker == Ink::MarkShape::Instance) {
-                                    bool pr2 = false;
-                                    if (pr::NodePickerRow("Marker node", doc,
-                                            &o.gapMarkerRef, id, true, false, &pr2)) {
-                                        structural = true; structLabel = "Gap Marker Node";
-                                    }
-                                    if (pr2) {
-                                        const std::size_t mmi = mi, ooi = oi;
-                                        const int sIdx = strokeIdx;
-                                        BeginObjectPick(nullptr,
-                                            [this, id, sIdx, mmi, ooi](Ink::NodeId picked) {
-                                                if (!project_.document) return;
-                                                const Ink::Node* nn = project_.document->Find(id);
-                                                if (!nn || sIdx < 0 ||
-                                                    sIdx >= (int)nn->style.strokes.size())
-                                                    return;
-                                                Ink::Style before = nn->style, after = before;
-                                                auto& mks = after.strokes[(std::size_t)sIdx].marks;
-                                                if (mmi >= mks.size() ||
-                                                    ooi >= mks[mmi].objects.size()) return;
-                                                mks[mmi].objects[ooi].gapMarkerRef = picked;
-                                                project_.document->SetStyle(id, after);
-                                                CommitStyleEdit(id, before, "Gap Marker Node");
-                                            });
-                                    }
+                                pr::ControlColumn();
+                                if (ImGui::SmallButton("Add")) {
+                                    Ink::MarkObject mo;   // fused circle default
+                                    lst.push_back(mo);
+                                    structural = true; structLabel = "Gap Marker";
                                 }
-                            }
+                            };
+                            pr::GroupGap();
+                            ImGui::PushID("gapStart");
+                            markerList("Start markers", o.gapStartObjects);
+                            ImGui::PopID();
+                            pr::GroupGap();
+                            ImGui::PushID("gapEnd");
+                            markerList("End markers", o.gapEndObjects);
+                            ImGui::PopID();
+
+                            pr::GroupGap();
                             pr::ControlColumn();
                             if (ImGui::SmallButton("Remove object")) removeObj = (int)oi;
                             ImGui::Separator();
