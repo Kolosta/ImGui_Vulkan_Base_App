@@ -502,7 +502,21 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
         };
 
         if (gaps.empty()) {
-            strokeRun(0.0, total);
+            // No gaps → stroke the whole (possibly CLOSED) spine directly, so a
+            // cyclic path keeps its start/end seam joined. ExtractRun would drop
+            // the `closed` flag and leave the seam open.
+            if (stroke.dashPattern.empty()) {
+                CenterStroke(spine, stroke, w * 0.5, tol, em);
+            } else {
+                double offset = stroke.dashOffset;
+                if (!anchors.empty())
+                    offset = AnchorDashOffset(stroke.dashPattern,
+                                              anchors.front().elementCentred,
+                                              anchors.front().at, offset);
+                for (const Polyline& piece :
+                     DashSplit(spine, stroke.dashPattern, offset))
+                    CenterStroke(piece, stroke, w * 0.5, tol, em);
+            }
         } else {
             std::sort(gaps.begin(), gaps.end(),
                       [](const GapSpan& a, const GapSpan& b) { return a.from < b.from; });
@@ -555,16 +569,17 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                             ring.push_back(place.Apply(q));
                 }
                 if (ring.size() < 3) continue;
-                DVec2 c{ 0, 0 };
-                for (const DVec2& p : ring) { c.x += p.x; c.y += p.y; }
-                c.x /= (double)ring.size(); c.y /= (double)ring.size();
-                const std::uint32_t cc = em.V(c.x, c.y);
-                std::uint32_t prev = em.V(ring.back().x, ring.back().y);
-                for (const DVec2& p : ring) {
-                    const std::uint32_t cur = em.V(p.x, p.y);
-                    em.Tri(cc, prev, cur);
-                    prev = cur;
-                }
+                // Triangulate the (possibly CONCAVE for Bend/Follow) ring
+                // PROPERLY — a centroid fan double-covers a concave ring and
+                // leaves residual overlapping triangles. Merge the result into
+                // the stroke mesh with an index offset.
+                Polyline rp; rp.points = ring; rp.closed = true;
+                const Mesh rm = TriangulateFill({ rp }, FillRule::NonZero);
+                const std::uint32_t base = out.VertexCount();
+                for (std::size_t i = 0; i + 1 < rm.positions.size(); i += 2)
+                    em.V(rm.positions[i], rm.positions[i + 1]);
+                for (std::uint32_t idx : rm.indices)
+                    out.indices.push_back(base + idx);
             }
         }
     }
@@ -632,69 +647,76 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
     double off = 0.0;
     if (mark.side == MarkSide::Left)  off =  mark.OffsetUnits(strokeWidth);
     if (mark.side == MarkSide::Right) off = -mark.OffsetUnits(strokeWidth);
-    // A fine, fixed sampling step so the curved edges read as smooth (not
-    // faceted) at any zoom — the resampled ring is dense along the curve.
-    const double tol = std::min(tolerance > 0.0 ? tolerance : 0.25, 0.15);
+    // A VERY fine, fixed sampling step so the curved edges read as smooth at
+    // any practical zoom — the derived ring is figée (a boolean-like limit at
+    // extreme zoom), so it must be dense enough up front.
+    const double tol = std::min(tolerance > 0.0 ? tolerance : 0.25, 0.03);
     const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
     const double hv = obj.shape == MarkShape::Rectangle
                           ? std::max(1e-6, obj.WidthUnits(strokeWidth)) : hu;
 
-    // A point placed on the curve: walk `u` along the arc from the mark, then
-    // step `v` along the LOCAL normal — so `u` follows the bend. On the CONCAVE
-    // side of a tight turn the normal offset is CLAMPED to just inside the local
-    // radius of curvature, so the inner edge never folds past the centre of
-    // curvature (which would add self-overlapping matter).
+    const bool follow = obj.bend == MarkBend::Follow;
+    // Place a local shape point (u along the tangent, v across it): sample the
+    // curve at arc d0+u and step v along the LOCAL normal there — so the sample
+    // frame is perpendicular to the curve at THAT position (this gives Bend its
+    // perpendicular ends). The concave-side offset is clamped to just inside
+    // the local radius of curvature so it never folds past the curvature centre.
     const double ds = std::max(1e-4, total * 0.01);
     auto place = [&](double u, double v) -> DVec2 {
         const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
         const double ur = u * ca - v * sa, vr = u * sa + v * ca;
-        double du = d0 + ur;
-        du = du < 0 ? 0 : (du > total ? total : du);
+        double du = std::clamp(d0 + ur, 0.0, total);
         DVec2 pu; V2 tu;
         ArcSampleAt(spine, du, pu, tu);
         const V2 nu = Perp(tu);
         double vv = vr + off;
-        // Local signed curvature: how the tangent turns over a small arc step.
         DVec2 pa, pb2; V2 ta, tb2;
         ArcSampleAt(spine, std::min(total, du + ds), pa, ta);
         ArcSampleAt(spine, std::max(0.0, du - ds), pb2, tb2);
         const double dTheta = std::atan2(Cross(tb2, ta), Dot(tb2, ta));
-        const double curv = dTheta / (2.0 * ds);   // + turns left (toward +n)
+        const double curv = dTheta / (2.0 * ds);
         if (std::abs(curv) > 1e-9) {
-            const double R = 1.0 / curv;            // signed radius
-            // Offsetting toward the centre of curvature (same sign as R) folds
-            // once |vv| reaches |R|; clamp to 90 % of it.
+            const double R = 1.0 / curv;
             if (R > 0.0 && vv > 0.9 * R)  vv = 0.9 * R;
             if (R < 0.0 && vv < 0.9 * R)  vv = 0.9 * R;
         }
         return { pu.x + nu.x * vv, pu.y + nu.y * vv };
     };
-    // Resample each side of the shape along u so the long edges curve. Use a
-    // FINE fixed step (a few times the tolerance) so the curved edges read as
-    // smooth at any zoom — the ring is dense along the arc.
-    const double step = std::max(tol * 1.5, 0.1);
+    // A shape EDGE from local (u0,v0) to (u1,v1). FOLLOW resamples it densely so
+    // it curves with the line; BEND keeps it a straight segment between the two
+    // (already-curve-placed) corners. The last point is NOT emitted (the next
+    // edge's first point continues the ring) — avoids a duplicate seam vertex.
+    const double step = std::max(tol, 0.05);
     auto edge = [&](double u0, double v0, double u1, double v1) {
-        const double len = std::hypot(u1 - u0, v1 - v0);
-        int n = (int)std::ceil(len / step);
-        n = n < 1 ? 1 : (n > 2048 ? 2048 : n);
+        int n = 1;
+        if (follow) {
+            const double len = std::hypot(u1 - u0, v1 - v0);
+            n = (int)std::ceil(len / step);
+            n = n < 1 ? 1 : (n > 4096 ? 4096 : n);
+        }
         for (int i = 0; i < n; ++i) {
             const double f = (double)i / (double)n;
             outRing.push_back(place(u0 + (u1 - u0) * f, v0 + (v1 - v0) * f));
         }
     };
     if (obj.shape == MarkShape::Circle) {
+        // A circle is one closed loop; sample its outline (fine for Follow,
+        // still smooth for Bend since every point uses its local frame).
         int steps = (int)std::ceil(6.28318530717958 /
             (hu > tol ? 2.0 * std::acos(1.0 - tol / hu) : 1.0));
-        steps = steps < 24 ? 24 : (steps > 512 ? 512 : steps);
+        steps = steps < 32 ? 32 : (steps > 512 ? 512 : steps);
         for (int i = 0; i < steps; ++i) {
             const double a = 6.28318530717958 * (double)i / (double)steps;
             outRing.push_back(place(std::cos(a) * hu, std::sin(a) * hu));
         }
     } else if (obj.shape == MarkShape::Rectangle) {
-        edge( hu, -hv,  hu,  hv);
-        edge( hu,  hv, -hu,  hv);
-        edge(-hu,  hv, -hu, -hv);
-        edge(-hu, -hv,  hu, -hv);
+        // Corners CCW; the two TRANSVERSE edges (constant u) are straight in
+        // both modes (perpendicular to the curve there); the two LONGITUDINAL
+        // edges follow the curve in Follow, straight in Bend.
+        edge( hu, -hv,  hu,  hv);   // right transverse
+        edge( hu,  hv, -hu,  hv);   // top longitudinal
+        edge(-hu,  hv, -hu, -hv);   // left transverse
+        edge(-hu, -hv,  hu, -hv);   // bottom longitudinal
     } else {   // Diamond
         edge( hu, 0, 0,  hu);
         edge( 0, hu, -hu, 0);
