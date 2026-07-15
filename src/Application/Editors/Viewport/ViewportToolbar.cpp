@@ -217,29 +217,35 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
     const float gs = ds.GetGlobalScale();
     EditorState* pst = &st;
 
-    // LEFT: Object/Edit mode + ruler space (greyed) + fill/stroke swatches
-    // (+ the mark-kind picker while the line-mark tool is active).
-    const bool markTool = Shortcuts::Tools::ToolManager::Instance()
-                              .GetActiveTool() == "tool.linemark";
+    // LEFT: Object / Edit / Line Mark mode + ruler space (greyed) + fill/stroke
+    // swatches (+ the mark-shape picker while in Line Mark mode).
+    const bool markMode = edit_.mode == EditorMode::LineMark;
     bar.left.width =
-        (110.0f + 6.0f + 130.0f + 6.0f + 60.0f + (markTool ? 136.0f : 0.0f)) * gs;
-    bar.left.draw = [this, gs, pst, markTool](ImVec2 pos, float bh) {
+        (110.0f + 6.0f + 130.0f + 6.0f + 60.0f + (markMode ? 136.0f : 0.0f)) * gs;
+    bar.left.draw = [this, gs, pst, markMode](ImVec2 pos, float bh) {
         ImGui::SetCursorPos(pos);
         const bool canEdit = edit_.active != Ink::kNullNode && project_.document &&
             project_.document->Find(edit_.active) &&
             project_.document->Find(edit_.active)->kind == Ink::NodeKind::Path;
         { UI::DropdownConfig cfg; cfg.id = "##editormode";
-          cfg.triggerLabel = (edit_.mode == EditorMode::Edit) ? "Edit Mode" : "Object Mode";
+          cfg.triggerLabel = edit_.mode == EditorMode::Edit ? "Edit Mode"
+                           : edit_.mode == EditorMode::LineMark ? "Line Mark Mode"
+                                                                : "Object Mode";
           { UI::DropdownItem it; it.label = "Object Mode";
             it.tooltip = "Select and transform whole objects"; cfg.items.push_back(it); }
           { UI::DropdownItem it; it.label = "Edit Mode";
             it.tooltip = "Edit an object's points"; it.enabled = canEdit;
             cfg.items.push_back(it); }
-          cfg.selectedIndex = (edit_.mode == EditorMode::Edit) ? 1 : 0;
+          { UI::DropdownItem it; it.label = "Line Mark Mode";
+            it.tooltip = "Place and edit marks along strokes (Shift+Tab)";
+            cfg.items.push_back(it); }
+          cfg.selectedIndex = edit_.mode == EditorMode::Edit ? 1
+                            : edit_.mode == EditorMode::LineMark ? 2 : 0;
           UI::DropdownResult r = UI::Dropdown(cfg);
           if (r.changed) {
-              if (r.selected == 0) Action_ExitEditMode();
-              else if (r.selected == 1 && canEdit) Action_EnterEditMode();
+              if (r.selected == 0) SetEditorMode(EditorMode::Object);
+              else if (r.selected == 1 && canEdit) SetEditorMode(EditorMode::Edit);
+              else if (r.selected == 2) SetEditorMode(EditorMode::LineMark);
           }
         }
         // Ruler-space dropdown — the rulers/ruler-space feature is not on Ink
@@ -259,7 +265,7 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
         // The default OBJECT a click drops on the line: an SVG-marker shape
         // and whether it ADDS to or SUBTRACTS from the stroke. Phase, side,
         // offset and the full object list are edited in Properties.
-        if (markTool) {
+        if (markMode) {
             ImGui::SameLine(0.0f, 8.0f * gs);
             static const char* kShapes[] = { "Circle", "Rectangle", "Diamond" };
             UI::DropdownConfig cfg; cfg.id = "##markshape";

@@ -377,8 +377,7 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
     //    the overlay list, so it drives from the overlay phase). ─────────────
     // The object eyedropper (a Properties node picker) owns the click while
     // active — the line-mark tool must not preview or place anything then.
-    if (Shortcuts::Tools::ToolManager::Instance().GetActiveTool() ==
-            "tool.linemark" && !ObjectPickActive())
+    if (MarkModeActive() && !ObjectPickActive())
         HandleMarkTool(st, cam, ov, hovered);
 
     (void)handleCol;

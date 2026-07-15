@@ -38,7 +38,7 @@ enum class TransformOrientation : uint8_t {
     Parent,       // active object's parent axes (object parenting, Lot 7)
 };
 
-enum class EditorMode : uint8_t { Object = 0, Edit };
+enum class EditorMode : uint8_t { Object = 0, Edit, LineMark };
 
 struct SnapSettings {
     // The legacy bar's full vocabulary; v1 implements Increment (the others
@@ -229,7 +229,7 @@ struct EditContext {
         return false;
     }
 
-    // ── Line-mark selection (tool.linemark): marks are quasi-objects ─────────
+    // ── Line-mark selection (Line-Mark mode): marks are quasi-objects ────────
     // A mark is addressed (node, stroke index, mark index) — it lives on the
     // node's Style, so every mark edit goes through SetStyle (undoable).
     struct MarkRef {

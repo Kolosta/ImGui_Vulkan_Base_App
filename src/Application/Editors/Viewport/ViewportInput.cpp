@@ -50,13 +50,16 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     // HandleMarkTool (overlay phase), so the router must stay inert.
     if (markGrab_.Active()) return;
 
-    // Esc (no modal op): clear the mark selection (line-mark tool), the
+    // Esc (no modal op): clear the mark selection (Line-Mark mode), the
     // selection (Object) or leave Edit mode.
     if (hovered && ImGui::IsKeyPressed(ImGuiKey_Escape) && !io.WantTextInput) {
-        if (MarkToolArmed()) edit_.markSel.clear();
+        if (MarkModeActive()) edit_.markSel.clear();
         else if (edit_.mode == EditorMode::Edit) Action_ExitEditMode();
         else edit_.Clear();
     }
+    // Line-Mark mode: all mouse handling lives in HandleMarkTool (overlay
+    // phase — it needs the overlay list for ghosts/handles).
+    if (MarkModeActive()) return;
 
     if (!hovered) return;
     // A popup is up: don't also drive the canvas underneath it.
@@ -151,10 +154,6 @@ void Application::ToolMousePress(EditorState& st, const ViewCam& cam,
         edit_.cursor2DValid = true;
         return;
     }
-
-    // Line-mark tool: all mouse handling lives in HandleMarkTool (overlay
-    // phase — it needs the overlay list for ghosts/handles).
-    if (tool == "tool.linemark") return;
 
     if (tool == "tool.select") {
         if (edit_.mode == EditorMode::Edit && edit_.active != Ink::kNullNode) {

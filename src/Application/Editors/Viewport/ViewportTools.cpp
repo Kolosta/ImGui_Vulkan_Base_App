@@ -572,8 +572,37 @@ void Application::Action_ExitEditMode() {
 }
 
 void Application::Action_ToggleEditMode() {
+    // Tab cycles Object ⇄ Edit. From Line-Mark mode, Tab returns to Object.
+    if (edit_.mode == EditorMode::LineMark) { SetEditorMode(EditorMode::Object); return; }
     if (edit_.mode == EditorMode::Edit) Action_ExitEditMode();
     else Action_EnterEditMode();
+}
+
+void Application::Action_ToggleLineMarkMode() {
+    // Shift+Tab enters / leaves the Line-Mark mode.
+    SetEditorMode(edit_.mode == EditorMode::LineMark ? EditorMode::Object
+                                                     : EditorMode::LineMark);
+}
+
+void Application::SetEditorMode(EditorMode mode) {
+    if (edit_.mode == mode) return;
+    // Leaving Line-Mark mode drops the mark selection + any in-progress gesture.
+    if (edit_.mode == EditorMode::LineMark) {
+        edit_.markSel.clear();
+        markGrab_.Reset(); markBox_ = {}; markDrag_ = {};
+    }
+    edit_.mode = mode;
+    edit_.elemSel.clear();
+    if (mode == EditorMode::LineMark) {
+        // Line-Mark defaults: transform each mark about its OWN origin, in its
+        // LOCAL axes (so R/S act along the object's length/width).
+        edit_.pivot = PivotMode::IndividualOrigins;
+        edit_.orientation = TransformOrientation::Local;
+        LogInfoAction("Enter Line Mark Mode");
+    } else {
+        LogInfoAction(mode == EditorMode::Edit ? "Enter Edit Mode"
+                                               : "Enter Object Mode");
+    }
 }
 
 void Application::Action_ApplyScale() {
@@ -628,9 +657,11 @@ void Application::Action_BeginScale() {
     if (hoveredViewport_) BeginTransform(TransformOp::Kind::Scale, *hoveredViewport_);
 }
 void Application::Action_ConstrainAxisX() {
+    if (markGrab_.Active()) { markGrab_.axis = (markGrab_.axis == 0) ? -1 : 0; return; }
     if (transformOp_.Active()) transformOp_.axis = (transformOp_.axis == 0) ? -1 : 0;
 }
 void Application::Action_ConstrainAxisY() {
+    if (markGrab_.Active()) { markGrab_.axis = (markGrab_.axis == 1) ? -1 : 1; return; }
     if (transformOp_.Active()) transformOp_.axis = (transformOp_.axis == 1) ? -1 : 1;
 }
 

@@ -578,7 +578,7 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                     "Lighten", "Color Dodge", "Color Burn", "Hard Light",
                     "Soft Light", "Difference", "Exclusion", "Erase" };
                 static const char* kShape[] = {
-                    "Circle", "Rectangle", "Diamond", "Instance" };
+                    "Circle", "Rectangle", "Diamond", "Instance", "Gap" };
                 ImGui::PushStyleColor(ImGuiCol_Text,
                     pr::SafeColor(pr::Tok::S_Color_Text_Subtle,
                                   ImVec4(0.6f, 0.6f, 0.6f, 1)));
@@ -659,17 +659,68 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                         Ink::MarkObject& o = m.objects[oi];
                         ImGui::PushID((int)(50 + oi));
                         int shp = (int)o.shape;
-                        if (pr::DropdownRow("Object", kShape, 4, &shp)) {
+                        if (pr::DropdownRow("Object", kShape, 5, &shp)) {
                             const Ink::MarkShape ns = (Ink::MarkShape)shp;
                             // Switching TO a rectangle applies its default
-                            // proportions (length 200 %, width 100 %) when the
-                            // dimensions still hold the shared 100 % default.
+                            // proportions (length 200 %) when the dimensions
+                            // still hold the shared 100 % default.
                             if (ns == Ink::MarkShape::Rectangle &&
                                 o.shape != Ink::MarkShape::Rectangle &&
                                 o.sizePercent && std::abs(o.size - 100.0) < 1e-6)
                                 o.size = 200.0;
+                            // Give the new shape its default bend.
+                            o.bend = Ink::DefaultBendFor(ns);
                             o.shape = ns;
                             structural = true; structLabel = "Mark Object";
+                        }
+                        const bool isGap = o.shape == Ink::MarkShape::Gap;
+                        // ── Gap: opens the line over a length with end caps ──
+                        if (isGap) {
+                            float len = (float)o.size;
+                            if (pr::DragFloat("Length", &len,
+                                    o.sizePercent ? 1.0f : 0.1f, 0.0f, 1000000.0f,
+                                    2, o.sizePercent ? "%" : "")) {
+                                o.size = len; structural = true;
+                                structLabel = "Gap Length";
+                            }
+                            static const char* kUnitG[] = { "%", "px" };
+                            const double sw = s.width > 1e-9 ? s.width : 1.0;
+                            int un = o.sizePercent ? 0 : 1;
+                            if (pr::ButtonGroupRow("Unit", kUnitG, 2, &un)) {
+                                const bool toPct = (un == 0);
+                                if (toPct != o.sizePercent) {
+                                    o.size = toPct ? o.size / sw * 100.0
+                                                   : o.size * 0.01 * sw;
+                                    o.sizePercent = toPct;
+                                    structural = true; structLabel = "Gap Unit";
+                                }
+                            }
+                            static const char* kCap[] = { "Butt", "Round", "Square" };
+                            int cs = (int)o.gapStart;
+                            if (pr::DropdownRow("Start cap", kCap, 3, &cs)) {
+                                o.gapStart = (Ink::GapCap)cs;
+                                structural = true; structLabel = "Gap Cap";
+                            }
+                            int ce = (int)o.gapEnd;
+                            if (pr::DropdownRow("End cap", kCap, 3, &ce)) {
+                                o.gapEnd = (Ink::GapCap)ce;
+                                structural = true; structLabel = "Gap Cap";
+                            }
+                            bool cut = o.gapCutsObjects;
+                            if (pr::CheckRow("Cut objects", &cut)) {
+                                o.gapCutsObjects = cut;
+                                structural = true; structLabel = "Gap Cut Objects";
+                            }
+                            if (ImGui::IsItemHovered())
+                                UI::DrawTooltipTranslucent(
+                                    "Also remove the other mark objects that "
+                                    "fall inside the gap (not just the line).",
+                                    ImGui::GetIO().MousePos, 1.0f);
+                            pr::ControlColumn();
+                            if (ImGui::SmallButton("Remove object")) removeObj = (int)oi;
+                            ImGui::Separator();
+                            ImGui::PopID();
+                            continue;
                         }
                         // Mode: Fusion (part of the stroke) / Blend / Subtract.
                         static const char* kMode[] = { "Fusion", "Blend", "Cut" };
@@ -780,7 +831,8 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                         if (ImGui::IsItemDeactivatedAfterEdit())
                             liveApply("Mark Object Rotation", true);
                         // Hard shape / Bend (lean) / Follow (curve the outline).
-                        if (o.shape != Ink::MarkShape::Instance) {
+                        // Available for instances too (they lean / warp with it).
+                        {
                             static const char* kBend[] = { "Hard", "Bend",
                                                            "Follow" };
                             int bd = (int)o.bend;

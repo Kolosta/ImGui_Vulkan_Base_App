@@ -168,6 +168,8 @@ private:
     void Action_EnterEditMode();
     void Action_ExitEditMode();
     void Action_ToggleEditMode();
+    void Action_ToggleLineMarkMode();   // Shift+Tab: enter/leave Line-Mark mode
+    void SetEditorMode(EditorMode mode); // switch mode + apply its defaults
     void Action_ApplyScale();
     void Action_BeginMove();
     void Action_BeginRotate();
@@ -199,7 +201,7 @@ private:
     bool           penDragging_ = false;       // pulling the new anchor's handles
     Ink::NodeId    penNode_     = Ink::kNullNode;
     Ink::SplineType penSpline_  = Ink::SplineType::Bezier;
-    // ── Line-mark tool (tool.linemark) — the generic mark editing on strokes ─
+    // ── Line-Mark MODE (EditorMode::LineMark) — generic mark editing ─────────
     // Handles/ghosts only render while the tool is active. Click places a
     // neutral mark (default object = `markPlaceShape_`) on the nearest stroked
     // line; a click on an existing handle selects (Shift toggles, Alt deletes)
@@ -209,7 +211,8 @@ private:
                         Ink::OverlayList& ov, bool hovered);
     void BeginMarkTransform(TransformOp::Kind kind);
     void DeleteSelectedMarks();
-    bool MarkToolArmed() const;   // tool active + marks selected (redirect G/R/X)
+    bool MarkModeActive() const;  // the Line-Mark editor mode is active
+    bool MarkToolArmed() const;   // mode active + marks selected (redirect G/R/S/X)
     // The default object a click drops on the line (top-bar picker): a shape
     // and whether it ADDS to or SUBTRACTS from the stroke.
     Ink::MarkShape markPlaceShape_ = Ink::MarkShape::Circle;
@@ -222,12 +225,14 @@ private:
         double dragT = 0.0;     // its previewed t this frame
         bool pendingCycle = false;  // a plain click (no drag) cycles the phase
     } markDrag_;
-    struct MarkGrab {           // modal G (slide along the curve) over markSel
-        int op = 0;             // 0 = none, 1 = grab
+    struct MarkGrab {           // modal G/R/S over the selected marks
+        int op = 0;             // 0 none, 1 slide(G), 2 rotate(R), 3 scale(S)
+        int axis = -1;          // R/S constraint: -1 free, 0 = X/length, 1 = Y/width
         const void* owner = nullptr;
         ImVec2 startMouse{};
         std::vector<EditContext::MarkRef> refs;
-        std::vector<double> t0;
+        std::vector<double> t0;         // G: each mark's t at press
+        std::vector<double> rot0, size0, width0;  // R/S: each object's start
         bool Active() const { return op != 0; }
         void Reset() { *this = MarkGrab{}; }
     } markGrab_;
