@@ -185,7 +185,8 @@ struct StrokeMark {
     double       t    = 0.5;  // arc-length position along it, in [0,1]
     MarkPhase    phase = MarkPhase::Neutral;
     MarkSide     side  = MarkSide::Center;
-    double       offset = 0.0;  // Left/Right: signed distance to the line
+    double       offset = 40.0;  // Left/Right: signed distance to the line
+                                 // (default 40 % of the stroke width)
     bool         offsetPercent = true;  // offset is a % of the stroke width
                                         // (100 % = one full width) vs doc-units
     // If ≥ 0 the mark is PINNED to that control point of its subpath (t is

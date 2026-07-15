@@ -343,6 +343,14 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
     if (w <= 0.0) return out;
     const double tol = tolerance > 0.0 ? tolerance : 0.25;
 
+    // A mark's OBJECTS are placed on the ORIGINAL path flattened at a FIXED fine
+    // tolerance (kMarkPlaceTolerance), NOT the per-tier / aligned spine — so a
+    // Fusion object lands at exactly the same spot the Scene places a Blend/Cut
+    // object, and stays put at any zoom. Falls back to the tier spine when the
+    // source path is unavailable (a boolean-derived outline).
+    std::vector<Polyline> placeSpines;
+    if (source) placeSpines = Flatten(*source, kMarkPlaceTolerance);
+
     for (std::size_t subI = 0; subI < polylines.size(); ++subI) {
         const Polyline& src = polylines[subI];
         if (src.points.size() < 2) continue;
@@ -409,8 +417,12 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                 CenterStroke(piece, stroke, w * 0.5, tol, em);
         }
 
-        // Fusion mark objects → triangulated INTO the stroke mesh at THIS
-        // tier's tolerance (one alpha, vector-smooth at any zoom).
+        // Fusion mark objects → triangulated INTO the stroke mesh (one alpha,
+        // vector-smooth at any zoom). Placed on the fine `placeSpine` so the
+        // spot matches the Scene's Blend/Cut placement exactly.
+        const Polyline& placeSpine =
+            (subI < placeSpines.size() && placeSpines[subI].points.size() >= 2)
+                ? placeSpines[subI] : spine;
         for (const StrokeMark& m : stroke.marks) {
             if (m.sub != (std::int32_t)subI) continue;
             for (const MarkObject& obj : m.objects) {
@@ -422,12 +434,13 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                     !obj.useStrokeColor) continue;
                 std::vector<DVec2> ring;
                 if (obj.bend == MarkBend::Follow) {
-                    if (!MarkFollowContour(spine, m, obj, w, tol, ring)) continue;
+                    if (!MarkFollowContour(placeSpine, m, obj, w, tol, ring))
+                        continue;
                 } else {
                     // Parametric primitive → flatten at tier tolerance → place.
                     const PathData shape = MarkPrimitiveShape(obj, w);
                     if (shape.Empty()) continue;
-                    const DMat23 place = MarkPlaceMatrix(spine, m, obj, w);
+                    const DMat23 place = MarkPlaceMatrix(placeSpine, m, obj, w);
                     for (const Polyline& pl : Flatten(shape, tol))
                         for (const DVec2& q : pl.points)
                             ring.push_back(place.Apply(q));
@@ -524,9 +537,12 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
                           ? std::max(1e-6, obj.WidthUnits(strokeWidth)) : hu;
 
     // A point placed on the curve: walk `u` along the arc from the mark, then
-    // step `v` along the LOCAL normal — so `u` follows the bend.
+    // step `v` along the LOCAL normal — so `u` follows the bend. On the CONCAVE
+    // side of a tight turn the normal offset is CLAMPED to just inside the local
+    // radius of curvature, so the inner edge never folds past the centre of
+    // curvature (which would add self-overlapping matter).
+    const double ds = std::max(1e-4, total * 0.01);
     auto place = [&](double u, double v) -> DVec2 {
-        // Apply the object rotation in the (u,v) frame first.
         const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
         const double ur = u * ca - v * sa, vr = u * sa + v * ca;
         double du = d0 + ur;
@@ -534,7 +550,20 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
         DVec2 pu; V2 tu;
         ArcSampleAt(spine, du, pu, tu);
         const V2 nu = Perp(tu);
-        const double vv = vr + off;
+        double vv = vr + off;
+        // Local signed curvature: how the tangent turns over a small arc step.
+        DVec2 pa, pb2; V2 ta, tb2;
+        ArcSampleAt(spine, std::min(total, du + ds), pa, ta);
+        ArcSampleAt(spine, std::max(0.0, du - ds), pb2, tb2);
+        const double dTheta = std::atan2(Cross(tb2, ta), Dot(tb2, ta));
+        const double curv = dTheta / (2.0 * ds);   // + turns left (toward +n)
+        if (std::abs(curv) > 1e-9) {
+            const double R = 1.0 / curv;            // signed radius
+            // Offsetting toward the centre of curvature (same sign as R) folds
+            // once |vv| reaches |R|; clamp to 90 % of it.
+            if (R > 0.0 && vv > 0.9 * R)  vv = 0.9 * R;
+            if (R < 0.0 && vv < 0.9 * R)  vv = 0.9 * R;
+        }
         return { pu.x + nu.x * vv, pu.y + nu.y * vv };
     };
     // Resample each side of the shape along u so the long edges curve.

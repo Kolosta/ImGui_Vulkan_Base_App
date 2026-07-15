@@ -53,6 +53,14 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                       const Stroke& stroke, double tolerance,
                       const PathData* source = nullptr);
 
+// The FIXED, fine node-local tolerance at which a mark's HOST spine is
+// flattened for PLACEMENT (point + tangent along the curve). Fixed — not per
+// tier — so a mark's objects land at exactly the same spot whatever the zoom,
+// and so every mode (Fusion in the stroke mesh, Blend/Cut as their own
+// drawables) places identically. Small enough that the tangent is accurate on
+// tight curves.
+inline constexpr double kMarkPlaceTolerance = 0.05;
+
 // The node-local, ORIGIN-CENTRED PARAMETRIC PathData of a primitive mark object
 // (Circle → Ellipse, Rectangle → Rect, Diamond → Polygon) at its resolved size
 // (`strokeWidth` resolves a percentage). Placed by MarkPlaceMatrix and

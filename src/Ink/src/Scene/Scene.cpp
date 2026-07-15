@@ -747,10 +747,11 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
     }
 
     // Emit one separate object (Blend / Subtract / Instance). Placed with the
-    // SAME helpers the stroker used for Fusion, and — for Hard/Bend primitives —
-    // as PARAMETRIC geometry placed by a transform, so the GeometryCache
-    // re-tessellates it per zoom tier (vector-exact at any zoom).
-    auto flat = geom::Flatten(*geo, 0.5);
+    // SAME helpers (and the SAME fine placement tolerance) the stroker uses for
+    // Fusion, so all modes line up exactly. Hard/Bend primitives are PARAMETRIC
+    // geometry placed by a transform, so the GeometryCache re-tessellates them
+    // per zoom tier (vector-exact at any zoom).
+    auto flat = geom::Flatten(*geo, geom::kMarkPlaceTolerance);
     auto emitObject = [&](const StrokeMark& m, const MarkObject& obj) {
         if (m.sub < 0 || m.sub >= (int)flat.size()) return;
         const geom::Polyline& spine = flat[(std::size_t)m.sub];
@@ -770,10 +771,17 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         if (obj.shape == MarkShape::Instance) {
             const Node* target = doc.Find(obj.nodeRef);
             if (!target || target == &n || instDepth >= 6) return;
-            const DMat23 place = geom::MarkPlaceMatrix(spine, m, obj, s.width);
-            // Cancel the target's OWN transform so its geometry lands at the
-            // mark point (it usually lives elsewhere on the page) — the same
-            // decoupling as a linked instance.
+            // place = frame at the mark (translate + rotate to the tangent).
+            const DMat23 frame = geom::MarkPlaceMatrix(spine, m, obj, s.width);
+            // Uniform scale: `size` is the factor (100 % = ×1, or the raw
+            // doc-unit value read as a multiplier).
+            const double k = obj.sizePercent ? obj.size * 0.01
+                                             : std::max(1e-6, obj.size);
+            DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
+            // The instance is anchored at the target's ORIGIN (its transform
+            // translation), decoupled like a linked instance: cancel the
+            // target's own transform, then place = frame · scale.
+            const DMat23 place = frame.Compose(scaleM);
             const DMat23 corr =
                 place.Compose(InvertAffine(target->transform.Matrix()));
             EmitNode(doc, *target, world.Compose(corr), objScope,
