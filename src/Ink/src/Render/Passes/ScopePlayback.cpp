@@ -159,14 +159,21 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
             const CmdSegment* segs = v.segScratch.data() + run.segOffset;
             const std::uint32_t nSegs = run.segCount;
             const bool overlayHere = isRoot && !overlayOnTop;
+            // Overlay dedup groups: stable copies made in the prepare phase;
+            // sharing the root pass, their tags continue the root run's.
+            const OverlayList::DedupGroup* ovDedups = v.overlayDedupScratch.data();
+            const std::uint32_t ovDedupCount =
+                (std::uint32_t)v.overlayDedupScratch.size();
+            const std::uint32_t ovBaseTag = v.overlayBaseTag;
             g.AddRenderPass("scope.content", content, {},
                             [&r, worldCam, indirect, segs, nSegs, sceneSet,
-                             overlayHere, pxCam, overlayBuffer,
-                             overlayCount](VkCommandBuffer cmd) {
+                             overlayHere, pxCam, overlayBuffer, overlayCount,
+                             ovDedups, ovDedupCount, ovBaseTag](VkCommandBuffer cmd) {
                 RecordContentPass(r, cmd, worldCam, indirect, segs, nSegs,
                                   sceneSet);
                 if (overlayHere)
-                    RecordOverlayPass(r, cmd, pxCam, overlayBuffer, overlayCount);
+                    RecordOverlayPass(r, cmd, pxCam, overlayBuffer, overlayCount,
+                                      ovDedups, ovDedupCount, ovBaseTag);
             });
             continue;
         }
@@ -200,10 +207,15 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
         content.stencil       = &ov.stencil;
         content.clearStencil  = true;
         const PushCamera pxCam = px;
+        // Own pass with a freshly-cleared stencil → dedup tags start at 2.
+        const OverlayList::DedupGroup* ovDedups = v.overlayDedupScratch.data();
+        const std::uint32_t ovDedupCount =
+            (std::uint32_t)v.overlayDedupScratch.size();
         g.AddRenderPass("overlay.top", content, {},
-                        [&r, pxCam, overlayBuffer,
-                         overlayCount](VkCommandBuffer cmd) {
-            RecordOverlayPass(r, cmd, pxCam, overlayBuffer, overlayCount);
+                        [&r, pxCam, overlayBuffer, overlayCount,
+                         ovDedups, ovDedupCount](VkCommandBuffer cmd) {
+            RecordOverlayPass(r, cmd, pxCam, overlayBuffer, overlayCount,
+                              ovDedups, ovDedupCount, 2);
         });
 
         IsoTarget& root = v.iso[0];

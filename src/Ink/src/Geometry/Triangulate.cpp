@@ -193,7 +193,9 @@ Mesh TriangulateFill(const std::vector<Polyline>& polylines, FillRule rule) {
     };
     std::vector<Ring> rings;
     for (const Polyline& pl : polylines) {
-        if (!pl.closed) continue;
+        // OPEN subpaths fill too, implicitly closed by the straight segment
+        // last→first (the SVG fill rule) — an unfinished pen path shows its
+        // real fill live while it is being drawn.
         Ring r;
         r.pts = CleanRing(pl.points);
         if (r.pts.size() < 3) continue;

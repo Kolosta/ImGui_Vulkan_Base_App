@@ -842,11 +842,22 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
             // curve-lean — an instance now always gets a real bend transform.
             MarkObject pobj = obj;
             if (pobj.bend == MarkBend::Follow) pobj.bend = MarkBend::Bend;
-            const DMat23 frame = geom::MarkPlaceMatrix(spine, m, pobj, s.width);
             // Uniform scale: `size` is the factor (100 % = ×1, or the raw
             // doc-unit value read as a multiplier).
             const double k = obj.sizePercent ? obj.size * 0.01
                                              : std::max(1e-6, obj.size);
+            // Bend shear extent: the shear is the tangent turn measured over the
+            // shape's half-length along the curve. An instance's meaningful
+            // extent is its GEOMETRY's radius × the scale (obj.size is a scale
+            // factor for instances, not a length — the default SizeUnits gave a
+            // near-zero span, so Bend visually did nothing on instances).
+            double instR = 0.0;
+            for (const Subpath& tsp : target->path.subpaths)
+                for (const Anchor& ta : tsp.anchors)
+                    instR = std::max(instR, std::hypot(ta.pos.x, ta.pos.y));
+            const double bendExtent = std::max(1e-3, instR * k);
+            const DMat23 frame =
+                geom::MarkPlaceMatrix(spine, m, pobj, s.width, bendExtent);
             DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
             // The instance is anchored at the target's ORIGIN (its transform
             // translation), decoupled like a linked instance: cancel the
@@ -868,12 +879,13 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         d.scope = objScope;
         if (geom::BendsAlongCurve(obj.bend)) {
             // Bend / Follow bend the outline along the line → a derived ring built
-            // ONCE at a fixed fine tolerance (node-local, so d.world = the node
-            // world). Cheap and stable; the ring is dense enough to read smooth at
-            // normal zoom (a documented figée limit at extreme zoom).
+            // ONCE per scene compile at the fine ring tolerance (node-local, so
+            // d.world = the node world). Smooth well past normal zoom; only an
+            // extreme zoom shows facets (documented limit — Fusion rings, built
+            // per tier by the stroker, don't have it).
             std::vector<DVec2> ring;
             if (!geom::MarkFollowContour(spine, m, obj, s.width,
-                                         geom::kMarkPlaceTolerance, ring))
+                                         geom::kMarkRingTolerance, ring))
                 return;
             markShapes_.push_back(RingToPath(ring));
             const PathData* g = &markShapes_.back();
@@ -889,11 +901,15 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
             d.world = world.Compose(place);  d.path = g;  d.pathHash = g->Hash();
         }
         if (erase) {
-            d.color = Color{ 0, 0, 0, 1 };
+            // dst-out strength = the object's opacity: 1 cuts the stroke layer
+            // fully, <1 is a PARTIAL erase (the stroke shows through dimmed —
+            // the live mark-move preview).
+            d.color = Color{ 0, 0, 0, std::clamp(obj.opacity, 0.0f, 1.0f) };
             d.clip = ClipRole::EraseWrite;
             d.clipPinned = true;
         } else {
             d.color = obj.useStrokeColor ? s.paint.color : obj.color;
+            d.color.a *= std::clamp(obj.opacity, 0.0f, 1.0f);
         }
         drawables_.push_back(std::move(d));
     };

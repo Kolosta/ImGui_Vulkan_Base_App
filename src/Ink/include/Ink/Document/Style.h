@@ -186,6 +186,14 @@ struct MarkObject {
     // the referenced node's own style, so this is ignored for them.
     Color           color{ 0, 0, 0, 1 };
     bool            useStrokeColor = true;    // primitive: inherit stroke paint
+    // Object opacity. For a Blend/recoloured primitive it multiplies the paint
+    // alpha; for a SUBTRACT object it is the ERASE STRENGTH (dst·(1−a)): 1 cuts
+    // the stroke fully, 0.5 leaves it half-transparent — the mark-move preview
+    // uses this for its live partial erase. Paint-level (like `color`):
+    // excluded from the geometry hash, so animating it never re-tessellates.
+    // v1 limit: ignored by stroke-coloured FUSION objects (their triangles are
+    // baked into the stroke mesh, one alpha for the whole stroke).
+    float           opacity = 1.0f;
 
     // Size / width / along-offset / side-offset resolved to node-local units.
     double SizeUnits(double w) const {

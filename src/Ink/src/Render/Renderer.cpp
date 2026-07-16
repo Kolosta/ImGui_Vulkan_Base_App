@@ -193,6 +193,13 @@ bool CreatePipelines(RendererImpl& r) {
                            { 1, VK_FORMAT_R32G32B32A32_SFLOAT, 8 } };
         d.layout       = r.overlayLayout;
         r.overlayPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        // Overlay dedup: the same NOT_EQUAL + replace stencil trick as the
+        // content stroke dedup, on the overlay vertex format — a translucent
+        // MESH preview (tessellated stroke/fill ghost) blends its own
+        // overlapping triangles exactly once (OverlayList dedup groups).
+        d.stencil = rhi::StencilMode::TestNotEqualWrite;
+        r.overlayDedupPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        d.stencil       = rhi::StencilMode::None;
         d.stencilFormat = VK_FORMAT_UNDEFINED;
 
         // Composite: fullscreen, writes the parent iso (×1) with the blend
@@ -216,7 +223,8 @@ bool CreatePipelines(RendererImpl& r) {
         ok = r.contentPipeline && r.contentClipPipeline && r.clipMaskPipeline &&
              r.clipClearPipeline && r.strokeDedupPipeline &&
              r.contentErasePipeline &&
-             r.overlayPipeline && r.compositePipeline && r.presentPipeline;
+             r.overlayPipeline && r.overlayDedupPipeline &&
+             r.compositePipeline && r.presentPipeline;
     }
     for (VkShaderModule m : all)
         if (m) vkDestroyShaderModule(r.device.vk(), m, nullptr);
@@ -525,6 +533,7 @@ void Renderer::Shutdown() {
         destroyPipeline(r.strokeDedupPipeline);
         destroyPipeline(r.contentErasePipeline);
         destroyPipeline(r.overlayPipeline);
+        destroyPipeline(r.overlayDedupPipeline);
         destroyPipeline(r.compositePipeline);
         destroyPipeline(r.presentPipeline);
         auto destroyLayout = [&](VkPipelineLayout& l) {
@@ -847,14 +856,22 @@ void Renderer::EndFrame() {
                     (std::uint32_t)cmds.size() - segs.back().cmdOffset;
             }
             run.segCount = (std::uint32_t)segs.size() - run.segOffset;
+            // The overlay may share the ROOT content pass (and its stencil):
+            // its dedup groups continue this run's tag sequence so they never
+            // collide with a content stroke's tag. (An overlay-on-top pass has
+            // its own cleared stencil; ScopePlayback passes baseTag 2 there.)
+            if (run.scope == kRootScope) v.overlayBaseTag = nextTag;
         }
         FillHostRingBuffer(r, v.indirect[r.slot], cmds.data(),
                            cmds.size() * sizeof(VkDrawIndexedIndirectCommand),
                            VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT);
 
-        // Overlay vertices → this slot's ring buffer.
+        // Overlay vertices → this slot's ring buffer. The dedup-group spans are
+        // copied so the record lambdas (executed later this frame) don't read
+        // the OverlayList, which the app refills next frame.
         const auto& overlayVerts = v.overlay.Vertices();
         v.overlayVertexCount = (std::uint32_t)overlayVerts.size();
+        v.overlayDedupScratch = v.overlay.Dedups();
         FillHostRingBuffer(r, v.overlayVb[r.slot], overlayVerts.data(),
                            v.overlay.ByteSize(),
                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);

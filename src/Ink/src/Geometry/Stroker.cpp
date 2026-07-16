@@ -242,6 +242,73 @@ Polyline ExtractRun(const Polyline& pl, double from, double to) {
     return run;
 }
 
+// ── Smooth arc-length frame over a flattened spine ───────────────────────────
+// Positions interpolate linearly (exact on the polyline); tangents interpolate
+// by ANGLE between per-vertex smoothed tangents (each vertex tangent averages
+// its two adjacent segment directions), so the frame's DIRECTION is continuous
+// in arc length. Mark objects placed through this frame turn smoothly along
+// the curve — no facet jumps while sliding, no zig-zag normals on dense
+// Follow resampling — whatever the flatten density of the spine.
+struct ArcFrame {
+    std::vector<double> cum;    // cumulative arc length per vertex
+    std::vector<DVec2>  pts;    // vertices (closed: the first re-appended)
+    std::vector<double> ang;    // per-vertex tangent angle, UNWRAPPED
+    double total = 0.0;
+
+    void Build(const Polyline& pl) {
+        const std::size_t n = pl.points.size();
+        if (n < 2) return;
+        const std::size_t sc = pl.closed ? n : n - 1;
+        std::vector<V2> dir(sc);
+        for (std::size_t i = 0; i < sc; ++i)
+            dir[i] = Norm(Sub(pl.points[(i + 1) % n], pl.points[i]));
+        auto vertexTangent = [&](std::size_t i) -> V2 {
+            V2 a{ 0, 0 }, b{ 0, 0 };
+            if (pl.closed) {
+                a = dir[(i + sc - 1) % sc];
+                b = dir[i % sc];
+            } else {
+                if (i > 0)  a = dir[i - 1];
+                if (i < sc) b = dir[i];
+            }
+            V2 m = Norm({ a.x + b.x, a.y + b.y });
+            if (m.x == 0.0 && m.y == 0.0) m = (b.x != 0.0 || b.y != 0.0) ? b : a;
+            return m;
+        };
+        pts.reserve(sc + 1); cum.reserve(sc + 1); ang.reserve(sc + 1);
+        constexpr double kTau = 6.28318530717958647692;
+        double acc = 0.0, prev = 0.0;
+        for (std::size_t i = 0; i <= sc; ++i) {
+            pts.push_back(pl.points[i % n]);
+            if (i > 0) acc += Len(Sub(pts[i], pts[i - 1]));
+            cum.push_back(acc);
+            const V2 t = vertexTangent((pl.closed && i == sc) ? 0 : i);
+            double a = std::atan2(t.y, t.x);
+            if (i > 0) {   // unwrap: interpolation always takes the short way
+                while (a - prev >  kTau * 0.5) a -= kTau;
+                while (a - prev < -kTau * 0.5) a += kTau;
+            }
+            ang.push_back(a);
+            prev = a;
+        }
+        total = acc;
+    }
+    bool Valid() const { return pts.size() >= 2 && total > 1e-9; }
+    void Sample(double d, DVec2& outP, V2& outT) const {
+        d = d < 0.0 ? 0.0 : (d > total ? total : d);
+        std::size_t k = (std::size_t)(std::upper_bound(cum.begin(), cum.end(), d)
+                                      - cum.begin());
+        k = k == 0 ? 0 : k - 1;
+        if (k >= pts.size() - 1) k = pts.size() - 2;
+        const double L = cum[k + 1] - cum[k];
+        const double u = L > 1e-12 ? (d - cum[k]) / L : 0.0;
+        outP = { pts[k].x + (pts[k + 1].x - pts[k].x) * u,
+                 pts[k].y + (pts[k + 1].y - pts[k].y) * u };
+        const double a = ang[k] + (ang[k + 1] - ang[k]) * u;
+        outT = { std::cos(a), std::sin(a) };
+    }
+};
+
 // Arc-length of the spine point closest to node-local position `p` (projects
 // onto every segment) — used to PIN a dash anchor to a control point.
 double ProjectArc(const Polyline& pl, DVec2 p, double fallback) {
@@ -502,7 +569,8 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
     // object, and stays put at any zoom. Falls back to the tier spine when the
     // source path is unavailable (a boolean-derived outline).
     std::vector<Polyline> placeSpines;
-    if (source) placeSpines = Flatten(*source, kMarkPlaceTolerance);
+    if (source && !stroke.marks.empty())
+        placeSpines = Flatten(*source, kMarkPlaceTolerance);
 
     for (std::size_t subI = 0; subI < polylines.size(); ++subI) {
         const Polyline& src = polylines[subI];
@@ -698,11 +766,13 @@ PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth) {
 }
 
 DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
-                       const MarkObject& obj, double strokeWidth) {
+                       const MarkObject& obj, double strokeWidth,
+                       double bendHalfExtent) {
     DMat23 id;
-    if (spine.points.size() < 2) return id;
-    const double total = PolyTotal(spine);
-    if (total < 1e-9) return id;
+    ArcFrame af;
+    af.Build(spine);
+    if (!af.Valid()) return id;
+    const double total = af.total;
     // The along-offset shifts the sample point up/down the curve; the side
     // offset shifts it across. Hard = a rigid frame. The Bend branch (a shear
     // that leans the shape with the local slope) is used ONLY by INSTANCES —
@@ -713,7 +783,7 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
                 + obj.AlongUnits(strokeWidth);
     d0 = d0 < 0 ? 0 : (d0 > total ? total : d0);
     DVec2 p0; V2 t0;
-    ArcSampleAt(spine, d0, p0, t0);
+    af.Sample(d0, p0, t0);
     const V2 n0 = Perp(t0);
     // Side across the line: the object's own side/offset when it overrides,
     // else the mark's.
@@ -730,14 +800,20 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
     double vx = t0.x * sa + n0.x * ca, vy = t0.y * sa + n0.y * ca;   // +y axis
     // BEND: shear the transverse axis along the tangent by the slope the curve
     // gains over the shape's half-extent — the long edges lean with the line
-    // while the shape stays affine. `shear = tan(Δθ)` where Δθ is the tangent
-    // rotation from the mark point to the shape's leading end (arc d0+hu).
+    // while the shape stays affine. `shear = tan(Δθ)` where Δθ is the AVERAGE
+    // tangent rotation over [d0−hu, d0+hu] (symmetric — the lean matches the
+    // curve on both sides of the mark, and moves smoothly as the mark slides).
+    // `bendHalfExtent` overrides hu for INSTANCES (their `size` is a scale
+    // factor, not a length — the geometric extent is measured by the caller).
     if (obj.bend == MarkBend::Bend) {
-        const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
-        DVec2 pa; V2 ta;
-        ArcSampleAt(spine, std::clamp(d0 + hu, 0.0, total), pa, ta);
-        double dth = std::atan2(Cross(t0, ta), Dot(t0, ta));   // signed turn
-        dth = std::clamp(dth, -1.3, 1.3);                      // < 90°, stable
+        const double hu = bendHalfExtent > 0.0
+                              ? bendHalfExtent
+                              : std::max(1e-6, obj.SizeUnits(strokeWidth));
+        DVec2 pa, pb; V2 ta, tb;
+        af.Sample(std::clamp(d0 + hu, 0.0, total), pa, ta);
+        af.Sample(std::clamp(d0 - hu, 0.0, total), pb, tb);
+        double dth = 0.5 * std::atan2(Cross(tb, ta), Dot(tb, ta));  // half-turn
+        dth = std::clamp(dth, -1.3, 1.3);                           // stable
         const double shear = std::tan(dth);
         // v' = v + shear · (component of v along the ORIGINAL tangent axis) — add
         // a tangential lean proportional to how far across the line the point is.
@@ -760,9 +836,10 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
     if (!BendsAlongCurve(obj.bend) || obj.shape == MarkShape::Instance)
         return false;
     const bool follow = obj.bend == MarkBend::Follow;
-    if (spine.points.size() < 2) return false;
-    const double total = PolyTotal(spine);
-    if (total < 1e-9) return false;
+    ArcFrame af;
+    af.Build(spine);
+    if (!af.Valid()) return false;
+    const double total = af.total;
     const double d0 = std::clamp(
         (mark.t < 0 ? 0 : mark.t > 1 ? 1 : mark.t) * total
             + obj.AlongUnits(strokeWidth), 0.0, total);
@@ -772,37 +849,36 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
     double off = 0.0;
     if (sd == MarkSide::Left)  off =  soff;
     if (sd == MarkSide::Right) off = -soff;
-    // A fixed fine sampling step so the curved edges read smooth at normal zoom.
-    // The derived ring is figée (built ONCE, not per zoom tier), so the tolerance
-    // is FLOORED — it must stay bounded (a tiny tolerance would build a huge ring
-    // and the O(n²) fill triangulation would stall). A documented boolean-like
-    // limit at extreme zoom.
-    const double tol = std::max(std::min(tolerance > 0.0 ? tolerance : 0.25, 0.05),
-                                0.02);
+    // Sampling density follows the CALLER's tolerance: the stroker passes the
+    // zoom tier's tolerance (Fusion rings re-tessellate per tier → vector-
+    // smooth at any zoom); the Scene passes kMarkRingTolerance for its
+    // compile-once Blend/Cut rings. Floored, and every loop below hard-caps
+    // its point count so the O(n²) ring triangulation stays bounded.
+    const double tol = std::max(tolerance > 0.0 ? tolerance : 0.25, 1e-4);
     const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
     const double hv = obj.shape == MarkShape::Rectangle
                           ? std::max(1e-6, obj.WidthUnits(strokeWidth)) : hu;
 
     // Place a LOCAL shape point (u along the tangent, v across it): the point's
     // ALONG coordinate `u` maps to a real arc-length step d0+u on the curve, and
-    // its ACROSS coordinate `v` steps along the LOCAL normal at THAT arc — so the
-    // whole outline bends WITH the line. The object's own rotation is applied in
-    // local (u,v) space first. A soft clamp keeps the concave side from folding
-    // past the curvature centre (which would invert triangles).
+    // its ACROSS coordinate `v` steps along the LOCAL (smooth) normal at THAT
+    // arc — so the whole outline bends WITH the line. The object's own rotation
+    // is applied in local (u,v) space first. A soft clamp keeps the concave side
+    // from folding past the curvature centre (which would invert triangles).
     const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
     auto place = [&](double u, double v) -> DVec2 {
         const double ur = u * ca - v * sa, vr = u * sa + v * ca;
         const double du = std::clamp(d0 + ur, 0.0, total);
         DVec2 pu; V2 tu;
-        ArcSampleAt(spine, du, pu, tu);
+        af.Sample(du, pu, tu);
         const V2 nu = Perp(tu);
         double vv = vr + off;
-        // Local curvature (central difference) → clamp the across-offset to just
-        // inside the radius so the ring never crosses the curvature centre.
+        // Local curvature (central difference on the SMOOTH tangents) → clamp
+        // the across-offset to just inside the curvature radius.
         const double ds = std::max(1e-4, hu * 0.5);
         DVec2 pA, pB; V2 tA, tB;
-        ArcSampleAt(spine, std::min(total, du + ds), pA, tA);
-        ArcSampleAt(spine, std::max(0.0,   du - ds), pB, tB);
+        af.Sample(std::min(total, du + ds), pA, tA);
+        af.Sample(std::max(0.0,   du - ds), pB, tB);
         const double dTheta = std::atan2(Cross(tB, tA), Dot(tB, tA));
         const double curv = dTheta / (2.0 * ds);
         if (std::abs(curv) > 1e-9) {
@@ -812,17 +888,18 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
         }
         return { pu.x + nu.x * vv, pu.y + nu.y * vv };
     };
-    // A shape EDGE from local (u0,v0) to (u1,v1). FOLLOW resamples it densely so
-    // its curved image stays smooth; BEND keeps it a STRAIGHT segment between the
-    // two (already curve-placed) corners. The last point is NOT emitted (the next
-    // edge's first point continues the ring) — avoids a duplicate seam vertex.
-    const double step = std::max(tol, 0.04);
+    // A shape EDGE from local (u0,v0) to (u1,v1). FOLLOW resamples it (density
+    // from the tolerance, hard-capped) so its curved image stays smooth; BEND
+    // keeps it a STRAIGHT segment between the two (already curve-placed)
+    // corners. The last point is NOT emitted (the next edge's first point
+    // continues the ring) — avoids a duplicate seam vertex.
+    const double step = std::max(4.0 * tol, 1e-3);
     auto edge = [&](double u0, double v0, double u1, double v1) {
         int n = 1;
         if (follow) {
             const double len = std::hypot(u1 - u0, v1 - v0);
             n = (int)std::ceil(len / step);
-            n = n < 1 ? 1 : (n > 4096 ? 4096 : n);
+            n = n < 1 ? 1 : (n > 384 ? 384 : n);
         }
         for (int i = 0; i < n; ++i) {
             const double f = (double)i / (double)n;
@@ -831,10 +908,12 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
     };
     if (obj.shape == MarkShape::Circle) {
         // One closed loop; sample its outline so the bent circle reads smooth.
-        // Each point is placed through the curve frame at its own arc.
+        // Each point is placed through the curve frame at its own arc; the
+        // count tracks the chord error at the given tolerance.
+        const double err = std::min(tol / hu, 0.999);
         int steps = (int)std::ceil(6.28318530717958 /
-            (hu > tol ? 2.0 * std::acos(1.0 - tol / hu) : 1.0));
-        steps = steps < 48 ? 48 : (steps > 512 ? 512 : steps);
+                                   (2.0 * std::acos(1.0 - err)));
+        steps = steps < 24 ? 24 : (steps > 512 ? 512 : steps);
         for (int i = 0; i < steps; ++i) {
             const double a = 6.28318530717958 * (double)i / (double)steps;
             outRing.push_back(place(std::cos(a) * hu, std::sin(a) * hu));

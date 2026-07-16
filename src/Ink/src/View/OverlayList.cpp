@@ -56,6 +56,20 @@ void OverlayList::AddCircle(Vec2 c, float radius, const Color& col,
     }
 }
 
+void OverlayList::BeginDedup() {
+    if (dedupOpen_) EndDedup();
+    dedups_.push_back({ (std::uint32_t)vertices_.size(), 0 });
+    dedupOpen_ = true;
+}
+
+void OverlayList::EndDedup() {
+    if (!dedupOpen_) return;
+    dedupOpen_ = false;
+    DedupGroup& g = dedups_.back();
+    g.count = (std::uint32_t)vertices_.size() - g.first;
+    if (g.count == 0) dedups_.pop_back();   // empty group — drop it
+}
+
 void OverlayList::AddCircleFilled(Vec2 c, float radius, const Color& col,
                                   int segments) {
     float prevX = c.x + radius, prevY = c.y;

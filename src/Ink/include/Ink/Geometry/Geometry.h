@@ -57,9 +57,17 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
 // flattened for PLACEMENT (point + tangent along the curve). Fixed — not per
 // tier — so a mark's objects land at exactly the same spot whatever the zoom,
 // and so every mode (Fusion in the stroke mesh, Blend/Cut as their own
-// drawables) places identically. Small enough that the tangent is accurate on
-// tight curves.
-inline constexpr double kMarkPlaceTolerance = 0.05;
+// drawables) places identically. Tangents are SMOOTHED over this spine
+// (angle-interpolated per vertex), so it only bounds the POSITION error of a
+// placed object against the (finer, per-tier) rendered stroke.
+inline constexpr double kMarkPlaceTolerance = 0.01;
+
+// The fixed sampling tolerance of a DERIVED Bend/Follow ring built by the
+// Scene for a Blend/Subtract object (the Scene has no zoom tier; the ring is
+// built once per scene compile). Fusion rings are built per tier with the
+// tier's own tolerance instead — vector-exact at any zoom. A documented limit:
+// a Blend/Cut ring reads faceted only at extreme zoom.
+inline constexpr double kMarkRingTolerance = 0.002;
 
 // The node-local, ORIGIN-CENTRED PARAMETRIC PathData of a primitive mark object
 // (Circle → Ellipse, Rectangle → Rect, Diamond → Polygon) at its resolved size
@@ -72,18 +80,26 @@ PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth);
 // `mark.sub`: translate to the mark point (honouring side + resolved offset),
 // rotate to the tangent + the object's own rotation, and — for Bend — shear
 // along the tangent to lean with the local slope. `strokeWidth` resolves the
-// offset. Returns identity if the spine is degenerate.
+// offset. Tangents are sampled SMOOTHLY (angle-interpolated over the spine's
+// vertices), so the frame turns continuously as the mark slides — no facet
+// jumps. `bendHalfExtent` (> 0) overrides the along-curve half-length the Bend
+// shear is measured over (used by INSTANCES, whose `size` is a scale factor,
+// not a length). Returns identity if the spine is degenerate.
 DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
-                       const MarkObject& obj, double strokeWidth);
+                       const MarkObject& obj, double strokeWidth,
+                       double bendHalfExtent = -1.0);
 
 // True for the mark bend modes that CURVE the outline along the line (Bend and
 // Follow); Hard keeps a rigid placed primitive.
 bool BendsAlongCurve(MarkBend b);
 
-// Follow-mode geometry: the primitive's outline RESAMPLED along the curve so it
-// truly bends with the line (a rectangle's long edges curve). A dense ring in
-// node-local space (already placed) — used when obj.bend == Follow. Returns
-// false for a non-Follow object or an Instance. `tolerance` bounds the sampling.
+// Bend/Follow geometry: the primitive's outline placed point-by-point through
+// the curve's smooth arc-length frame, so it truly bends with the line (a
+// Follow rectangle's long edges curve; Bend keeps them straight between
+// curve-placed corners). A ring in node-local space (already placed).
+// `tolerance` bounds the sampling density (pass the zoom tier's tolerance for
+// vector-smooth results at any zoom; ring size is hard-capped). Returns false
+// for a Hard object or an Instance.
 bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
                        const MarkObject& obj, double strokeWidth,
                        double tolerance, std::vector<DVec2>& outRing);

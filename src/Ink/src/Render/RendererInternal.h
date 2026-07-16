@@ -133,6 +133,13 @@ struct ViewImpl {
     // Per-slot overlay vertex buffers (host-visible ring).
     rhi::Buffer   overlayVb[kFramesInFlight];
     std::uint32_t overlayVertexCount = 0;
+    // Overlay DEDUP groups (translucent mesh previews, OverlayList::Dedups),
+    // copied here in the prepare phase so the record lambdas outlive the list.
+    // `overlayBaseTag` continues the root content run's stroke-dedup tag
+    // sequence when the overlay shares its pass (and stencil) with the root
+    // content; an overlay-on-top pass has a cleared stencil and starts at 2.
+    std::vector<OverlayList::DedupGroup> overlayDedupScratch;
+    std::uint32_t overlayBaseTag = 2;
 
     // The view's draw commands (built in scope order): one host-visible ring
     // buffer per slot holds every command back-to-back; each ScopeRun points
@@ -208,6 +215,7 @@ struct RendererImpl {
     VkPipeline strokeDedupPipeline = VK_NULL_HANDLE;  // TestNotEqualWrite (dyn ref)
     VkPipeline contentErasePipeline= VK_NULL_HANDLE;  // dst-out (subtractive marks)
     VkPipeline overlayPipeline     = VK_NULL_HANDLE;
+    VkPipeline overlayDedupPipeline= VK_NULL_HANDLE;  // overlay TestNotEqualWrite
     VkPipeline presentPipeline     = VK_NULL_HANDLE;
     VkPipeline compositePipeline   = VK_NULL_HANDLE;  // iso composite (blend)
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
@@ -247,9 +255,14 @@ void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& worldToNdc, VkBuffer indirect,
                        const CmdSegment* segments, std::uint32_t segmentCount,
                        VkDescriptorSet sceneSet);
+// Overlay: draws the vertex list in emission order; DEDUP-group ranges play
+// through the overlay stencil-dedup pipeline (one tag each, from `baseTag`),
+// the rest through the plain overlay pipeline.
 void RecordOverlayPass(RendererImpl& r, VkCommandBuffer cmd,
                        const PushCamera& pxToNdc, VkBuffer vertexBuffer,
-                       std::uint32_t vertexCount);
+                       std::uint32_t vertexCount,
+                       const OverlayList::DedupGroup* dedups,
+                       std::uint32_t dedupCount, std::uint32_t baseTag);
 void RecordPresentPass(RendererImpl& r, VkCommandBuffer cmd,
                        VkDescriptorSet presentSet);
 // Composite: fullscreen draw sampling source+backdrop (compositeSet) with the
