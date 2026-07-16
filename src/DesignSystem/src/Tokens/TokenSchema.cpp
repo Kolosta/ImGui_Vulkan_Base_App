@@ -1409,6 +1409,8 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_IconButton_Icon, TokenLevel::Component, Tok::S_Color_Text_Default, "icon button tint"));
     put(Ref(Tok::C_IconButton_IconNegative, TokenLevel::Component, Tok::S_Color_Negative_Default, "icon button danger"));
     put(Ref(Tok::C_IconButton_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "icon button rounding"));
+    put(Float(Tok::C_ToolPalette_ButtonSize, TokenLevel::Component, 32.f, "tool palette button square side", CS::Range(16.0,64.0,"px")));
+    put(Float(Tok::C_ToolPalette_IconScale, TokenLevel::Component, 0.68f, "tool palette icon size as a fraction of the button", CS::Range(0.3,1.0,"ratio")));
     put(Ref(Tok::S_Color_DataViz_Line, TokenLevel::Component, Tok::S_DataViz_Cat_1, "plot line"));
     put(Ref(Tok::S_Color_DataViz_LineHover, TokenLevel::Component, Tok::S_DataViz_Highlight, "plot line hover"));
     put(Ref(Tok::S_Color_DataViz_Histogram, TokenLevel::Component, Tok::S_DataViz_Cat_2, "plot histogram"));

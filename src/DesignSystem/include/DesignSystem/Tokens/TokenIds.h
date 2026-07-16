@@ -1370,6 +1370,8 @@ enum class Tok : std::uint32_t {
     C_IconButton_Background,
     C_IconButton_BackgroundHover,
     C_IconButton_BackgroundDown,
+    C_ToolPalette_ButtonSize,
+    C_ToolPalette_IconScale,
     C_IconButton_Border,
     C_IconButton_Icon,
     C_IconButton_IconNegative,
@@ -2921,6 +2923,8 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_IconButton_Background: return "component.icon-button.background.color.default";
         case Tok::C_IconButton_BackgroundHover: return "component.icon-button.background.color.hover";
         case Tok::C_IconButton_BackgroundDown: return "component.icon-button.background.color.down";
+        case Tok::C_ToolPalette_ButtonSize: return "component.tool-palette.button.size";
+        case Tok::C_ToolPalette_IconScale: return "component.tool-palette.icon.scale";
         case Tok::C_IconButton_Border: return "component.icon-button.border.color.default";
         case Tok::C_IconButton_Icon: return "component.icon-button.icon.color.default";
         case Tok::C_IconButton_IconNegative: return "component.icon-button.icon.color.negative";

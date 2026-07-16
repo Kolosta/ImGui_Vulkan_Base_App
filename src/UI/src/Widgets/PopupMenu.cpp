@@ -212,6 +212,12 @@ bool ContextMenu(const char* popupId, ImVec2 screenPos,
     if (ImGui::BeginPopup(popupId,
                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+        // Esc cancels the menu (the popup doesn't take keyboard focus, so
+        // ImGui's own nav-cancel never fires for it — handle it explicitly).
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            ImGui::CloseCurrentPopup();
+            ss = SubState{};
+        }
         ImGui::Dummy(size);
         ImDrawList* dl = ImGui::GetWindowDrawList();
         ImGuiIO& io = ImGui::GetIO();

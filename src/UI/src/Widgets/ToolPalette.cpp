@@ -28,7 +28,7 @@ ToolPaletteResult ToolPalette(const char* id, ImVec2 origin,
     auto& ds      = DS::DesignSystem::Instance();
     auto& iconMgr = VectorGraphics::IconManager::Instance();
     const float gs   = ds.GetGlobalScale();
-    const float btn  = 26.0f * gs;                        // button square
+    const float btn  = SafeFloat(Tok::C_ToolPalette_ButtonSize, 32.0f) * gs;
     const float pad  = 4.0f * gs;                         // outer margin
     const float gap  = 4.0f * gs;                         // between buttons
     const float ggap = 12.0f * gs;                        // between GROUPS
@@ -76,7 +76,7 @@ ToolPaletteResult ToolPalette(const char* id, ImVec2 origin,
                           std::max(0.0f, rnd - 1.0f));
 
         // Icon centred in the button.
-        const float isz = btn * 0.62f;
+        const float isz = btn * SafeFloat(Tok::C_ToolPalette_IconScale, 0.68f);
         ImVec4 iconTint = tint;
         if (!it.enabled) iconTint.w *= disMul;
         auto md = iconMgr.GetDefaultMetadata(it.icon);
