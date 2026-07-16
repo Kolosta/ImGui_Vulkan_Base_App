@@ -67,12 +67,15 @@ namespace CoreEditor {
 inline constexpr const char* Viewport   = "core.viewport";
 inline constexpr const char* Outliner   = "core.outliner";
 inline constexpr const char* Properties = "core.properties";
+inline constexpr const char* StrokeEd   = "core.strokes";
+inline constexpr const char* FillEd     = "core.fills";
 inline constexpr const char* Timeline   = "core.timeline";
 inline constexpr const char* DevPanels  = "core.devpanels";
 inline constexpr const char* Info       = "core.info";
 // Every core editor id — the editor set offered in Classic mode (no module).
 inline std::vector<std::string> Ids() {
-    return { Viewport, Outliner, Properties, Timeline, DevPanels, Info };
+    return { Viewport, Outliner, Properties, StrokeEd, FillEd,
+             Timeline, DevPanels, Info };
 }
 }  // namespace CoreEditor
 

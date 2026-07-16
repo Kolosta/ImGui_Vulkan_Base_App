@@ -143,14 +143,28 @@ void Application::ToolMousePress(EditorState& st, const ViewCam& cam,
                                  Ink::DVec2 doc, bool shift) {
     const std::string tool = Shortcuts::Tools::ToolManager::Instance().GetActiveTool();
 
-    // Draw-on-create shape armed (a Shapes/circle Add-menu pick while Draw on
-    // Create is on): press-drag defines the box, release builds the shape.
-    if (!pendingDrawKind_.empty()) {
-        canvasDrag_ = CanvasDrag{};
-        canvasDrag_.kind = CanvasDrag::Kind::DrawShape;
-        canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
-        canvasDrag_.leaf = &st;
-        canvasDrag_.shapeKind = pendingDrawKind_;
+    // Shape / Curve creation tools (the palette multi-tools). Drag-box kinds
+    // build the shape in the dragged box (PERSISTENT — the tool stays armed);
+    // pen kinds start the pen and place the first anchor with THIS click (the
+    // pen owns input from the next frame on).
+    if (tool == "tool.shape" || tool == "tool.curve") {
+        const std::string kind = tool == "tool.shape" ? toolShapeKind_
+                                                      : toolCurveKind_;
+        const bool penKind = kind == "free" || kind == "curve" ||
+                             kind == "nurbs" || kind == "poly";
+        if (penKind) {
+            BeginPenDraw(kind.c_str());
+            penPending_ = Ink::Anchor{};
+            penPending_.pos = doc;
+            penHasPending_ = true;
+            penDragging_ = (penSpline_ == Ink::SplineType::Bezier);
+        } else {
+            canvasDrag_ = CanvasDrag{};
+            canvasDrag_.kind = CanvasDrag::Kind::DrawShape;
+            canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
+            canvasDrag_.leaf = &st;
+            canvasDrag_.shapeKind = kind;
+        }
         return;
     }
 
@@ -242,12 +256,6 @@ void Application::ToolMousePress(EditorState& st, const ViewCam& cam,
             canvasDrag_.leaf = &st;
             canvasDrag_.extend = shift;
         }
-    } else if (tool == "tool.rect" || tool == "tool.ellipse") {
-        canvasDrag_ = CanvasDrag{};
-        canvasDrag_.kind = tool == "tool.rect" ? CanvasDrag::Kind::DrawRect
-                                               : CanvasDrag::Kind::DrawEllipse;
-        canvasDrag_.startDoc = canvasDrag_.curDoc = doc;
-        canvasDrag_.leaf = &st;
     }
 }
 
@@ -335,31 +343,10 @@ void Application::ToolMouseRelease(EditorState& st, const ViewCam& cam, Ink::DVe
             if (!canvasDrag_.extend) edit_.Clear();
             for (Ink::NodeId id : hits) edit_.SelectAdd(id);
         }
-    } else if ((canvasDrag_.kind == CanvasDrag::Kind::DrawRect ||
-                canvasDrag_.kind == CanvasDrag::Kind::DrawEllipse) &&
-               project_.document && !project_.document->Pages().empty()) {
-        const Ink::DVec2 a = canvasDrag_.startDoc, b = canvasDrag_.curDoc;
-        const double x = std::min(a.x, b.x), y = std::min(a.y, b.y);
-        const double w = std::abs(a.x - b.x), h = std::abs(a.y - b.y);
-        if (w > 1.0 && h > 1.0) {
-            Ink::Document& d = *project_.document;
-            const Ink::NodeId page = d.Pages().front().id;
-            Ink::PathData path = canvasDrag_.kind == CanvasDrag::Kind::DrawRect
-                ? Ink::PathData::Rect(x, y, w, h)
-                : Ink::PathData::Ellipse(x + w * 0.5, y + h * 0.5, w * 0.5, h * 0.5);
-            const char* nm = canvasDrag_.kind == CanvasDrag::Kind::DrawRect
-                                 ? "Rectangle" : "Ellipse";
-            const Ink::NodeId id = d.AddPath(page, path, DefaultStyle(), nm);
-            edit_.SelectOnly(id);
-            auto snap = d.CopySubtree(id);
-            PushDocCommand(std::string("Draw ") + nm,
-                [id](Ink::Document& doc) { doc.Remove(id); },
-                [snap](Ink::Document& doc) { doc.RestoreSubtree(snap); });
-            LogInfoAction(std::string("Draw ") + nm);
-        }
     } else if (canvasDrag_.kind == CanvasDrag::Kind::DrawShape) {
-        // Draw-on-create: build the armed shape kind in the dragged box. A
+        // Shape/Curve tool: build the armed kind in the dragged box. A
         // near-zero drag (a plain click) falls back to a preset at the click.
+        // The tool stays ARMED — the next drag draws another one.
         const Ink::DVec2 a = canvasDrag_.startDoc, b = canvasDrag_.curDoc;
         const std::string kind = canvasDrag_.shapeKind;
         const double w = std::abs(a.x - b.x), h = std::abs(a.y - b.y);
@@ -371,7 +358,6 @@ void Application::ToolMouseRelease(EditorState& st, const ViewCam& cam, Ink::DVe
             edit_.cursor2D = a; edit_.cursor2DValid = true;
             SpawnShape(kind.c_str());
         }
-        pendingDrawKind_.clear();   // one placement per menu pick
     }
     canvasDrag_ = CanvasDrag{};
 }

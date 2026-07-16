@@ -195,14 +195,13 @@ private:
     bool   handleMenuOpen_ = false, handleMenuRequested_ = false;
     ImVec2 handleMenuPos_{};
     // ── Pen (draw-on-create, the legacy live path construction) ─────────────
-    // Armed from the Add menu when "Draw on Create" is on: click = corner
-    // anchor, click-drag = symmetric handles (Bézier), Backspace = drop the
-    // last anchor, Enter / double-click = finish open, a click on the first
-    // anchor closes, Esc cancels. One undo command on commit.
+    // Armed by the Curve/Shape tools (pen kinds) or the Add menu's Free entry:
+    // click = corner anchor, click-drag = symmetric handles (Bézier),
+    // Backspace = drop the last anchor, Enter / double-click = finish open, a
+    // click on the first anchor closes, Esc cancels. One undo command on commit.
     void BeginPenDraw(const char* kind);
     bool HandlePenInput(EditorState& st, const ViewCam& cam, bool hovered);
     void CommitPenDraw(bool keep);
-    bool           addDrawOnCreate_ = false;   // the Add-menu toggle
     bool           penActive_   = false;
     bool           penDragging_ = false;       // pulling the new anchor's handles
     Ink::NodeId    penNode_     = Ink::kNullNode;
@@ -329,10 +328,18 @@ private:
     // Draw-on-create: build `kind` to fill the dragged box (doc space).
     Ink::NodeId SpawnShapeInRect(const char* kind, Ink::DVec2 mn, Ink::DVec2 mx);
     Ink::NodeId FinishSpawn(Ink::NodeId id, const std::string& name);
-    // The shape kind armed by the Add menu when Draw on Create is on: the next
-    // canvas drag builds it in the dragged box (empty = nothing armed).
-    std::string pendingDrawKind_;
-    // Build the default Style (fill+stroke) from the EditContext swatches.
+    // The MULTI-TOOL variants: which shape / curve kind the Shape and Curve
+    // palette buttons currently create (picked from their right-click menu).
+    std::string toolShapeKind_ = "rect";
+    std::string toolCurveKind_ = "curve";
+    // The palette variant menu: which multi-tool button it is open for
+    // ("tool.shape" / "tool.curve", empty = closed), where it opens, and which
+    // viewport leaf owns it (popups are id-scoped per zone child window).
+    std::string toolMenuFor_;
+    ImVec2      toolMenuPos_{};
+    bool        toolMenuOpen_ = false;
+    const void* toolMenuLeaf_ = nullptr;
+    // Build the default Style (fills+strokes) from the EditContext defaults.
     Ink::Style DefaultStyle() const;
     // Push an already-applied reversible command onto the doc undo stack.
     // Also a Modules::ModuleHost service (module edits undo like core ones).
@@ -509,6 +516,36 @@ private:
     void PropCurveSection(Ink::NodeId id);   // spline type / NURBS params
     void PropFillsSection(Ink::NodeId id);
     void PropStrokesSection(Ink::NodeId id);
+    // The SHARED fills / strokes stack UI (vignette rail + selected item's
+    // properties) working on a style COPY: Properties wraps it per-node, the
+    // Stroke/Fill EDITORS wrap it selection-wide. `node` = the pattern-preview /
+    // eyedropper target (kNullNode when editing the default style). `sel` = the
+    // rail selection storage of the caller.
+    void DrawFillsStackBody(Ink::Style& style, Ink::NodeId node, int& sel,
+                            const std::function<void(const char*, bool)>& liveApply,
+                            bool& structural, const char*& structLabel);
+    void DrawStrokesStackBody(Ink::Style& style, int& sel,
+                              const std::function<void(const char*, bool)>& liveApply,
+                              bool& structural, const char*& structLabel);
+    // ── Stroke / Fill EDITORS (PaintEditors.cpp) ─────────────────────────────
+    // Same stack UI as Properties, but edits apply to the WHOLE selection (all
+    // selected path nodes), and with NOTHING selected they edit the DEFAULT
+    // style used for new objects (which mirrors the last active object).
+    void RenderStrokeEditor(EditorState& st);
+    void RenderFillEditor(EditorState& st);
+    // Mirror the active path node's style into the defaults (so deselecting
+    // keeps the last style displayed / used for new objects).
+    void SyncDefaultStyleFromActive();
+    // Apply the CURRENT defaults (edit_.defaultFills / defaultStrokes) to every
+    // selected path node — live while a drag lasts, ONE undo command when
+    // `released`. No-ops on the document when nothing is selected.
+    void ApplyDefaultFillsEdit(const char* label, bool released);
+    void ApplyDefaultStrokesEdit(const char* label, bool released);
+    std::vector<Ink::NodeId> SelectedPathNodes() const;
+    bool paintEdActive_ = false;   // selection-wide gesture fold state
+    std::vector<std::pair<Ink::NodeId, Ink::Style>> paintEdBefore_;
+    int  strokeEdSel_ = 0;         // the editors' own rail selections
+    int  fillEdSel_   = 0;
     // Compact editor for a single mark object (shape/mode/bend/size/side/blend/
     // colour) — shared by the gap start/end marker lists. Sets `structural` and
     // `structLabel` on a structural edit. No Gap / nested gap.

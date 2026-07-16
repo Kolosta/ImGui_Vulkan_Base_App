@@ -11,6 +11,7 @@
 #include <UI/Widgets/PopupMenu.h>
 #include <UI/Widgets/ToolPalette.h>
 #include <imgui_internal.h>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -28,34 +29,70 @@ namespace App {
 namespace { namespace DS = DesignSystem; using Tok = DesignSystem::Tok; }
 
 // ── Floating tool palette (left column of the canvas) ─────────────────────────
+// A plain column of buttons (no container chrome), in LOGICAL GROUPS separated
+// by a larger gap: [Select · 2D Cursor] then [Shape · Curve]. Shape and Curve
+// are MULTI-TOOLS: their button shows the current variant's icon, carries the
+// corner triangle, and a RIGHT-CLICK opens the variant menu (icon + name per
+// option).
+
+namespace {
+struct ToolVariant { const char* kind; const char* name; const char* icon; };
+constexpr ToolVariant kShapeVariants[] = {
+    { "rect",     "Rectangle", "crop-landscape" },
+    { "ellipse",  "Ellipse",   "format-shapes" },
+    { "triangle", "Triangle",  "shape-category" },
+    { "free",     "Free",      "draw" },
+};
+constexpr ToolVariant kCurveVariants[] = {
+    { "curve",        "B\xC3\xA9zier",        "bezier-curve" },
+    { "beziercircle", "B\xC3\xA9zier Circle", "rounded-corner" },
+    { "nurbs",        "NURBS Path",           "nurbs-curve" },
+    { "nurbscircle",  "NURBS Circle",         "contrast-square" },
+    { "poly",         "Poly Line",            "polyline" },
+};
+const ToolVariant& FindVariant(const std::string& kind, const ToolVariant* v,
+                               int n) {
+    for (int i = 0; i < n; ++i)
+        if (kind == v[i].kind) return v[i];
+    return v[0];
+}
+} // namespace
 
 void Application::RenderToolPalette(ImVec2 origin, EditorState& st) {
     auto& sm = Shortcuts::ShortcutManager::Instance();
     auto& tm = Shortcuts::Tools::ToolManager::Instance();
-
-    // Build the item list from the ToolManager (data-driven — the palette
-    // never drifts from the shortcut system). Edit-only tools are hidden in
-    // Object Mode (legacy skip-logic).
     const std::string activeTool = tm.GetActiveTool();
-    const bool editMode = (edit_.mode == EditorMode::Edit);
-    std::vector<const Shortcuts::Tools::ToolDef*> defs;
-    for (const auto* t : tm.GetAllTools()) {
-        if (t->id == "tool.extrude" && !editMode) continue;
-        defs.push_back(t);
-    }
-    if (defs.empty()) return;
+
+    struct Entry {
+        const char* toolId; int group; bool multi;
+        std::string icon, name;
+    };
+    const ToolVariant& sv = FindVariant(toolShapeKind_, kShapeVariants, 4);
+    const ToolVariant& cv = FindVariant(toolCurveKind_, kCurveVariants, 5);
+    const std::vector<Entry> entries = {
+        { "tool.select", 0, false, "select",    "Select" },
+        { "tool.cursor", 0, false, "crop-free", "2D Cursor" },
+        { "tool.shape",  1, true,  sv.icon,
+          std::string("Shape \xC2\xB7 ") + sv.name },
+        { "tool.curve",  1, true,  cv.icon,
+          std::string("Curve \xC2\xB7 ") + cv.name },
+    };
 
     std::vector<UI::ToolPaletteItem> items;
-    items.reserve(defs.size());
-    for (const auto* t : defs) {
+    items.reserve(entries.size());
+    for (const Entry& e : entries) {
         UI::ToolPaletteItem it;
-        it.icon = t->iconId;
-        it.selected = (activeTool == t->id);
-        it.tooltip = t->name;
-        if (!t->actionIds.empty()) {
+        it.icon = e.icon;
+        it.selected = (activeTool == e.toolId);
+        it.group = e.group;
+        it.hasMenu = e.multi;
+        it.tooltip = e.name;
+        // Append the bound shortcut when there is one.
+        if (const auto* t = tm.GetTool(e.toolId); t && !t->actionIds.empty()) {
             const std::string s = sm.GetShortcutString(t->actionIds.front());
             if (!s.empty()) it.tooltip += "   (" + s + ")";
         }
+        if (e.multi) it.tooltip += "\nRight-click: pick the tool variant";
         items.push_back(std::move(it));
     }
 
@@ -63,53 +100,166 @@ void Application::RenderToolPalette(ImVec2 origin, EditorState& st) {
     const UI::ToolPaletteResult r = UI::ToolPalette("##InkTools", origin, items);
     // Publish the rect so canvas hit-testing excludes the palette.
     st.overlayRects.push_back(ImVec4(r.rectMin.x, r.rectMin.y, r.rectMax.x, r.rectMax.y));
-    if (r.clicked >= 0) Action_ActivateNamedTool(defs[(size_t)r.clicked]->id);
+    if (r.clicked >= 0)
+        Action_ActivateNamedTool(entries[(size_t)r.clicked].toolId);
+    if (r.rightClicked >= 0 && entries[(size_t)r.rightClicked].multi) {
+        toolMenuFor_  = entries[(size_t)r.rightClicked].toolId;
+        toolMenuPos_  = ImGui::GetIO().MousePos;
+        toolMenuLeaf_ = &st;
+        toolMenuOpen_ = true;
+        ImGui::OpenPopup("##toolVariants");
+    }
+
+    // Variant menu — rendered EVERY frame while open (popup rule), only by the
+    // leaf that opened it (popup ids are scoped to the zone child window).
+    if (toolMenuOpen_ && toolMenuLeaf_ == &st && !toolMenuFor_.empty()) {
+        const bool shape = toolMenuFor_ == "tool.shape";
+        const ToolVariant* vars = shape ? kShapeVariants : kCurveVariants;
+        const int nVars = shape ? 4 : 5;
+        const std::string& cur = shape ? toolShapeKind_ : toolCurveKind_;
+        std::vector<UI::MenuEntry> menu;
+        for (int i = 0; i < nVars; ++i) {
+            UI::MenuEntry e;
+            e.label = vars[i].name;
+            if (cur == vars[i].kind) e.label += "  \xE2\x9C\x93";   // current
+            e.icon  = vars[i].icon;
+            const char* kind = vars[i].kind;
+            const bool isShape = shape;
+            e.onClick = [this, kind, isShape]() {
+                if (isShape) toolShapeKind_ = kind; else toolCurveKind_ = kind;
+                Action_ActivateNamedTool(isShape ? "tool.shape" : "tool.curve");
+                toolMenuOpen_ = false;
+                toolMenuFor_.clear();
+            };
+            menu.push_back(std::move(e));
+        }
+        const bool open = UI::ContextMenu("##toolVariants", toolMenuPos_, menu,
+                                          shape ? "Shape tools" : "Curve tools");
+        if (!open) { toolMenuOpen_ = false; toolMenuFor_.clear(); }
+    }
 }
 
 // ── Default fill / stroke swatches (new-shape style) ──────────────────────────
+// A mini-view of the SAME state the Fill / Stroke editors show: the FIRST
+// fill/stroke of the current stacks (the active object's when one is selected,
+// the persisted default otherwise). An EMPTY stack reads as "none": a white
+// plate crossed by a red diagonal. The picker edits the first entry (applied to
+// the whole selection when there is one) and offers the "none" button.
+
+namespace {
+// linear straight ↔ sRGB (UI pickers are sRGB; document colours are linear).
+float LinToSrgb1(float u) {
+    return u <= 0.0031308f ? u * 12.92f
+                           : 1.055f * std::pow(u, 1.0f / 2.4f) - 0.055f;
+}
+float SrgbToLin1(float u) {
+    return u <= 0.04045f ? u / 12.92f
+                         : std::pow((u + 0.055f) / 1.055f, 2.4f);
+}
+ImVec4 LinToSrgb(const Ink::Color& c) {
+    return { LinToSrgb1(c.r), LinToSrgb1(c.g), LinToSrgb1(c.b), c.a };
+}
+Ink::Color SrgbToLin(const ImVec4& c) {
+    return { SrgbToLin1(c.x), SrgbToLin1(c.y), SrgbToLin1(c.z), c.w };
+}
+} // namespace
 
 void Application::DrawDefaultColorSwatches(float barHeight) {
+    (void)barHeight;
     auto& ds = DS::DesignSystem::Instance();
     const float gs = ds.GetGlobalScale();
-    const float sw = barHeight * 0.62f;
+    SyncDefaultStyleFromActive();
+
+    // ui-unit tall, wider than tall (rectangular) — the same control height as
+    // the bar's dropdowns, so it sits vertically centred like they do.
+    const float uiU = ds.GetFloat(Tok::S_Size_ControlHeight) * gs;
+    const ImVec2 swSize(uiU * 1.6f, uiU);
+    const float rnd = ds.GetFloat(Tok::S_CornerRadius_Control) * gs;
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImU32 border = ImGui::ColorConvertFloat4ToU32(
+        ds.GetColor(Tok::S_Color_Border_Default));
 
-    // Fill swatch (filled disc).
-    ImGui::PushID("##fillSw");
-    if (ImGui::ColorButton("##fill", edit_.defaultFill,
-            ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder,
-            ImVec2(sw, sw)))
-        ImGui::OpenPopup("##fillPick");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-        UI::DrawTooltip("Default fill for new shapes", ImGui::GetIO().MousePos);
-    if (ImGui::BeginPopup("##fillPick")) {
-        ImGui::ColorPicker4("##fillp", &edit_.defaultFill.x,
-                            ImGuiColorEditFlags_NoSidePreview);
-        ImGui::Checkbox("Fill enabled", &edit_.defaultFillEnabled);
-        ImGui::EndPopup();
-    }
-    ImGui::PopID();
-    (void)dl;
+    auto swatch = [&](const char* id, bool isFill) {
+        ImGui::PushID(id);
+        const ImVec2 mn = ImGui::GetCursorScreenPos();
+        const ImVec2 mx(mn.x + swSize.x, mn.y + swSize.y);
+        const bool none = isFill ? edit_.defaultFills.empty()
+                                 : edit_.defaultStrokes.empty();
+        if (ImGui::InvisibleButton("##sw", swSize))
+            ImGui::OpenPopup("##pick");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            UI::DrawTooltip(isFill
+                ? "Fill for new shapes / the selection (first fill of the stack)"
+                : "Stroke for new shapes / the selection (first stroke of the stack)",
+                ImGui::GetIO().MousePos);
+        // Visual: the first entry's colour, or the "none" plate (white + red
+        // diagonal).
+        if (none) {
+            dl->AddRectFilled(mn, mx, IM_COL32(255, 255, 255, 255), rnd);
+            dl->AddLine(ImVec2(mn.x + 1.5f * gs, mx.y - 1.5f * gs),
+                        ImVec2(mx.x - 1.5f * gs, mn.y + 1.5f * gs),
+                        IM_COL32(220, 40, 40, 255), 2.0f * gs);
+        } else {
+            const Ink::Color c = isFill
+                ? edit_.defaultFills.front().paint.color
+                : edit_.defaultStrokes.front().paint.color;
+            dl->AddRectFilled(mn, mx,
+                ImGui::ColorConvertFloat4ToU32(LinToSrgb(c)), rnd);
+        }
+        dl->AddRect(mn, mx, border, rnd);
 
+        if (ImGui::BeginPopup("##pick")) {
+            const char* lbl = isFill ? "Fill Colour" : "Stroke Colour";
+            ImVec4 cur(1, 1, 1, 1);
+            if (!none)
+                cur = LinToSrgb(isFill ? edit_.defaultFills.front().paint.color
+                                       : edit_.defaultStrokes.front().paint.color);
+            if (ImGui::ColorPicker4("##p", &cur.x,
+                                    ImGuiColorEditFlags_NoSidePreview |
+                                    ImGuiColorEditFlags_AlphaBar)) {
+                if (isFill) {
+                    if (edit_.defaultFills.empty())
+                        edit_.defaultFills.push_back(Ink::Fill{});
+                    edit_.defaultFills.front().paint.color = SrgbToLin(cur);
+                    ApplyDefaultFillsEdit(lbl, false);
+                } else {
+                    if (edit_.defaultStrokes.empty()) {
+                        Ink::Stroke s; s.width = 2.0;
+                        edit_.defaultStrokes.push_back(s);
+                    }
+                    edit_.defaultStrokes.front().paint.color = SrgbToLin(cur);
+                    ApplyDefaultStrokesEdit(lbl, false);
+                }
+            }
+            if (ImGui::IsItemDeactivatedAfterEdit()) {
+                if (isFill) ApplyDefaultFillsEdit(lbl, true);
+                else        ApplyDefaultStrokesEdit(lbl, true);
+            }
+            if (!isFill && !edit_.defaultStrokes.empty()) {
+                float w = (float)edit_.defaultStrokes.front().width;
+                if (ImGui::DragFloat("Width", &w, 0.1f, 0.0f, 100.0f, "%.1f")) {
+                    edit_.defaultStrokes.front().width = w;
+                    ApplyDefaultStrokesEdit("Stroke Width", false);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    ApplyDefaultStrokesEdit("Stroke Width", true);
+            }
+            ImGui::Separator();
+            if (ImGui::Button(isFill ? "No fill" : "No stroke")) {
+                if (isFill) { edit_.defaultFills.clear();
+                              ApplyDefaultFillsEdit("Remove Fills", true); }
+                else        { edit_.defaultStrokes.clear();
+                              ApplyDefaultStrokesEdit("Remove Strokes", true); }
+                ImGui::CloseCurrentPopup();
+            }
+            ImGui::EndPopup();
+        }
+        ImGui::PopID();
+    };
+
+    swatch("##fillSw", true);
     ImGui::SameLine(0.0f, 4.0f * gs);
-    // Stroke swatch.
-    ImGui::PushID("##strokeSw");
-    if (ImGui::ColorButton("##stroke", edit_.defaultStroke,
-            ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoBorder,
-            ImVec2(sw, sw)))
-        ImGui::OpenPopup("##strokePick");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-        UI::DrawTooltip("Default stroke for new shapes", ImGui::GetIO().MousePos);
-    if (ImGui::BeginPopup("##strokePick")) {
-        ImGui::ColorPicker4("##strokep", &edit_.defaultStroke.x,
-                            ImGuiColorEditFlags_NoSidePreview);
-        ImGui::Checkbox("Stroke enabled", &edit_.defaultStrokeEnabled);
-        float w = (float)edit_.defaultStrokeWidth;
-        if (ImGui::DragFloat("Width", &w, 0.1f, 0.0f, 100.0f, "%.1f"))
-            edit_.defaultStrokeWidth = w;
-        ImGui::EndPopup();
-    }
-    ImGui::PopID();
+    swatch("##strokeSw", false);
 }
 
 // ── Snap widget: magnet toggle fused to a Snap dropdown ───────────────────────
@@ -387,79 +537,42 @@ void Application::RenderAddMenu() {
     if (!addMenuOpen_) return;
 
     // The legacy two-column split: SHAPES (filled primitives) and CURVES
-    // (Bézier / NURBS / Poly, with their circle forms) as submenus.
+    // (Bézier / NURBS / Poly, with their circle forms) as submenus. Every
+    // entry SPAWNS a preset at the 2D cursor — interactive drawing lives on
+    // the palette's Shape / Curve tools now (draw-on-create is the tools'
+    // behaviour, no menu toggle). Free is the exception: a custom shape only
+    // exists drawn, so it starts the pen.
     std::vector<UI::MenuEntry> entries;
-    // A SHAPE / circle leaf: when Draw on Create is on it arms a drag-to-place
-    // (the canvas builds the shape in the dragged box); otherwise it spawns a
-    // preset at the 2D cursor.
     auto leaf = [&](std::vector<UI::MenuEntry>& dst, const char* label,
                     const char* kind, const char* tip) {
         UI::MenuEntry e; e.label = label; e.tooltip = tip;
         e.onClick = [this, kind]() {
-            if (addDrawOnCreate_) pendingDrawKind_ = kind;
-            else                  SpawnShape(kind);
+            SpawnShape(kind);
             addMenuOpen_ = false;
         };
         dst.push_back(std::move(e));
     };
     {
         UI::MenuEntry shapes; shapes.label = "Shapes"; shapes.icon = "shape-category";
-        leaf(shapes.submenu, "Rectangle", "rect",
-             "Rectangle (drag to place when Draw on Create is on)");
-        leaf(shapes.submenu, "Ellipse",   "ellipse",
-             "Ellipse (drag to place when Draw on Create is on)");
-        leaf(shapes.submenu, "Triangle",  "triangle",
-             "Triangle (drag to place when Draw on Create is on)");
-        // FREE: a custom-shaped path drawn point by point with the pen — ALWAYS
-        // starts the pen (as if Draw on Create were on, even when it is off).
+        leaf(shapes.submenu, "Rectangle", "rect",     "Rectangle preset");
+        leaf(shapes.submenu, "Ellipse",   "ellipse",  "Ellipse preset");
+        leaf(shapes.submenu, "Triangle",  "triangle", "Triangle preset");
         {
             UI::MenuEntry e; e.label = "Free";
-            e.tooltip = "Draw a free custom shape point by point (the pen); "
-                        "always uses draw-on-create";
+            e.tooltip = "Draw a free custom shape point by point (the pen)";
             e.onClick = [this]() { BeginPenDraw("free"); addMenuOpen_ = false; };
             shapes.submenu.push_back(std::move(e));
         }
         entries.push_back(std::move(shapes));
     }
     {
-        // Open curve kinds honour "Draw on Create" via the PEN (per-point
-        // construction); the circle forms use the drag-to-place box like the
-        // shapes.
-        auto curveLeaf = [&](std::vector<UI::MenuEntry>& dst, const char* label,
-                             const char* kind, const char* tip) {
-            UI::MenuEntry e; e.label = label; e.tooltip = tip;
-            e.onClick = [this, kind]() {
-                if (addDrawOnCreate_) BeginPenDraw(kind);
-                else                  SpawnShape(kind);
-                addMenuOpen_ = false;
-            };
-            dst.push_back(std::move(e));
-        };
         UI::MenuEntry curves; curves.label = "Curves"; curves.icon = "bezier-curve";
-        curveLeaf(curves.submenu, "Bézier",     "curve",
-                  "Add an open Bézier curve (pen when Draw on Create is on)");
-        leaf(curves.submenu, "Bézier Circle",   "beziercircle",
-             "Four-arc Bézier circle (drag to place when Draw on Create is on)");
-        curveLeaf(curves.submenu, "NURBS Path", "nurbs",
-                  "Add an open NURBS path (pen when Draw on Create is on)");
-        leaf(curves.submenu, "NURBS Circle",    "nurbscircle",
-             "Exact rational-NURBS circle (drag to place when Draw on Create "
-             "is on)");
-        curveLeaf(curves.submenu, "Poly Line",  "poly",
-                  "Add a straight polyline (pen when Draw on Create is on)");
+        leaf(curves.submenu, "Bézier",        "curve",        "Open Bézier curve preset");
+        leaf(curves.submenu, "Bézier Circle", "beziercircle", "Four-arc Bézier circle");
+        leaf(curves.submenu, "NURBS Path",    "nurbs",        "Open NURBS path preset");
+        leaf(curves.submenu, "NURBS Circle",  "nurbscircle",  "Exact rational-NURBS circle");
+        leaf(curves.submenu, "Poly Line",     "poly",         "Straight polyline preset");
         entries.push_back(std::move(curves));
-    }
-    // Draw-on-create: when ON, picking a CURVE arms the PEN instead of
-    // spawning a ready-made object — click places corner anchors, click-drag
-    // pulls symmetric handles, Enter/double-click finishes, first-anchor
-    // click closes, Esc cancels (the legacy pen workflow).
-    {
-        UI::MenuEntry t;
-        t.label = addDrawOnCreate_ ? "Draw on Create: On" : "Draw on Create: Off";
-        t.tooltip = "When on, curve entries start the pen tool at the cursor "
-                    "instead of spawning a preset object";
-        t.onClick = [this] { addDrawOnCreate_ = !addDrawOnCreate_; addMenuOpen_ = false; };
-        entries.push_back(std::move(t));
     }
 
     const bool open = UI::ContextMenu("##addMenu", addMenuPos_, entries, "Add");

@@ -15,38 +15,13 @@
 
 namespace App {
 
-namespace {
-// sRGB (straight) → the engine's linear-straight document color.
-Ink::Color DocColor(const ImVec4& c) {
-    auto lin = [](float u) {
-        return u <= 0.04045f ? u / 12.92f
-                             : std::pow((u + 0.055f) / 1.055f, 2.4f);
-    };
-    return { lin(c.x), lin(c.y), lin(c.z), c.w };
-}
-} // namespace
-
 Ink::Style Application::DefaultStyle() const {
+    // The default style IS the fill/stroke stacks shown by the Stroke/Fill
+    // editors (and their top-bar swatches). Either list may be EMPTY — an
+    // explicit "no fill" / "no stroke" the user chose there.
     Ink::Style s;
-    if (edit_.defaultFillEnabled) {
-        Ink::Fill f;
-        f.paint.color = DocColor(edit_.defaultFill);
-        s.fills.push_back(f);
-    }
-    if (edit_.defaultStrokeEnabled) {
-        Ink::Stroke st;
-        st.paint.color = DocColor(edit_.defaultStroke);
-        st.width = edit_.defaultStrokeWidth;
-        st.align = Ink::StrokeAlign::Center;
-        st.join  = Ink::JoinStyle::Round;
-        st.cap   = Ink::CapStyle::Round;
-        s.strokes.push_back(st);
-    }
-    // A shape with neither fill nor stroke would be invisible — guarantee one.
-    if (s.fills.empty() && s.strokes.empty()) {
-        Ink::Fill f; f.paint.color = DocColor(edit_.defaultFill);
-        s.fills.push_back(f);
-    }
+    s.fills   = edit_.defaultFills;
+    s.strokes = edit_.defaultStrokes;
     return s;
 }
 

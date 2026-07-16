@@ -37,6 +37,7 @@ add_library(Application STATIC
     Editors/Outliner/OutlinerDragDrop.cpp
     Editors/Properties/Properties.cpp
     Editors/Properties/PropertiesPaint.cpp
+    Editors/Properties/PaintEditors.cpp
     Editors/Properties/PropertiesModifiers.cpp
     Editors/Info/InfoEditors.cpp
 

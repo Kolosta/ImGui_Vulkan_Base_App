@@ -151,6 +151,24 @@ void Application::RegisterCoreEditors() {
         reg.Register(std::move(d));
     }
 
+    // Stroke editor — the stroke stack of the WHOLE selection (or, with no
+    // selection, the default strokes used for new objects). Fill editor: same
+    // for fills. Both reuse the Properties Paint stack UI (PaintEditors.cpp).
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::StrokeEd; d.name = "Stroke"; d.icon = "draw";
+        d.column = 2; d.themeScope = "editors/properties";
+        d.draw = [this](ImVec2, EditorState& st) { RenderStrokeEditor(st); };
+        reg.Register(std::move(d));
+    }
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::FillEd; d.name = "Fill"; d.icon = "colorize";
+        d.column = 2; d.themeScope = "editors/properties";
+        d.draw = [this](ImVec2, EditorState& st) { RenderFillEditor(st); };
+        reg.Register(std::move(d));
+    }
+
     // Timeline — placeholder strip with the reusable side panel demo.
     {
         EditorDescriptor d;

@@ -408,20 +408,10 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
                          { std::max(a.x,b.x), std::max(a.y,b.y) }, fill);
         ov.AddRect({ std::min(a.x,b.x), std::min(a.y,b.y) },
                    { std::max(a.x,b.x), std::max(a.y,b.y) }, selCol, 1.0f);
-    } else if (canvasDrag_.kind == CanvasDrag::Kind::DrawRect ||
-               canvasDrag_.kind == CanvasDrag::Kind::DrawEllipse) {
-        const Ink::Vec2 a = cam.DocToView(canvasDrag_.startDoc.x, canvasDrag_.startDoc.y);
-        const Ink::Vec2 b = cam.DocToView(canvasDrag_.curDoc.x, canvasDrag_.curDoc.y);
-        if (canvasDrag_.kind == CanvasDrag::Kind::DrawRect) {
-            ov.AddRect({ std::min(a.x,b.x), std::min(a.y,b.y) },
-                       { std::max(a.x,b.x), std::max(a.y,b.y) }, activeCol, 1.5f);
-        } else {
-            const Ink::Vec2 ctr{ (a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f };
-            ov.AddCircle(ctr, std::max(std::abs(b.x-a.x), std::abs(b.y-a.y)) * 0.5f, activeCol, 1.5f);
-        }
     } else if (canvasDrag_.kind == CanvasDrag::Kind::DrawShape) {
-        // Draw-on-create ghost: the shape flattened at the dragged box size,
-        // plus a subtle box outline (the placement rect).
+        // Shape-tool ghost: the REAL result at reduced alpha — the default
+        // fill triangulated + the default stroke tessellated over the shape
+        // built at the dragged box size — plus a subtle box outline.
         const Ink::DVec2 sa = canvasDrag_.startDoc, sb = canvasDrag_.curDoc;
         const double cx = (sa.x + sb.x) * 0.5, cy = (sa.y + sb.y) * 0.5;
         const double hw = std::max(1.0, std::abs(sb.x - sa.x) * 0.5);
@@ -430,15 +420,38 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
         Ink::PathData gp = BuildShapeGeometry(canvasDrag_.shapeKind.c_str(),
                                               hw, hh, nm);
         const double localTol = std::max(1e-4, 0.25 / std::max(1e-6, cam.zoom));
-        for (const auto& pl : Ink::geom::Flatten(gp, localTol)) {
-            const std::size_t m = pl.points.size();
-            if (m < 2) continue;
-            const std::size_t last = pl.closed ? m : m - 1;
-            for (std::size_t i = 0; i < last; ++i) {
-                const Ink::DVec2 p0 = pl.points[i];
-                const Ink::DVec2 p1 = pl.points[(i + 1) % m];
-                ov.AddLine(cam.DocToView(cx + p0.x, cy + p0.y),
-                           cam.DocToView(cx + p1.x, cy + p1.y), activeCol, 1.5f);
+        const auto flat = Ink::geom::Flatten(gp, localTol);
+        // Fill (first default fill, translucent).
+        if (!edit_.defaultFills.empty() && edit_.defaultFills.front().enabled) {
+            const Ink::Color fc = edit_.defaultFills.front().paint.color;
+            const float fa = 0.4f;
+            const Ink::Color tri{ fc.r * fa, fc.g * fa, fc.b * fa, fc.a * fa };
+            const Ink::geom::Mesh m =
+                Ink::geom::TriangulateFill(flat, Ink::FillRule::NonZero);
+            for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
+                auto vp = [&](std::uint32_t idx) {
+                    return cam.DocToView(cx + m.positions[idx*2],
+                                         cy + m.positions[idx*2+1]);
+                };
+                ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
+                               vp(m.indices[i+2]), tri);
+            }
+        }
+        // Stroke (first default stroke, translucent, real width/caps/joins).
+        if (!edit_.defaultStrokes.empty() && edit_.defaultStrokes.front().enabled) {
+            const Ink::Stroke& sk = edit_.defaultStrokes.front();
+            const Ink::Color kc = sk.paint.color;
+            const float sa2 = 0.5f;
+            const Ink::Color tc{ kc.r * sa2, kc.g * sa2, kc.b * sa2, kc.a * sa2 };
+            const Ink::geom::Mesh m =
+                Ink::geom::TessellateStroke(flat, sk, localTol);
+            for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
+                auto vp = [&](std::uint32_t idx) {
+                    return cam.DocToView(cx + m.positions[idx*2],
+                                         cy + m.positions[idx*2+1]);
+                };
+                ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
+                               vp(m.indices[i+2]), tc);
             }
         }
         const Ink::Vec2 a = cam.DocToView(sa.x, sa.y);

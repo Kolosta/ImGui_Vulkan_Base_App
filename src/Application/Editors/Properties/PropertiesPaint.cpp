@@ -97,6 +97,30 @@ void Application::PropFillsSection(Ink::NodeId id) {
             }
         };
 
+        DrawFillsStackBody(style, id, propFillSel_, liveApply,
+                           structural, structLabel);
+
+        if (structural) {
+            const Ink::Style before = n->style;
+            doc.SetStyle(id, style);
+            CommitStyleEdit(id, before, structLabel);
+        }
+    }
+    UI::EndPanel();
+}
+
+// ── Shared fills stack body (Properties + the Fill editor) ───────────────────
+// The vignette rail + the selected fill's properties, editing `style` in place.
+// `node` = the pattern-preview / eyedropper target (kNullNode when editing the
+// default style); `sel` = the caller's rail selection.
+void Application::DrawFillsStackBody(
+    Ink::Style& style, Ink::NodeId node, int& sel,
+    const std::function<void(const char*, bool)>& liveApply,
+    bool& structural, const char*& structLabel) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    const float gs = pr::Gs();
+    {
         const float thumb = kThumbBase * gs;
 
         // ── LEFT: the vignette rail (dynamic drag-reorder + the "add" tile) ───
@@ -121,13 +145,13 @@ void Application::PropFillsSection(Ink::NodeId id) {
                 char tid[16];
                 std::snprintf(tid, sizeof tid, "f%d", i);
                 const bool clicked =
-                    pr::ThumbTile(tid, thumb, i == propFillSel_, &cmn, &cmx, &pos);
+                    pr::ThumbTile(tid, thumb, i == sel, &cmn, &cmx, &pos);
                 rr.HandleCell(i, ImGui::IsItemActivated(), ImGui::IsItemActive(),
                               railOrigin.y + (float)i * cellH, railOrigin.y);
-                if (clicked && rr.Grabbed() < 0) propFillSel_ = i;
+                if (clicked && rr.Grabbed() < 0) sel = i;
                 ImTextureID patTex = (ImTextureID)0;
                 if (f.kind == Ink::FillKind::Pattern)
-                    patTex = PaintPatternPreview(id, i);
+                    patTex = PaintPatternPreview(node, i);
                 if (!isGrab) {
                     if (patTex)
                         ImGui::GetWindowDrawList()->AddImage(patTex, cmn, cmx);
@@ -172,7 +196,7 @@ void Application::PropFillsSection(Ink::NodeId id) {
                 const ImVec2 gmx(railOrigin.x + thumb - ins, posY + thumb - ins);
                 ImDrawList* fdl = ImGui::GetForegroundDrawList();
                 ImTextureID patTex = gf.kind == Ink::FillKind::Pattern
-                                         ? PaintPatternPreview(id, grabbed)
+                                         ? PaintPatternPreview(node, grabbed)
                                          : (ImTextureID)0;
                 if (patTex) fdl->AddImage(patTex, gmn, gmx);
                 else        pr::DrawFillSample(fdl, gmn, gmx, gf);
@@ -180,9 +204,11 @@ void Application::PropFillsSection(Ink::NodeId id) {
             ImGui::SetCursorScreenPos(
                 ImVec2(railOrigin.x, railOrigin.y + (float)nF * cellH));
             if (pr::ThumbAddTile(thumb)) {
-                Ink::Fill f; f.paint.color = pr::ToLinear(edit_.defaultFill);
+                // Seed the new fill from the default stack's first entry.
+                Ink::Fill f = edit_.defaultFills.empty() ? Ink::Fill{}
+                                                         : edit_.defaultFills.front();
                 style.fills.push_back(f);
-                propFillSel_ = (int)style.fills.size() - 1;
+                sel = (int)style.fills.size() - 1;
                 structural = true; structLabel = "Add Fill";
             }
             pr::VReorder::Move mv = rr.Commit();
@@ -192,11 +218,11 @@ void Application::PropFillsSection(Ink::NodeId id) {
                 Ink::Fill moved = style.fills[(std::size_t)mv.from];
                 style.fills.erase(style.fills.begin() + mv.from);
                 style.fills.insert(style.fills.begin() + mv.to, moved);
-                if (propFillSel_ == mv.from) propFillSel_ = mv.to;
-                else if (mv.from < mv.to && propFillSel_ > mv.from &&
-                         propFillSel_ <= mv.to) --propFillSel_;
-                else if (mv.to < mv.from && propFillSel_ >= mv.to &&
-                         propFillSel_ < mv.from) ++propFillSel_;
+                if (sel == mv.from) sel = mv.to;
+                else if (mv.from < mv.to && sel > mv.from &&
+                         sel <= mv.to) --sel;
+                else if (mv.to < mv.from && sel >= mv.to &&
+                         sel < mv.from) ++sel;
                 liveApply("Reorder Fills", true);
             }
         }
@@ -204,8 +230,7 @@ void Application::PropFillsSection(Ink::NodeId id) {
         ImGui::SameLine(0.0f, 8.0f * gs);
 
         // ── RIGHT: the selected fill's properties ─────────────────────────────
-        propFillSel_ = std::clamp(propFillSel_, 0,
-                                  std::max(0, (int)style.fills.size() - 1));
+        sel = std::clamp(sel, 0, std::max(0, (int)style.fills.size() - 1));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
         ImGui::BeginChild("##fillProps", ImVec2(ImGui::GetContentRegionAvail().x, 0),
@@ -219,7 +244,7 @@ void Application::PropFillsSection(Ink::NodeId id) {
             ImGui::TextUnformatted("Click + to add one.");
             ImGui::PopStyleColor();
         } else {
-            Ink::Fill& f = style.fills[(std::size_t)propFillSel_];
+            Ink::Fill& f = style.fills[(std::size_t)sel];
 
             bool enabled = f.enabled;
             if (pr::CheckRow("Enabled", &enabled)) {
@@ -249,23 +274,31 @@ void Application::PropFillsSection(Ink::NodeId id) {
             } else {
                 // ── Pattern fill (legacy fill-layer feature set) ──
                 bool pickReq = false;
-                if (pr::NodePickerRow("Motif", doc, &f.pattern.motifRef, id,
+                if (pr::NodePickerRow("Motif", doc, &f.pattern.motifRef, node,
                                       /*allowNone=*/true, /*pathsOnly=*/false,
                                       &pickReq)) {
                     structural = true; structLabel = "Pattern Motif";
                 }
                 if (pickReq) {
                     // Eyedropper: pick a node in the viewport/outliner; the
-                    // commit re-fetches the style so the write survives.
-                    const std::size_t fi = (std::size_t)propFillSel_;
-                    BeginObjectPick(nullptr, [this, id, fi](Ink::NodeId picked) {
+                    // commit re-fetches the style so the write survives. When
+                    // there is NO host node (the Fill editor on the default
+                    // style), the pick writes into the defaults instead.
+                    const std::size_t fi = (std::size_t)sel;
+                    const Ink::NodeId nid = node;
+                    BeginObjectPick(nullptr, [this, nid, fi](Ink::NodeId picked) {
                         if (!project_.document) return;
-                        const Ink::Node* nn = project_.document->Find(id);
-                        if (!nn || fi >= nn->style.fills.size()) return;
-                        Ink::Style before = nn->style, after = before;
-                        after.fills[fi].pattern.motifRef = picked;
-                        project_.document->SetStyle(id, after);
-                        CommitStyleEdit(id, before, "Pattern Motif");
+                        if (nid != Ink::kNullNode) {
+                            const Ink::Node* nn = project_.document->Find(nid);
+                            if (!nn || fi >= nn->style.fills.size()) return;
+                            Ink::Style before = nn->style, after = before;
+                            after.fills[fi].pattern.motifRef = picked;
+                            project_.document->SetStyle(nid, after);
+                            CommitStyleEdit(nid, before, "Pattern Motif");
+                        } else if (fi < edit_.defaultFills.size()) {
+                            edit_.defaultFills[fi].pattern.motifRef = picked;
+                            ApplyDefaultFillsEdit("Pattern Motif", true);
+                        }
                     });
                 }
                 float sp[2] = { (float)f.pattern.spacingX,
@@ -357,22 +390,15 @@ void Application::PropFillsSection(Ink::NodeId id) {
             pr::GroupGap();
             pr::ControlColumn();
             if (ImGui::SmallButton("Remove")) {
-                style.fills.erase(style.fills.begin() + propFillSel_);
-                propFillSel_ = std::max(0, propFillSel_ - 1);
+                style.fills.erase(style.fills.begin() + sel);
+                sel = std::max(0, sel - 1);
                 structural = true; structLabel = "Remove Fill";
             }
         }
         ImGui::EndChild();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
-
-        if (structural) {
-            const Ink::Style before = n->style;
-            doc.SetStyle(id, style);
-            CommitStyleEdit(id, before, structLabel);
-        }
     }
-    UI::EndPanel();
 }
 
 // ── Compact single-object editor (gap start/end markers) ────────────────────
@@ -493,11 +519,6 @@ void Application::PropStrokesSection(Ink::NodeId id) {
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(id);
     if (!n || n->kind != Ink::NodeKind::Path) return;
-    const float gs = pr::Gs();
-    static const char* kAlign[] = { "Center", "Inner", "Outer" };
-    static const char* kCap[]   = { "Butt", "Round", "Square" };
-    static const char* kJoin[]  = { "Miter", "Round", "Bevel" };
-    static const char* kSpace[] = { "Document", "Viewport px" };
 
     UI::PanelConfig pc; pc.id = "##strokes"; pc.label = "Strokes";
     pc.defaultOpen = true;
@@ -518,6 +539,31 @@ void Application::PropStrokesSection(Ink::NodeId id) {
             }
         };
 
+        DrawStrokesStackBody(style, propStrokeSel_, liveApply,
+                             structural, structLabel);
+
+        if (structural) {
+            const Ink::Style before = n->style;
+            doc.SetStyle(id, style);
+            CommitStyleEdit(id, before, structLabel);
+        }
+    }
+    UI::EndPanel();
+}
+
+// ── Shared strokes stack body (Properties + the Stroke editor) ───────────────
+// The vignette rail + the selected stroke's properties, editing `style` in
+// place. `sel` = the caller's rail selection.
+void Application::DrawStrokesStackBody(
+    Ink::Style& style, int& sel,
+    const std::function<void(const char*, bool)>& liveApply,
+    bool& structural, const char*& structLabel) {
+    const float gs = pr::Gs();
+    static const char* kAlign[] = { "Center", "Inner", "Outer" };
+    static const char* kCap[]   = { "Butt", "Round", "Square" };
+    static const char* kJoin[]  = { "Miter", "Round", "Bevel" };
+    static const char* kSpace[] = { "Document", "Viewport px" };
+    {
         const float thumb = kThumbBase * gs;
 
         // ── LEFT: the vignette rail (line samples, dynamic drag-reorder) ──────
@@ -542,11 +588,11 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                 char tid[16];
                 std::snprintf(tid, sizeof tid, "s%d", i);
                 const bool clicked =
-                    pr::ThumbTile(tid, thumb, i == propStrokeSel_, &cmn, &cmx, &pos);
+                    pr::ThumbTile(tid, thumb, i == sel, &cmn, &cmx, &pos);
                 rr.HandleCell(i, ImGui::IsItemActivated(), ImGui::IsItemActive(),
                               railOrigin.y + (float)i * cellH, railOrigin.y);
                 // A plain click (no drag this hold) selects.
-                if (clicked && rr.Grabbed() < 0) propStrokeSel_ = i;
+                if (clicked && rr.Grabbed() < 0) sel = i;
                 // The grabbed tile's sample is drawn LAST (foreground) so it sits
                 // over its neighbours; the rest draw inline.
                 if (!isGrab)
@@ -592,10 +638,12 @@ void Application::PropStrokesSection(Ink::NodeId id) {
             ImGui::SetCursorScreenPos(
                 ImVec2(railOrigin.x, railOrigin.y + (float)nS * cellH));
             if (pr::ThumbAddTile(thumb)) {
-                Ink::Stroke s; s.paint.color = pr::ToLinear(edit_.defaultStroke);
-                s.width = edit_.defaultStrokeWidth;
+                // Seed the new stroke from the default stack's first entry.
+                Ink::Stroke s;
+                if (!edit_.defaultStrokes.empty()) s = edit_.defaultStrokes.front();
+                else s.width = 2.0;
                 style.strokes.push_back(s);
-                propStrokeSel_ = (int)style.strokes.size() - 1;
+                sel = (int)style.strokes.size() - 1;
                 structural = true; structLabel = "Add Stroke";
             }
             // Apply a committed drag move (reorder the stack + follow selection).
@@ -606,11 +654,11 @@ void Application::PropStrokesSection(Ink::NodeId id) {
                 Ink::Stroke moved = style.strokes[(std::size_t)mv.from];
                 style.strokes.erase(style.strokes.begin() + mv.from);
                 style.strokes.insert(style.strokes.begin() + mv.to, moved);
-                if (propStrokeSel_ == mv.from) propStrokeSel_ = mv.to;
-                else if (mv.from < mv.to && propStrokeSel_ > mv.from &&
-                         propStrokeSel_ <= mv.to) --propStrokeSel_;
-                else if (mv.to < mv.from && propStrokeSel_ >= mv.to &&
-                         propStrokeSel_ < mv.from) ++propStrokeSel_;
+                if (sel == mv.from) sel = mv.to;
+                else if (mv.from < mv.to && sel > mv.from &&
+                         sel <= mv.to) --sel;
+                else if (mv.to < mv.from && sel >= mv.to &&
+                         sel < mv.from) ++sel;
                 liveApply("Reorder Strokes", true);
             }
         }
@@ -618,8 +666,7 @@ void Application::PropStrokesSection(Ink::NodeId id) {
         ImGui::SameLine(0.0f, 8.0f * gs);
 
         // ── RIGHT: the selected stroke's properties ───────────────────────────
-        propStrokeSel_ = std::clamp(propStrokeSel_, 0,
-                                    std::max(0, (int)style.strokes.size() - 1));
+        sel = std::clamp(sel, 0, std::max(0, (int)style.strokes.size() - 1));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
         ImGui::BeginChild("##strokeProps",
@@ -634,7 +681,7 @@ void Application::PropStrokesSection(Ink::NodeId id) {
             ImGui::TextUnformatted("Click + to add one.");
             ImGui::PopStyleColor();
         } else {
-            Ink::Stroke& s = style.strokes[(std::size_t)propStrokeSel_];
+            Ink::Stroke& s = style.strokes[(std::size_t)sel];
 
             bool enabled = s.enabled;
             if (pr::CheckRow("Enabled", &enabled)) {
@@ -1158,22 +1205,15 @@ void Application::PropStrokesSection(Ink::NodeId id) {
             pr::GroupGap();
             pr::ControlColumn();
             if (ImGui::SmallButton("Remove")) {
-                style.strokes.erase(style.strokes.begin() + propStrokeSel_);
-                propStrokeSel_ = std::max(0, propStrokeSel_ - 1);
+                style.strokes.erase(style.strokes.begin() + sel);
+                sel = std::max(0, sel - 1);
                 structural = true; structLabel = "Remove Stroke";
             }
         }
         ImGui::EndChild();
         ImGui::PopStyleColor();
         ImGui::PopStyleVar();
-
-        if (structural) {
-            const Ink::Style before = n->style;
-            doc.SetStyle(id, style);
-            CommitStyleEdit(id, before, structLabel);
-        }
     }
-    UI::EndPanel();
 }
 
 // ── Single-mark editor (viewport "Marks" side-panel tab) ────────────────────

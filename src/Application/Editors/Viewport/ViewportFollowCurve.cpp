@@ -1,6 +1,7 @@
 #include "Application.h"
 #include <DesignSystem/DesignSystem.h>
 #include <Ink/View/OverlayList.h>
+#include <Shortcuts/ToolManager.h>
 #include <imgui.h>
 #include <algorithm>
 #include <cmath>
@@ -461,9 +462,14 @@ std::string Application::CreateCursorKind() const {
         return penSpline_ == Ink::SplineType::Nurbs ? "nurbs"
              : penSpline_ == Ink::SplineType::Poly  ? "poly" : "curve";
     }
-    if (!pendingDrawKind_.empty()) return pendingDrawKind_;
     if (canvasDrag_.kind == CanvasDrag::Kind::DrawShape)
         return canvasDrag_.shapeKind;
+    // A creation TOOL armed (Shape / Curve palette buttons): preview its
+    // current variant at the cursor.
+    const std::string tool =
+        Shortcuts::Tools::ToolManager::Instance().GetActiveTool();
+    if (tool == "tool.shape") return toolShapeKind_;
+    if (tool == "tool.curve") return toolCurveKind_;
     return {};
 }
 

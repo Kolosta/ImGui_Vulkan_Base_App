@@ -3,6 +3,7 @@
 #include <Ink/Document/Document.h>
 #include <imgui.h>
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <string>
 #include <vector>
@@ -165,8 +166,7 @@ struct TransformOp {
 
 // ── Canvas drag gestures (select tool) ───────────────────────────────────────
 struct CanvasDrag {
-    enum class Kind : uint8_t { None = 0, BoxSelect, DrawRect, DrawEllipse,
-                                MoveVerts, DrawShape };
+    enum class Kind : uint8_t { None = 0, BoxSelect, MoveVerts, DrawShape };
     Kind kind = Kind::None;
     Ink::DVec2 startDoc{};
     Ink::DVec2 curDoc{};
@@ -177,6 +177,15 @@ struct CanvasDrag {
     std::string shapeKind;
 };
 
+// sRGB → linear STRAIGHT (document colours; the UI pickers are sRGB).
+inline Ink::Color SrgbToLinearStraight(float r, float g, float b, float a = 1.0f) {
+    auto L = [](float u) {
+        return u <= 0.04045f ? u / 12.92f
+                             : std::pow((u + 0.055f) / 1.055f, 2.4f);
+    };
+    return { L(r), L(g), L(b), a };
+}
+
 // ── The shared editing context ───────────────────────────────────────────────
 struct EditContext {
     std::vector<Ink::NodeId> selection;      // insertion order
@@ -186,13 +195,24 @@ struct EditContext {
     TransformOrientation orientation = TransformOrientation::Global;
     SnapSettings snap;
 
-    // Default style for NEW shapes (sRGB, converted at creation time; edited
-    // by the top bar's fill/stroke swatches).
-    ImVec4 defaultFill{ 0.75f, 0.75f, 0.78f, 1.0f };
-    ImVec4 defaultStroke{ 0.10f, 0.11f, 0.12f, 1.0f };
-    double defaultStrokeWidth = 2.0;
-    bool   defaultFillEnabled = true;
-    bool   defaultStrokeEnabled = true;
+    // Default style for NEW shapes — FULL fill/stroke stacks (multi-fill /
+    // multi-stroke, edited by the Stroke/Fill editors and the top-bar
+    // swatches). Mirrors the active object while one is selected, persists
+    // after deselection; either list MAY be empty ("no fill" / "no stroke").
+    std::vector<Ink::Fill>   defaultFills;
+    std::vector<Ink::Stroke> defaultStrokes;
+    EditContext() {
+        Ink::Fill f;
+        f.paint.color = SrgbToLinearStraight(0.75f, 0.75f, 0.78f);
+        defaultFills.push_back(f);
+        Ink::Stroke s;
+        s.paint.color = SrgbToLinearStraight(0.10f, 0.11f, 0.12f);
+        s.width = 2.0;
+        s.align = Ink::StrokeAlign::Center;
+        s.join  = Ink::JoinStyle::Round;
+        s.cap   = Ink::CapStyle::Round;
+        defaultStrokes.push_back(s);
+    }
 
     // ── Edit Mode element selection ──────────────────────────────────────────
     // Points and the two handles of a point are selected INDIVIDUALLY (Blender-

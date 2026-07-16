@@ -142,10 +142,14 @@ void Application::RegisterDefaultShortcuts() {
     }
 
     // ── Tools (Lot 8: the editing loop) ───────────────────────────────────────
-    tm.RegisterTool({"tool.select",  "Select",     "select",         {"tool.select.activate"}});
-    tm.RegisterTool({"tool.rect",    "Rectangle",  "crop-landscape", {"tool.rect.activate"}});
-    tm.RegisterTool({"tool.ellipse", "Ellipse",    "format-shapes",  {"tool.ellipse.activate"}});
-    tm.RegisterTool({"tool.cursor",  "2D Cursor",  "crop-free",      {"tool.cursor.activate"}});
+    // Shape and Curve are MULTI-TOOLS: one palette button hosting several
+    // related creation tools (rectangle/ellipse/triangle/free — bézier/circles/
+    // nurbs/poly). The active variant lives on Application (toolShapeKind_ /
+    // toolCurveKind_); right-clicking the palette button picks the variant.
+    tm.RegisterTool({"tool.select", "Select",    "select",         {"tool.select.activate"}});
+    tm.RegisterTool({"tool.cursor", "2D Cursor", "crop-free",      {"tool.cursor.activate"}});
+    tm.RegisterTool({"tool.shape",  "Shape",     "crop-landscape", {"tool.shape.activate"}});
+    tm.RegisterTool({"tool.curve",  "Curve",     "bezier-curve",   {"tool.curve.activate"}});
     {
         Action a; a.id = "tool.select.activate"; a.name = "Activate Select";
         a.description = "Select, box-select and grab-move objects";
@@ -154,17 +158,19 @@ void Application::RegisterDefaultShortcuts() {
         sm.RegisterAction(a, { sigKey(ImGuiKey_W) });
     }
     {
-        Action a; a.id = "tool.rect.activate"; a.name = "Activate Rectangle";
-        a.description = "Draw rectangles by dragging on the canvas";
+        Action a; a.id = "tool.shape.activate"; a.name = "Activate Shape";
+        a.description = "Draw shapes (rectangle / ellipse / triangle / free) "
+                        "by dragging on the canvas";
         a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
-        a.callback = [this]{ Action_ActivateNamedTool("tool.rect"); };
+        a.callback = [this]{ Action_ActivateNamedTool("tool.shape"); };
         sm.RegisterAction(a, {});
     }
     {
-        Action a; a.id = "tool.ellipse.activate"; a.name = "Activate Ellipse";
-        a.description = "Draw ellipses by dragging on the canvas";
+        Action a; a.id = "tool.curve.activate"; a.name = "Activate Curve";
+        a.description = "Draw curves (Bézier / NURBS / poly and their circle "
+                        "forms) on the canvas";
         a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
-        a.callback = [this]{ Action_ActivateNamedTool("tool.ellipse"); };
+        a.callback = [this]{ Action_ActivateNamedTool("tool.curve"); };
         sm.RegisterAction(a, {});
     }
     {
