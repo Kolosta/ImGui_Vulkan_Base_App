@@ -31,24 +31,25 @@ ToolPaletteResult ToolPalette(const char* id, ImVec2 origin,
     const float btn  = 26.0f * gs;                        // button square
     const float pad  = 4.0f * gs;                         // outer margin
     const float gap  = 4.0f * gs;                         // between buttons
+    const float ggap = 12.0f * gs;                        // between GROUPS
     const float rnd  = SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * gs;
     const int   n    = (int)items.size();
 
-    // Container geometry from the item count (explicit — no window padding).
-    const float w = btn + pad * 2.0f;
-    const float h = pad * 2.0f + (float)n * btn + (float)(n - 1) * gap;
+    // Column geometry: no container — the buttons stack directly, a larger gap
+    // whenever the group index changes.
     const ImVec2 mn(origin.x + pad, origin.y + pad);
-    const ImVec2 mx(mn.x + w, mn.y + h);
-    res.rectMin = mn;  res.rectMax = mx;
+    std::vector<float> tops((std::size_t)n, 0.0f);
+    float y = mn.y;
+    for (int i = 0; i < n; ++i) {
+        if (i > 0)
+            y += btn + (items[(std::size_t)i].group !=
+                        items[(std::size_t)(i - 1)].group ? ggap : gap);
+        tops[(std::size_t)i] = y;
+    }
+    res.rectMin = mn;
+    res.rectMax = ImVec2(mn.x + btn, tops.back() + btn);
 
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(mn, mx,
-        ImGui::ColorConvertFloat4ToU32(SafeColor(Tok::S_Color_Background_Layer1,
-                                                 ImVec4(0.16f, 0.16f, 0.18f, 1))), rnd);
-    if (ds.BordersEnabled())
-        dl->AddRect(mn, mx,
-            ImGui::ColorConvertFloat4ToU32(SafeColor(Tok::S_Color_Border_Default,
-                                                     ImVec4(0.35f, 0.35f, 0.38f, 1))), rnd);
 
     const ImVec4 bg    = SafeColor(Tok::C_IconButton_Background,      ImVec4(0.2f, 0.2f, 0.22f, 1));
     const ImVec4 hov   = SafeColor(Tok::C_IconButton_BackgroundHover, ImVec4(0.3f, 0.3f, 0.33f, 1));
@@ -59,10 +60,8 @@ ToolPaletteResult ToolPalette(const char* id, ImVec2 origin,
     ImGui::PushID(id);
     ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);   // Tab must not focus tools
     for (int i = 0; i < n; ++i) {
-        const ToolPaletteItem& it = items[i];
-        // Centre the button in the strip.
-        const ImVec2 bmin(mn.x + (w - btn) * 0.5f,
-                          mn.y + pad + (float)i * (btn + gap));
+        const ToolPaletteItem& it = items[(std::size_t)i];
+        const ImVec2 bmin(mn.x, tops[(std::size_t)i]);
         const ImVec2 bmax(bmin.x + btn, bmin.y + btn);
         ImGui::SetCursorScreenPos(bmin);
         ImGui::PushID(i);
@@ -86,10 +85,22 @@ ToolPaletteResult ToolPalette(const char* id, ImVec2 origin,
                            ImVec2(bmin.x + (btn - isz) * 0.5f, bmin.y + (btn - isz) * 0.5f),
                            isz, md);
 
+        // Multi-tool corner: a small filled triangle at the bottom-right,
+        // signalling the right-click variant menu.
+        if (it.hasMenu) {
+            const float t = 6.0f * gs, inset = 2.5f * gs;
+            const ImVec2 c(bmax.x - inset, bmax.y - inset);
+            dl->AddTriangleFilled(ImVec2(c.x - t, c.y), ImVec2(c.x, c.y - t), c,
+                                  ImGui::ColorConvertFloat4ToU32(iconTint));
+        }
+
         if (hovered && !it.tooltip.empty() &&
             ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
             DrawTooltip(it.tooltip.c_str(), ImGui::GetIO().MousePos);
         if (clicked && it.enabled) res.clicked = i;
+        if (hovered && it.enabled && it.hasMenu &&
+            ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+            res.rightClicked = i;
         ImGui::PopID();
     }
     ImGui::PopItemFlag();
