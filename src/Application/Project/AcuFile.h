@@ -33,6 +33,9 @@ struct AcuData {
     std::vector<Ink::Collection> collections;
     Ink::NodeId                  nextId = 1;  // id-allocator high-water mark
     std::vector<std::uint8_t>    layoutBlob;  // ZoneLayout blob (empty = none)
+    // EDST section: opaque, self-versioned editing-session blob written by the
+    // Application (per-mode active tools + tool variants). Empty = none.
+    std::vector<std::uint8_t>    editorBlob;
 };
 
 // The THMB section content: a PNG preview of one page (empty png = skip the
@@ -51,7 +54,8 @@ inline constexpr std::uint32_t kContainerVersion = 2;
 // user-displayable reason).
 bool Save(const std::string& path, const std::string& projectName,
           const std::string& moduleId, const Ink::Document& doc,
-          const std::vector<std::uint8_t>& layoutBlob, const AcuThumb& thumb,
+          const std::vector<std::uint8_t>& layoutBlob,
+          const std::vector<std::uint8_t>& editorBlob, const AcuThumb& thumb,
           std::string* error = nullptr);
 
 // Parse `path` into `out`. False on I/O failure / corrupt data / a v1 file /

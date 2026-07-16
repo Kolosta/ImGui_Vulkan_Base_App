@@ -297,6 +297,12 @@ void Application::Update() {
     // order the canvas writes before ImGui's sampling, no semaphore needed.
     if (ink_) ink_->EndFrame();
 
+    // A live mark preview (temporary style applied while building overlays so
+    // the pipeline renders the real subtract/gap effect) is restored HERE —
+    // right after the frame recorded it, BEFORE saves and action dispatch —
+    // so undo, hit-testing and persistence only ever see the true document.
+    ClearMarkPreviewStyle();
+
     FinishSavePass();
 
     // Dispatch happens after panels have set the context for this frame so

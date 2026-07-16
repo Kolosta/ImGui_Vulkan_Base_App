@@ -29,6 +29,10 @@ void Application::SyncDefaultStyleFromActive() {
     if (n && n->kind == Ink::NodeKind::Path) {
         edit_.defaultFills   = n->style.fills;
         edit_.defaultStrokes = n->style.strokes;
+        // Marks are PER-OBJECT annotations — the default style never carries
+        // them (a new object must not inherit the active object's marks, and
+        // a selection-wide apply must not overwrite each node's own marks).
+        for (Ink::Stroke& s : edit_.defaultStrokes) s.marks.clear();
     }
 }
 
@@ -69,8 +73,18 @@ void ApplyPaintEdit(Application& app, Ink::Document& doc,
     for (Ink::NodeId id : sel)
         if (const Ink::Node* n = doc.Find(id)) {
             Ink::Style s = n->style;
-            if (strokes) s.strokes = strokesList;
-            else         s.fills   = fills;
+            if (strokes) {
+                // Replace the stroke STYLE but keep each node's own MARKS
+                // (per-object annotations, matched by stroke index) — a
+                // selection-wide style edit must never wipe them.
+                std::vector<Ink::Stroke> ns = strokesList;
+                for (std::size_t i = 0;
+                     i < ns.size() && i < s.strokes.size(); ++i)
+                    ns[i].marks = s.strokes[i].marks;
+                s.strokes = std::move(ns);
+            } else {
+                s.fills = fills;
+            }
             doc.SetStyle(id, s);
         }
     if (released && active) {

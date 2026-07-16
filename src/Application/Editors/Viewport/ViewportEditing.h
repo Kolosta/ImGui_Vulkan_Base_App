@@ -279,6 +279,13 @@ struct EditContext {
     Ink::DVec2 cursor2D{ 960.0, 540.0 };
     bool       cursor2DValid = false;   // false until first placed / seeded
 
+    // ── Per-mode tool memory ─────────────────────────────────────────────────
+    // Each editor MODE has its own tool palette (creation tools are Object-mode
+    // only) and remembers its last active tool: switching mode restores that
+    // mode's tool (never leaving an impossible one active). Indexed by
+    // EditorMode; persisted in the .acu EDST section.
+    std::string toolByMode[3] = { "tool.select", "tool.select", "tool.select" };
+
     bool IsSelected(Ink::NodeId id) const {
         return std::find(selection.begin(), selection.end(), id) !=
                selection.end();

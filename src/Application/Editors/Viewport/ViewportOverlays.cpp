@@ -272,53 +272,46 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
                   ov.AddCircleFilled(cam.DocToView(penPending_.pos.x,
                                                    penPending_.pos.y), 3.5f, activeCol);
 
-              // Preview a stroke SEGMENT as the REAL tessellated stroke at a
+              // Preview a stroke SEGMENT as the REAL tessellated strokes at a
               // translucent alpha (so it reads like the finished object, not a
-              // thin guide). `a`/`b` are the two end anchors (handles relative).
-              const Ink::Stroke* strokeStyle =
-                  pn->style.strokes.empty() ? nullptr : &pn->style.strokes.front();
+              // thin guide): EVERY enabled stroke of the pen node, each at
+              // HALF ITS OWN alpha (a translucent stroke previews even more
+              // translucent — never re-opaqued), each mesh in a DEDUP group so
+              // its join self-overlaps blend exactly once. A thin construction
+              // line always draws ON TOP (a strokeless style would otherwise
+              // preview nothing). The node's FILLS need no ghost: open paths
+              // fill implicitly, so the content pipeline shows them live.
               auto previewSeg = [&](const Ink::Anchor& a, const Ink::Anchor& b) {
-                  if (!strokeStyle) return;
                   Ink::PathData seg; Ink::Subpath sp; sp.spline = Ink::SplineType::Bezier;
                   sp.anchors = { a, b }; sp.closed = false;
                   seg.subpaths.push_back(std::move(sp));
-                  const Ink::geom::Mesh m = Ink::geom::TessellateStroke(
-                      Ink::geom::Flatten(seg, tol), *strokeStyle, tol);
-                  Ink::Color k = strokeStyle->paint.color;
-                  const float sa = 0.5f;                 // premultiplied preview
-                  const Ink::Color tc{ k.r * sa, k.g * sa, k.b * sa, sa };
-                  for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
-                      auto vp = [&](std::uint32_t idx) {
-                          return cam.DocToView(m.positions[idx*2], m.positions[idx*2+1]);
-                      };
-                      ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
-                                     vp(m.indices[i+2]), tc);
-                  }
-              };
-
-              // FREE fill preview when snapping closed: the real translucent fill
-              // of the closed area (frozen anchors, closed).
-              if (closeHover && penIsArea_ && !pn->style.fills.empty()) {
-                  Ink::PathData closed = pn->path;
-                  closed.subpaths.front().closed = true;
-                  Ink::Color fc = pn->style.fills.front().paint.color;
-                  const float fa = 0.4f;
-                  Ink::Color tri{ fc.r * fa, fc.g * fa, fc.b * fa, fa };
-                  for (const auto& pl : Ink::geom::Flatten(closed, tol)) {
-                      if (pl.points.size() < 3) continue;
-                      Ink::geom::Polyline rp; rp.points = pl.points; rp.closed = true;
+                  const auto segFlat = Ink::geom::Flatten(seg, tol);
+                  for (const Ink::Stroke& stk : pn->style.strokes) {
+                      if (!stk.enabled || stk.width <= 0.0) continue;
                       const Ink::geom::Mesh m =
-                          Ink::geom::TriangulateFill({ rp }, Ink::FillRule::NonZero);
+                          Ink::geom::TessellateStroke(segFlat, stk, tol);
+                      const Ink::Color k = stk.paint.color;
+                      const float ea = k.a * 0.5f;       // scales EXISTING alpha
+                      const Ink::Color tc{ k.r * ea, k.g * ea, k.b * ea, ea };
+                      ov.BeginDedup();
                       for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
                           auto vp = [&](std::uint32_t idx) {
                               return cam.DocToView(m.positions[idx*2],
                                                    m.positions[idx*2+1]);
                           };
                           ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
-                                         vp(m.indices[i+2]), tri);
+                                         vp(m.indices[i+2]), tc);
                       }
+                      ov.EndDedup();
                   }
-              }
+                  for (const auto& pl : segFlat)
+                      for (std::size_t i = 0; i + 1 < pl.points.size(); ++i)
+                          ov.AddLine(cam.DocToView(pl.points[i].x,
+                                                   pl.points[i].y),
+                                     cam.DocToView(pl.points[i + 1].x,
+                                                   pl.points[i + 1].y),
+                                     activeCol, 1.0f);
+              };
 
               // The LAST/in-progress segment as a translucent REAL stroke:
               //  • dragging → last frozen anchor → the pending (its handles);
@@ -339,10 +332,24 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
     }
     // Draw-on-Create cursor: hide the OS cursor and draw a crosshair + a preview
     // glyph of the shape/curve being created (pen active OR a shape drag-box
-    // armed). Foreground list, so it sits over everything.
-    if (hovered) {
-        const std::string ck = CreateCursorKind();
-        if (!ck.empty()) DrawCreateCursor(ck.c_str());
+    // armed). Foreground list, so it sits over everything. NOT over a floating
+    // overlay (tool palette / N panel) and not while any popup is open — the
+    // pointer is on UI there and must keep the plain OS cursor (a popup opened
+    // from this zone still counts as "hovered" via the popup hierarchy).
+    {
+        const ImVec2 mp2 = ImGui::GetIO().MousePos;
+        bool onOverlayUi = false;
+        for (const ImVec4& r : st.overlayRects)
+            if (mp2.x >= r.x && mp2.x <= r.z && mp2.y >= r.y && mp2.y <= r.w) {
+                onOverlayUi = true;
+                break;
+            }
+        const bool anyPopup = ImGui::IsPopupOpen(
+            nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+        if (hovered && !onOverlayUi && !anyPopup) {
+            const std::string ck = CreateCursorKind();
+            if (!ck.empty()) DrawCreateCursor(ck.c_str());
+        }
     }
 
     // ── 2D cursor (legacy design): a red/white ringed crosshair. The four
@@ -421,38 +428,54 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
                                               hw, hh, nm);
         const double localTol = std::max(1e-4, 0.25 / std::max(1e-6, cam.zoom));
         const auto flat = Ink::geom::Flatten(gp, localTol);
-        // Fill (first default fill, translucent).
-        if (!edit_.defaultFills.empty() && edit_.defaultFills.front().enabled) {
-            const Ink::Color fc = edit_.defaultFills.front().paint.color;
-            const float fa = 0.4f;
-            const Ink::Color tri{ fc.r * fa, fc.g * fa, fc.b * fa, fc.a * fa };
-            const Ink::geom::Mesh m =
-                Ink::geom::TriangulateFill(flat, Ink::FillRule::NonZero);
-            for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
-                auto vp = [&](std::uint32_t idx) {
-                    return cam.DocToView(cx + m.positions[idx*2],
-                                         cy + m.positions[idx*2+1]);
-                };
-                ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
-                               vp(m.indices[i+2]), tri);
-            }
+        auto vpAt = [&](const Ink::geom::Mesh& m, std::uint32_t idx) {
+            return cam.DocToView(cx + m.positions[idx * 2],
+                                 cy + m.positions[idx * 2 + 1]);
+        };
+        // EVERY enabled default fill, translucent — each mesh in a DEDUP group
+        // (self-overlaps blend once), the alpha SCALING the fill's own.
+        const Ink::geom::Mesh fillMesh =
+            Ink::geom::TriangulateFill(flat, Ink::FillRule::NonZero);
+        for (const Ink::Fill& fl : edit_.defaultFills) {
+            if (!fl.enabled) continue;
+            const Ink::Color fc = fl.paint.color;
+            const float fa = fc.a * fl.opacity * 0.4f;
+            const Ink::Color tri{ fc.r * fa, fc.g * fa, fc.b * fa, fa };
+            ov.BeginDedup();
+            for (std::size_t i = 0; i + 2 < fillMesh.indices.size(); i += 3)
+                ov.AddTriangle(vpAt(fillMesh, fillMesh.indices[i]),
+                               vpAt(fillMesh, fillMesh.indices[i + 1]),
+                               vpAt(fillMesh, fillMesh.indices[i + 2]), tri);
+            ov.EndDedup();
         }
-        // Stroke (first default stroke, translucent, real width/caps/joins).
-        if (!edit_.defaultStrokes.empty() && edit_.defaultStrokes.front().enabled) {
-            const Ink::Stroke& sk = edit_.defaultStrokes.front();
+        // EVERY enabled default stroke, translucent, real width/caps/joins —
+        // dedup'd so the join self-overlaps of a translucent preview blend once.
+        for (const Ink::Stroke& sk : edit_.defaultStrokes) {
+            if (!sk.enabled || sk.width <= 0.0) continue;
             const Ink::Color kc = sk.paint.color;
-            const float sa2 = 0.5f;
-            const Ink::Color tc{ kc.r * sa2, kc.g * sa2, kc.b * sa2, kc.a * sa2 };
+            const float ea = kc.a * 0.5f;              // scales EXISTING alpha
+            const Ink::Color tc{ kc.r * ea, kc.g * ea, kc.b * ea, ea };
             const Ink::geom::Mesh m =
                 Ink::geom::TessellateStroke(flat, sk, localTol);
-            for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
-                auto vp = [&](std::uint32_t idx) {
-                    return cam.DocToView(cx + m.positions[idx*2],
-                                         cy + m.positions[idx*2+1]);
-                };
-                ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
-                               vp(m.indices[i+2]), tc);
-            }
+            ov.BeginDedup();
+            for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3)
+                ov.AddTriangle(vpAt(m, m.indices[i]), vpAt(m, m.indices[i + 1]),
+                               vpAt(m, m.indices[i + 2]), tc);
+            ov.EndDedup();
+        }
+        // The construction outline ALWAYS draws on top of the ghost (a shape
+        // with no stroke would otherwise be invisible): the shape's flattened
+        // contour, plus the subtle drag box.
+        for (const auto& pl : flat) {
+            const std::size_t np = pl.points.size();
+            if (np < 2) continue;
+            const std::size_t last = pl.closed ? np : np - 1;
+            for (std::size_t i = 0; i < last; ++i)
+                ov.AddLine(cam.DocToView(cx + pl.points[i].x,
+                                         cy + pl.points[i].y),
+                           cam.DocToView(cx + pl.points[(i + 1) % np].x,
+                                         cy + pl.points[(i + 1) % np].y),
+                           activeCol, 1.0f);
         }
         const Ink::Vec2 a = cam.DocToView(sa.x, sa.y);
         const Ink::Vec2 b = cam.DocToView(sb.x, sb.y);

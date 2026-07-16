@@ -48,7 +48,14 @@ void Application::Action_ToggleImGuiDemo() {
 }
 
 void Application::Action_ActivateNamedTool(const std::string& toolId) {
+    // Tools are per editor MODE: a tool the current mode doesn't offer (e.g.
+    // the Shape shortcut while in Edit mode) is ignored — the palette and the
+    // keymap can never leave an impossible tool active.
+    bool allowed = false;
+    for (const char* id : ToolsForMode(edit_.mode)) allowed = allowed || toolId == id;
+    if (!allowed) return;
     Shortcuts::Tools::ToolManager::Instance().SetActiveTool(toolId);
+    edit_.toolByMode[(int)edit_.mode] = toolId;   // per-mode memory
 }
 
 // Per-leaf view requests. The placeholder Viewport ignores them; the Ink

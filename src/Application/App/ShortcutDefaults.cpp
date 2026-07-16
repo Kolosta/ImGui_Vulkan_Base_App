@@ -160,25 +160,25 @@ void Application::RegisterDefaultShortcuts() {
     {
         Action a; a.id = "tool.shape.activate"; a.name = "Activate Shape";
         a.description = "Draw shapes (rectangle / ellipse / triangle / free) "
-                        "by dragging on the canvas";
+                        "by dragging on the canvas (Object mode)";
         a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_ActivateNamedTool("tool.shape"); };
-        sm.RegisterAction(a, {});
+        sm.RegisterAction(a, { sigKey(ImGuiKey_B) });
     }
     {
         Action a; a.id = "tool.curve.activate"; a.name = "Activate Curve";
         a.description = "Draw curves (Bézier / NURBS / poly and their circle "
-                        "forms) on the canvas";
+                        "forms) on the canvas (Object mode)";
         a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_ActivateNamedTool("tool.curve"); };
-        sm.RegisterAction(a, {});
+        sm.RegisterAction(a, { sigKey(ImGuiKey_C) });
     }
     {
         Action a; a.id = "tool.cursor.activate"; a.name = "Activate 2D Cursor";
-        a.description = "Place the 2D cursor by clicking (2D cursor — later)";
+        a.description = "Place the 2D cursor by clicking";
         a.category = ActionCategory::Tool; a.requiredContext.editor = "viewport";
         a.callback = [this]{ Action_ActivateNamedTool("tool.cursor"); };
-        sm.RegisterAction(a, {});
+        sm.RegisterAction(a, { sigKey(ImGuiKey_E) });
     }
     tm.SetActiveTool("tool.select");
 

@@ -231,6 +231,36 @@ void DrawHandle(Ink::OverlayList& ov, Ink::Vec2 sp, Ink::Vec2 tv,
 
 } // namespace
 
+// ── Live mark preview (temporary style) ──────────────────────────────────────
+// While a Subtract/Gap mark is placed or moved, its ghost applies a TEMPORARY
+// style to the host node so the REAL pipeline renders the effect: the stroke
+// below turns semi-transparent (partial dst-out erase / a dimmed copy over the
+// future gap span) instead of a painted approximation. Strictly frame-scoped:
+// Update() calls ClearMarkPreviewStyle right after the Ink frame is recorded,
+// so undo, hit-testing and saves only ever see the true document.
+
+void Application::ApplyMarkPreviewStyle(Ink::NodeId node,
+                                        const Ink::Style& preview) {
+    if (!project_.document || node == Ink::kNullNode) return;
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(node);
+    if (!n) return;
+    bool seen = false;
+    for (const auto& p : markPreviewSaved_) seen = seen || p.first == node;
+    if (!seen) markPreviewSaved_.push_back({ node, n->style });
+    doc.SetStyle(node, preview);
+}
+
+void Application::ClearMarkPreviewStyle() {
+    if (markPreviewSaved_.empty()) return;
+    if (project_.document)
+        for (auto it = markPreviewSaved_.rbegin();
+             it != markPreviewSaved_.rend(); ++it)
+            if (project_.document->Find(it->first))
+                project_.document->SetStyle(it->first, it->second);
+    markPreviewSaved_.clear();
+}
+
 // Line-Mark MODE active (the third editor mode).
 bool Application::MarkModeActive() const {
     return edit_.mode == EditorMode::LineMark;
@@ -343,16 +373,22 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         }
         return ps;
     };
-    // A TRANSLUCENT preview of the mark's objects at position `m.t` — the real
-    // filled shape (as it will render), the same look the legacy tool had while
-    // sliding. Flattens the host path in LOCAL space, builds each object's
-    // contour with the shared engine helper, then maps world→view.
+    // Preview of the mark's objects at position `m.t`. ADD (Fusion/Blend)
+    // objects draw as a translucent filled shape; SUBTRACT objects draw a
+    // dashed construction OUTLINE while the erase itself renders LIVE through
+    // a temporary style (partial dst-out — the stroke below dims for real);
+    // GAP objects dim the stroke over the exact future span the same live way.
+    // `replaceIndex` (≥ 0) is the real mark this ghost REPLACES in the live
+    // style (a move); −1 appends it (a placement / paste).
     auto drawGhost = [&](Ink::NodeId nodeId, int strokeIdx,
-                         const Ink::StrokeMark& m, const WorldPoly& worldPoly) {
+                         const Ink::StrokeMark& m, const WorldPoly& worldPoly,
+                         int replaceIndex = -1) {
         const Ink::Node* n = doc.Find(nodeId);
         if (!n || strokeIdx < 0 || strokeIdx >= (int)n->style.strokes.size())
             return;
-        const Ink::Stroke& sk = n->style.strokes[(std::size_t)strokeIdx];
+        // COPY (not a reference): the live preview below replaces the node's
+        // style vectors — a reference into them would dangle.
+        const Ink::Stroke sk = n->style.strokes[(std::size_t)strokeIdx];
         const Ink::DMat23 w = doc.WorldTransform(nodeId);
         const double wsc =
             std::max(1e-6, std::sqrt(std::abs(w.m[0]*w.m[4] - w.m[1]*w.m[3])));
@@ -365,6 +401,73 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         // The stroke paint (or the object's own) at a preview alpha.
         const float alpha = 0.55f;
         const Ink::Color base = sk.paint.color;
+
+        // ── LIVE pipeline preview (Subtract / Gap) ───────────────────────────
+        // Apply a temporary style where the ghost mark replaces (or joins) the
+        // real one: its Subtract objects run at PARTIAL erase strength, and
+        // each Gap span keeps a DIMMED companion copy of the stroke (its own
+        // dashes preserved, cut to exactly the opening) — the canvas shows the
+        // stroke below turning semi-transparent, rendered by the real Vulkan
+        // pipeline. Restored right after this frame records (Update()).
+        bool wantsLive = false;
+        for (const Ink::MarkObject& o : m.objects)
+            wantsLive = wantsLive || o.shape == Ink::MarkShape::Gap ||
+                        o.mode == Ink::MarkObjectMode::Subtract;
+        if (wantsLive) {
+            Ink::Style ps = n->style;
+            Ink::Stroke& host = ps.strokes[(std::size_t)strokeIdx];
+            Ink::StrokeMark pm = m;
+            for (Ink::MarkObject& o : pm.objects)
+                if (o.mode == Ink::MarkObjectMode::Subtract)
+                    o.opacity = 0.45f;          // partial erase while previewing
+            if (replaceIndex >= 0 && replaceIndex < (int)host.marks.size())
+                host.marks[(std::size_t)replaceIndex] = pm;
+            else
+                host.marks.push_back(pm);
+            // Arc total of THIS subpath at the placement tolerance (the same
+            // parameterisation the stroker's gap cut uses).
+            double liveTot = 0.0;
+            {
+                const auto& pts = spine.points;
+                const std::size_t nn = pts.size();
+                const std::size_t sc = spine.closed ? nn : (nn ? nn - 1 : 0);
+                for (std::size_t i = 0; i < sc; ++i)
+                    liveTot += std::hypot(pts[(i + 1) % nn].x - pts[i].x,
+                                          pts[(i + 1) % nn].y - pts[i].y);
+            }
+            if (liveTot > 1e-9) {
+                for (const Ink::MarkObject& o : m.objects) {
+                    if (o.shape != Ink::MarkShape::Gap) continue;
+                    const double half =
+                        std::max(1e-4, o.SizeUnits(sk.width)) * 0.5;
+                    const double c  = std::clamp(m.t, 0.0, 1.0) * liveTot;
+                    const double lo = std::max(0.0, c - half);
+                    const double hi = std::min(liveTot, c + half);
+                    if (hi - lo < 1e-6) continue;
+                    // Dimmed copy restricted to [lo,hi]: two synthetic gaps cut
+                    // everything OUTSIDE the span (butt-capped, no re-phasing).
+                    Ink::Stroke dim = n->style.strokes[(std::size_t)strokeIdx];
+                    dim.marks.clear();
+                    dim.paint.color.a *= 0.4f;
+                    auto cutOutside = [&](double from, double to) {
+                        if (to - from < 1e-6) return;
+                        Ink::MarkObject g;
+                        g.shape = Ink::MarkShape::Gap;
+                        g.sizePercent = false;
+                        g.size = to - from;
+                        Ink::StrokeMark gm;
+                        gm.sub = m.sub;
+                        gm.t = ((from + to) * 0.5) / liveTot;
+                        gm.objects.push_back(g);
+                        dim.marks.push_back(gm);
+                    };
+                    cutOutside(0.0, lo);
+                    cutOutside(hi, liveTot);
+                    ps.strokes.push_back(std::move(dim));
+                }
+            }
+            ApplyMarkPreviewStyle(nodeId, ps);
+        }
         // The side/offset guide: a dashed line from the spine point to the
         // offset mark point (world space).
         if (m.side != Ink::MarkSide::Center) {
@@ -408,10 +511,18 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                                  MkCol(Tok::S_Color_Accent_Default, 0.7f), 1.5f);
                     return;
                 }
-                const Ink::DMat23 frame =
-                    Ink::geom::MarkPlaceMatrix(spine, mk, po, sk.width);
                 const double k = o.sizePercent ? o.size * 0.01
                                                : std::max(1e-6, o.size);
+                // Bend shear extent = the instance geometry's radius × scale
+                // (mirrors the Scene, so the ghost leans exactly like the
+                // final render).
+                double instR = 0.0;
+                for (const Ink::Subpath& tsp : tgt->path.subpaths)
+                    for (const Ink::Anchor& ta : tsp.anchors)
+                        instR = std::max(instR,
+                                         std::hypot(ta.pos.x, ta.pos.y));
+                const Ink::DMat23 frame = Ink::geom::MarkPlaceMatrix(
+                    spine, mk, po, sk.width, std::max(1e-3, instR * k));
                 Ink::DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
                 // The target's OWN transform is cancelled by the Scene, so its
                 // local geometry lands under place = frame · scale.
@@ -422,6 +533,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                                   tgt->style.fills.front().paint.color.g * alpha,
                                   tgt->style.fills.front().paint.color.b * alpha,
                                   alpha };
+                ov.BeginDedup();   // fans overlap — blend the ghost once
                 for (const auto& pl : Ink::geom::Flatten(tgt->path, localTol)) {
                     if (pl.points.size() < 3) continue;
                     Ink::DVec2 cn{ 0, 0 };
@@ -436,6 +548,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                         ov.AddTriangle(cvv, d2v(aw), d2v(bw), tcol);
                     }
                 }
+                ov.EndDedup();
                 return;
             }
             // The real filled shape (as it renders): Follow curves the outline
@@ -463,6 +576,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             Ink::geom::Polyline rp; rp.points = ring; rp.closed = true;
             const Ink::geom::Mesh rm =
                 Ink::geom::TriangulateFill({ rp }, Ink::FillRule::NonZero);
+            ov.BeginDedup();   // any residual self-overlap blends once
             for (std::size_t i = 0; i + 2 < rm.indices.size(); i += 3) {
                 auto vp = [&](std::uint32_t idx) {
                     const Ink::DVec2 lp{ rm.positions[idx*2], rm.positions[idx*2+1] };
@@ -471,39 +585,45 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 ov.AddTriangle(vp(rm.indices[i]), vp(rm.indices[i+1]),
                                vp(rm.indices[i+2]), col);
             }
+            ov.EndDedup();
+        };
+
+        // A SUBTRACT object previews as a dashed construction OUTLINE — the
+        // erase itself already renders live through the temporary style above,
+        // so no filled ghost is painted over it.
+        auto drawCutOutline = [&](const Ink::StrokeMark& mk,
+                                  const Ink::MarkObject& o) {
+            if (o.shape == Ink::MarkShape::Instance) return;   // live erase only
+            std::vector<Ink::DVec2> ring;
+            if (Ink::geom::BendsAlongCurve(o.bend)) {
+                if (!Ink::geom::MarkFollowContour(spine, mk, o, sk.width,
+                                                  localTol, ring))
+                    return;
+            } else {
+                const Ink::PathData shape =
+                    Ink::geom::MarkPrimitiveShape(o, sk.width);
+                if (shape.Empty()) return;
+                const Ink::DMat23 place =
+                    Ink::geom::MarkPlaceMatrix(spine, mk, o, sk.width);
+                for (const auto& pl : Ink::geom::Flatten(shape, localTol))
+                    for (const Ink::DVec2& q : pl.points)
+                        ring.push_back(place.Apply(q));
+            }
+            if (ring.size() < 2) return;
+            const Ink::Color oc = MkCol(Tok::S_Color_Text_Subtle, 0.9f);
+            for (std::size_t i = 0; i < ring.size(); ++i) {
+                const Ink::DVec2 aw = w.Apply(ring[i]);
+                const Ink::DVec2 bw2 = w.Apply(ring[(i + 1) % ring.size()]);
+                DashLine(ov, d2v(aw), d2v(bw2), oc, 1.2f, 4.0f, 3.0f);
+            }
         };
 
         for (const Ink::MarkObject& o : m.objects) {
             if (o.shape == Ink::MarkShape::Gap) {
-                // Preview a Gap by DARKENING the stroke over EXACTLY the future
-                // opening (band = the stroke's own half-width, length = the gap
-                // length), then previewing its start/end marker sub-objects as
-                // translucent shapes at the gap ends — a complete result view.
-                const double total = PolyTotal(worldPoly);
-                if (total < 1e-9) continue;
-                const double half = std::max(1e-4, o.SizeUnits(sk.width)) * wsc * 0.5;
-                const double dc = (m.t < 0 ? 0 : m.t > 1 ? 1 : m.t) * total;
-                const double bw = sk.width * wsc * 0.5;    // exact stroke half-width
-                const Ink::Color dark{ 0, 0, 0, 0.45f };   // premultiplied
-                const double lo = std::max(0.0, dc - half);
-                const double hi = std::min(total, dc + half);
-                const int N = std::max(2, (int)((hi - lo) / 2.0));
-                Ink::DVec2 prevA, prevB; bool have = false;
-                for (int i = 0; i <= N; ++i) {
-                    const double d = lo + (hi - lo) * (double)i / (double)N;
-                    Ink::DVec2 p, tn; PointAtArc(worldPoly, d, p, tn);
-                    const Ink::DVec2 nb{ -tn.y * bw, tn.x * bw };
-                    const Ink::DVec2 a{ p.x + nb.x, p.y + nb.y };
-                    const Ink::DVec2 b{ p.x - nb.x, p.y - nb.y };
-                    if (have) {
-                        ov.AddTriangle(d2v(prevA), d2v(prevB), d2v(b), dark);
-                        ov.AddTriangle(d2v(prevA), d2v(b), d2v(a), dark);
-                    }
-                    prevA = a; prevB = b; have = true;
-                }
-                // Start/end marker sub-objects: place a virtual mark at each gap
-                // end (local spine arc tc±half) and preview each sub-object there,
-                // matching the Scene's stampEnd (arc length of the LOCAL spine).
+                // The opening itself previews LIVE (the dimmed companion stroke
+                // in the temporary style). Here: only the start/end marker
+                // sub-objects, as translucent shapes at the gap ends —
+                // matching the Scene's stampEnd (arc of the LOCAL spine).
                 double sTot = 0.0;
                 {
                     const auto& pts = spine.points;
@@ -528,6 +648,10 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                     stampEnd(stc - sHalf, o.gapStartObjects);
                     stampEnd(stc + sHalf, o.gapEndObjects);
                 }
+                continue;
+            }
+            if (o.mode == Ink::MarkObjectMode::Subtract) {
+                drawCutOutline(m, o);   // live erase + construction outline
                 continue;
             }
             drawObject(m, o);
@@ -665,7 +789,8 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 ghost.t = previewT(k);
                 auto polys = FlattenWorld(doc, r.node, zoom);
                 if (ghost.sub < 0 || ghost.sub >= (int)polys.size()) continue;
-                drawGhost(r.node, r.stroke, ghost, polys[(std::size_t)ghost.sub]);
+                drawGhost(r.node, r.stroke, ghost, polys[(std::size_t)ghost.sub],
+                          r.index);
             }
             if (cancel) { markGrab_.Reset(); return; }
             if (commit) {
@@ -736,7 +861,8 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             for (Ink::MarkObject& go : ghost.objects) apply(go, k);
             auto polys = FlattenWorld(doc, r.node, zoom);
             if (ghost.sub < 0 || ghost.sub >= (int)polys.size()) continue;
-            drawGhost(r.node, r.stroke, ghost, polys[(std::size_t)ghost.sub]);
+            drawGhost(r.node, r.stroke, ghost, polys[(std::size_t)ghost.sub],
+                      r.index);
         }
         if (cancel) { markGrab_.Reset(); return; }
         if (commit) {
@@ -782,7 +908,8 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             markDrag_.dragT = std::clamp(markDrag_.dragT0 + deltaT, 0.0, 1.0);
             Ink::StrokeMark ghost = *m;
             ghost.t = markDrag_.dragT;
-            drawGhost(markDrag_.ref.node, markDrag_.ref.stroke, ghost, poly);
+            drawGhost(markDrag_.ref.node, markDrag_.ref.stroke, ghost, poly,
+                      markDrag_.ref.index);
             for (const EditContext::MarkRef& r : edit_.markSel) {
                 if (r == markDrag_.ref) continue;
                 const Ink::StrokeMark* om = markOf(r);
@@ -791,7 +918,8 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 if (om->sub < 0 || om->sub >= (int)opolys.size()) continue;
                 Ink::StrokeMark og = *om;
                 og.t = std::clamp(og.t + deltaT, 0.0, 1.0);
-                drawGhost(r.node, r.stroke, og, opolys[(std::size_t)om->sub]);
+                drawGhost(r.node, r.stroke, og, opolys[(std::size_t)om->sub],
+                          r.index);
             }
         }
         if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
@@ -1021,7 +1149,9 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             m.objects.push_back(obj);
         }
         auto polys = FlattenWorld(doc, best.id, zoom);
-        if (best.sub >= 0 && best.sub < (int)polys.size())
+        // Hovered only: the placement ghost now drives a LIVE style preview —
+        // it must not fire while the pointer is on UI (palette, popups).
+        if (hovered && best.sub >= 0 && best.sub < (int)polys.size())
             drawGhost(best.id, best.stroke, m, polys[(std::size_t)best.sub]);
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
             std::vector<StylePair> ps =

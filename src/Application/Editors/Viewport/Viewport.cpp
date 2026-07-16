@@ -186,8 +186,14 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     DrawEditOverlays(st, cam, ov, hovered);
 
     // Cursor crosshair while this canvas is hovered (only with a tool that has
-    // no drag gesture in flight, to keep the modal feedback readable).
-    if (hovered && !transformOp_.Active()) {
+    // no drag gesture in flight, to keep the modal feedback readable). NOT over
+    // a floating overlay (tool palette, N panel) and not while a popup is open:
+    // the pointer is on UI there, so it keeps the plain OS cursor. NB: popup
+    // hierarchy makes IsWindowHovered(ChildWindows) report TRUE over a popup
+    // opened from this zone — the explicit popup check is what excludes it.
+    const bool anyPopup = ImGui::IsPopupOpen(
+        nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+    if (hovered && !onOverlay && !anyPopup && !transformOp_.Active()) {
         const Ink::Vec2 m{ io.MousePos.x - cMin.x, io.MousePos.y - cMin.y };
         const float s = 9.0f;
         ov.AddLine({ m.x - s, m.y }, { m.x + s, m.y }, accentCol, 1.0f);

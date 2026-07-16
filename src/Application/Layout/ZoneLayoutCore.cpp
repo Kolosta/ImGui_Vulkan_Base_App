@@ -174,7 +174,11 @@ struct BR {
 // v7: Outliner state rebuilt on the Ink model (Lot 9): display mode + two show
 //     toggles replace the old filter block. v5/v6 blobs migrate (their 8 filter
 //     bytes are read and discarded; display defaults to Layers).
-constexpr uint32_t kLayoutBlobVersion = 7;
+// v8: per-tab Outliner FOLD state — the collapsed containers (groups /
+//     collections / pages / project root) and the Collections-view expanded
+//     objects — appended after nPanelShowOrphans, so reopening a file keeps
+//     every tree folded exactly as it was left.
+constexpr uint32_t kLayoutBlobVersion = 8;
 } // namespace
 
 // Node encoding: [isLeaf:u8]; split → [vertical][firstPx][initRatio][lastUsable]
@@ -216,6 +220,11 @@ std::vector<uint8_t> ZoneLayout::Serialize() const {
                 w.u8((uint8_t)o.objState);
                 w.u8(o.invertFilter ? 1 : 0);
                 w.u8(t.state.nPanelShowOrphans ? 1 : 0);
+                // v8: fold state (collapsed containers + expanded objects).
+                w.u32((uint32_t)o.collapsed.size());
+                for (uint64_t id : o.collapsed) w.u64(id);
+                w.u32((uint32_t)o.expandedObjects.size());
+                for (uint64_t id : o.expandedObjects) w.u64(id);
             }
         } else {
             w.u8(1);
@@ -283,6 +292,14 @@ bool ZoneLayout::Deserialize(const std::vector<uint8_t>& blob) {
                         o.objState        = (ObjStateFilter)r.u8();
                         o.invertFilter    = r.u8() != 0;
                         t.state.nPanelShowOrphans = r.u8() != 0;
+                        if (ver >= 8) {   // fold state (bounded reads)
+                            uint32_t nc = r.u32();
+                            for (uint32_t k = 0; k < nc && r.ok; ++k)
+                                o.collapsed.insert(r.u64());
+                            uint32_t ne = r.u32();
+                            for (uint32_t k = 0; k < ne && r.ok; ++k)
+                                o.expandedObjects.insert(r.u64());
+                        }
                     } else if (ver >= 5) {   // migrate: discard old filter block
                         for (int k = 0; k < 7; ++k) r.u8();   // old show*/objState/invert
                         t.state.nPanelShowOrphans = r.u8() != 0;

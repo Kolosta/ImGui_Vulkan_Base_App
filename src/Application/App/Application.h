@@ -267,6 +267,16 @@ private:
     // and whether it ADDS to or SUBTRACTS from the stroke.
     Ink::MarkShape markPlaceShape_ = Ink::MarkShape::Circle;
     bool           markPlaceSubtract_ = false;
+    // LIVE mark preview: while a Subtract/Gap mark is placed or moved, a
+    // TEMPORARY style is applied to the host node so the REAL pipeline shows
+    // the effect (partial erase / dimmed gap span). Strictly frame-scoped:
+    // applied while building the overlays, restored right after the Ink frame
+    // is recorded (before action dispatch / saves), so undo, hit-testing and
+    // persistence never see it.
+    // One saved original per previewed node (a multi-mark drag can span nodes).
+    std::vector<std::pair<Ink::NodeId, Ink::Style>> markPreviewSaved_;
+    void ApplyMarkPreviewStyle(Ink::NodeId node, const Ink::Style& preview);
+    void ClearMarkPreviewStyle();
     struct MarkDrag {           // click-drag of one grabbed mark (+ group Δt)
         bool armed = false, active = false;
         EditContext::MarkRef ref;
@@ -332,6 +342,14 @@ private:
     // palette buttons currently create (picked from their right-click menu).
     std::string toolShapeKind_ = "rect";
     std::string toolCurveKind_ = "curve";
+    // The tool ids available in an editor MODE (Object gets the creation
+    // tools; Edit / Line-Mark keep Select + 2D Cursor for now). The palette,
+    // the activation action and the mode switch all share this table.
+    static const std::vector<const char*>& ToolsForMode(EditorMode mode);
+    // The EDST .acu section: per-mode tools + multi-tool variants (opaque,
+    // self-versioned — Application-owned editing-session state).
+    std::vector<std::uint8_t> BuildEditorStateBlob() const;
+    void ApplyEditorStateBlob(const std::vector<std::uint8_t>& blob);
     // The palette variant menu: which multi-tool button it is open for
     // ("tool.shape" / "tool.curve", empty = closed), where it opens, and which
     // viewport leaf owns it (popups are id-scoped per zone child window).

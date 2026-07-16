@@ -4,10 +4,12 @@
 #include "PngWrite.h"
 #include "ModuleRegistry.h"
 
+#include <Shortcuts/ToolManager.h>
 #include <SDL3/SDL_dialog.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <filesystem>
 #include <mutex>
 
@@ -53,6 +55,75 @@ std::string EnsureAcuExtension(std::string path) {
 const SDL_DialogFileFilter kAcuFilters[] = { { "Carto project", "acu" } };
 
 } // namespace
+
+// ── EDST blob: the editing-session state saved with the project ──────────────
+// v1: [version u32][toolByMode ×3 str][shape variant str][curve variant str].
+// Self-versioned and skipped gracefully — an unknown/short blob leaves the
+// session defaults in place.
+
+std::vector<std::uint8_t> Application::BuildEditorStateBlob() const {
+    std::vector<std::uint8_t> b;
+    auto u32 = [&](std::uint32_t v) {
+        for (int i = 0; i < 4; ++i) b.push_back((std::uint8_t)(v >> (i * 8)));
+    };
+    auto str = [&](const std::string& s) {
+        u32((std::uint32_t)s.size());
+        b.insert(b.end(), s.begin(), s.end());
+    };
+    u32(1);
+    for (int i = 0; i < 3; ++i) str(edit_.toolByMode[i]);
+    str(toolShapeKind_);
+    str(toolCurveKind_);
+    return b;
+}
+
+void Application::ApplyEditorStateBlob(const std::vector<std::uint8_t>& blob) {
+    std::size_t pos = 0;
+    bool ok = true;
+    auto u32 = [&]() -> std::uint32_t {
+        if (pos + 4 > blob.size()) { ok = false; return 0; }
+        std::uint32_t v = 0;
+        for (int i = 0; i < 4; ++i) v |= (std::uint32_t)blob[pos + i] << (i * 8);
+        pos += 4;
+        return v;
+    };
+    auto str = [&]() -> std::string {
+        const std::uint32_t n = u32();
+        if (!ok || pos + n > blob.size()) { ok = false; return {}; }
+        std::string s((const char*)blob.data() + pos, n);
+        pos += n;
+        return s;
+    };
+    const std::uint32_t ver = u32();
+    if (!ok || ver == 0) return;
+    auto& tm = Shortcuts::Tools::ToolManager::Instance();
+    std::string tools[3];
+    for (int i = 0; i < 3; ++i) tools[i] = str();
+    const std::string shape = str();
+    const std::string curve = str();
+    if (!ok) return;
+    // Validate every remembered tool against its mode's palette (a file from a
+    // newer build may name tools this build doesn't have).
+    for (int i = 0; i < 3; ++i) {
+        bool allowed = false;
+        for (const char* id : ToolsForMode((EditorMode)i))
+            allowed = allowed || tools[i] == id;
+        if (allowed && tm.GetTool(tools[i])) edit_.toolByMode[i] = tools[i];
+    }
+    auto validVariant = [](const std::string& k,
+                           std::initializer_list<const char*> set) {
+        for (const char* s : set)
+            if (k == s) return true;
+        return false;
+    };
+    if (validVariant(shape, { "rect", "ellipse", "triangle", "free" }))
+        toolShapeKind_ = shape;
+    if (validVariant(curve, { "curve", "beziercircle", "nurbs", "nurbscircle",
+                              "poly" }))
+        toolCurveKind_ = curve;
+    // The document opens in Object mode — arm its remembered tool.
+    tm.SetActiveTool(edit_.toolByMode[(int)EditorMode::Object]);
+}
 
 // ── Async dialog callbacks (may fire on another thread: stash only) ──────────
 
@@ -175,6 +246,7 @@ void Application::LoadProjectFromFile(const std::string& path) {
     addMenuOpen_ = false;
     viewportCtxOpen_ = false;
     osCursorHidden_  = false;
+    markPreviewSaved_.clear();   // saved styles referenced the OLD document
     if (ink_) ink_->SetDocument(project_.document.get());
 
     // Restore the module the file was made with (Lot 11): activate it WITHOUT
@@ -194,6 +266,8 @@ void Application::LoadProjectFromFile(const std::string& path) {
     // The stored zone arrangement (tabs, cameras) — best-effort: a malformed
     // blob leaves the current layout in place.
     if (!data.layoutBlob.empty()) zoneLayout_.Deserialize(data.layoutBlob);
+    // The editing-session state (per-mode tools + tool variants) — best-effort.
+    if (!data.editorBlob.empty()) ApplyEditorStateBlob(data.editorBlob);
 
     showSplash_ = false;
     AddRecentFile(path);
@@ -203,7 +277,11 @@ void Application::LoadProjectFromFile(const std::string& path) {
 // ── Save (two-phase around ink_->EndFrame) ────────────────────────────────────
 
 void Application::PrepareSavePass() {
-    if (pendingSavePath_.empty() || !ink_ || !project_.document) return;
+    if (pendingSavePath_.empty()) return;
+    // A live mark preview is a TEMPORARY style — it must appear neither in the
+    // saved document nor in the thumbnail this frame renders.
+    ClearMarkPreviewStyle();
+    if (!ink_ || !project_.document) return;
     const auto& pages = project_.document->Pages();
     if (pages.empty()) return;             // no page → file saves without THMB
     const Ink::Page& pg = pages.front();
@@ -251,7 +329,8 @@ void Application::FinishSavePass() {
     const std::string name = PathDisplayName(path);
     std::string err;
     if (!AcuFile::Save(path, name, project_.moduleId, *project_.document,
-                       zoneLayout_.Serialize(), thumb, &err)) {
+                       zoneLayout_.Serialize(), BuildEditorStateBlob(), thumb,
+                       &err)) {
         LogInfoAction("Save File", err);
         // Drop any chained new/open intent — it must not run on a failed save.
         newFileAfterSave_ = false;

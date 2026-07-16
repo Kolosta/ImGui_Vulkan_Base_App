@@ -22,6 +22,10 @@ Ink::Style Application::DefaultStyle() const {
     Ink::Style s;
     s.fills   = edit_.defaultFills;
     s.strokes = edit_.defaultStrokes;
+    // Marks are PER-OBJECT annotations (placed at arc positions of one
+    // specific path) — a new object never inherits them; only the stroke
+    // STYLE (paint/width/dash/caps…) carries over.
+    for (Ink::Stroke& st : s.strokes) st.marks.clear();
     return s;
 }
 
@@ -618,15 +622,46 @@ void Application::Action_ToggleLineMarkMode() {
                                                      : EditorMode::LineMark);
 }
 
+// The tools each editor mode offers. Select and the 2D Cursor are universal;
+// the CREATION multi-tools (Shape / Curve) are Object-mode only for now —
+// every mode gets its own additions as its workflow lands.
+const std::vector<const char*>& Application::ToolsForMode(EditorMode mode) {
+    static const std::vector<const char*> kObject = {
+        "tool.select", "tool.cursor", "tool.shape", "tool.curve" };
+    static const std::vector<const char*> kOther = {
+        "tool.select", "tool.cursor" };
+    return mode == EditorMode::Object ? kObject : kOther;
+}
+
 void Application::SetEditorMode(EditorMode mode) {
     if (edit_.mode == mode) return;
-    // Leaving Line-Mark mode drops the mark selection + any in-progress gesture.
+    // Leaving Line-Mark mode drops the mark selection + any in-progress gesture
+    // (and any live style preview a ghost applied).
     if (edit_.mode == EditorMode::LineMark) {
         edit_.markSel.clear();
         markGrab_.Reset(); markBox_ = {}; markDrag_ = {};
+        ClearMarkPreviewStyle();
     }
+    // Leaving Object mode cancels any in-progress creation gesture (pen or
+    // shape drag-box) — its tools don't exist in the other modes.
+    if (edit_.mode == EditorMode::Object) {
+        if (penActive_) CommitPenDraw(/*keep=*/false);
+        canvasDrag_ = CanvasDrag{};
+    }
+    // Per-mode tool memory: remember the leaving mode's tool, restore the
+    // entered mode's remembered one (validated — never an impossible tool).
+    auto& tm = Shortcuts::Tools::ToolManager::Instance();
+    edit_.toolByMode[(int)edit_.mode] = tm.GetActiveTool();
     edit_.mode = mode;
     edit_.elemSel.clear();
+    {
+        std::string next = edit_.toolByMode[(int)mode];
+        const auto& allowed = ToolsForMode(mode);
+        bool ok = false;
+        for (const char* id : allowed) ok = ok || next == id;
+        if (!ok || !tm.GetTool(next)) next = "tool.select";
+        tm.SetActiveTool(next);
+    }
     if (mode == EditorMode::LineMark) {
         // Line-Mark defaults: transform each mark about its OWN origin, in its
         // LOCAL axes (so R/S act along the object's length/width).

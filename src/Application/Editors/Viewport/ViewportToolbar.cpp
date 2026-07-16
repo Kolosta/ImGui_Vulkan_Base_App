@@ -12,6 +12,7 @@
 #include <UI/Widgets/ToolPalette.h>
 #include <imgui_internal.h>
 #include <cmath>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -69,14 +70,24 @@ void Application::RenderToolPalette(ImVec2 origin, EditorState& st) {
     };
     const ToolVariant& sv = FindVariant(toolShapeKind_, kShapeVariants, 4);
     const ToolVariant& cv = FindVariant(toolCurveKind_, kCurveVariants, 5);
-    const std::vector<Entry> entries = {
-        { "tool.select", 0, false, "select",    "Select" },
-        { "tool.cursor", 0, false, "crop-free", "2D Cursor" },
-        { "tool.shape",  1, true,  sv.icon,
-          std::string("Shape \xC2\xB7 ") + sv.name },
-        { "tool.curve",  1, true,  cv.icon,
-          std::string("Curve \xC2\xB7 ") + cv.name },
-    };
+    // The palette is CONTEXTUAL: it lists the current MODE's tools only
+    // (ToolsForMode — Select + 2D Cursor everywhere, the creation multi-tools
+    // in Object mode). Grouping: [Select · Cursor] then [Shape · Curve].
+    std::vector<Entry> entries;
+    for (const char* id : ToolsForMode(edit_.mode)) {
+        if (!std::strcmp(id, "tool.select"))
+            entries.push_back({ "tool.select", 0, false, "select", "Select" });
+        else if (!std::strcmp(id, "tool.cursor"))
+            entries.push_back({ "tool.cursor", 0, false, "crop-free",
+                                "2D Cursor" });
+        else if (!std::strcmp(id, "tool.shape"))
+            entries.push_back({ "tool.shape", 1, true, sv.icon,
+                                std::string("Shape \xC2\xB7 ") + sv.name });
+        else if (!std::strcmp(id, "tool.curve"))
+            entries.push_back({ "tool.curve", 1, true, cv.icon,
+                                std::string("Curve \xC2\xB7 ") + cv.name });
+    }
+    if (entries.empty()) return;
 
     std::vector<UI::ToolPaletteItem> items;
     items.reserve(entries.size());
@@ -417,27 +428,60 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
         // offset and the full object list are edited in Properties.
         if (markMode) {
             ImGui::SameLine(0.0f, 8.0f * gs);
-            static const char* kShapes[] = { "Circle", "Rectangle", "Diamond" };
+            // The placeable shapes + GAP (an opening cut in the line). While
+            // Gap is picked the Subtract toggle disappears — a gap always cuts.
+            static const char* kShapes[] = { "Circle", "Rectangle", "Diamond",
+                                             "Gap" };
+            const bool gapPicked = markPlaceShape_ == Ink::MarkShape::Gap;
             UI::DropdownConfig cfg; cfg.id = "##markshape";
             cfg.triggerIcon = "line-end-diamond";
-            const int shp = std::min((int)markPlaceShape_, 2);
+            const int shp = gapPicked ? 3 : std::min((int)markPlaceShape_, 2);
             cfg.triggerLabel = kShapes[shp];
-            for (int i = 0; i < 3; ++i) {
+            for (int i = 0; i < 4; ++i) {
                 UI::DropdownItem it; it.label = kShapes[i];
                 cfg.items.push_back(it);
             }
             cfg.selectedIndex = shp;
             UI::DropdownResult r = UI::Dropdown(cfg);
-            if (r.changed && r.selected >= 0 && r.selected < 3)
-                markPlaceShape_ = (Ink::MarkShape)r.selected;
-            ImGui::SameLine(0.0f, 6.0f * gs);
-            bool sub = markPlaceSubtract_;
-            if (UI::CheckboxBox("##marksub", &sub)) markPlaceSubtract_ = sub;
-            if (ImGui::IsItemHovered())
-                UI::DrawTooltip("Subtract: the object cuts the stroke instead "
-                                "of fusing into it (Ctrl-click places an "
-                                "objectless dash tick)",
-                                ImGui::GetIO().MousePos);
+            if (r.changed && r.selected >= 0 && r.selected < 4)
+                markPlaceShape_ = r.selected == 3 ? Ink::MarkShape::Gap
+                                                  : (Ink::MarkShape)r.selected;
+            if (!gapPicked) {
+                // Subtract as an ICON TOGGLE (eraser): on = the object cuts
+                // the stroke (dst-out) instead of fusing into it.
+                ImGui::SameLine(0.0f, 6.0f * gs);
+                auto& ds2 = DS::DesignSystem::Instance();
+                const float ui = ds2.GetFloat(Tok::S_Size_ControlHeight) * gs;
+                const float rnd2 = ds2.GetFloat(Tok::S_CornerRadius_Control) * gs;
+                const ImVec2 mn = ImGui::GetCursorScreenPos();
+                const ImVec2 mx(mn.x + ui, mn.y + ui);
+                if (ImGui::InvisibleButton("##marksub", ImVec2(ui, ui)))
+                    markPlaceSubtract_ = !markPlaceSubtract_;
+                const bool hov = ImGui::IsItemHovered();
+                ImDrawList* dl2 = ImGui::GetWindowDrawList();
+                const ImVec4 fill = markPlaceSubtract_
+                    ? ds2.GetColor(Tok::S_Color_Accent_Default)
+                    : ds2.GetColor(hov ? Tok::C_IconButton_BackgroundHover
+                                       : Tok::C_IconButton_Background);
+                dl2->AddRectFilled(mn, mx,
+                                   ImGui::ColorConvertFloat4ToU32(fill), rnd2);
+                auto& im = VectorGraphics::IconManager::Instance();
+                if (im.HasIcon("ink-eraser")) {
+                    const float isz = ui * 0.7f;
+                    auto md = im.GetDefaultMetadata("ink-eraser");
+                    if (!md.colorZones.empty())
+                        md.colorZones[0].customColor =
+                            ds2.GetColor(Tok::C_IconButton_Icon);
+                    im.RenderIcon(dl2, "ink-eraser",
+                                  ImVec2(mn.x + (ui - isz) * 0.5f,
+                                         mn.y + (ui - isz) * 0.5f), isz, md);
+                }
+                if (hov)
+                    UI::DrawTooltip("Subtract: the object cuts the stroke "
+                                    "instead of fusing into it (Ctrl-click "
+                                    "places an objectless dash tick)",
+                                    ImGui::GetIO().MousePos);
+            }
         }
         (void)pst;
     };
