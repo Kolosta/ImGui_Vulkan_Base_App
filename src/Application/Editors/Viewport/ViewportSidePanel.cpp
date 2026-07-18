@@ -181,23 +181,16 @@ void Application::RenderViewportSidePanel(EditorState& st, ImVec2 cMin, ImVec2 c
         !ImGui::GetIO().WantTextInput)
         st.sidePanel.stage = (st.sidePanel.stage == 2) ? 0 : 2;
     UI::EditorSidePanel("##viewportSide", cMin, cMax, st.sidePanel, tabs);
-    // Exclude the panel's interactive band from the canvas hit-testing (input +
-    // the mark tool read st.overlayRects), so clicks/drags/wheel on the panel —
-    // INCLUDING the resize edge on its left and the closed handle — don't fall
-    // through to the viewport (deselect, box-select, camera pan/zoom).
-    const float gs = DesignSystem::DesignSystem::Instance().GetGlobalScale();
-    const float w = UI::SidePanelOccupiedWidth(st.sidePanel, cMin, cMax);
-    float left;
-    if (st.sidePanel.stage == 0) {
-        // Closed: only the small handle sliver on the right is interactive.
-        const float chev = DesignSystem::DesignSystem::Instance()
-                               .GetFloat(DesignSystem::Tok::C_Dropdown_ChevronSize) * gs * 1.6f;
-        left = cMax.x - (chev + 6.0f * gs);
-    } else {
-        // Open / bar: the band + an ~8px resize-edge grip on its left.
-        left = cMax.x - w - 8.0f * gs;
-    }
-    st.overlayRects.push_back(ImVec4(left, cMin.y, cMax.x, cMax.y));
+    // Exclude the panel's interactive rects from the canvas hit-testing (input +
+    // the mark tool + the custom cursor read st.overlayRects). The widget
+    // publishes what it ACTUALLY occupies — the full-height tab-bar column (or
+    // the closed handle) and the height-FITTED content panel + resize grip —
+    // so the canvas below the auto-fitted panel stays fully interactive.
+    auto pushRect = [&](const ImVec4& r) {
+        if (r.z > r.x && r.w > r.y) st.overlayRects.push_back(r);
+    };
+    pushRect(st.sidePanel.outBarRect);
+    pushRect(st.sidePanel.outPanelRect);
 }
 
 } // namespace App

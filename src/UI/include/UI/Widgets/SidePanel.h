@@ -32,8 +32,16 @@ namespace UI {
 
 struct SidePanelState {
     int   stage = 0;        // 0 closed, 1 tab-bar only, 2 full panel
-    float width = 240.0f;   // full-panel width (px), resizable
+    float width = 320.0f;   // full-panel width (px), resizable
     int   tab   = 0;        // active tab index
+    // OUTPUT (filled by EditorSidePanel each frame): the screen rects the panel
+    // ACTUALLY occupies — the tab-bar column (full height; the closed handle at
+    // stage 0) and the height-FITTED content panel incl. its resize grip (zero
+    // when absent). The host excludes exactly these from its canvas
+    // hit-testing, not a full-height band (the content panel auto-fits its
+    // content, so the canvas below it stays live).
+    ImVec4 outBarRect{ 0, 0, 0, 0 };
+    ImVec4 outPanelRect{ 0, 0, 0, 0 };
 };
 
 struct SidePanelTab {

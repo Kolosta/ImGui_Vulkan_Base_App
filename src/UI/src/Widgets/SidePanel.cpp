@@ -107,6 +107,7 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     st.width = std::clamp(st.width, minPanel, std::max(minPanel, maxPanel));
 
     ImGui::PushID(id);
+    st.outBarRect = st.outPanelRect = ImVec4(0, 0, 0, 0);
 
     // ── Drag handle / edge grip ───────────────────────────────────────────────
     ImGuiStorage* store  = ImGui::GetStateStorage();
@@ -142,10 +143,29 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
             !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left)) {
             st.stage = 2; dragging = false; store->SetBool(dragKey, false);
         }
+        st.outBarRect = ImVec4(hmn.x, hmn.y, hmx.x, hmx.y);   // just the handle
     } else {
         float edge = cMax.x - width;
-        ImGui::SetCursorScreenPos(ImVec2(edge - 4.0f * gs, cMin.y));
-        ImGui::InvisibleButton("##spEdge", ImVec2(8.0f * gs, cMax.y - cMin.y));
+        // The resize grip spans only the panel's ACTUAL band: full height at
+        // stage 1 (the bar column is full-height), the FITTED content height at
+        // stage 2 (estimated from last frame's measure, like the panel itself)
+        // — the canvas below the auto-fitted panel stays fully interactive.
+        float gripTop = cMin.y, gripBot = cMax.y;
+        if (st.stage == 2) {
+            const float aTop = cMin.y + margin;
+            const float aBot = cMax.y - margin;
+            const float aH   = std::max(uiU, aBot - aTop);
+            const float measured =
+                store->GetFloat(ImGui::GetID("##sp_contentH"), 0.0f);
+            const float ph = (measured <= 0.5f)
+                ? aH : std::min(aH, measured + margin * 2.0f);
+            gripTop = aTop;
+            gripBot = aTop + ph;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(edge - 4.0f * gs, gripTop));
+        ImGui::InvisibleButton("##spEdge",
+                               ImVec2(8.0f * gs,
+                                      std::max(1.0f, gripBot - gripTop)));
         if (ImGui::IsItemHovered() || ImGui::IsItemActive())
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         if (ImGui::IsItemActivated()) { dragging = true; store->SetBool(dragKey, true); }
@@ -174,7 +194,11 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     const float panelLeft = std::round(cMax.x - width);
     ImVec2 pmin(panelLeft, cMin.y), pmax(rightX, cMax.y);
 
-    ImVec2 barMin(rightX - barWpx, pmin.y), barMax(rightX, pmax.y);
+    // The tabs FLOAT: their column is inset from the canvas edge by a margin
+    // (no full-height bar). The content panel meets their left edge.
+    const float tabInset = margin;
+    ImVec2 barMin(rightX - barWpx - tabInset, pmin.y),
+           barMax(rightX - tabInset, pmax.y);
     ImVec2 conMin(pmin.x, pmin.y),          conMax(barMin.x, pmax.y);
 
     const float r  = fillet;
@@ -194,7 +218,10 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     struct TabBox { float top, bot; bool sel, hov; };
     std::vector<TabBox> boxes((size_t)nTabs);
     {
-        float y = barMin.y + margin + tabPadY;   // inset the tabs from the top
+        // The first tab starts a corner-radius below the panel top, so a
+        // selected tab's concave fillet never bows above the panel's rounded
+        // top-right corner.
+        float y = barMin.y + margin + zoneRnd;
         for (int i = 0; i < nTabs; ++i) {
             float textLen = AddTextVertical(dl, font, fontSz, 0.f, 0.f, 0,
                                             tabs[(size_t)i].name.c_str());
@@ -255,9 +282,24 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     conMin.y = availTop;
     conMax.y = availTop + panelH;
 
+    // Publish the occupied rects: the FLOATING tabs occupy only their own
+    // vertical band (their column, from the first tab top to the last tab
+    // bottom) — the canvas above/below and beside them stays interactive; the
+    // CONTENT panel (stage 2) covers its fitted height incl. the resize grip.
+    if (nTabs > 0)
+        st.outBarRect = ImVec4(barMin.x - 8.0f * gs,
+                               boxes.front().top,
+                               rightX,
+                               boxes.back().bot);
+    if (st.stage == 2)
+        st.outPanelRect = ImVec4(conMin.x - 4.0f * gs, conMin.y,
+                                 conMax.x, conMax.y);
+
+    // The open panel is a fully ROUNDED card now (the tabs float over its
+    // right side rather than a full-height bar hiding that edge).
     if (st.stage == 2)
         dl->AddRectFilled(conMin, conMax, panelBg, zoneRnd,
-                          ImDrawFlags_RoundCornersLeft);
+                          ImDrawFlags_RoundCornersAll);
 
     // Clip everything that follows. Selected-tab concave fillets reach LEFT into
     // the content panel (where they merge with it), so the clip starts at the
@@ -265,58 +307,48 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     const float clipLeft = (st.stage == 2) ? conMin.x : barMin.x;
     dl->PushClipRect(ImVec2(clipLeft, cMin.y), ImVec2(rightX, cMax.y), true);
 
-    // Step 1 — bar background, ONE flat rectangle over the whole bar column. We do
-    // NOT cut holes for the tabs: the tab silhouettes are simply painted on top in
-    // panelBg (exactly like the zone tab bar, where the active tab body is drawn
-    // over the already-painted bar). This keeps the rounded/concave tab edges
-    // perfectly clean — there is no separate "complement" geometry that could
-    // leave triangular gaps or expose the wrong colour behind the fillets.
-    dl->AddRectFilled(barMin, barMax, barBg);
-
-    // Step 2 — tab silhouettes (panelBg), drawn ON TOP of the bar. The SELECTED
-    // tab is the proven shape: concave fillets on the LEFT that flare into the
-    // content panel + convex corners on the RIGHT, traced as ONE closed outline
-    // (no separate fill pieces → no diagonal seam). A HOVERED (non-selected) tab
-    // keeps the convex right corners but has SQUARE left corners — no concave
-    // fillets — exactly like an inactive zone tab.
-    //
-    // Outline order (single continuous loop, no stray closing edge):
-    //   left side ▸ top-left ▸ top edge ▸ top-right convex ▸ right edge ▸
-    //   bottom-right convex ▸ bottom edge ▸ bottom-left ▸ back up the left side.
+    // FLOATING tabs — no full-height bar. Each tab is its own chip:
+    //   • the SELECTED tab keeps the proven shape: concave fillets on the LEFT
+    //     that flare into the content panel + convex corners on the RIGHT, in
+    //     the panel colour so it merges seamlessly with the open card;
+    //   • every OTHER tab is a fully rounded floating pill in the (translucent)
+    //     bar colour.
+    // Traced as ONE closed outline per selected tab (no diagonal seam).
     auto drawTabShape = [&](float top, float bot, ImU32 col, bool selected) {
         const float left  = barMin.x;
         const float right = barMax.x;
         if (er <= 0.5f) { dl->AddRectFilled(ImVec2(left, top), ImVec2(right, bot), col); return; }
-
-        const bool concave = selected && cr > 0.5f;
+        if (!selected) {   // a floating rounded pill
+            dl->AddRectFilled(ImVec2(left, top), ImVec2(right, bot), col, er,
+                              ImDrawFlags_RoundCornersAll);
+            return;
+        }
+        const bool concave = cr > 0.5f;
         dl->PathClear();
-        // 1. Top-left. Concave fillet centred ABOVE the corner at (left+cr, top−cr)
-        //    so it bows OUTWARD (left) into the content panel; runs from the left
-        //    edge (left, top−cr) round to the top edge (left+cr, top). This is the
-        //    user-validated convention.
+        // 1. Top-left concave fillet bowing OUT (left) into the content panel.
         if (concave) dl->PathArcTo(ImVec2(left + cr, top - cr), cr, PI, PI * 0.5f, 12);
-        else         dl->PathLineTo(ImVec2(left, top));        // square top-left
-        // 2. Top-right convex corner (top edge → right edge).
+        else         dl->PathLineTo(ImVec2(left, top));
+        // 2. Top-right convex corner.
         dl->PathArcTo(ImVec2(right - er, top + er), er, -PI * 0.5f, 0.0f, 12);
-        // 3. Bottom-right convex corner (right edge → bottom edge).
+        // 3. Bottom-right convex corner.
         dl->PathArcTo(ImVec2(right - er, bot - er), er, 0.0f, PI * 0.5f, 12);
-        // 4. Bottom-left. Concave fillet centred BELOW the corner at (left+cr,bot+cr),
-        //    from the bottom edge (left+cr, bot) round to the left edge (left, bot+cr).
+        // 4. Bottom-left concave fillet.
         if (concave) dl->PathArcTo(ImVec2(left + cr, bot + cr), cr, -PI * 0.5f, -PI, 12);
-        else         dl->PathLineTo(ImVec2(left, bot));        // square bottom-left
-        // The closing edge (back up the left side) is implicit. Concave variant is
-        // non-convex → concave-aware fill; otherwise the fast convex fill.
+        else         dl->PathLineTo(ImVec2(left, bot));
         if (concave) dl->PathFillConcave(col);
         else         dl->PathFillConvex(col);
     };
 
-    for (int i = 0; i < nTabs; ++i) {           // selected first (lowest)
+    // Unselected pills first (bar colour; a hovered one slightly lighter), then
+    // the selected tab on top in the panel colour.
+    const ImU32 barHov = ColA(Tok::S_Color_Background_Layer2, A);
+    for (int i = 0; i < nTabs; ++i) {
+        const TabBox& b = boxes[(size_t)i];
+        if (!b.sel) drawTabShape(b.top, b.bot, b.hov ? barHov : barBg, false);
+    }
+    for (int i = 0; i < nTabs; ++i) {
         const TabBox& b = boxes[(size_t)i];
         if (b.sel) drawTabShape(b.top, b.bot, panelBg, true);
-    }
-    for (int i = 0; i < nTabs; ++i) {           // hovered (non-selected) above
-        const TabBox& b = boxes[(size_t)i];
-        if (!b.sel && b.hov) drawTabShape(b.top, b.bot, panelBg, false);
     }
 
     // Step 3 — vertical labels (selected = full text colour, others = subtle).
