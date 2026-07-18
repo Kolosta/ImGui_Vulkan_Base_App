@@ -80,6 +80,10 @@ struct DropdownConfig {
     // owner reads DropdownResult::pickRequested / cleared to drive it.
     bool objectPicker = false;
     bool objectPickerHasValue = false;
+    // Suppress the trailing EYEDROPPER glyph/action when empty (the trigger is
+    // clearable but not a node-pick target — e.g. a plain enum with a "none"
+    // placeholder). The CLEAR cross still appears when a value is set.
+    bool objectPickerNoEyedropper = false;
     // When set and the trigger label is empty, draw `placeholder` in the
     // subtle/disabled text colour instead of the normal label.
     std::string placeholder;

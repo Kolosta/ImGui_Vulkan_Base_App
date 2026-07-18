@@ -107,15 +107,24 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     // The object picker forces a leading object icon and a trailing action
     // slot (eyedropper / clear cross) inside the trigger.
     const bool  objPick = cfg.objectPicker;
+    // The trailing ACTION slot exists when there is something to draw there: a
+    // CLEAR cross (a value is set) or the EYEDROPPER (allowed). A no-eyedropper
+    // picker with an empty value has NO trailing slot (a plain placeholder).
+    const bool  actionSlot = objPick &&
+        (cfg.objectPickerHasValue || !cfg.objectPickerNoEyedropper);
     const bool  hasIcon = objPick || (cfg.triggerIcon && *cfg.triggerIcon);
     const char* leadIcon = objPick ? "shape-category" : cfg.triggerIcon;
-    ImVec2 ts = ImGui::CalcTextSize(label);
+    // The PLACEHOLDER (shown when the label is empty) sizes the trigger like
+    // a real label — an empty-value picker must not collapse under its text.
+    ImVec2 ts = ImGui::CalcTextSize(
+        (cfg.triggerLabel.empty() && !cfg.placeholder.empty())
+            ? cfg.placeholder.c_str() : label);
 
     float btnW = pad.x;
     if (hasIcon) btnW += iconSz + gap;
     btnW += ts.x + pad.x;
     if (showChevron) btnW += gap + chevSz;
-    if (objPick)     btnW += gap + iconSz;   // trailing action slot
+    if (actionSlot)  btnW += gap + iconSz;   // trailing action slot
     if (cfg.triggerWidth > 0.0f) btnW = std::max(btnW, cfg.triggerWidth);
 
     ImGui::PushID(cfg.id);
@@ -153,7 +162,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
 
     // The object picker's trailing ACTION slot (eyedropper / clear cross) sits
     // just left of the chevron. Left edge of that slot:
-    const float actionSlotX = objPick
+    const float actionSlotX = actionSlot
         ? (btnMax.x - pad.x - (showChevron ? (chevSz + gap) : 0.0f) - iconSz)
         : btnMax.x;
 
@@ -189,7 +198,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
 
     // The action button, on TOP of the trigger over its slot (AllowOverlap
     // above lets it take priority for the click there).
-    if (objPick) {
+    if (actionSlot) {
         const ImRect actRect(ImVec2(actionSlotX, btnMin.y),
                              ImVec2(actionSlotX + iconSz, btnMax.y));
         ImGui::SetCursorScreenPos(actRect.Min);
@@ -374,7 +383,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     // Empty + a placeholder given → draw the placeholder in the subtle text
     // colour; otherwise the real label in the normal colour.
     if (cfg.triggerLabel.empty() && !cfg.placeholder.empty()) {
-        const ImU32 phCol = ImGui::ColorConvertFloat4ToU32(Col(Tok::S_Color_Text_Subtle));
+        const ImU32 phCol = ImGui::ColorConvertFloat4ToU32(Col(Tok::S_Color_Text_Disabled));
         dl->AddText(ImVec2(cx, btnMin.y + (controlH - ts.y) * 0.5f), phCol,
                     cfg.placeholder.c_str());
     } else {
@@ -393,7 +402,7 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
     // empty, a clear cross when a value is set. The clickable button was drawn
     // earlier (before the trigger) so it wins the click; here we only draw the
     // icon, greyed at rest and WHITE on hover so the user sees it is live.
-    if (objPick) {
+    if (actionSlot) {
         const char* icon = cfg.objectPickerHasValue ? "close" : "colorize";
         const ImVec4 rest  = Col(Tok::S_Color_Text_Subtle);
         const ImVec4 hovC  = Col(Tok::S_Color_Text_Default);
