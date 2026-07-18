@@ -91,6 +91,9 @@ struct EditorState {
     // corner). Falls back to Viewport when no page is implied by the selection.
     enum class RulerSpace : uint8_t { Viewport = 0, Page };
     RulerSpace rulerSpace = RulerSpace::Viewport;
+    // Which of the four rulers are visible (any combination). Default = the
+    // legacy pair: top + left. Persisted in the LAY blob (v9).
+    bool rulerTop = true, rulerLeft = true, rulerRight = false, rulerBottom = false;
 
     // Right-side reusable EditorSidePanel (the "N" panel). Generic UI state
     // (stage/width/tab) lives in `sidePanel`; viewport-specific options are kept
@@ -114,8 +117,9 @@ struct EditorState {
 
     // Properties editor page (Blender-style top-bar tabs): Object = transform /
     // compositing / instance target; Paint = the fill & stroke stacks (path
-    // nodes); Modifiers = the modifier stack.
-    enum class PropTab : uint8_t { Object = 0, Paint = 1, Modifiers = 2 };
+    // nodes); Modifiers = the modifier stack; Document = document-wide settings
+    // (the display-unit system, …).
+    enum class PropTab : uint8_t { Object = 0, Paint = 1, Modifiers = 2, Document = 3 };
     PropTab propTab = PropTab::Object;
 };
 

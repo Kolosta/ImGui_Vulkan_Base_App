@@ -88,13 +88,14 @@ void Application::PropTransformSection(Ink::NodeId id) {
 
         bool dx = false, dy = false;
         unsigned ch = pr::Vec2Group("Location", loc, 0.5f, 0.0f, 0.0f, 3, "",
-                                    &dx, &dy);
+                                    &dx, &dy, true, pr::Quantity::Length);
         if (ch & 1u) applyLive([&](Ink::Transform2D& x) { x.tx = loc[0]; });
         if (ch & 2u) applyLive([&](Ink::Transform2D& x) { x.ty = loc[1]; });
         commitOnRelease(dx || dy);
 
         pr::GroupGap();
-        if (pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600, 1, "\xC2\xB0"))
+        if (pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600, 1, "",
+                          pr::Quantity::Angle))
             applyLive([&](Ink::Transform2D& x) {
                 x.rotation = rotDeg * 3.14159265358979 / 180.0;
             });
@@ -256,7 +257,8 @@ void Application::PropCompositingSection(Ink::NodeId id) {
     pc.defaultOpen = true;
     if (UI::BeginPanel(pc).open) {
         float op = n->opacity;
-        if (pr::DragFloat("Opacity", &op, 0.005f, 0.0f, 1.0f, 3))
+        if (pr::DragFloat("Opacity", &op, 0.5f, 0.0f, 1.0f, 0, "",
+                          pr::Quantity::Percent))
             doc.SetOpacity(id, op);
         if (ImGui::IsItemDeactivatedAfterEdit()) LogInfoAction("Opacity");
 
@@ -316,7 +318,8 @@ void Application::BuildPropertiesTopBar(EditorState& st, EditorBar& bar) {
     const float cellW = ds.GetFloat(pr::Tok::C_Dropdown_Height) * gs * 1.45f;
     EditorState* stp = &st;
 
-    bar.middle.width = cellW * 3.0f;
+    constexpr int kNTabs = 4;
+    bar.middle.width = cellW * (float)kNTabs;
     bar.middle.draw = [this, stp, cellW](ImVec2 pos, float) {
         ImGui::SetCursorPos(pos);
         const Ink::Node* n = project_.document && edit_.active != Ink::kNullNode
@@ -336,9 +339,11 @@ void Application::BuildPropertiesTopBar(EditorState& st, EditorBar& bar) {
               EditorState::PropTab::Paint,     isPath },
             { "settings",       "Modifiers",
               EditorState::PropTab::Modifiers, true },
+            { "crop-free",      "Document settings",
+              EditorState::PropTab::Document,  true },
         };
-        std::vector<UI::DropdownButton> cells(3);
-        for (int i = 0; i < 3; ++i) {
+        std::vector<UI::DropdownButton> cells(kNTabs);
+        for (int i = 0; i < kNTabs; ++i) {
             cells[(std::size_t)i].id      = tabs[i].icon;
             cells[(std::size_t)i].icon    = tabs[i].icon;
             cells[(std::size_t)i].tooltip = tabs[i].tip;
@@ -346,7 +351,7 @@ void Application::BuildPropertiesTopBar(EditorState& st, EditorBar& bar) {
             cells[(std::size_t)i].enabled = tabs[i].enabled;
         }
         const int clicked = UI::DropdownButtonRow("##propTabs", cells, cellW);
-        if (clicked >= 0 && clicked < 3 && tabs[clicked].enabled)
+        if (clicked >= 0 && clicked < kNTabs && tabs[clicked].enabled)
             stp->propTab = tabs[clicked].tab;
     };
 }
@@ -358,6 +363,15 @@ void Application::RenderProperties(EditorState& st) {
     if (!project_.document) return;
     Ink::Document& doc = *project_.document;
     edit_.Prune(doc);
+
+    // Document settings are independent of the selection — render them even with
+    // no active object (before the "no active object" guard below).
+    if (st.propTab == EditorState::PropTab::Document) {
+        if (UI::BeginScroll("##propsScroll", ImVec2(0, 0)))
+            DrawPropertiesDocument();
+        UI::EndScroll();
+        return;
+    }
 
     const Ink::NodeId id = edit_.active;
     if (id == Ink::kNullNode || !doc.Find(id)) {
@@ -412,6 +426,27 @@ void Application::RenderProperties(EditorState& st) {
         }
     }
     UI::EndScroll();
+}
+
+// ── Document settings tab ─────────────────────────────────────────────────────
+// Document-wide options (independent of the selection). The DISPLAY UNIT SYSTEM
+// is the first: it drives every unit-aware input in the app (a viewport's rulers
+// + N-panel Item tab can override it locally). Geometry is stored once in the
+// base unit (px) — this only changes how values are shown/parsed.
+void Application::DrawPropertiesDocument() {
+    auto& ds = pr::DST::DesignSystem::Instance();
+    ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(pr::Tok::S_Color_Text_Subtle));
+    ImGui::TextUnformatted("Units");
+    ImGui::PopStyleColor();
+    ImGui::Separator();
+
+    static const char* kSystems[UI::Units::kUnitSystemCount] = {
+        "Metric", "Imperial", "Typographic", "Pixel" };
+    int sys = (int)project_.docUnitSystem;
+    if (pr::DropdownRow("Unit system", kSystems, UI::Units::kUnitSystemCount, &sys)) {
+        project_.docUnitSystem = (UI::Units::UnitSystem)sys;
+        project_.dirty = true;
+    }
 }
 
 } // namespace App

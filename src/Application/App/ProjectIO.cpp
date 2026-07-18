@@ -229,6 +229,8 @@ void Application::LoadProjectFromFile(const std::string& path) {
                                               : data.projectName;
     project_.path  = path;
     project_.dirty = false;
+    project_.docUnitSystem = (UI::Units::UnitSystem)std::min<std::uint8_t>(
+        data.docUnitSystem, (std::uint8_t)(UI::Units::kUnitSystemCount - 1));
 
     // Fresh editing state for the restored document (mirrors ResetDocument,
     // minus the demo seed).
@@ -332,6 +334,7 @@ void Application::FinishSavePass() {
     const std::string name = PathDisplayName(path);
     std::string err;
     if (!AcuFile::Save(path, name, project_.moduleId, *project_.document,
+                       (std::uint8_t)project_.docUnitSystem,
                        zoneLayout_.Serialize(), BuildEditorStateBlob(), thumb,
                        &err)) {
         LogInfoAction("Save File", err);

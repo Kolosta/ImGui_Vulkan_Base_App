@@ -28,7 +28,10 @@ namespace App {
 namespace pr {   // properties-row helpers
 
 namespace DST = DesignSystem;
+namespace un  = UI::Units;
 using Tok = DesignSystem::Tok;
+using Quantity    = UI::Units::Quantity;
+using LengthScale = UI::Units::LengthScale;
 
 inline float Gs() { return DST::DesignSystem::Instance().GetGlobalScale(); }
 inline float SafeFloat(Tok t, float fallback) {
@@ -89,12 +92,21 @@ inline void ControlColumn() {
 }
 
 // A DragValue row: full-precision store, `decimals` shown. True while changing.
+// `q` tags the QUANTITY (Length/Angle/Percent/Scalar) so the field shows + parses
+// in the document display unit; Scalar keeps the fixed `unit` suffix. `unit` is
+// only honoured for Scalar (a bare "×" / "px" label).
 inline bool DragFloat(const char* label, float* v, float speed, float mn,
-                      float mx, int decimals = 3, const char* unit = "") {
+                      float mx, int decimals = 3, const char* unit = "",
+                      Quantity q = Quantity::Scalar,
+                      LengthScale scale = LengthScale::Normal,
+                      bool useDocSys = true,
+                      un::UnitSystem sysOverride = un::UnitSystem::Pixel) {
     const float w = Label(label);
     UI::DragValueConfig dc;
     dc.id = "##dv"; dc.speed = speed; dc.min = mn; dc.max = mx;
     dc.displayDecimals = decimals; dc.unit = unit; dc.width = w;
+    dc.quantity = q; dc.scale = scale;
+    dc.useDocSystem = useDocSys; dc.system = sysOverride;
     ImGui::PushID(label);
     const bool ch = UI::DragValue(dc, v);
     ImGui::PopID();
@@ -137,14 +149,20 @@ inline unsigned Vec2Group(const char* title, float v[2], float speed, float mn,
                           float mx, int decimals = 3, const char* unit = "",
                           bool* xDeactivated = nullptr,
                           bool* yDeactivated = nullptr,
-                          bool leadingGap = true) {
+                          bool leadingGap = true,
+                          Quantity q = Quantity::Scalar,
+                          LengthScale scale = LengthScale::Normal,
+                          bool useDocSys = true,
+                          un::UnitSystem sysOverride = un::UnitSystem::Pixel) {
     unsigned changed = 0;
     ImGui::PushID(title);
     if (leadingGap) GroupGap();   // a FIRST group in a panel passes false
     GroupTitleInline(title, "X");
-    if (DragFloat("X", &v[0], speed, mn, mx, decimals, unit)) changed |= 1u;
+    if (DragFloat("X", &v[0], speed, mn, mx, decimals, unit, q, scale,
+                  useDocSys, sysOverride)) changed |= 1u;
     if (xDeactivated) *xDeactivated = ImGui::IsItemDeactivatedAfterEdit();
-    if (DragFloat("Y", &v[1], speed, mn, mx, decimals, unit)) changed |= 2u;
+    if (DragFloat("Y", &v[1], speed, mn, mx, decimals, unit, q, scale,
+                  useDocSys, sysOverride)) changed |= 2u;
     if (yDeactivated) *yDeactivated = ImGui::IsItemDeactivatedAfterEdit();
     ImGui::PopID();
     return changed;

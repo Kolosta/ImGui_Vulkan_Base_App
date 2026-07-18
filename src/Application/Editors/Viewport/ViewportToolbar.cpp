@@ -304,7 +304,8 @@ void Application::DrawSnapWidget(ImVec2 pos, float widthPx) {
             ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(Tok::S_Color_Text_Subtle));
             ImGui::TextUnformatted(s); ImGui::PopStyleColor();
         };
-        // Snap To — only Increment is implemented on Ink; the rest are greyed.
+        // Snap To — every mode is live: Increment/Grid (grid) and Vertex/Edge/
+        // Face/EdgeCenter (document geometry). See ViewportSnap.cpp.
         subtle("Snap To");
         {
             static const char* kSnapIcons[6] = {
@@ -319,12 +320,13 @@ void Application::DrawSnapWidget(ImVec2 pos, float widthPx) {
                 c.icon  = kSnapIcons[i];
                 c.col = 0; c.row = i;
                 c.selected = ((int)edit_.snap.mode == i);
-                c.enabled  = (i == 0);   // Increment only (Lot 8); others later
+                c.enabled  = true;
                 c.align = UI::ButtonGroup::Align::Left;
                 g.AddCell(c);
             }
             UI::ButtonGroup::Result r = g.Render();
-            if (r.clickedIndex == 0) edit_.snap.mode = SnapSettings::Mode::Increment;
+            if (r.clickedIndex >= 0)
+                edit_.snap.mode = (SnapSettings::Mode)r.clickedIndex;
         }
         ImGui::Separator();
         // Snap Base — a 4-cell group (functional: affects incremental rounding
@@ -554,34 +556,73 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
     // metrics are not on Ink yet → shown greyed.
     const float h = ds.GetFloat(Tok::S_Size_ControlHeight) * gs;
     bar.right.width = h + 6.0f * gs;
-    bar.right.draw = [this, gs](ImVec2 pos, float) {
+    bar.right.draw = [this, gs, pst](ImVec2 pos, float) {
         auto& ds2 = DS::DesignSystem::Instance();
         ImGui::SetCursorPos(pos);
-        const float bodyW = 220.0f * gs, bodyH = 200.0f * gs;
+        const float bodyW = 232.0f * gs, bodyH = 400.0f * gs;
+        const float cellH = ds2.GetFloat(Tok::S_Size_ControlHeight) * gs;
         UI::DropdownConfig ov;
         ov.id = "##viewportOverlay";
         ov.triggerIcon = "image-aspect-ratio";
         ov.triggerLabel = "";
         ov.menuSize = ImVec2(bodyW, bodyH);
-        ov.bodyDraw = [this, &ds2]() {
-            ImGui::PushStyleColor(ImGuiCol_Text, ds2.GetColor(Tok::S_Color_Text_Subtle));
-            ImGui::TextUnformatted("2D Cursor"); ImGui::PopStyleColor();
-            ImGui::Checkbox("Show 2D cursor", &show2DCursor_);
-            if (ImGui::Button("Reset to origin"))     Action_Cursor2DToOrigin();
-            if (ImGui::Button("Move to selection"))   Action_Cursor2DToSelection();
-            ImGui::Separator();
-            ImGui::PushStyleColor(ImGuiCol_Text, ds2.GetColor(Tok::S_Color_Text_Subtle));
-            ImGui::TextUnformatted("Overlays"); ImGui::PopStyleColor();
+        // Custom widgets throughout (token-styled checkboxes / button groups) —
+        // no base ImGui controls.
+        ov.bodyDraw = [this, &ds2, gs, bodyW, cellH, pst]() {
+            auto subtle = [&](const char* s) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ds2.GetColor(Tok::S_Color_Text_Subtle));
+                ImGui::TextUnformatted(s); ImGui::PopStyleColor();
+            };
+            // ── Rulers (any combination; default = top + left) ───────────────
+            subtle("Rulers");
+            UI::Checkbox("##rTop",    "Top",    &pst->rulerTop);
+            UI::Checkbox("##rBottom", "Bottom", &pst->rulerBottom);
+            UI::Checkbox("##rLeft",   "Left",   &pst->rulerLeft);
+            UI::Checkbox("##rRight",  "Right",  &pst->rulerRight);
+            ImGui::Dummy(ImVec2(0, 4.0f * gs));
+
+            // ── Viewport unit (also here for when the rulers have no corner) ──
+            subtle("Viewport unit");
+            {
+                static const char* kU[5] = { "Follow document", "Metric",
+                                             "Imperial", "Typographic", "Pixel" };
+                UI::ButtonGroup g("##vpunit");
+                g.SetGrid({ bodyW }, std::vector<float>(5, cellH));
+                for (int i = 0; i < 5; ++i)
+                    g.AddCell(kU[i], 0, i, 1, 1, pst->docUnit == i);
+                const UI::ButtonGroup::Result r = g.Render();
+                if (r.clickedIndex >= 0) pst->docUnit = r.clickedIndex;
+            }
+            ImGui::Dummy(ImVec2(0, 4.0f * gs));
+
+            // ── 2D cursor ────────────────────────────────────────────────────
+            subtle("2D Cursor");
+            UI::Checkbox("##show2d", "Show 2D cursor", &show2DCursor_);
+            {
+                const float sp = ds2.GetFloat(Tok::P_Spacing_100) * gs;
+                const float cw = (bodyW - sp) * 0.5f;
+                UI::ButtonGroup g("##cursorActs");
+                g.SetGrid({ cw, cw }, { cellH });
+                g.AddCell("Reset to origin",   0, 0, 1, 1, false);
+                g.AddCell("Move to selection", 1, 0, 1, 1, false);
+                const UI::ButtonGroup::Result r = g.Render();
+                if (r.clickedIndex == 0) Action_Cursor2DToOrigin();
+                if (r.clickedIndex == 1) Action_Cursor2DToSelection();
+            }
+            ImGui::Dummy(ImVec2(0, 4.0f * gs));
+
+            // ── Overlays (not on Ink yet) ────────────────────────────────────
+            subtle("Overlays");
             ImGui::BeginDisabled(true);
-            bool page = true, pages = true, metrics = false;
-            ImGui::Checkbox("Page layout (later)", &page);
-            ImGui::Checkbox("Show pages (later)", &pages);
-            ImGui::Checkbox("Performance metrics (later)", &metrics);
+            static bool page = true, pages = true, metrics = false;
+            UI::Checkbox("##ovPage",    "Page layout (later)",         &page);
+            UI::Checkbox("##ovPages",   "Show pages (later)",          &pages);
+            UI::Checkbox("##ovMetrics", "Performance metrics (later)", &metrics);
             ImGui::EndDisabled();
         };
         UI::Dropdown(ov);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-            UI::DrawTooltip("Viewport overlays (2D cursor, page layout, metrics)",
+            UI::DrawTooltip("Viewport overlays — rulers, unit, 2D cursor",
                             ImGui::GetIO().MousePos);
     };
 }

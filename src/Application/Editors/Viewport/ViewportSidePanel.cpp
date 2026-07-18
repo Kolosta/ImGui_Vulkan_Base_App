@@ -73,17 +73,23 @@ void Application::DrawSidePanelItemTab(ImVec2 cMin, ImVec2 cMax) {
         }
     };
 
+    // These inputs display in the VIEWPORT unit (the ruler unit), overriding
+    // the document one.
+    const bool vDoc = false;
+    const auto vSys = sidePanelUnitSys_;
     bool dx = false, dy = false;
     // First group in the panel → no leading gap (the panel's own top margin
     // provides the inset), so the top padding matches the other tabs exactly.
     unsigned ch = pr::Vec2Group("Location", loc, 0.5f, 0.0f, 0.0f, 3, "", &dx, &dy,
-                                /*leadingGap=*/false);
+                                /*leadingGap=*/false, pr::Quantity::Length,
+                                pr::LengthScale::Normal, vDoc, vSys);
     if (ch & 1u) applyLive([&](Ink::Transform2D& x) { x.tx = loc[0]; });
     if (ch & 2u) applyLive([&](Ink::Transform2D& x) { x.ty = loc[1]; });
     commitOnRelease(dx || dy);
 
     pr::GroupGap();
-    if (pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600, 1, "\xC2\xB0"))
+    if (pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600, 1, "",
+                      pr::Quantity::Angle, pr::LengthScale::Normal, vDoc, vSys))
         applyLive([&](Ink::Transform2D& x) {
             x.rotation = rotDeg * 3.14159265358979 / 180.0;
         });
@@ -100,7 +106,9 @@ void Application::DrawSidePanelItemTab(ImVec2 cMin, ImVec2 cMax) {
         float dim[2] = { (float)(b.max.x - b.min.x), (float)(b.max.y - b.min.y) };
         ImGui::BeginDisabled(true);
         bool ddx = false, ddy = false;
-        pr::Vec2Group("Dimensions", dim, 0.0f, 0.0f, 0.0f, 2, "", &ddx, &ddy);
+        pr::Vec2Group("Dimensions", dim, 0.0f, 0.0f, 0.0f, 2, "", &ddx, &ddy,
+                      true, pr::Quantity::Length, pr::LengthScale::Normal,
+                      vDoc, vSys);
         ImGui::EndDisabled();
     }
     EndTabChild();
@@ -154,6 +162,9 @@ void Application::DrawSidePanelMarksTab(ImVec2 cMin, ImVec2 cMax) {
 
 // ── Panel host ──────────────────────────────────────────────────────────────
 void Application::RenderViewportSidePanel(EditorState& st, ImVec2 cMin, ImVec2 cMax) {
+    // The Item-tab inputs follow this VIEWPORT's display unit (the ruler unit),
+    // not the document one.
+    sidePanelUnitSys_ = ViewportUnitSystem(st);
     std::vector<UI::SidePanelTab> tabs;
     // Item — always available.
     {

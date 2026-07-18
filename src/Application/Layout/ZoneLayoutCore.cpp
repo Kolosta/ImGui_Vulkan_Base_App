@@ -178,7 +178,9 @@ struct BR {
 //     collections / pages / project root) and the Collections-view expanded
 //     objects — appended after nPanelShowOrphans, so reopening a file keeps
 //     every tree folded exactly as it was left.
-constexpr uint32_t kLayoutBlobVersion = 8;
+// v9: per-tab ruler VISIBILITY (top/left/right/bottom packed in a u8),
+//     appended after the fold state. Older blobs default to top + left.
+constexpr uint32_t kLayoutBlobVersion = 9;
 } // namespace
 
 // Node encoding: [isLeaf:u8]; split → [vertical][firstPx][initRatio][lastUsable]
@@ -225,6 +227,11 @@ std::vector<uint8_t> ZoneLayout::Serialize() const {
                 for (uint64_t id : o.collapsed) w.u64(id);
                 w.u32((uint32_t)o.expandedObjects.size());
                 for (uint64_t id : o.expandedObjects) w.u64(id);
+                // v9: ruler visibility packed (top 1 · left 2 · right 4 · bottom 8).
+                w.u8((uint8_t)((t.state.rulerTop    ? 1 : 0) |
+                               (t.state.rulerLeft   ? 2 : 0) |
+                               (t.state.rulerRight  ? 4 : 0) |
+                               (t.state.rulerBottom ? 8 : 0)));
             }
         } else {
             w.u8(1);
@@ -304,6 +311,13 @@ bool ZoneLayout::Deserialize(const std::vector<uint8_t>& blob) {
                         for (int k = 0; k < 7; ++k) r.u8();   // old show*/objState/invert
                         t.state.nPanelShowOrphans = r.u8() != 0;
                     }
+                }
+                if (ver >= 9) {   // v9: ruler visibility flags
+                    const uint8_t rf = r.u8();
+                    t.state.rulerTop    = (rf & 1) != 0;
+                    t.state.rulerLeft   = (rf & 2) != 0;
+                    t.state.rulerRight  = (rf & 4) != 0;
+                    t.state.rulerBottom = (rf & 8) != 0;
                 }
                 n->tabs.push_back(std::move(t));
             }

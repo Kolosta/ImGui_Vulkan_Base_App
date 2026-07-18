@@ -401,7 +401,8 @@ void Application::DrawFillsStackBody(
                                 (float)f.pattern.spacingY };
                 bool dx = false, dy = false;
                 unsigned ch = pr::Vec2Group("Spacing", sp, 0.2f, 0.1f,
-                                            10000.0f, 2, "", &dx, &dy);
+                                            10000.0f, 2, "", &dx, &dy, true,
+                                            pr::Quantity::Length);
                 if (ch) {
                     f.pattern.spacingX = sp[0]; f.pattern.spacingY = sp[1];
                     liveApply("Pattern Spacing", false);
@@ -411,7 +412,8 @@ void Application::DrawFillsStackBody(
                 float off[2] = { (float)f.pattern.phaseX,
                                  (float)f.pattern.phaseY };
                 ch = pr::Vec2Group("Offset", off, 0.2f, -10000.0f,
-                                   10000.0f, 2, "", &dx, &dy);
+                                   10000.0f, 2, "", &dx, &dy, true,
+                                   pr::Quantity::Length);
                 if (ch) {
                     f.pattern.phaseX = off[0]; f.pattern.phaseY = off[1];
                     liveApply("Pattern Offset", false);
@@ -422,7 +424,7 @@ void Application::DrawFillsStackBody(
                 float angleDeg =
                     (float)(f.pattern.rotation * 180.0 / 3.14159265358979);
                 if (pr::DragFloat("Angle", &angleDeg, 0.5f, -360.0f, 360.0f,
-                                  1, "\xC2\xB0")) {
+                                  1, "", pr::Quantity::Angle)) {
                     f.pattern.rotation = angleDeg * 3.14159265358979 / 180.0;
                     liveApply("Pattern Angle", false);
                 }
@@ -432,7 +434,7 @@ void Application::DrawFillsStackBody(
                 float motifDeg =
                     (float)(f.pattern.motifRotation * 180.0 / 3.14159265358979);
                 if (pr::DragFloat("Motif angle", &motifDeg, 0.5f, -360.0f,
-                                  360.0f, 1, "\xC2\xB0")) {
+                                  360.0f, 1, "", pr::Quantity::Angle)) {
                     f.pattern.motifRotation = motifDeg * 3.14159265358979 / 180.0;
                     liveApply("Motif Angle", false);
                 }
@@ -476,7 +478,8 @@ void Application::DrawFillsStackBody(
             }
 
             float op = f.opacity;
-            if (pr::DragFloat("Opacity", &op, 0.005f, 0.0f, 1.0f, 3)) {
+            if (pr::DragFloat("Opacity", &op, 0.5f, 0.0f, 1.0f, 0, "",
+                              pr::Quantity::Percent)) {
                 f.opacity = op;
                 liveApply("Fill Opacity", false);
             }
@@ -513,7 +516,13 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
     static const char* kMode[]  = { "Fusion", "Blend", "Cut" };
     static const char* kBend[]  = { "Hard", "Bend", "Follow", "Chord" };
     static const char* kSide[]  = { "Center", "Left", "Right" };
-    static const char* kUnit[]  = { "%", "px" };
+    // The absolute mode is a DOCUMENT-unit length: the switch's second cell and
+    // the fields' suffix follow the document unit (mm / pt / px …), not a fixed
+    // "px". `docUn` = the doc unit's short name; `lenQ` tags a field Length while
+    // absolute (converts + labels), Scalar while percent (a plain "%").
+    const char* docUn = pr::un::Name(
+        pr::un::Resolve(pr::un::DocumentSystem(), pr::un::LengthScale::Normal));
+    const char* kUnit[2] = { "%", docUn };
     static const char* kBlend[] = {
         "Normal", "Multiply", "Screen", "Overlay", "Darken", "Lighten",
         "Color Dodge", "Color Burn", "Hard Light", "Soft Light", "Difference",
@@ -521,6 +530,9 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
     const double sw = strokeWidth > 1e-9 ? strokeWidth : 1.0;
     bool changed = false;
     auto S = [&](const char* l) { structural = true; structLabel = l; changed = true; };
+    // Length while absolute, plain Scalar while percent (with the "%" suffix).
+    const pr::Quantity lenQ = o.sizePercent ? pr::Quantity::Scalar
+                                            : pr::Quantity::Length;
 
     int shp = 0;
     for (int i = 0; i < 6; ++i) if (o.shape == kShapeVal[i]) shp = i;
@@ -543,7 +555,8 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
         // doc.SetStyle here would write the document's OLD, unedited style back
         // over the change — that is what reset the value.
         if (pr::DragFloat("Distance", &off, o.sizePercent ? 1.0f : 0.1f,
-                          -100000.0f, 100000.0f, 2, o.sizePercent ? "%" : "")) {
+                          -100000.0f, 100000.0f, 2, o.sizePercent ? "%" : "",
+                          lenQ)) {
             o.sideOffset = off; S("Marker Distance"); }
     }
 
@@ -559,7 +572,8 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
         auto sizeField = [&](const char* l, double* v) {
             float f = (float)*v;
             if (pr::DragFloat(l, &f, o.sizePercent ? 1.0f : 0.1f, 0.0f,
-                              1000000.0f, 2, o.sizePercent ? "%" : "")) { *v = f; S("Marker Size"); }
+                              1000000.0f, 2, o.sizePercent ? "%" : "", lenQ)) {
+                *v = f; S("Marker Size"); }
         };
         if (o.shape == Ink::MarkShape::Circle ||
             o.shape == Ink::MarkShape::HalfCircle) sizeField("Radius", &o.size);
@@ -581,13 +595,14 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
     }
     if (o.shape != Ink::MarkShape::Circle) {
         float rot = (float)(o.rotation * 180.0 / 3.14159265358979);
-        if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f, 1, "\xC2\xB0")) {
+        if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f, 1, "", pr::Quantity::Angle)) {
             o.rotation = rot * 3.14159265358979 / 180.0; S("Marker Rotation"); }
     }
     {   // Along the line (before/after the gap end).
         float ao = (float)o.alongOffset;
         if (pr::DragFloat("Along", &ao, o.sizePercent ? 1.0f : 0.1f,
-                          -100000.0f, 100000.0f, 2, o.sizePercent ? "%" : "")) {
+                          -100000.0f, 100000.0f, 2, o.sizePercent ? "%" : "",
+                          lenQ)) {
             o.alongOffset = ao; S("Marker Along"); }
     }
     int bd = (int)o.bend;
@@ -800,9 +815,14 @@ void Application::DrawStrokesStackBody(
             // Width + its space. "Viewport px" = the non-scaling HAIRLINE
             // (constant on-screen width at any zoom).
             float w = (float)s.width;
+            // A hairline width is literal SCREEN px (non-scaling) — a plain
+            // "px" scalar, not a document length to convert; a Document width is
+            // a real length that follows the document unit.
+            const bool vpWidth = s.widthSpace == Ink::WidthSpace::Viewport;
             if (pr::DragFloat("Width", &w, 0.1f, 0.0f, 10000.0f, 2,
-                              s.widthSpace == Ink::WidthSpace::Viewport
-                                  ? "px" : "")) {
+                              vpWidth ? "px" : "",
+                              vpWidth ? pr::Quantity::Scalar
+                                      : pr::Quantity::Length)) {
                 s.width = w;
                 liveApply("Stroke Width", false);
             }
@@ -856,14 +876,16 @@ void Application::DrawStrokesStackBody(
                 float gap  = (float)(s.dashPattern.size() > 1
                                          ? s.dashPattern[1]
                                          : s.dashPattern[0]);
-                if (pr::DragFloat("Dash", &dash, 0.1f, 0.05f, 10000.0f, 2)) {
+                if (pr::DragFloat("Dash", &dash, 0.1f, 0.05f, 10000.0f, 2, "",
+                                  pr::Quantity::Length)) {
                     if (s.dashPattern.size() < 2) s.dashPattern.resize(2, 8.0);
                     s.dashPattern[0] = dash;
                     liveApply("Stroke Dashes", false);
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit())
                     liveApply("Stroke Dashes", true);
-                if (pr::DragFloat("Gap", &gap, 0.1f, 0.05f, 10000.0f, 2)) {
+                if (pr::DragFloat("Gap", &gap, 0.1f, 0.05f, 10000.0f, 2, "",
+                                  pr::Quantity::Length)) {
                     if (s.dashPattern.size() < 2) s.dashPattern.resize(2, 8.0);
                     s.dashPattern[1] = gap;
                     liveApply("Stroke Dashes", false);
@@ -872,7 +894,7 @@ void Application::DrawStrokesStackBody(
                     liveApply("Stroke Dashes", true);
                 float dOff = (float)s.dashOffset;
                 if (pr::DragFloat("Dash offset", &dOff, 0.1f, -10000.0f,
-                                  10000.0f, 2)) {
+                                  10000.0f, 2, "", pr::Quantity::Length)) {
                     s.dashOffset = dOff;
                     liveApply("Dash Offset", false);
                 }
@@ -941,8 +963,13 @@ void Application::DrawStrokesStackBody(
                         rp.sizePercent = pct;
                         structural = true; structLabel = "Repeat Units";
                     }
+                    // Length while absolute (doc-unit), plain "%" while percent.
+                    const char* rpU = rp.sizePercent ? "%" : "";
+                    const pr::Quantity rpQ = rp.sizePercent ? pr::Quantity::Scalar
+                                                            : pr::Quantity::Length;
                     float sz = (float)rp.size;
-                    if (pr::DragFloat("Length", &sz, 0.5f, 0.01f, 10000.0f, 2)) {
+                    if (pr::DragFloat("Length", &sz, 0.5f, 0.01f, 10000.0f, 2,
+                                      rpU, rpQ)) {
                         rp.size = sz; liveApply("Repeat Size", false);
                     }
                     if (ImGui::IsItemDeactivatedAfterEdit())
@@ -953,7 +980,7 @@ void Application::DrawStrokesStackBody(
                         float wd = (float)rp.width;
                         if (pr::DragFloat(rp.shape == Ink::MarkShape::Line
                                               ? "Thickness" : "Width",
-                                          &wd, 0.5f, 0.01f, 10000.0f, 2)) {
+                                          &wd, 0.5f, 0.01f, 10000.0f, 2, rpU, rpQ)) {
                             rp.width = wd; liveApply("Repeat Width", false);
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -962,7 +989,7 @@ void Application::DrawStrokesStackBody(
                     float rot =
                         (float)(rp.rotation * 180.0 / 3.14159265358979);
                     if (pr::DragFloat("Incline", &rot, 0.5f, -360.0f, 360.0f,
-                                      1, "\xC2\xB0")) {
+                                      1, "", pr::Quantity::Angle)) {
                         rp.rotation = rot * 3.14159265358979 / 180.0;
                         liveApply("Repeat Incline", false);
                     }
@@ -987,7 +1014,10 @@ void Application::DrawStrokesStackBody(
                         // Negative offsets allowed (the other side / reversed).
                         if (pr::DragFloat(rp.offsetPercent ? "Offset %"
                                                            : "Offset",
-                                          &so, 0.5f, -10000.0f, 10000.0f, 1)) {
+                                          &so, 0.5f, -10000.0f, 10000.0f, 1,
+                                          rp.offsetPercent ? "%" : "",
+                                          rp.offsetPercent ? pr::Quantity::Scalar
+                                                           : pr::Quantity::Length)) {
                             rp.sideOffset = so;
                             liveApply("Repeat Offset", false);
                         }
@@ -1022,7 +1052,7 @@ void Application::DrawStrokesStackBody(
                     if (rp.distribute == Ink::RepeatDistribute::Pitch) {
                         float pv = (float)rp.pitch;
                         if (pr::DragFloat("Spacing c-c", &pv, 0.2f, 0.01f,
-                                          10000.0f, 2)) {
+                                          10000.0f, 2, "", pr::Quantity::Length)) {
                             rp.pitch = pv; liveApply("Repeat Pitch", false);
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -1030,7 +1060,7 @@ void Application::DrawStrokesStackBody(
                     } else if (rp.distribute == Ink::RepeatDistribute::Gap) {
                         float gv = (float)rp.gap;
                         if (pr::DragFloat("Gap edge-edge", &gv, 0.2f, 0.0f,
-                                          10000.0f, 2)) {
+                                          10000.0f, 2, "", pr::Quantity::Length)) {
                             rp.gap = gv; liveApply("Repeat Gap", false);
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -1053,7 +1083,7 @@ void Application::DrawStrokesStackBody(
                     }
                     float ph = (float)rp.phase;
                     if (pr::DragFloat("Phase", &ph, 0.2f, -10000.0f,
-                                      10000.0f, 2)) {
+                                      10000.0f, 2, "", pr::Quantity::Length)) {
                         rp.phase = ph; liveApply("Repeat Phase", false);
                     }
                     if (ImGui::IsItemDeactivatedAfterEdit())
@@ -1067,7 +1097,7 @@ void Application::DrawStrokesStackBody(
                     if (rp.groupCount > 1) {
                         float gp = (float)rp.groupPitch;
                         if (pr::DragFloat("Group c-c", &gp, 0.1f, 0.01f,
-                                          10000.0f, 2)) {
+                                          10000.0f, 2, "", pr::Quantity::Length)) {
                             rp.groupPitch = gp;
                             liveApply("Repeat Group Pitch", false);
                         }
@@ -1077,13 +1107,13 @@ void Application::DrawStrokesStackBody(
                     // Trims.
                     float ts0 = (float)rp.startTrim, ts1 = (float)rp.endTrim;
                     if (pr::DragFloat("Trim start", &ts0, 0.5f, 0.0f,
-                                      1000000.0f, 1)) {
+                                      1000000.0f, 1, "", pr::Quantity::Length)) {
                         rp.startTrim = ts0; liveApply("Repeat Trim", false);
                     }
                     if (ImGui::IsItemDeactivatedAfterEdit())
                         liveApply("Repeat Trim", true);
                     if (pr::DragFloat("Trim end", &ts1, 0.5f, 0.0f,
-                                      1000000.0f, 1)) {
+                                      1000000.0f, 1, "", pr::Quantity::Length)) {
                         rp.endTrim = ts1; liveApply("Repeat Trim", false);
                     }
                     if (ImGui::IsItemDeactivatedAfterEdit())
@@ -1124,7 +1154,8 @@ void Application::DrawStrokesStackBody(
                     if (!addMode && !customAlpha) {
                         float op = rp.opacity;
                         if (pr::DragFloat(cutMode ? "Erase strength" : "Opacity",
-                                          &op, 0.01f, 0.0f, 1.0f, 2)) {
+                                          &op, 0.5f, 0.0f, 1.0f, 0, "",
+                                          pr::Quantity::Percent)) {
                             rp.opacity = op;
                             liveApply("Repeat Opacity", false);
                         }
@@ -1201,12 +1232,15 @@ void Application::DrawStrokesStackBody(
                         float off = (float)m.offset;
                         if (pr::DragFloat("Distance", &off, m.offsetPercent ? 0.5f : 0.1f,
                                           -100000.0f, 100000.0f, 2,
-                                          m.offsetPercent ? "%" : "")) {
+                                          m.offsetPercent ? "%" : "",
+                                          m.offsetPercent ? pr::Quantity::Scalar
+                                                          : pr::Quantity::Length)) {
                             m.offset = off; liveApply("Mark Distance", false);
                         }
                         if (ImGui::IsItemDeactivatedAfterEdit())
                             liveApply("Mark Distance", true);
-                        static const char* kUnit[] = { "%", "px" };
+                        const char* kUnit[2] = { "%", pr::un::Name(pr::un::Resolve(
+                            pr::un::DocumentSystem(), pr::un::LengthScale::Normal)) };
                         int un = m.offsetPercent ? 0 : 1;
                         if (pr::ButtonGroupRow("Unit", kUnit, 2, &un)) {
                             const bool toPercent = (un == 0);
@@ -1454,7 +1488,7 @@ void Application::DrawStrokesStackBody(
                         if (o.shape != Ink::MarkShape::Circle) {
                             float rot = (float)(o.rotation * 180.0 / 3.14159265358979);
                             if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f,
-                                              360.0f, 1, "\xC2\xB0")) {
+                                              360.0f, 1, "", pr::Quantity::Angle)) {
                                 o.rotation = rot * 3.14159265358979 / 180.0;
                                 liveApply("Mark Object Rotation", false);
                             }
@@ -1675,7 +1709,8 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
     if (m.phase != Ink::MarkPhase::Neutral) {
         // Forced size of the centred dash/gap (0 = the pattern's own length).
         float asz = (float)m.anchorSize;
-        if (pr::DragFloat("Anchor size", &asz, 0.1f, 0.0f, 100000.0f, 2)) {
+        if (pr::DragFloat("Anchor size", &asz, 0.1f, 0.0f, 100000.0f, 2, "",
+                          pr::Quantity::Length)) {
             m.anchorSize = asz; liveApply("Mark Anchor Size", false);
         }
         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -1693,7 +1728,8 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
         // The forced pitch (doc units) of the repeat segment starting here —
         // the "Anchor Size" for repeats (0 = the run's own pitch).
         float rg = (float)m.repeatGap;
-        if (pr::DragFloat("Repeat pitch", &rg, 0.1f, 0.0f, 100000.0f, 2)) {
+        if (pr::DragFloat("Repeat pitch", &rg, 0.1f, 0.0f, 100000.0f, 2, "",
+                          pr::Quantity::Length)) {
             m.repeatGap = rg; liveApply("Mark Repeat Pitch", false);
         }
         if (ImGui::IsItemDeactivatedAfterEdit())
@@ -1863,7 +1899,7 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
         }
         if (o.shape != Ink::MarkShape::Circle) {
             float rot = (float)(o.rotation * 180.0 / 3.14159265358979);
-            if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f, 1, "\xC2\xB0")) {
+            if (pr::DragFloat("Rotation", &rot, 0.5f, -360.0f, 360.0f, 1, "", pr::Quantity::Angle)) {
                 o.rotation = rot * 3.14159265358979 / 180.0;
                 liveApply("Mark Object Rotation", false);
             }

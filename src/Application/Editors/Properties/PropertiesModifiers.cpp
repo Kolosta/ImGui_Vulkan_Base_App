@@ -151,7 +151,9 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                                           : relative ? "Factor" : "Step",
                                           st, relative ? 0.01f : 0.5f,
                                           0.0f, 0.0f, relative ? 3 : 2, "",
-                                          &dx, &dy)) {
+                                          &dx, &dy, true,
+                                          relative ? pr::Quantity::Scalar
+                                                   : pr::Quantity::Length)) {
                             m.step.tx = st[0]; m.step.ty = st[1];
                             liveApply("Array Step", false);
                         }
@@ -160,7 +162,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         pr::GroupGap();
                         float rotDeg = (float)(m.step.rotation / kDeg);
                         if (pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600.0f,
-                                          3600.0f, 1, "\xC2\xB0")) {
+                                          3600.0f, 1, "", pr::Quantity::Angle)) {
                             m.step.rotation = rotDeg * kDeg;
                             liveApply("Array Rotation", false);
                         }
@@ -185,7 +187,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                             float stepDeg =
                                 (float)(m.circleAngleStep / kDeg);
                             if (pr::DragFloat("Angle step", &stepDeg, 0.5f,
-                                              0.1f, 360.0f, 1, "\xC2\xB0")) {
+                                              0.1f, 360.0f, 1, "", pr::Quantity::Angle)) {
                                 m.circleAngleStep = stepDeg * kDeg;
                                 liveApply("Array Angle Step", false);
                             }
@@ -193,7 +195,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         }
                         float radius = (float)m.circleRadius;
                         if (pr::DragFloat("Radius", &radius, 0.5f, 0.0f,
-                                          1000000.0f, 1)) {
+                                          1000000.0f, 1, "", pr::Quantity::Length)) {
                             m.circleRadius = radius;
                             liveApply("Array Radius", false);
                         }
@@ -209,7 +211,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                             float sweepDeg =
                                 (float)(m.circleSweep / kDeg);
                             if (pr::DragFloat("Sweep", &sweepDeg, 0.5f, 1.0f,
-                                              360.0f, 1, "\xC2\xB0")) {
+                                              360.0f, 1, "", pr::Quantity::Angle)) {
                                 m.circleSweep = sweepDeg * kDeg;
                                 liveApply("Array Sweep", false);
                             }
@@ -269,7 +271,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                     } else {
                         float asz = (float)m.alongSize;
                         if (pr::DragFloat("Length", &asz, 0.2f, 0.01f,
-                                          100000.0f, 2)) {
+                                          100000.0f, 2, "", pr::Quantity::Length)) {
                             m.alongSize = asz;
                             liveApply("Along Size", false);
                         }
@@ -278,7 +280,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                             m.alongShape == Ink::MarkShape::Triangle) {
                             float awd = (float)m.alongWidth;
                             if (pr::DragFloat("Width", &awd, 0.2f, 0.01f,
-                                              100000.0f, 2)) {
+                                              100000.0f, 2, "", pr::Quantity::Length)) {
                                 m.alongWidth = awd;
                                 liveApply("Along Width", false);
                             }
@@ -298,8 +300,8 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                             if (crel) liveApply("Along Colour", true);
                         }
                         float aop = m.alongOpacity;
-                        if (pr::DragFloat("Opacity", &aop, 0.01f, 0.0f, 1.0f,
-                                          2)) {
+                        if (pr::DragFloat("Opacity", &aop, 0.5f, 0.0f, 1.0f,
+                                          0, "", pr::Quantity::Percent)) {
                             m.alongOpacity = aop;
                             liveApply("Along Opacity", false);
                         }
@@ -324,7 +326,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                     } else if (m.distribute == Ink::AlongDistribute::BySpacing) {
                         float sp = (float)m.spacing;
                         if (pr::DragFloat("Spacing c-c", &sp, 0.2f, 0.01f,
-                                          100000.0f, 2)) {
+                                          100000.0f, 2, "", pr::Quantity::Length)) {
                             m.spacing = sp;
                             liveApply("Along Spacing", false);
                         }
@@ -332,7 +334,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                     } else if (m.distribute == Ink::AlongDistribute::ByGap) {
                         float gp = (float)m.alongGap;
                         if (pr::DragFloat("Gap edge-edge", &gp, 0.2f, 0.0f,
-                                          100000.0f, 2)) {
+                                          100000.0f, 2, "", pr::Quantity::Length)) {
                             m.alongGap = gp;
                             liveApply("Along Gap", false);
                         }
@@ -349,7 +351,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                     if (m.distribute != Ink::AlongDistribute::AtAnchors) {
                         float aph = (float)m.alongPhase;
                         if (pr::DragFloat("Phase", &aph, 0.2f, -100000.0f,
-                                          100000.0f, 2)) {
+                                          100000.0f, 2, "", pr::Quantity::Length)) {
                             m.alongPhase = aph;
                             liveApply("Along Phase", false);
                         }
@@ -363,7 +365,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         if (m.alongGroupCount > 1) {
                             float gp2 = (float)m.alongGroupPitch;
                             if (pr::DragFloat("Group c-c", &gp2, 0.1f, 0.01f,
-                                              100000.0f, 2)) {
+                                              100000.0f, 2, "", pr::Quantity::Length)) {
                                 m.alongGroupPitch = gp2;
                                 liveApply("Along Group Pitch", false);
                             }
@@ -387,10 +389,16 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                     }
                     if (m.alongSide != Ink::RepeatSide::Center) {
                         float aoff = (float)m.alongSideOffset;
+                        // Percent mode stores a percentage NUMBER (a plain "%"
+                        // scalar); absolute mode is a document length.
                         if (pr::DragFloat(m.alongOffsetPercent ? "Offset %"
                                                                : "Offset",
                                           &aoff, 0.2f, -100000.0f,
-                                          100000.0f, 2)) {
+                                          100000.0f, 2,
+                                          m.alongOffsetPercent ? "%" : "",
+                                          m.alongOffsetPercent
+                                              ? pr::Quantity::Scalar
+                                              : pr::Quantity::Length)) {
                             m.alongSideOffset = aoff;
                             liveApply("Along Offset", false);
                         }
@@ -404,7 +412,7 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                     float arot =
                         (float)(m.alongRotation * 180.0 / 3.14159265358979);
                     if (pr::DragFloat("Incline", &arot, 0.5f, -360.0f, 360.0f,
-                                      1, "\xC2\xB0")) {
+                                      1, "", pr::Quantity::Angle)) {
                         m.alongRotation = arot * 3.14159265358979 / 180.0;
                         liveApply("Along Incline", false);
                     }
@@ -419,13 +427,13 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         pr::GroupGap();
                         float t0 = (float)m.startTrim, t1 = (float)m.endTrim;
                         if (pr::DragFloat("Trim start", &t0, 0.5f, 0.0f,
-                                          1000000.0f, 1)) {
+                                          1000000.0f, 1, "", pr::Quantity::Length)) {
                             m.startTrim = t0;
                             liveApply("Along Trim", false);
                         }
                         dragCommit("Along Trim");
                         if (pr::DragFloat("Trim end", &t1, 0.5f, 0.0f,
-                                          1000000.0f, 1)) {
+                                          1000000.0f, 1, "", pr::Quantity::Length)) {
                             m.endTrim = t1;
                             liveApply("Along Trim", false);
                         }

@@ -448,6 +448,10 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
                                   (float)(transformOp_.virtPx.y - cam.canvasMin.y) };
             DashLine(ov, p, virt, subtleCol, 1.0f, 5.0f, 4.0f);
         }
+        // Snap previews: violet candidates (where you CAN land) + the accent
+        // indicator glyph (where a snap IS engaged, its shape per mode).
+        DrawSnapCandidates(cam, ov);
+        DrawSnapIndicatorGlyph(cam, ov);
     }
 
     // ── In-progress canvas gesture ────────────────────────────────────────────
@@ -498,6 +502,106 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
         HandleMarkTool(st, cam, ov, hovered);
 
     (void)handleCol;
+}
+
+// ── Snap previews (violet candidates + the accent indicator glyph) ────────────
+// Shown during a snap-active MOVE so the user sees where they can land before
+// getting there (the grid keeps its dots the whole time; geometry candidates
+// hide once a snap engages, leaving only the indicator). Excludes the moving
+// selection. Edge/Increment preview nothing (you can land anywhere on an edge).
+void Application::DrawSnapCandidates(const ViewCam& cam, Ink::OverlayList& ov) {
+    if (!transformOp_.Active() || transformOp_.kind != TransformOp::Kind::Move)
+        return;
+    if (!SnapActiveFor(transformOp_.kind)) return;
+    const SnapSettings::Mode mode = edit_.snap.mode;
+    if (mode == SnapSettings::Mode::Increment ||
+        mode == SnapSettings::Mode::Edge) return;
+
+    using MS = Ink::OverlayList::MarkerShape;
+    auto& ds = DS::DesignSystem::Instance();
+    const float gs = ds.GetGlobalScale();
+    const Ink::Color vio = Tint(ds, Tok::S_State_Selected_Loose, 1.0f);
+    const float cw = canvasRectMax_.x - canvasRectMin_.x;
+    const float ch = canvasRectMax_.y - canvasRectMin_.y;
+    auto onScreen = [&](Ink::Vec2 s) {
+        return s.x >= 0 && s.y >= 0 && s.x <= cw && s.y <= ch;
+    };
+
+    // Grid: a violet dot at every crossing in view — always visible while snap
+    // is held (the grid is everywhere), so it does NOT hide when a snap engages.
+    // The step is ADAPTIVE (GridSnapStep), so the on-screen spacing — and thus
+    // the number of dots — stays bounded at any zoom (a fixed doc-space step
+    // explodes when dezoomed and got truncated / culled). Each dot is an
+    // instanced MARKER (a 6-vert quad from a shared template), so it stays cheap.
+    if (mode == SnapSettings::Mode::Grid) {
+        const double g = GridSnapStep(cam.zoom);
+        if (g < 1e-9) return;
+        const Ink::DVec2 a = cam.ScreenToDoc(canvasRectMin_.x, canvasRectMin_.y);
+        const Ink::DVec2 b = cam.ScreenToDoc(canvasRectMax_.x, canvasRectMax_.y);
+        const double x1 = std::max(a.x, b.x), y1 = std::max(a.y, b.y);
+        const double x0 = std::floor(std::min(a.x, b.x) / g) * g;
+        const double y0 = std::floor(std::min(a.y, b.y) / g) * g;
+        const float dotR = 1.5f * gs;
+        int guard = 0;
+        for (double x = x0; x <= x1 && guard < 200000; x += g)
+            for (double y = y0; y <= y1 && guard < 200000; y += g, ++guard)
+                ov.AddMarker(cam.DocToView(x, y), dotR, vio, MS::DotFilled);
+        return;
+    }
+
+    // Geometry modes: a snap is engaged → hide all previews (only the glyph
+    // remains, for a clear view).
+    if (snapIndicator_.snapped) return;
+    std::vector<Ink::NodeId> exclude;
+    if (!transformOp_.editVerts)
+        for (const TransformOp::NodeOrig& o : transformOp_.nodes)
+            exclude.push_back(o.id);
+    std::vector<Ink::DVec2> reject = MovingSelectionPoints();
+    for (Ink::DVec2& p : reject) {
+        p.x += transformOp_.gestureAccum.x;
+        p.y += transformOp_.gestureAccum.y;
+    }
+    // Candidates use the same instanced markers (a shared low-vert template), so
+    // a dense drawing's on-screen vertices stay cheap too.
+    const float r = 6.0f * gs;
+    for (const Ink::DVec2& w : CollectSnapPoints(exclude, reject)) {
+        const Ink::Vec2 s = cam.DocToView(w.x, w.y);
+        if (!onScreen(s)) continue;
+        if (mode == SnapSettings::Mode::Vertex) {
+            ov.AddMarker(s, r * 0.45f, vio, MS::DiscFilled);
+            ov.AddMarker(s, r * 0.7f, vio, MS::RingOutline, 1.2f);
+        } else if (mode == SnapSettings::Mode::EdgeCenter) {
+            ov.AddMarker(s, r * 0.55f, vio, MS::TriangleOutline, 1.4f);
+        } else {   // Face
+            ov.AddMarker(s, r * 0.5f, vio, MS::SquareOutline, 1.4f);
+        }
+    }
+}
+
+// The published snap indicator glyph at snapIndicator_.pos — its SHAPE encodes
+// the mode (circle=Vertex, triangle=EdgeCenter, diamond=Edge, square=Grid/Face),
+// in the accent colour. No-op unless a snap is engaged with a mark.
+void Application::DrawSnapIndicatorGlyph(const ViewCam& cam, Ink::OverlayList& ov) {
+    if (!snapIndicator_.snapped || !snapIndicator_.showMark) return;
+    using MS = Ink::OverlayList::MarkerShape;
+    auto& ds = DS::DesignSystem::Instance();
+    const float gs = ds.GetGlobalScale();
+    const Ink::Vec2 c = cam.DocToView(snapIndicator_.pos.x, snapIndicator_.pos.y);
+    const float r = 8.0f * gs, th = 2.0f * gs;
+    const Ink::Color sc = Tint(ds, Tok::S_State_Active_OnPage, 1.0f);
+    switch (edit_.snap.mode) {
+        case SnapSettings::Mode::Vertex:
+            ov.AddMarker(c, r, sc, MS::RingOutline, th); break;
+        case SnapSettings::Mode::EdgeCenter:
+            ov.AddMarker(c, r, sc, MS::TriangleOutline, th); break;
+        case SnapSettings::Mode::Edge:
+            ov.AddMarker(c, r, sc, MS::DiamondOutline, th); break;
+        case SnapSettings::Mode::Grid:
+        case SnapSettings::Mode::Face:
+            ov.AddMarker(c, r, sc, MS::SquareOutline, th); break;
+        default:
+            ov.AddMarker(c, r * 0.6f, sc, MS::DiscFilled); break;
+    }
 }
 
 } // namespace App

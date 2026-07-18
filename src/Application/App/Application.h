@@ -334,6 +334,63 @@ private:
     void   SnapSelection(const char* label,
                          std::function<Ink::DVec2(Ink::NodeId)> targetFor);
     double SnapGridStep() const;
+    // The interactive Grid snap step for a given zoom: the move increment,
+    // COARSENED by a nice factor (×1 / 2 / 5·10ⁿ) so on-screen crossings never
+    // fall below a legible spacing — this BOUNDS the number of grid dots at any
+    // zoom (a fixed doc-space step explodes when dezoomed and gets truncated).
+    // Display and snap share it, so the dots always mark exactly the crossings
+    // you snap to. At working zoom the factor is 1 (== the raw increment).
+    double GridSnapStep(double zoom) const;
+
+    // ── Interactive snapping during a modal G/R/S (the legacy Snap To system) ──
+    // Modes: Increment (round the displacement), Grid (land on an absolute grid
+    // crossing), Vertex/Edge/Face/EdgeCenter (snap onto document geometry within
+    // a screen-pixel radius). Snap engages when the magnet is on OR Ctrl is held,
+    // gated per transform by the Affect toggles. Snap Base picks WHICH point of
+    // the moving selection lands on the target.
+    struct SnapResult { bool snapped = false; Ink::DVec2 pos{}; bool showMark = false; };
+    // True if snapping should apply to `kind` right now (magnet/Ctrl + Affect).
+    bool SnapActiveFor(TransformOp::Kind kind) const;
+    // Apply the active Snap To mode to a Move op's displacement `moveD`
+    // (in place), publishing the indicator for Grid / geometry snaps.
+    // `cursorDoc` is the effective cursor in doc space.
+    void ApplyMoveSnap(const ViewCam& cam, Ink::DVec2 cursorDoc,
+                       Ink::DVec2& moveD, bool precise);
+    // Find the geometry snap target for doc point `cursor` under the current
+    // mode. `exclude` = node ids NOT to snap to (the moving objects); `rejectPts`
+    // = world points to skip (the moving selection's current positions, so it
+    // never snaps onto itself); `rejectSegs` = world segment pairs (a,b,a,b,…) of
+    // the moving selection's edges. `zoom` = screen px per doc-unit.
+    SnapResult ComputeSnap(Ink::DVec2 cursor, double zoom,
+                           const std::vector<Ink::NodeId>& exclude,
+                           const std::vector<Ink::DVec2>& rejectPts,
+                           const std::vector<Ink::DVec2>& rejectSegs) const;
+    // Discrete snap candidates (world) for the DISCRETE modes (Vertex anchors /
+    // EdgeCenter node-segment midpoints / Face centroids), excluding the moving
+    // selection. Shared by ComputeSnap and the candidate overlay.
+    std::vector<Ink::DVec2> CollectSnapPoints(
+        const std::vector<Ink::NodeId>& exclude,
+        const std::vector<Ink::DVec2>& rejectPts) const;
+    // Snap SOURCE point(s) of the moving selection under the current Snap Base,
+    // at their PRE-MOVE world positions (Closest = every moving control point).
+    std::vector<Ink::DVec2> SnapBaseSources() const;
+    // Every moving vertex (edit mode) at its PRE-MOVE world position — rejected
+    // as a snap target so the selection never snaps onto itself. Empty in object
+    // mode (the whole shape is id-excluded instead).
+    std::vector<Ink::DVec2> MovingSelectionPoints() const;
+    // The moving selection's EDGES as PRE-MOVE world segment pairs (edit mode):
+    // an edge is "moving" when BOTH endpoints are selected. Keeps Edge/EdgeCenter
+    // off the moving geometry.
+    std::vector<Ink::DVec2> MovingSelectionEdges() const;
+    // The live snap indicator (world pos + visible), published during a transform
+    // so the overlay draws the accent glyph. Cleared when no snap is active.
+    SnapResult snapIndicator_;
+    // Overlay: every possible snap point for the current mode (violet), shown
+    // during a snap-active transform so the user sees where they can land; the
+    // grid draws dots at its crossings. Hidden once a geometry snap engages.
+    void DrawSnapCandidates(const ViewCam& cam, Ink::OverlayList& ov);
+    // Overlay: the snap indicator glyph (shape encodes the mode) at snapIndicator_.
+    void DrawSnapIndicatorGlyph(const ViewCam& cam, Ink::OverlayList& ov);
     void Action_SelectionToCursor();
     void Action_SelectionToActive();
     void Action_SelectionToGrid();
@@ -551,6 +608,28 @@ private:
     void BuildPropertiesTopBar(EditorState& st, EditorBar& bar);
     // The page actually shown (Paint falls back to Object off path nodes).
     EditorState::PropTab PropsEffectiveTab(const EditorState& st) const;
+    // Document settings tab (display-unit system, …) — selection-independent.
+    void DrawPropertiesDocument();
+
+    // ── Rulers + per-viewport display unit ────────────────────────────────────
+    // The viewport's effective unit SYSTEM: EditorState.docUnit selects it
+    // (0 = follow the document; 1..4 = force Metric / Imperial / Typographic /
+    // Pixel). Followed by this viewport's rulers + its N-panel Item tab inputs.
+    UI::Units::UnitSystem ViewportUnitSystem(const EditorState& st) const;
+    // The ruler band thickness (px) and the per-side insets a viewport's ENABLED
+    // rulers claim (ImVec4 = left, top, right, bottom; 0 where that ruler is off).
+    // Tool palette + side panel offset by these so they never sit over a ruler.
+    float  RulerWidth() const;
+    ImVec4 RulerInsets(const EditorState& st) const;
+    // The system the N-panel Item-tab inputs display in — set to the hosting
+    // viewport's ViewportUnitSystem() each frame (they follow the ruler unit,
+    // not the document one, per the design).
+    UI::Units::UnitSystem sidePanelUnitSys_ = UI::Units::UnitSystem::Pixel;
+    // Draw the top + left rulers (translucent chrome over the canvas edges):
+    // adaptive nice ticks labelled in the viewport unit, cursor guides, and the
+    // corner unit button (cycles the viewport unit). Adds its bands to
+    // st.overlayRects so canvas input never falls through them.
+    void DrawRulers(EditorState& st, ImVec2 canvasMin, ImVec2 canvasSize);
     // Property sub-sections (Properties.cpp / PropertiesPaint.cpp /
     // PropertiesModifiers.cpp).
     void PropTransformSection(Ink::NodeId id);

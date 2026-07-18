@@ -159,6 +159,13 @@ struct TransformOp {
     std::vector<Ink::NodeId> spawned;
     std::vector<Ink::NodeId> spawnedPrevSel;
 
+    // Snap SOURCE point(s) of the moving selection under the current Snap Base,
+    // captured ONCE from PRE-MOVE geometry (Closest = every moving control
+    // point; else the single base point). The source(s) land on the snap
+    // target. Captured lazily so toggling snap ON mid-drag still reads pre-move.
+    std::vector<Ink::DVec2> snapSources;
+    bool snapSourceInit = false;
+
     const void* leaf = nullptr;          // EditorState* owning the gesture
 
     bool Active() const { return kind != Kind::None; }

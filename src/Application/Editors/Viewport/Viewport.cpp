@@ -244,11 +244,19 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     // Floating tool palette (drawn OVER the canvas image, as ImGui chrome).
     // Clear + repopulate the overlay rects HERE (input read last frame's).
     st.overlayRects.clear();
-    RenderToolPalette(cMin, st);
+    // Rulers first (chrome over the canvas edges); they push their bands into
+    // st.overlayRects so canvas input never falls through them.
+    DrawRulers(st, cMin, size);
+    // The tool palette + side panel are inset by the ENABLED rulers so they sit
+    // INSIDE them, never on top (RulerInsets = left, top, right, bottom widths).
+    const ImVec4 ins = RulerInsets(st);
+    RenderToolPalette(ImVec2(cMin.x + ins.x, cMin.y + ins.y), st);
     // The right-side "N" panel (Item / Marks tabs), over the canvas. It records
     // its occupied band as an overlay rect so clicks on the panel don't also
     // drive the canvas underneath.
-    RenderViewportSidePanel(st, cMin, ImVec2(cMin.x + size.x, cMin.y + size.y));
+    RenderViewportSidePanel(st,
+        ImVec2(cMin.x + ins.x, cMin.y + ins.y),
+        ImVec2(cMin.x + size.x - ins.z, cMin.y + size.y - ins.w));
     // NB: the Add / context popups are rendered ONCE per frame from Update()
     // (after the whole layout), not here — a popup gated by per-zone hover
     // freezes when the cursor leaves the canvas onto the popup.

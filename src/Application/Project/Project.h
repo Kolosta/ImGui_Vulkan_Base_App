@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Ink/Document/Document.h>
+#include <UI/Units.h>
 #include <memory>
 #include <string>
 
@@ -31,6 +32,12 @@ struct Project {
     // a new project so engine-side pointers are refreshed explicitly.
     std::unique_ptr<Ink::Document> document;
 
+    // The DOCUMENT display-unit system (Metric / Imperial / Typographic /
+    // Pixel), persisted in the .acu. Followed by every app input except a
+    // viewport's rulers + N-panel Item tab (those use the per-viewport unit).
+    // Geometry is stored once in the base unit (px); this only changes display.
+    UI::Units::UnitSystem docUnitSystem = UI::Units::UnitSystem::Pixel;
+
     // Reset to a brand-new empty project: fresh document with one default
     // page (size overridable — a module supplies its own via DefaultPageSize).
     // The caller re-hands the new document to the engine.
@@ -39,6 +46,7 @@ struct Project {
         path.clear();
         moduleId.clear();
         dirty = false;
+        docUnitSystem = UI::Units::UnitSystem::Pixel;
         document = std::make_unique<Ink::Document>();
         document->AddPage("Page 1", { 0, 0 }, { pageW, pageH });
     }

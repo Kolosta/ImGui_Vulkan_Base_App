@@ -41,7 +41,7 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 11;  // v3: subpath spline params +
+constexpr std::uint32_t kDocVersion = 12;  // v3: subpath spline params +
                                            //     anchor weight (+ dead marks)
                                            // v4-v8: generic marks (dead)
                                            // v9: marks — per-object side/offset +
@@ -53,6 +53,7 @@ constexpr std::uint32_t kDocVersion = 11;  // v3: subpath spline params +
                                            //      fit, mark anchorSize /
                                            //      repeatAnchor, new shapes,
                                            //      along-path modifier options
+                                           // v12: document display-unit system
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -684,7 +685,8 @@ void WriteSubtree(Writer& w, const Ink::Document& doc, Ink::NodeId id,
     for (Ink::NodeId c : n->children) WriteSubtree(w, doc, c, count);
 }
 
-std::vector<std::uint8_t> EncodeDoc(const Ink::Document& doc) {
+std::vector<std::uint8_t> EncodeDoc(const Ink::Document& doc,
+                                    std::uint8_t docUnitSystem) {
     Writer w;
     w.u32(kDocVersion);
     w.u64(doc.PeekNextId());
@@ -721,6 +723,8 @@ std::vector<std::uint8_t> EncodeDoc(const Ink::Document& doc) {
         w.u32((std::uint32_t)c.childCollections.size());
         for (Ink::NodeId k : c.childCollections) w.u64(k);
     }
+    // v12: the document display-unit system (app-level, one byte).
+    w.u8(docUnitSystem);
     return std::move(w.bytes);
 }
 
@@ -763,6 +767,8 @@ bool DecodeDoc(const std::uint8_t* p, std::size_t n, AcuData& out) {
             c.childCollections.push_back(r.u64());
         out.collections.push_back(std::move(c));
     }
+    // v12: the document display-unit system (defaults to Pixel for older files).
+    out.docUnitSystem = ver >= 12 ? r.u8() : 3;
     return r.ok;
 }
 
@@ -783,6 +789,7 @@ namespace AcuFile {
 
 bool Save(const std::string& path, const std::string& projectName,
           const std::string& moduleId, const Ink::Document& doc,
+          std::uint8_t docUnitSystem,
           const std::vector<std::uint8_t>& layoutBlob,
           const std::vector<std::uint8_t>& editorBlob, const AcuThumb& thumb,
           std::string* error) {
@@ -800,7 +807,7 @@ bool Save(const std::string& path, const std::string& projectName,
         meta.str(moduleId);
         WriteSection(file, kTagMeta, meta.bytes);
     }
-    WriteSection(file, kTagDoc, EncodeDoc(doc));
+    WriteSection(file, kTagDoc, EncodeDoc(doc, docUnitSystem));
     if (!layoutBlob.empty()) WriteSection(file, kTagLay, layoutBlob);
     if (!editorBlob.empty()) WriteSection(file, kTagEdst, editorBlob);
     if (!thumb.png.empty()) {

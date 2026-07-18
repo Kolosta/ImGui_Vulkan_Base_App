@@ -166,6 +166,11 @@ void Application::ProcessEvents() {
 void Application::Update() {
     VectorGraphics::IconManager::Instance().CleanupCacheIfNeeded();
 
+    // Publish the document's display-unit system so every unit-aware input
+    // (UI::DragValue) formats/parses in it — the single source of truth, updated
+    // live when the Properties → Document tab changes it.
+    UI::Units::SetDocumentSystem(project_.docUnitSystem);
+
     // Let the active module keep the document invariants it owns (IOF: each page's
     // shapes in print-layer z-order) before any UI / viewport reads the document.
     if (activeModule_) activeModule_->OnFrameSync();

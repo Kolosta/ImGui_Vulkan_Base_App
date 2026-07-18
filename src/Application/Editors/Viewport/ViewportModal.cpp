@@ -205,7 +205,8 @@ void Application::UpdateTransform(const ViewCam& cam) {
     transformOp_.gestureAccum.y += (double)rel.y * pf / cam.zoom;
     const Ink::DVec2 cur{ transformOp_.startDoc.x + transformOp_.gestureAccum.x,
                           transformOp_.startDoc.y + transformOp_.gestureAccum.y };
-    const bool snap = edit_.snap.enabled ^ io.KeyCtrl;   // magnet XOR Ctrl
+    const bool snap = edit_.snap.enabled != io.KeyCtrl;  // Ctrl inverts the magnet
+    snapIndicator_ = SnapResult{};                       // cleared unless a snap engages
 
     const Ink::DVec2 P = transformOp_.pivot;
 
@@ -220,10 +221,8 @@ void Application::UpdateTransform(const ViewCam& cam) {
             const double t = moveD.x*transformOp_.basisY.x + moveD.y*transformOp_.basisY.y;
             moveD = { transformOp_.basisY.x*t, transformOp_.basisY.y*t };
         }
-        if (snap && edit_.snap.affectMove) {
-            const double inc = precise ? edit_.snap.movePrecision : edit_.snap.moveIncrement;
-            moveD.x = vpm::SnapTo(moveD.x, inc); moveD.y = vpm::SnapTo(moveD.y, inc);
-        }
+        if (snap && edit_.snap.affectMove)
+            ApplyMoveSnap(cam, cur, moveD, precise);
     } else if (transformOp_.kind == TransformOp::Kind::Rotate) {
         const double a0 = std::atan2(transformOp_.startDoc.y-P.y, transformOp_.startDoc.x-P.x);
         const double a1 = std::atan2(cur.y-P.y, cur.x-P.x);
@@ -375,6 +374,7 @@ void Application::ConfirmTransform() {
             });
     }
     EndModalCapture();
+    snapIndicator_ = SnapResult{};
     transformOp_ = TransformOp{};
 }
 
@@ -397,6 +397,7 @@ void Application::CancelTransform() {
         for (const auto& o : transformOp_.nodes) doc.SetTransform(o.id, o.t);
     }
     EndModalCapture();
+    snapIndicator_ = SnapResult{};
     transformOp_ = TransformOp{};
 }
 
