@@ -172,8 +172,122 @@ std::vector<Polyline> DashSplit(const Polyline& pl,
 // so a dash element / gap lands on a non-Neutral mark, and it CUTS the base
 // line where a mark carries a Gap object (with the chosen end caps).
 
-struct PhaseAnchor { double at; bool elementCentred; };
+struct PhaseAnchor { double at; bool elementCentred; double forcedSize; };
 struct GapSpan { double from, to; GapCap capFrom, capTo; bool cutsObjects; };
+
+// ── Multi-anchor dash layout ─────────────────────────────────────────────────
+// ON intervals with SEVERAL dash anchors (or a forced feature size): each
+// anchor centres a dash ELEMENT (or a GAP) of its own/forced length; between
+// two consecutive anchor features a WHOLE number of alternating runs fits,
+// stretched per `fit` (scale both / keep the gaps / keep the dashes); outside
+// the outer anchors the pattern runs unscaled and the spine ends absorb the
+// partials. The pattern is reduced to its first dash/gap pair (documented v1).
+std::vector<std::pair<double,double>>
+AnchoredDashIntervals(double total, const std::vector<double>& patternIn,
+                      std::vector<PhaseAnchor> anchors, DashFit fit) {
+    std::vector<std::pair<double,double>> on;
+    double D = 0.0, G = 0.0;
+    {
+        std::vector<double> pat;
+        for (double d : patternIn)
+            if (d > 1e-9) pat.push_back(d);
+        if (pat.empty()) { on.push_back({ 0.0, total }); return on; }
+        D = pat[0];
+        G = pat.size() > 1 ? pat[1] : pat[0];
+    }
+    std::sort(anchors.begin(), anchors.end(),
+              [](const PhaseAnchor& a, const PhaseAnchor& b) {
+                  return a.at < b.at;
+              });
+    struct Feat { double a, b; bool gap; };
+    std::vector<Feat> feats;
+    for (const PhaseAnchor& an : anchors) {
+        const double s = an.forcedSize > 1e-9
+                             ? an.forcedSize
+                             : (an.elementCentred ? D : G);
+        feats.push_back({ an.at - s * 0.5, an.at + s * 0.5,
+                          !an.elementCentred });
+    }
+    auto emitOn = [&](double a, double b) {
+        a = std::max(0.0, a);
+        b = std::min(total, b);
+        if (b - a > 1e-9) on.push_back({ a, b });
+    };
+    // Fill [x0,x1] with alternating runs: the first run's type is `startGap`,
+    // the last one's `endGap`; lengths from D/G stretched per `fit` so a
+    // whole number of runs fits exactly.
+    auto fillBetween = [&](double x0, double x1, bool startGap, bool endGap) {
+        const double M = x1 - x0;
+        if (M <= 1e-9) return;
+        long nD = 0, nG = 0;
+        if (startGap && endGap) {
+            long k2 = std::lround((M - G) / (D + G));
+            k2 = k2 < 0 ? 0 : k2;
+            nD = k2; nG = k2 + 1;
+        } else if (!startGap && !endGap) {
+            long k2 = std::lround((M - D) / (D + G));
+            k2 = k2 < 0 ? 0 : k2;
+            nD = k2 + 1; nG = k2;
+        } else {
+            long m2 = std::lround(M / (D + G));
+            m2 = m2 < 1 ? 1 : m2;
+            nD = m2; nG = m2;
+        }
+        double d2 = D, g2 = G;
+        const double ideal = (double)nD * D + (double)nG * G;
+        if (fit == DashFit::ScaleDash && nD > 0 && M > (double)nG * G)
+            d2 = (M - (double)nG * G) / (double)nD;
+        else if (fit == DashFit::ScaleGap && nG > 0 && M > (double)nD * D)
+            g2 = (M - (double)nD * D) / (double)nG;
+        else if (ideal > 1e-9) {
+            const double f = M / ideal;
+            d2 = D * f;
+            g2 = G * f;
+        }
+        bool isGap = startGap;
+        double pos = x0;
+        while (pos < x1 - 1e-9 && (nD > 0 || nG > 0)) {
+            const double len = isGap ? g2 : d2;
+            if (!isGap) { emitOn(pos, std::min(pos + len, x1)); --nD; }
+            else --nG;
+            pos += std::max(len, 1e-9);
+            isGap = !isGap;
+        }
+    };
+    // Unscaled runs OUTSIDE the outer anchors; the spine ends clip partials.
+    auto fillBefore = [&](double edge2, bool featIsGap) {
+        bool isGap = !featIsGap;
+        double hi = edge2;
+        int guard = 100000;
+        while (hi > 1e-9 && guard-- > 0) {
+            const double len = std::max(isGap ? G : D, 1e-9);
+            if (!isGap) emitOn(hi - len, hi);
+            hi -= len;
+            isGap = !isGap;
+        }
+    };
+    auto fillAfter = [&](double edge2, bool featIsGap) {
+        bool isGap = !featIsGap;
+        double lo = edge2;
+        int guard = 100000;
+        while (lo < total - 1e-9 && guard-- > 0) {
+            const double len = std::max(isGap ? G : D, 1e-9);
+            if (!isGap) emitOn(lo, lo + len);
+            lo += len;
+            isGap = !isGap;
+        }
+    };
+    fillBefore(feats.front().a, feats.front().gap);
+    for (std::size_t i = 0; i < feats.size(); ++i) {
+        if (!feats[i].gap) emitOn(feats[i].a, feats[i].b);
+        if (i + 1 < feats.size())
+            fillBetween(feats[i].b, feats[i + 1].a,
+                        !feats[i].gap, !feats[i + 1].gap);
+    }
+    fillAfter(feats.back().b, feats.back().gap);
+    std::sort(on.begin(), on.end());
+    return on;
+}
 
 // One stroked "on" interval [from,to] of the spine, each end tagged with its cap
 // and whether it abuts a GAP (so the gap's cap wins over the stroke's own cap).
@@ -306,6 +420,53 @@ struct ArcFrame {
                  pts[k].y + (pts[k + 1].y - pts[k].y) * u };
         const double a = ang[k] + (ang[k + 1] - ang[k]) * u;
         outT = { std::cos(a), std::sin(a) };
+    }
+};
+
+// Shared Bend/Follow placement: a local shape point (u along the tangent, v
+// across it) maps through the smooth arc frame — u to a real arc-length step,
+// v along the LOCAL normal at that arc — with the object's own rotation
+// applied in local space first and the across-offset soft-clamped inside the
+// local curvature radius (the geometry must never fold past the curvature
+// centre, which would invert triangles).
+struct CurvePlacer {
+    ArcFrame af;
+    double d0 = 0.0, off = 0.0, ca = 1.0, sa = 0.0, ds = 1e-4;
+
+    bool Init(const Polyline& spine, const StrokeMark& mark,
+              const MarkObject& obj, double strokeWidth, double halfExtent) {
+        af.Build(spine);
+        if (!af.Valid()) return false;
+        d0 = (mark.t < 0 ? 0 : mark.t > 1 ? 1 : mark.t) * af.total
+             + obj.AlongUnits(strokeWidth);
+        d0 = std::clamp(d0, 0.0, af.total);
+        const MarkSide sd = obj.sideInherit ? mark.side : obj.side;
+        const double soff = obj.sideInherit ? mark.OffsetUnits(strokeWidth)
+                                            : obj.SideOffsetUnits(strokeWidth);
+        off = sd == MarkSide::Left ? soff : sd == MarkSide::Right ? -soff : 0.0;
+        ca = std::cos(obj.rotation);
+        sa = std::sin(obj.rotation);
+        ds = std::max(1e-4, halfExtent * 0.5);
+        return true;
+    }
+    DVec2 Place(double u, double v) const {
+        const double ur = u * ca - v * sa, vr = u * sa + v * ca;
+        const double du = std::clamp(d0 + ur, 0.0, af.total);
+        DVec2 pu; V2 tu;
+        af.Sample(du, pu, tu);
+        const V2 nu = Perp(tu);
+        double vv = vr + off;
+        DVec2 pA, pB; V2 tA, tB;
+        af.Sample(std::min(af.total, du + ds), pA, tA);
+        af.Sample(std::max(0.0, du - ds), pB, tB);
+        const double dTheta = std::atan2(Cross(tB, tA), Dot(tB, tA));
+        const double curv = dTheta / (2.0 * ds);
+        if (std::abs(curv) > 1e-9) {
+            const double R = 1.0 / curv;
+            if (R > 0.0 && vv >  0.95 * R) vv =  0.95 * R;
+            if (R < 0.0 && vv <  0.95 * R) vv =  0.95 * R;
+        }
+        return { pu.x + nu.x * vv, pu.y + nu.y * vv };
     }
 };
 
@@ -462,21 +623,23 @@ void CenterStroke(const Polyline& pl, const Stroke& st, double halfW,
     }
 }
 
-// Strokes `spine` (arc length `total`) with the stroke's OWN dash pattern, then
-// opens the given `gaps` on top WITHOUT re-phasing the dashes: the dash motif's
-// "on" intervals are computed over the whole spine, the gaps are subtracted, and
-// each surviving run is stroked BUTT with an explicit per-end cap — the gap ends
-// carry the GAP's cap (independent of the stroke), the other ends the stroke's
-// own cap. A free function so `TessellateStroke` stays small and readable.
-void StrokeDashesWithGaps(const Polyline& spine, const Stroke& stroke,
-                          double w, double tol, double total, double offset,
-                          const std::vector<GapSpan>& gaps, Emitter& em) {
+// Strokes `spine` (arc length `total`) from PRECOMPUTED "on" intervals (the
+// dash layout — plain, offset-anchored or multi-anchored — or one solid run),
+// then opens the given `gaps` on top WITHOUT re-phasing: the gaps are
+// subtracted from the intervals and each surviving run is stroked BUTT with an
+// explicit per-end cap — the gap ends carry the GAP's cap (independent of the
+// stroke), the other ends the stroke's own cap. A free function so
+// `TessellateStroke` stays small and readable.
+void StrokeIntervalsWithGaps(const Polyline& spine, const Stroke& stroke,
+                             double w, double tol, double total,
+                             const std::vector<std::pair<double,double>>& on,
+                             const std::vector<GapSpan>& gaps, Emitter& em) {
     // On-intervals carry, per END, whether that end abuts a GAP (its cap is the
     // GAP's, independent of the stroke) or is an ordinary dash/spine end (the
     // stroke's own cap). Every interval is stroked BUTT, then each end gets
     // exactly one explicit cap — so a Butt gap shows no round bleeding in.
     std::vector<Iv> onIv;
-    for (const auto& p : DashIntervals(total, stroke.dashPattern, offset))
+    for (const auto& p : on)
         onIv.push_back({ p.first, p.second, GapCap::Butt, GapCap::Butt,
                          false, false });
     std::vector<GapSpan> sorted = gaps;
@@ -569,7 +732,7 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
     // object, and stays put at any zoom. Falls back to the tier spine when the
     // source path is unavailable (a boolean-derived outline).
     std::vector<Polyline> placeSpines;
-    if (source && !stroke.marks.empty())
+    if (source && (!stroke.marks.empty() || !stroke.repeats.empty()))
         placeSpines = Flatten(*source, kMarkPlaceTolerance);
 
     for (std::size_t subI = 0; subI < polylines.size(); ++subI) {
@@ -620,8 +783,15 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                         source->subpaths[si]
                             .anchors[(std::size_t)m.nodeAnchor].pos, at);
             }
-            anchors.push_back({ at, m.phase == MarkPhase::Dash });
+            anchors.push_back({ at, m.phase == MarkPhase::Dash,
+                                m.anchorSize });
         }
+        // SEVERAL anchors (or a forced feature size) → the multi-anchor
+        // layout; a single plain anchor keeps the legacy offset re-phase.
+        const bool multiAnchor =
+            !stroke.dashPattern.empty() &&
+            (anchors.size() > 1 ||
+             (anchors.size() == 1 && anchors.front().forcedSize > 1e-9));
 
         // ── Gap objects → cut the base line ─────────────────────────────────
         // A Gap mark opens the line over its length, centred on the mark, with
@@ -640,7 +810,7 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
             }
         }
 
-        if (gaps.empty()) {
+        if (gaps.empty() && !multiAnchor) {
             // No gaps → stroke the whole (possibly CLOSED) spine directly, so a
             // cyclic path keeps its start/end seam joined. ExtractRun would drop
             // the `closed` flag and leave the seam open.
@@ -657,18 +827,26 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                     CenterStroke(piece, stroke, w * 0.5, tol, em);
             }
         } else {
-            // A Gap object opens the line LOCALLY, ON TOP of the stroke's own
-            // dashing — it does NOT re-phase the dashes. Compute the dash motif's
-            // phase (possibly re-anchored by a Dash/Gap PHASE mark) and delegate
-            // the interval subtraction + capping to StrokeDashesWithGaps.
-            double offset = stroke.dashOffset;
-            if (!anchors.empty())
-                offset = AnchorDashOffset(stroke.dashPattern.empty()
-                                              ? std::vector<double>{ 1, 0 }
-                                              : stroke.dashPattern,
-                                          anchors.front().elementCentred,
-                                          anchors.front().at, offset);
-            StrokeDashesWithGaps(spine, stroke, w, tol, total, offset, gaps, em);
+            // Gap objects open the line LOCALLY on top of the dashing (never
+            // re-phasing it), and/or SEVERAL dash anchors lay the pattern out
+            // piecewise. Build the ON intervals, then delegate the gap
+            // subtraction + per-end capping to StrokeIntervalsWithGaps.
+            std::vector<std::pair<double,double>> onIv;
+            if (stroke.dashPattern.empty()) {
+                onIv.push_back({ 0.0, total });
+            } else if (multiAnchor) {
+                onIv = AnchoredDashIntervals(total, stroke.dashPattern,
+                                             anchors, stroke.dashFit);
+            } else {
+                double offset = stroke.dashOffset;
+                if (!anchors.empty())
+                    offset = AnchorDashOffset(stroke.dashPattern,
+                                              anchors.front().elementCentred,
+                                              anchors.front().at, offset);
+                onIv = DashIntervals(total, stroke.dashPattern, offset);
+            }
+            StrokeIntervalsWithGaps(spine, stroke, w, tol, total, onIv, gaps,
+                                    em);
         }
 
         // Fusion mark objects → triangulated INTO the stroke mesh (one alpha,
@@ -744,6 +922,110 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
                 bakeFusion(m, obj);
             }
         }
+
+        // ── REPEAT runs → stroke-coloured Fusion primitives baked into the
+        // stroke mesh (one drawing, one alpha — no double transparency).
+        // Blend / Cut / recoloured runs are emitted by the Scene instead.
+        // The shape is triangulated ONCE and its mesh is stamped per placement
+        // through a rigid frame (tangent + inclination) — cheap even for
+        // thousands of ticks.
+        for (const StrokeRepeat& rep : stroke.repeats) {
+            if (!rep.enabled) continue;
+            // ADD (Fusion) always fuses into the stroke mesh in the stroke
+            // colour (the colour toggle is hidden for Add); Blend / Cut emit
+            // separately (the Scene).
+            if (rep.mode != MarkObjectMode::Fusion) continue;
+            const auto places =
+                RepeatObjectPlacements(placeSpine, stroke, rep, (int)subI);
+            if (places.empty()) continue;
+            const bool isLine = rep.shape == MarkShape::Line;
+            // A non-Line shape is triangulated ONCE and stamped; a Line's
+            // geometry depends on its per-placement offset (its start sits at
+            // the offset point), so it is rebuilt per placement.
+            Mesh shapeMesh;
+            if (!isLine) {
+                MarkObject obj;
+                obj.shape = rep.shape;
+                obj.size = rep.size;
+                obj.width = rep.width;
+                obj.sizePercent = rep.sizePercent;
+                const PathData shape = MarkPrimitiveShape(obj, w);
+                if (shape.Empty()) continue;
+                shapeMesh = TriangulateFill(Flatten(shape, tol),
+                                            FillRule::NonZero);
+                if (shapeMesh.Empty()) continue;
+            }
+            ArcFrame raf;
+            raf.Build(placeSpine);
+            if (!raf.Valid()) continue;
+            const double cca = std::cos(rep.rotation);
+            const double ssa = std::sin(rep.rotation);
+            const double lhu = std::max(1e-6, rep.SizeUnits(w));
+            const double lhv = std::max(1e-6, rep.WidthUnits(w));
+            const bool centred = rep.side == RepeatSide::Center;
+            for (const RepeatPlacement& rp2 : places) {
+                DVec2 p0; V2 t0;
+                raf.Sample(std::clamp(rp2.at, 0.0, raf.total), p0, t0);
+                const V2 n0 = Perp(t0);
+                const DVec2 at{ p0.x + n0.x * rp2.offset,
+                                p0.y + n0.y * rp2.offset };
+                // Frame: +x → tangent, +y → left normal, spun by `rotation`.
+                const double ux = t0.x * cca - n0.x * ssa;
+                const double uy = t0.y * cca - n0.y * ssa;
+                const double vx = t0.x * ssa + n0.x * cca;
+                const double vy = t0.y * ssa + n0.y * cca;
+                if (isLine) {
+                    // Build the Line's corners in node space.
+                    const PathData lp = MarkLineShape(lhu, lhv, rp2.offset,
+                                                      rp2.dir, centred,
+                                                      rep.lineJoin);
+                    if (lp.subpaths.empty()) continue;
+                    std::vector<DVec2> corners;
+                    for (const Anchor& a : lp.subpaths.front().anchors)
+                        corners.push_back({ at.x + ux * a.pos.x + vx * a.pos.y,
+                                            at.y + uy * a.pos.x + vy * a.pos.y });
+                    if (corners.size() < 3) continue;
+                    if (rep.lineClip && !centred) {
+                        // Cut whatever crosses to the FAR side of the path,
+                        // following the real curve (boolean subtract).
+                        const double ext =
+                            2.0 * lhu + lhv + std::abs(rp2.offset);
+                        std::vector<Polyline> rings;
+                        for (auto& r : ClipPolygonToPathSide(
+                                 corners, placeSpine, rp2.at, -rp2.dir, ext)) {
+                            Polyline pl; pl.points = std::move(r);
+                            pl.closed = true;
+                            rings.push_back(std::move(pl));
+                        }
+                        const Mesh cm = TriangulateFill(rings, FillRule::NonZero);
+                        const std::uint32_t base = out.VertexCount();
+                        for (std::size_t i2 = 0; i2 + 1 < cm.positions.size();
+                             i2 += 2)
+                            em.V(cm.positions[i2], cm.positions[i2 + 1]);
+                        for (std::uint32_t idx : cm.indices)
+                            out.indices.push_back(base + idx);
+                        continue;
+                    }
+                    const std::uint32_t base = out.VertexCount();
+                    for (const DVec2& c : corners) em.V(c.x, c.y);
+                    for (std::size_t k = 1; k + 1 < corners.size(); ++k) {
+                        out.indices.push_back(base);
+                        out.indices.push_back(base + (std::uint32_t)k);
+                        out.indices.push_back(base + (std::uint32_t)k + 1);
+                    }
+                    continue;
+                }
+                const std::uint32_t base = out.VertexCount();
+                for (std::size_t i2 = 0; i2 + 1 < shapeMesh.positions.size();
+                     i2 += 2) {
+                    const double qx = shapeMesh.positions[i2];
+                    const double qy = shapeMesh.positions[i2 + 1];
+                    em.V(at.x + ux * qx + vx * qy, at.y + uy * qx + vy * qy);
+                }
+                for (std::uint32_t idx : shapeMesh.indices)
+                    out.indices.push_back(base + idx);
+            }
+        }
     }
     return out;
 }
@@ -751,8 +1033,9 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
 PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth) {
     if (obj.shape == MarkShape::Instance) return PathData{};
     // `size` is HALF-extent along the tangent (rectangle length / circle radius
-    // / diamond diagonal-half); `width` the rectangle half-height. The geometry
-    // is parametric so the GeometryCache re-tessellates it per zoom tier.
+    // / diamond diagonal-half); `width` the rectangle/triangle half-height. The
+    // geometry is parametric so the GeometryCache re-tessellates it per zoom
+    // tier.
     const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
     if (obj.shape == MarkShape::Circle)
         return PathData::Ellipse(0, 0, hu, hu);
@@ -760,9 +1043,114 @@ PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth) {
         const double hv = std::max(1e-6, obj.WidthUnits(strokeWidth));
         return PathData::Rect(-hu, -hv, hu * 2.0, hv * 2.0);
     }
+    if (obj.shape == MarkShape::Triangle) {
+        // Isoceles: base across the full along-extent, apex on +y.
+        const double hv = std::max(1e-6, obj.WidthUnits(strokeWidth));
+        return PathData::Polygon({ { -hu, -hv }, { hu, -hv }, { 0, hv } },
+                                 true);
+    }
+    if (obj.shape == MarkShape::HalfCircle) {
+        // Chord ON the line (y = 0), Bézier dome on +y (two quarter arcs).
+        PathData p;
+        Subpath sp;
+        sp.closed = true;
+        const double k = 0.5522847498307936 * hu;   // circle kappa
+        Anchor a0; a0.pos = { -hu, 0 }; a0.hasOut = true; a0.out = { 0, k };
+        Anchor a1; a1.pos = { 0, hu };
+        a1.hasIn = true;  a1.in  = { -k, 0 };
+        a1.hasOut = true; a1.out = { k, 0 };
+        Anchor a2; a2.pos = { hu, 0 }; a2.hasIn = true; a2.in = { 0, k };
+        sp.anchors = { a0, a1, a2 };
+        p.subpaths.push_back(std::move(sp));
+        return p;
+    }
+    if (obj.shape == MarkShape::Line) {
+        // A rigid rectangle CENTRED (the side-aware placement of a repeat Line
+        // uses MarkLineShape instead — a mark-object Line just reads as a
+        // rectangle across the line).
+        const double hv = std::max(1e-6, obj.WidthUnits(strokeWidth));
+        return PathData::Rect(-hv, -hu, hv * 2.0, hu * 2.0);
+    }
     // Diamond: a 4-point polygon, `size` = the half-diagonal.
     return PathData::Polygon({ { hu, 0 }, { 0, hu }, { -hu, 0 }, { 0, -hu } },
                              true);
+}
+
+PathData MarkLineShape(double halfLen, double halfThick, double offset,
+                       double dir, bool centred, bool join) {
+    const double hu = std::max(1e-6, halfLen);
+    const double hv = std::max(1e-6, halfThick);
+    // Local frame: +y is the left normal, origin at the placement (offset)
+    // point. Thickness spans x ∈ [−hv, hv]; length spans y (across the line).
+    double yLo, yHi;
+    if (centred) {
+        yLo = -hu; yHi = hu;               // straddles the stroke
+    } else {
+        const double d = dir >= 0.0 ? 1.0 : -1.0;   // side direction (≠ 0)
+        double yNear = 0.0;                // the offset point
+        double yFar  = d * 2.0 * hu;       // reach out by the full length
+        if (join) yNear = -offset;         // back to the stroke (stroke at −off)
+        yLo = std::min(yNear, yFar);  yHi = std::max(yNear, yFar);
+    }
+    return PathData::Rect(-hv, yLo, hv * 2.0, yHi - yLo);
+}
+
+std::vector<std::vector<DVec2>>
+ClipPolygonToPathSide(const std::vector<DVec2>& poly, const Polyline& path,
+                      double atArc, double farSign, double ext) {
+    if (poly.size() < 3) return { poly };
+    const double total = PolyTotal(path);
+    if (total < 1e-9) return { poly };
+    const double e = std::max(1e-3, ext);
+    // A local span wide enough to bracket the line; the far side is closed by a
+    // big offset so the region covers the whole far half near the line.
+    const double span = 2.0 * e;
+    const double reach = 6.0 * e;
+    const double lo = std::clamp(atArc - span, 0.0, total);
+    const double hi = std::clamp(atArc + span, 0.0, total);
+    if (hi - lo < 1e-6) return { poly };
+    const double sd = farSign >= 0.0 ? 1.0 : -1.0;
+    // The region boundary FOLLOWS the ALREADY-flattened path over [lo,hi] (its
+    // real vertices, not a coarse re-sample) — so the cut is as fine as the
+    // path itself, curving exactly along it with no large facets.
+    const Polyline run = ExtractRun(path, lo, hi);
+    if (run.points.size() < 2) return { poly };
+    const std::size_t rn = run.points.size();
+    const V2 tFront = Norm(Sub(run.points[1], run.points[0]));
+    const V2 tBack  = Norm(Sub(run.points[rn - 1], run.points[rn - 2]));
+    const V2 nFront = Perp(tFront), nBack = Perp(tBack);
+    std::vector<DVec2> region = run.points;
+    // Close on the far side (path back → far-back → far-front → path front).
+    region.push_back({ run.points[rn - 1].x + sd * nBack.x * reach,
+                       run.points[rn - 1].y + sd * nBack.y * reach });
+    region.push_back({ run.points[0].x + sd * nFront.x * reach,
+                       run.points[0].y + sd * nFront.y * reach });
+    auto res = BooleanPolygons({ poly }, { region }, BoolOp::Subtract);
+    if (res.empty()) return { poly };   // boolean bailed → leave uncut
+    return res;
+}
+
+std::vector<DVec2> ClipConvexHalfPlane(const std::vector<DVec2>& poly,
+                                       DVec2 lineP, DVec2 keepNormal) {
+    std::vector<DVec2> out;
+    const std::size_t n = poly.size();
+    if (n < 3) return poly;
+    const double nl = std::hypot(keepNormal.x, keepNormal.y);
+    if (nl < 1e-12) return poly;
+    const DVec2 kn{ keepNormal.x / nl, keepNormal.y / nl };
+    auto side = [&](const DVec2& p) {
+        return (p.x - lineP.x) * kn.x + (p.y - lineP.y) * kn.y;   // ≥0 = keep
+    };
+    for (std::size_t i = 0; i < n; ++i) {
+        const DVec2 a = poly[i], b = poly[(i + 1) % n];
+        const double da = side(a), db = side(b);
+        if (da >= 0.0) out.push_back(a);
+        if ((da < 0.0) != (db < 0.0)) {          // edge crosses the line
+            const double t = da / (da - db);
+            out.push_back({ a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t });
+        }
+    }
+    return out;
 }
 
 DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
@@ -784,7 +1172,7 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
     d0 = d0 < 0 ? 0 : (d0 > total ? total : d0);
     DVec2 p0; V2 t0;
     af.Sample(d0, p0, t0);
-    const V2 n0 = Perp(t0);
+    V2 n0 = Perp(t0);
     // Side across the line: the object's own side/offset when it overrides,
     // else the mark's.
     const MarkSide sd = obj.sideInherit ? mark.side : obj.side;
@@ -793,8 +1181,28 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
     double off = 0.0;
     if (sd == MarkSide::Left)  off =  soff;
     if (sd == MarkSide::Right) off = -soff;
+    // CHORD: pin the two transverse crossings (local ±hu, v=0) to the curve —
+    // the frame's +x axis spans the CHORD between the arc points d0±hu (so its
+    // magnitude compresses to the chord length), origin at the chord midpoint,
+    // +y the chord's left normal. A diamond's two angles then land exactly on
+    // the line, the shape spanning straight between them. Rigid otherwise.
+    if (obj.bend == MarkBend::Chord) {
+        const double hu = bendHalfExtent > 0.0
+                              ? bendHalfExtent
+                              : std::max(1e-6, obj.SizeUnits(strokeWidth));
+        DVec2 pa, pb; V2 ta, tb;
+        af.Sample(std::clamp(d0 + hu, 0.0, total), pa, ta);
+        af.Sample(std::clamp(d0 - hu, 0.0, total), pb, tb);
+        p0 = { (pa.x + pb.x) * 0.5, (pa.y + pb.y) * 0.5 };
+        V2 chord{ (pa.x - pb.x) / (2.0 * hu), (pa.y - pb.y) / (2.0 * hu) };
+        if (std::abs(chord.x) < 1e-12 && std::abs(chord.y) < 1e-12)
+            chord = t0;
+        t0 = chord;                 // +x axis (already scaled to the chord)
+        n0 = Perp(Norm(chord));     // unit left normal (height preserved)
+    }
     const DVec2 at{ p0.x + n0.x * off, p0.y + n0.y * off };
-    // Frame axes: local +x → tangent, local +y → left normal, then object spin.
+    // Frame axes: local +x → tangent (or chord), local +y → left normal, then
+    // the object's own spin.
     const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
     double ux = t0.x * ca - n0.x * sa, uy = t0.y * ca - n0.y * sa;   // +x axis
     double vx = t0.x * sa + n0.x * ca, vy = t0.y * sa + n0.y * ca;   // +y axis
@@ -836,19 +1244,6 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
     if (!BendsAlongCurve(obj.bend) || obj.shape == MarkShape::Instance)
         return false;
     const bool follow = obj.bend == MarkBend::Follow;
-    ArcFrame af;
-    af.Build(spine);
-    if (!af.Valid()) return false;
-    const double total = af.total;
-    const double d0 = std::clamp(
-        (mark.t < 0 ? 0 : mark.t > 1 ? 1 : mark.t) * total
-            + obj.AlongUnits(strokeWidth), 0.0, total);
-    const MarkSide sd = obj.sideInherit ? mark.side : obj.side;
-    const double soff = obj.sideInherit ? mark.OffsetUnits(strokeWidth)
-                                        : obj.SideOffsetUnits(strokeWidth);
-    double off = 0.0;
-    if (sd == MarkSide::Left)  off =  soff;
-    if (sd == MarkSide::Right) off = -soff;
     // Sampling density follows the CALLER's tolerance: the stroker passes the
     // zoom tier's tolerance (Fusion rings re-tessellate per tier → vector-
     // smooth at any zoom); the Scene passes kMarkRingTolerance for its
@@ -858,36 +1253,9 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
     const double hu = std::max(1e-6, obj.SizeUnits(strokeWidth));
     const double hv = obj.shape == MarkShape::Rectangle
                           ? std::max(1e-6, obj.WidthUnits(strokeWidth)) : hu;
-
-    // Place a LOCAL shape point (u along the tangent, v across it): the point's
-    // ALONG coordinate `u` maps to a real arc-length step d0+u on the curve, and
-    // its ACROSS coordinate `v` steps along the LOCAL (smooth) normal at THAT
-    // arc — so the whole outline bends WITH the line. The object's own rotation
-    // is applied in local (u,v) space first. A soft clamp keeps the concave side
-    // from folding past the curvature centre (which would invert triangles).
-    const double ca = std::cos(obj.rotation), sa = std::sin(obj.rotation);
-    auto place = [&](double u, double v) -> DVec2 {
-        const double ur = u * ca - v * sa, vr = u * sa + v * ca;
-        const double du = std::clamp(d0 + ur, 0.0, total);
-        DVec2 pu; V2 tu;
-        af.Sample(du, pu, tu);
-        const V2 nu = Perp(tu);
-        double vv = vr + off;
-        // Local curvature (central difference on the SMOOTH tangents) → clamp
-        // the across-offset to just inside the curvature radius.
-        const double ds = std::max(1e-4, hu * 0.5);
-        DVec2 pA, pB; V2 tA, tB;
-        af.Sample(std::min(total, du + ds), pA, tA);
-        af.Sample(std::max(0.0,   du - ds), pB, tB);
-        const double dTheta = std::atan2(Cross(tB, tA), Dot(tB, tA));
-        const double curv = dTheta / (2.0 * ds);
-        if (std::abs(curv) > 1e-9) {
-            const double R = 1.0 / curv;
-            if (R > 0.0 && vv >  0.95 * R) vv =  0.95 * R;
-            if (R < 0.0 && vv <  0.95 * R) vv =  0.95 * R;
-        }
-        return { pu.x + nu.x * vv, pu.y + nu.y * vv };
-    };
+    CurvePlacer cp;
+    if (!cp.Init(spine, mark, obj, strokeWidth, hu)) return false;
+    auto place = [&](double u, double v) { return cp.Place(u, v); };
     // A shape EDGE from local (u0,v0) to (u1,v1). FOLLOW resamples it (density
     // from the tolerance, hard-capped) so its curved image stays smooth; BEND
     // keeps it a STRAIGHT segment between the two (already curve-placed)
@@ -899,7 +1267,9 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
         if (follow) {
             const double len = std::hypot(u1 - u0, v1 - v0);
             n = (int)std::ceil(len / step);
-            n = n < 1 ? 1 : (n > 384 ? 384 : n);
+            // Cap tight: the ring is ear-clipped O(n²) — and re-built EVERY
+            // FRAME while a Subtract ghost live-moves.
+            n = n < 1 ? 1 : (n > 256 ? 256 : n);
         }
         for (int i = 0; i < n; ++i) {
             const double f = (double)i / (double)n;
@@ -925,6 +1295,22 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
         edge( hu,  hv, -hu,  hv);   // top longitudinal
         edge(-hu,  hv, -hu, -hv);   // left transverse
         edge(-hu, -hv,  hu, -hv);   // bottom longitudinal
+    } else if (obj.shape == MarkShape::Triangle) {
+        const double hw2 = std::max(1e-6, obj.WidthUnits(strokeWidth));
+        edge(-hu, -hw2,  hu, -hw2);  // base (along the line)
+        edge( hu, -hw2,  0,  hw2);   // right slope
+        edge( 0,  hw2, -hu, -hw2);   // left slope
+    } else if (obj.shape == MarkShape::HalfCircle) {
+        // Dome sampled through the curve frame + the flat chord back.
+        const double err = std::min(tol / hu, 0.999);
+        int steps = (int)std::ceil(3.14159265358979 /
+                                   (2.0 * std::acos(1.0 - err)));
+        steps = steps < 12 ? 12 : (steps > 256 ? 256 : steps);
+        for (int i = 0; i <= steps; ++i) {
+            const double a = 3.14159265358979 * (double)i / (double)steps;
+            outRing.push_back(place(-std::cos(a) * hu, std::sin(a) * hu));
+        }
+        // chord hu → −hu (the next-first point closes the ring)
     } else {   // Diamond
         edge( hu, 0, 0,  hu);
         edge( 0, hu, -hu, 0);
@@ -932,6 +1318,203 @@ bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
         edge( 0, -hu, hu, 0);
     }
     return outRing.size() >= 3;
+}
+
+PathData MarkBendPath(const Polyline& spine, const StrokeMark& mark,
+                      const MarkObject& obj, double strokeWidth,
+                      const PathData& target, double targetScale,
+                      double tolerance) {
+    PathData out;
+    if (!BendsAlongCurve(obj.bend) || target.Empty()) return out;
+    const bool follow = obj.bend == MarkBend::Follow;
+    const double k = std::max(1e-6, targetScale);
+    const double tol = std::max(tolerance > 0.0 ? tolerance : 0.25, 1e-4);
+    // Flatten in TARGET-local units at a tolerance that lands at `tol` AFTER
+    // the scale, then measure the scaled extent (the Bend-shear span and the
+    // curvature-probe step derive from it).
+    const auto flat = Flatten(target, tol / k);
+    double ext = 1e-3;
+    for (const Polyline& pl : flat)
+        for (const DVec2& p : pl.points)
+            ext = std::max(ext, std::hypot(p.x, p.y) * k);
+    CurvePlacer cp;
+    if (!cp.Init(spine, mark, obj, strokeWidth, ext)) return out;
+    const double step = std::max(4.0 * tol, 1e-3);
+    for (const Polyline& pl : flat) {
+        const std::size_t n = pl.points.size();
+        if (n < 2) continue;
+        Subpath sp;
+        sp.closed = pl.closed;
+        const std::size_t sc = pl.closed ? n : n - 1;
+        for (std::size_t i = 0; i < sc && sp.anchors.size() <= 4096; ++i) {
+            const DVec2 a{ pl.points[i].x * k, pl.points[i].y * k };
+            const DVec2 b{ pl.points[(i + 1) % n].x * k,
+                           pl.points[(i + 1) % n].y * k };
+            int steps = 1;
+            if (follow) {   // resample straight runs so their image curves
+                const double len = std::hypot(b.x - a.x, b.y - a.y);
+                steps = (int)std::ceil(len / step);
+                steps = steps < 1 ? 1 : (steps > 128 ? 128 : steps);
+            }
+            for (int s2 = 0; s2 < steps; ++s2) {
+                const double f = (double)s2 / (double)steps;
+                Anchor an;
+                an.pos = cp.Place(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f);
+                sp.anchors.push_back(an);
+            }
+        }
+        if (!pl.closed) {   // the final endpoint of an open subpath
+            Anchor an;
+            an.pos = cp.Place(pl.points[n - 1].x * k, pl.points[n - 1].y * k);
+            sp.anchors.push_back(an);
+        }
+        if (sp.anchors.size() >= 2) out.subpaths.push_back(std::move(sp));
+    }
+    return out;
+}
+
+std::vector<RepeatPlacement> RepeatObjectPlacements(const Polyline& spine,
+                                                    const Stroke& stroke,
+                                                    const StrokeRepeat& rep,
+                                                    int sub) {
+    std::vector<RepeatPlacement> out;
+    if (!rep.enabled) return out;
+    ArcFrame af;
+    af.Build(spine);
+    if (!af.Valid()) return out;
+    const double total = af.total;
+    const double w = stroke.width;
+    const double hu = std::max(1e-6, rep.SizeUnits(w));
+    const int    gN = rep.groupCount < 1 ? 1 : rep.groupCount;
+    const double gHalf = rep.GroupHalfExtent(w);
+
+    // Base pitch — group CENTRE-to-centre distance.
+    double P;
+    switch (rep.distribute) {
+    case RepeatDistribute::Gap:     P = rep.gap + gHalf * 2.0;               break;
+    case RepeatDistribute::Count:   P = total / std::max(1, rep.count);      break;
+    case RepeatDistribute::Density: P = 100.0 / std::max(1e-3, rep.density); break;
+    case RepeatDistribute::Pitch:
+    default:                        P = rep.pitch;                           break;
+    }
+    P = std::max(P, 1e-3);
+    // Trim the usable range at both ends.
+    const double lo = std::clamp(rep.startTrim, 0.0, total);
+    const double hi = std::clamp(total - rep.endTrim, lo, total);
+    const bool stretch = rep.fit == DashFit::ScaleBoth;  // else keep exact P
+
+    // Repeat-anchor marks of THIS subpath → pinned group centres. A Between
+    // anchor pins the MIDDLE of the space between two groups (one centre at
+    // anchor ± P/2). A mark's `repeatGap` (> 0) overrides the pitch of the
+    // segment that STARTS at it.
+    struct Cst { double at; bool between; double pitch; };
+    std::vector<Cst> csts;
+    for (const StrokeMark& m : stroke.marks) {
+        if (m.sub != sub || m.repeatAnchor == MarkRepeatAnchor::None) continue;
+        const double tc = m.t < 0 ? 0 : m.t > 1 ? 1 : m.t;
+        csts.push_back({ tc * total,
+                         m.repeatAnchor == MarkRepeatAnchor::Between,
+                         m.repeatGap > 1e-9 ? m.repeatGap : 0.0 });
+    }
+    std::sort(csts.begin(), csts.end(),
+              [](const Cst& a, const Cst& b) { return a.at < b.at; });
+
+    std::vector<double> centres;
+    constexpr std::size_t kMaxPlacements = 20000;   // runaway-density guard
+    auto push = [&](double c) {
+        if (c >= lo - 1e-9 && c <= hi + 1e-9)
+            centres.push_back(std::clamp(c, lo, hi));
+    };
+    if (csts.empty()) {
+        for (double c = lo + rep.phase + P * 0.5;
+             c <= hi + 1e-9 && centres.size() < kMaxPlacements; c += P)
+            push(c);
+    } else {
+        // Piecewise: one centre pinned per anchor, then steps filling each
+        // segment — stretched to a whole count (ScaleBoth) or kept at the
+        // exact pitch (the other fits). The pitch of a segment is the pin's
+        // repeatGap override when set, else the run pitch.
+        std::vector<double> pins;
+        for (const Cst& c : csts)
+            pins.push_back(c.between ? c.at - P * 0.5 : c.at);
+        for (double c = pins.front() - P;
+             c >= lo - 1e-9 && centres.size() < kMaxPlacements; c -= P)
+            push(c);
+        for (std::size_t i = 0; i < pins.size(); ++i) {
+            push(pins[i]);
+            const double segP = csts[i].pitch > 0.0 ? csts[i].pitch : P;
+            const double segFrom = pins[i] + (csts[i].between ? segP : 0.0);
+            if (csts[i].between) push(segFrom);   // the twin across the gap
+            if (i + 1 < pins.size()) {
+                const double L = pins[i + 1] - segFrom;
+                if (L > segP * 0.5) {
+                    if (stretch) {
+                        const long nSeg = std::max(1l, std::lround(L / segP));
+                        const double Pp = L / (double)nSeg;
+                        for (long j2 = 1; j2 < nSeg &&
+                                          centres.size() < kMaxPlacements; ++j2)
+                            push(segFrom + Pp * (double)j2);
+                    } else {
+                        for (double c = segFrom + segP;
+                             c < pins[i + 1] - segP * 0.5 &&
+                             centres.size() < kMaxPlacements; c += segP)
+                            push(c);
+                    }
+                }
+            }
+        }
+        const double lastP = csts.back().pitch > 0.0 ? csts.back().pitch : P;
+        for (double c = pins.back() + (csts.back().between ? lastP : 0.0) + lastP;
+             c <= hi + 1e-9 && centres.size() < kMaxPlacements; c += lastP)
+            push(c);
+        std::sort(centres.begin(), centres.end());
+    }
+
+    // Across-the-line offset per placement. Inside/Outside: interior winding
+    // on a CLOSED subpath, the local curvature side on an open one.
+    const double offU = rep.SideOffsetUnits(w);
+    const bool closed = spine.closed;
+    const double area = closed ? SignedArea(spine.points) : 0.0;
+    // The SIDE direction sign at `at` (+1 = left normal, −1 = right, 0 =
+    // centred) — separate from the offset MAGNITUDE, so a Line at a 0 % offset
+    // still knows which way to reach.
+    auto dirAt = [&](double at) -> double {
+        switch (rep.side) {
+        case RepeatSide::Left:  return  1.0;
+        case RepeatSide::Right: return -1.0;
+        case RepeatSide::Inside:
+        case RepeatSide::Outside: {
+            double s;
+            if (closed) {
+                s = area > 0.0 ? 1.0 : -1.0;   // interior = +normal when CCW
+            } else {
+                const double ds = std::max(1e-3, hu);
+                DVec2 pA, pB; V2 tA, tB;
+                af.Sample(std::min(total, at + ds), pA, tA);
+                af.Sample(std::max(0.0,   at - ds), pB, tB);
+                const double dTheta = std::atan2(Cross(tB, tA), Dot(tB, tA));
+                s = dTheta > 1e-6 ? 1.0 : dTheta < -1e-6 ? -1.0 : 1.0;
+            }
+            return rep.side == RepeatSide::Inside ? s : -s;
+        }
+        case RepeatSide::Center:
+        default: return 0.0;
+        }
+    };
+
+    // Groups → objects (each object clamped to the trimmed range).
+    out.reserve(std::min(centres.size() * (std::size_t)gN, kMaxPlacements));
+    for (double c : centres) {
+        for (int j2 = 0; j2 < gN; ++j2) {
+            const double at =
+                c + ((double)j2 - (double)(gN - 1) * 0.5) * rep.groupPitch;
+            if (at < lo - 1e-9 || at > hi + 1e-9) continue;
+            const double d = dirAt(at);
+            out.push_back({ std::clamp(at, lo, hi), d * offU, d });
+            if (out.size() >= kMaxPlacements) return out;
+        }
+    }
+    return out;
 }
 
 } // namespace Ink::geom

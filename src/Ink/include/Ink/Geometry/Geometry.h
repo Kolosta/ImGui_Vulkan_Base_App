@@ -64,10 +64,11 @@ inline constexpr double kMarkPlaceTolerance = 0.01;
 
 // The fixed sampling tolerance of a DERIVED Bend/Follow ring built by the
 // Scene for a Blend/Subtract object (the Scene has no zoom tier; the ring is
-// built once per scene compile). Fusion rings are built per tier with the
-// tier's own tolerance instead — vector-exact at any zoom. A documented limit:
-// a Blend/Cut ring reads faceted only at extreme zoom.
-inline constexpr double kMarkRingTolerance = 0.002;
+// built once per scene compile — and PER FRAME while a mark ghost live-moves,
+// so it must stay cheap to build AND to ear-clip). Fusion rings are built per
+// tier with the tier's own tolerance instead — vector-exact at any zoom. A
+// documented limit: a Blend/Cut ring reads faceted only at extreme zoom.
+inline constexpr double kMarkRingTolerance = 0.005;
 
 // The node-local, ORIGIN-CENTRED PARAMETRIC PathData of a primitive mark object
 // (Circle → Ellipse, Rectangle → Rect, Diamond → Polygon) at its resolved size
@@ -75,6 +76,36 @@ inline constexpr double kMarkRingTolerance = 0.002;
 // re-tessellated per zoom tier by the GeometryCache — vector-exact at any zoom.
 // Empty for an Instance (routed as a node instead).
 PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth);
+
+// The LINE shape (a segment ACROSS the stroke), built RELATIVE to a frame
+// whose origin is the placement point (already offset across by `offset`) and
+// whose +y is the left normal. `halfLen` = half the line length, `halfThick`
+// = half its thickness, `offset` = the resolved across-offset, `dir` = the
+// SIDE direction sign (+1 left / −1 right; used even when |offset| is 0 so a
+// 0 % Line still reaches to the right side of the line). `centred` straddles
+// the stroke; otherwise the line STARTS at the offset point and reaches out by
+// the full length in `dir`. `join` extends the near end back to the stroke.
+// (The far-side CLIP is applied by the caller in node space along the path.)
+PathData MarkLineShape(double halfLen, double halfThick, double offset,
+                       double dir, bool centred, bool join);
+
+// Clip a CONVEX polygon (node-local points) by a HALF-PLANE: keep the vertices
+// on the side `keepNormal` points to, measured from the line through `lineP`.
+// A single-plane Sutherland–Hodgman pass — used to cut a repeat Line's
+// overflow at the path (the far side of the stroke).
+std::vector<DVec2> ClipConvexHalfPlane(const std::vector<DVec2>& poly,
+                                       DVec2 lineP, DVec2 keepNormal);
+
+// Clip a polygon (node-local) so nothing crosses to the FAR side of the path —
+// the cut follows the path CURVE exactly (vectorial), not a straight tangent.
+// `path` is the flattened spine (node-local); `atArc` the placement's arc; the
+// FAR side is `farSign` × the left normal (farSign = −dir). A far-side region is
+// built from the real path over a local span and boolean-subtracted from the
+// polygon; returns the resulting rings (possibly several). `ext` bounds the
+// region (a few line extents). Falls back to the input on a degenerate path.
+std::vector<std::vector<DVec2>>
+ClipPolygonToPathSide(const std::vector<DVec2>& poly, const Polyline& path,
+                      double atArc, double farSign, double ext);
 
 // The node-local placement matrix of a mark on the (aligned) `spine` of subpath
 // `mark.sub`: translate to the mark point (honouring side + resolved offset),
@@ -103,6 +134,38 @@ bool BendsAlongCurve(MarkBend b);
 bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
                        const MarkObject& obj, double strokeWidth,
                        double tolerance, std::vector<DVec2>& outRing);
+
+// Bend/Follow an ARBITRARY path (an INSTANCE mark object's target) through
+// the same smooth curve frame the primitive rings use: every flattened point
+// (scaled by `targetScale`, spun by the object's rotation) maps u→arc step,
+// v→local normal, so the geometry truly bends with the line — perpendicular
+// bounding sides on Bend, fully curved edges on Follow (which additionally
+// resamples straight segments). Returns the bent path in node-local space
+// (closed flags preserved); empty for a Hard object or a degenerate spine.
+PathData MarkBendPath(const Polyline& spine, const StrokeMark& mark,
+                      const MarkObject& obj, double strokeWidth,
+                      const PathData& target, double targetScale,
+                      double tolerance);
+
+// One placement of a repeat run: the arc position of the OBJECT CENTRE, its
+// resolved across-the-line offset (node-local units, + = left normal), and the
+// SIDE direction sign (+1 = left normal, −1 = right, 0 = centred). `dir` is
+// non-zero even when the offset MAGNITUDE is 0 — a Line placement needs to
+// know which way to reach out at a 0 % offset.
+struct RepeatPlacement {
+    double at = 0.0;
+    double offset = 0.0;
+    double dir = 0.0;
+};
+// Every object placement of `rep` along `spine` (subpath `sub` of the
+// stroke): distribution (pitch / gap / count / density) + phase + groups,
+// Inside/Outside resolved per placement (winding on closed subpaths, local
+// curvature on open ones), and the stroke's Object/Between repeat-anchor
+// marks re-phasing the run piecewise (whole steps stretched between anchors).
+std::vector<RepeatPlacement> RepeatObjectPlacements(const Polyline& spine,
+                                                    const Stroke& stroke,
+                                                    const StrokeRepeat& rep,
+                                                    int sub);
 
 // AABB of the flattened points alone (style-independent; the caller inflates
 // by stroke bands — used by view culling).

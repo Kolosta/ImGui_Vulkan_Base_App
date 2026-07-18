@@ -109,12 +109,19 @@ enum class MarkSide : std::uint8_t { Center = 0, Left = 1, Right = 2 };
 // `Instance` stamps an existing node's geometry; `Gap` cuts the LINE open over
 // a length (not a filled shape) with a chosen end cap.
 enum class MarkShape : std::uint8_t {
-    Circle    = 0,
-    Rectangle = 1,
-    Diamond   = 2,
-    Instance  = 3,   // instance of `nodeRef`
-    Gap       = 4,   // an opening cut in the line (length = size)
+    Circle     = 0,
+    Rectangle  = 1,
+    Diamond    = 2,
+    Instance   = 3,   // instance of `nodeRef`
+    Gap        = 4,   // an opening cut in the line (length = size)
+    Triangle   = 5,   // isoceles, apex on +y (across the line)
+    HalfCircle = 6,   // flat side ON the line, dome on +y
+    Line       = 7,   // a segment ACROSS the line: `size` = half-length,
+                      // `width` = half-thickness. Unlike the others, in a
+                      // side mode its START (not its centre) sits at the
+                      // offset — it reaches OUT from there (see StrokeRepeat).
 };
+inline constexpr std::uint8_t kMarkShapeMax = 7;
 
 // The end shape of a Gap opening (mirrors the stroke caps).
 enum class GapCap : std::uint8_t { Butt = 0, Round = 1, Square = 2 };
@@ -130,18 +137,25 @@ enum class GapCap : std::uint8_t { Butt = 0, Round = 1, Square = 2 };
 enum class MarkObjectMode : std::uint8_t { Fusion = 0, Blend = 1, Subtract = 2 };
 
 // How the object's geometry relates to the curve:
-//   Hard   — a rigid shape merely rotated to the tangent.
+//   Hard   — a rigid shape merely rotated to the tangent (at the mark point).
 //   Bend   — the shape is skewed along the tangent frame (a shear that
 //            approximates the local slope).
 //   Follow — the shape's outline is RESAMPLED along the curve so it truly
 //            bends with the line (a rectangle's long edges curve).
-enum class MarkBend : std::uint8_t { Hard = 0, Bend = 1, Follow = 2 };
+//   Chord  — a RIGID shape placed on the CHORD between the two curve points
+//            its transverse ends cross: those crossing midpoints sit exactly
+//            on the stroke, the shape spanning straight between them (its
+//            centre floats to the chord midpoint). The natural placement for
+//            a diamond, whose two tangent angles then land on the line.
+enum class MarkBend : std::uint8_t { Hard = 0, Bend = 1, Follow = 2, Chord = 3 };
+inline constexpr std::uint8_t kMarkBendMax = 3;
 
-// The default bend for a shape: Rectangle/Diamond follow the curve, Circle and
-// Instance are rigid.
+// The default bend for a shape: Rectangle follows the curve, Diamond spans as
+// a chord (its angles on the line), Circle and Instance are rigid.
 inline MarkBend DefaultBendFor(MarkShape s) {
-    return (s == MarkShape::Rectangle || s == MarkShape::Diamond)
-               ? MarkBend::Follow : MarkBend::Hard;
+    if (s == MarkShape::Rectangle)  return MarkBend::Follow;
+    if (s == MarkShape::Diamond)    return MarkBend::Chord;
+    return MarkBend::Hard;
 }
 
 struct MarkObject {
@@ -231,6 +245,11 @@ struct MarkObject {
     }
 };
 
+// Repeat anchoring of a mark: force an OBJECT/GROUP centre of every repeat
+// run (StrokeRepeat) onto this mark (Object), or the middle of the space
+// BETWEEN two groups (Between). None = the run ignores this mark.
+enum class MarkRepeatAnchor : std::uint8_t { None = 0, Object = 1, Between = 2 };
+
 struct StrokeMark {
     std::int32_t sub  = 0;    // which FLATTENED subpath the mark lives on
     double       t    = 0.5;  // arc-length position along it, in [0,1]
@@ -243,18 +262,32 @@ struct StrokeMark {
     // If ≥ 0 the mark is PINNED to that control point of its subpath (t is
     // recomputed from the point as the curve is edited); −1 = free at `t`.
     std::int32_t nodeAnchor = -1;
+    // Forced size (doc units) of the dash/gap this mark centres when it
+    // re-phases (phase Dash/Gap): the centred element takes THIS length
+    // instead of the pattern's own — a bigger/smaller feature at the mark.
+    // 0 = the pattern's size.
+    double anchorSize = 0.0;
+    // Repeat-run anchoring (see MarkRepeatAnchor / StrokeRepeat).
+    MarkRepeatAnchor repeatAnchor = MarkRepeatAnchor::None;
+    // The forced group centre-to-centre SPACING (doc units) a repeat run takes
+    // at THIS mark — the "Anchor Size" equivalent for repeats: the gap before
+    // the next repeat object/group after this point. 0 = the run's own pitch.
+    double repeatGap = 0.0;
     // The objects stamped at this mark (may be EMPTY — a pure dash/gap
     // re-phaser). SVG-marker shapes / node instances.
     std::vector<MarkObject> objects;
 
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[3] = { (std::uint8_t)phase, (std::uint8_t)side,
-                                         (std::uint8_t)(offsetPercent ? 1 : 0) };
+        const std::uint8_t packed[4] = { (std::uint8_t)phase, (std::uint8_t)side,
+                                         (std::uint8_t)(offsetPercent ? 1 : 0),
+                                         (std::uint8_t)repeatAnchor };
         h = HashBytes(packed, sizeof packed, h);
         h = HashBytes(&sub, sizeof sub, h);
         h = HashBytes(&nodeAnchor, sizeof nodeAnchor, h);
         h = HashDouble(t, h);
         h = HashDouble(offset, h);
+        h = HashDouble(anchorSize, h);
+        h = HashDouble(repeatGap, h);
         for (const MarkObject& o : objects) h = o.Hash(h);
         return h;
     }
@@ -263,6 +296,119 @@ struct StrokeMark {
     // The offset resolved to node-local doc-units for a given stroke width.
     double OffsetUnits(double strokeWidth) const {
         return offsetPercent ? offset * 0.01 * strokeWidth : offset;
+    }
+};
+
+// How a dash re-phasing with SEVERAL anchors stretches the pattern between
+// two consecutive anchors so a whole number of runs fits: scale dashes and
+// gaps together, keep the gaps and stretch the dashes, or the reverse. Also
+// reused by StrokeRepeat for how its pitch stretches between repeat anchors.
+enum class DashFit : std::uint8_t { ScaleBoth = 0, ScaleDash = 1, ScaleGap = 2 };
+
+// ── Stroke repeats (the IOF fence-tick family) — a REPEATED OBJECT RUN along
+// the stroke, part of the stroke STYLE (so any stroke reuses it and a new
+// object previews it while being drawn). GROUPS of `groupCount` primitive
+// objects (intra-group centre-to-centre `groupPitch`) are stamped along the
+// line by the chosen distribution; each object is a HARD primitive (no
+// bend/follow), rigidly inclined by `rotation` about its point (the IOF 60°
+// fence ticks). Marks with a repeat anchor re-phase the run (an object/group
+// or a between-groups gap lands centred on the mark; the pitch stretches
+// piecewise between anchors so whole steps fit).
+
+// Which side of the line a repeated object sits on. Center straddles the
+// line; Left/Right are the walk-direction sides (open paths; Left = +normal,
+// the left hand walking start→end). Inside/Outside resolve per placement:
+// against the shape's INTERIOR on a closed subpath (winding), against the
+// LOCAL CURVATURE side on an open one (falls back to Left on straights).
+enum class RepeatSide : std::uint8_t {
+    Center = 0, Left = 1, Right = 2, Inside = 3, Outside = 4,
+};
+
+// How the run's group centres are laid out along the line.
+enum class RepeatDistribute : std::uint8_t {
+    Pitch   = 0,   // fixed group centre-to-centre distance (doc units)
+    Gap     = 1,   // fixed EDGE-to-edge distance between groups (doc units)
+    Count   = 2,   // exactly N groups spread over the line
+    Density = 3,   // groups per 100 doc units
+};
+
+struct StrokeRepeat {
+    bool            enabled = true;
+    MarkShape       shape   = MarkShape::Rectangle;   // primitives only
+    MarkObjectMode  mode    = MarkObjectMode::Fusion; // fusion / blend / cut
+    BlendMode       blend   = BlendMode::Normal;      // Blend mode only
+    // Like MarkObject: size = half-extent along the line (radius); width = a
+    // rectangle's half-height across it; % of the stroke width or doc units.
+    double  size  = 100.0;
+    double  width = 25.0;
+    bool    sizePercent = true;
+    double  rotation = 0.0;        // inclination about each point (radians)
+    RepeatSide side = RepeatSide::Center;
+    double  sideOffset = 50.0;     // % of the stroke width (or doc units)
+    bool    offsetPercent = true;
+    RepeatDistribute distribute = RepeatDistribute::Pitch;
+    double  pitch   = 8.0;         // Pitch: group centre-to-centre (doc units)
+    double  gap     = 4.0;         // Gap: edge-to-edge between groups
+    int     count   = 10;          // Count: groups over the line
+    double  density = 12.0;        // Density: groups per 100 doc units
+    double  phase   = 0.0;         // start offset along the line (doc units)
+    int     groupCount = 1;        // objects per group
+    double  groupPitch = 2.0;      // object centre-to-centre inside a group
+    double  startTrim = 0.0;       // skip this arc length at the start …
+    double  endTrim   = 0.0;       // … and at the end
+    DashFit fit = DashFit::ScaleBoth;   // how the pitch stretches between two
+                                        // repeat anchors (ScaleBoth stretches
+                                        // the pitch; the others keep it fixed)
+    // Line shape only: draw a connector from the offset start back to the path
+    // (`lineJoin`), and/or clip whatever crosses to the far side of the path
+    // (`lineClip`, a documented straight-line-at-the-path approximation).
+    bool    lineJoin = false;
+    bool    lineClip = false;
+    Color   color{ 0, 0, 0, 1 };   // recolour (linear straight)
+    bool    useStrokeColor = true;
+    float   opacity = 1.0f;        // paint alpha / Subtract erase strength
+
+    // Geometry-affecting fields only (color/opacity are paint-level).
+    std::uint64_t Hash(std::uint64_t h) const {
+        const std::uint8_t packed[7] = {
+            (std::uint8_t)(enabled ? 1 : 0), (std::uint8_t)shape,
+            (std::uint8_t)mode, (std::uint8_t)blend,
+            (std::uint8_t)(sizePercent ? 1 : 0), (std::uint8_t)side,
+            (std::uint8_t)distribute };
+        h = HashBytes(packed, sizeof packed, h);
+        const std::uint8_t p2[2] = { (std::uint8_t)(offsetPercent ? 1 : 0),
+                                     (std::uint8_t)(useStrokeColor ? 1 : 0) };
+        h = HashBytes(p2, sizeof p2, h);
+        h = HashDouble(size, h);   h = HashDouble(width, h);
+        h = HashDouble(rotation, h);
+        h = HashDouble(sideOffset, h);
+        h = HashDouble(pitch, h);  h = HashDouble(gap, h);
+        h = HashBytes(&count, sizeof count, h);
+        h = HashDouble(density, h);
+        h = HashDouble(phase, h);
+        h = HashBytes(&groupCount, sizeof groupCount, h);
+        h = HashDouble(groupPitch, h);
+        h = HashDouble(startTrim, h);  h = HashDouble(endTrim, h);
+        const std::uint8_t p3[3] = { (std::uint8_t)fit,
+                                     (std::uint8_t)(lineJoin ? 1 : 0),
+                                     (std::uint8_t)(lineClip ? 1 : 0) };
+        h = HashBytes(p3, sizeof p3, h);
+        return h;
+    }
+    double SizeUnits(double w) const {
+        return sizePercent ? size * 0.01 * w : size;
+    }
+    double WidthUnits(double w) const {
+        return sizePercent ? width * 0.01 * w : width;
+    }
+    double SideOffsetUnits(double w) const {
+        return offsetPercent ? sideOffset * 0.01 * w : sideOffset;
+    }
+    // The group's along-the-line half extent (centre of first object to
+    // centre of last, plus one object half-extent each side).
+    double GroupHalfExtent(double w) const {
+        const int n = groupCount < 1 ? 1 : groupCount;
+        return (double)(n - 1) * groupPitch * 0.5 + SizeUnits(w);
     }
 };
 
@@ -279,24 +425,30 @@ struct Stroke {
     // dash gets real caps (docs/Ink/GEOMETRY.md §2).
     std::vector<double> dashPattern;
     double              dashOffset = 0.0;
+    // Multi-anchor dash fitting priority (see DashFit).
+    DashFit             dashFit = DashFit::ScaleBoth;
     bool                enabled    = true;
     // Manual marks along the stroke (ticks/crossings/bridges/pylons + dash
     // anchors). Cuts and re-phasing are applied by the stroker.
     std::vector<StrokeMark> marks;
+    // Repeated object runs along the stroke (see StrokeRepeat).
+    std::vector<StrokeRepeat> repeats;
 
     // Geometry-affecting parameters only (paints excluded — a color edit must
     // NOT re-tessellate; docs/Ink/GEOMETRY.md §3).
     std::uint64_t GeometryHash() const {
         std::uint64_t h = 0x57120CEULL;
         h = HashDouble(width, h);
-        const std::uint8_t packed[4] = { (std::uint8_t)align, (std::uint8_t)cap,
+        const std::uint8_t packed[5] = { (std::uint8_t)align, (std::uint8_t)cap,
                                          (std::uint8_t)join,
-                                         (std::uint8_t)widthSpace };
+                                         (std::uint8_t)widthSpace,
+                                         (std::uint8_t)dashFit };
         h = HashBytes(packed, sizeof packed, h);
         h = HashDouble(miterLimit, h);
         for (double d : dashPattern) h = HashDouble(d, h);
         if (!dashPattern.empty()) h = HashDouble(dashOffset, h);
         for (const StrokeMark& m : marks) h = m.Hash(h);
+        for (const StrokeRepeat& r : repeats) h = r.Hash(h);
         return h;
     }
 };

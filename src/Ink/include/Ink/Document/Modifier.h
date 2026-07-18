@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Ink/Document/Types.h"
+#include "Ink/Document/Style.h"   // MarkShape / RepeatSide / MarkObjectMode
 #include <vector>
 
 namespace Ink {
@@ -32,8 +33,10 @@ enum class AlongAlign : std::uint8_t {
 // How copies distribute along the target path.
 enum class AlongDistribute : std::uint8_t {
     ByCount = 0,   // `alongCount` copies, evenly spaced by arc length
-    BySpacing = 1, // one copy every `spacing` arc-length units
+    BySpacing = 1, // one copy every `spacing` arc-length units (centre-to-centre)
     AtAnchors = 2, // one copy on every anchor point (Blender's "on points")
+    ByGap = 3,     // fixed EDGE-to-edge distance between groups (`alongGap`)
+    ByDensity = 4, // groups per 100 doc units (`alongDensity`)
 };
 
 // DEPRECATED (kept for .acu compatibility, no effect): the array layout now
@@ -94,17 +97,47 @@ struct Modifier {
 
     // ── AlongPath ────────────────────────────────────────────────────────────
     // The modifier lives on the PATH being followed (Blender's rule): it
-    // instances the MOTIF object along this node's own spine. Copies sit ON
-    // the path — the motif's translation is ignored, its rotation/scale still
-    // shape each copy — and render like pattern motifs: technically instanced
-    // (shared mesh, merged draws) and independent of the motif's visibility.
+    // distributes content along this node's own spine — either INSTANCES of
+    // the motif node (alongShape == Instance) or a PRIMITIVE shape (circle /
+    // rectangle / diamond / triangle / half-circle) stamped at each point.
+    // Copies sit ON the path (side/offset moves them across) — the motif's
+    // translation is ignored, its rotation/scale still shape each copy — and
+    // render technically instanced (shared mesh, merged draws), independent of
+    // the motif's visibility. Placement is HARD (no bend/follow), rigidly
+    // inclined by `alongRotation` on top of the tangent alignment. Objects
+    // come in GROUPS of `alongGroupCount` (intra-group centre-to-centre
+    // `alongGroupPitch`); the distribution + spacing apply between GROUP
+    // centres. Along modifiers ignore the stroke MARKS entirely (the
+    // stroke-style repeats are the mark-aware variant).
     NodeId          motifRef = kNullNode;  // node instanced along the spine
     AlongDistribute distribute = AlongDistribute::ByCount;
-    double          spacing = 50.0;        // arc-length step (BySpacing)
-    int             alongCount = 10;       // number of copies (ByCount)
+    double          spacing = 50.0;        // group centre-to-centre (BySpacing)
+    int             alongCount = 10;       // number of groups (ByCount)
     AlongAlign      align = AlongAlign::Tangent;
     double          startTrim = 0.0;       // skip this arc-length at the start
     double          endTrim   = 0.0;       // and at the end
+    // Content: Instance = the motif node; anything else = that primitive
+    // (half-extents in doc units, like a non-percent mark object).
+    MarkShape       alongShape = MarkShape::Instance;
+    double          alongSize  = 2.0;      // half-extent along the line
+    double          alongWidth = 1.0;      // rectangle/triangle half-height
+    double          alongRotation = 0.0;   // inclination (radians)
+    RepeatSide      alongSide = RepeatSide::Center;
+    double          alongSideOffset = 0.0; // across the line
+    bool            alongOffsetPercent = false;  // offset unit (% of size vs doc)
+    double          alongScale = 1.0;      // extra uniform scale of each copy
+    int             alongGroupCount = 1;   // objects per group
+    double          alongGroupPitch = 2.0; // centre-to-centre inside a group
+    double          alongPhase = 0.0;      // start offset along the line
+    double          alongGap = 4.0;        // ByGap: edge-to-edge between groups
+    double          alongDensity = 12.0;   // ByDensity: groups per 100 units
+    // How the content combines: Fusion reads as a plain ADD (own drawable);
+    // Blend composites with `alongBlend`; Subtract ERASES the node's own
+    // layer (the node isolates automatically).
+    MarkObjectMode  alongMode = MarkObjectMode::Fusion;
+    BlendMode       alongBlend = BlendMode::Normal;
+    Color           alongColor{ 0, 0, 0, 1 };   // primitive paint (linear)
+    float           alongOpacity = 1.0f;        // alpha / erase strength
 
     // ── Boolean ──────────────────────────────────────────────────────────────
     BooleanOp    op = BooleanOp::Union;

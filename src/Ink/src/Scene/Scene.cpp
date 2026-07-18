@@ -40,9 +40,17 @@ ScopeId Scene::OpenScopeIfNeeded(const Document& doc, const Node& group,
     // masks among the children make it composite too.
     const bool pathParent =
         group.kind == NodeKind::Path && !group.children.empty();
+    // A SUBTRACT along-path modifier erases within the node's OWN layer — the
+    // node must isolate or the erase would punch through everything below it.
+    bool cutModifier = false;
+    for (const Modifier& mm : group.modifiers)
+        if (mm.enabled && mm.kind == ModifierKind::AlongPath &&
+            mm.alongMode == MarkObjectMode::Subtract)
+            cutModifier = true;
     const bool composites = group.opacity < 0.999f ||
                             group.blend != BlendMode::Normal ||
-                            group.isolate || clip != kNullNode || pathParent;
+                            group.isolate || clip != kNullNode || pathParent ||
+                            cutModifier;
     if (!composites) return parent;
 
     CompositeScope s;
@@ -347,34 +355,184 @@ void Scene::EmitNode(const Document& doc, const Node& n,
             EmitContent(doc, n, world.Compose(local), nodeScope, instDepth, owner);
     }
 
-    // AlongPath modifiers ON A PATH instance a motif OBJECT along this node's
-    // own spine (Blender's rule: the modifier lives on the path, the object
-    // stays a plain, single object elsewhere). Copies render like pattern
-    // motifs: the motif's own translation is ignored (rotation/scale kept),
-    // its visibility is irrelevant, and the shared content hash keeps every
-    // copy in one instanced draw. Selection/bounds map to THIS node.
+    // AlongPath modifiers ON A PATH distribute content along this node's own
+    // spine (Blender's rule: the modifier lives on the path): motif-node
+    // INSTANCES (alongShape == Instance) or PRIMITIVE shapes, in GROUPS, on a
+    // chosen SIDE, rigidly inclined — the IOF fence-tick family as a
+    // modifier. Copies render technically instanced (shared mesh / parametric
+    // shape, merged draws). Selection/bounds map to THIS node. Marks are
+    // IGNORED here (the stroke-style repeats are the mark-aware variant).
     if (n.kind == NodeKind::Path && instDepth < kMaxInstanceDepth) {
         for (const Modifier& m : n.modifiers) {
             if (!m.enabled || m.kind != ModifierKind::AlongPath) continue;
-            const Node* motif = doc.Find(m.motifRef);
-            if (!motif || motif == &n || n.path.Empty()) continue;
-            std::vector<DVec2>  pos;
-            std::vector<double> ang;
-            SampleAlongSpine(n.path, m, pos, ang);
-            Transform2D rsOnly = motif->transform;
-            rsOnly.tx = rsOnly.ty = 0.0;
-            const DMat23 rs = rsOnly.Matrix();
-            for (std::size_t i = 0; i < pos.size(); ++i) {
-                DMat23 place = DMat23::Translation(pos[i].x, pos[i].y);
-                if (m.align == AlongAlign::Tangent) {
-                    const double c = std::cos(ang[i]), sn = std::sin(ang[i]);
-                    DMat23 rot;
-                    rot.m[0] = c; rot.m[1] = -sn; rot.m[3] = sn; rot.m[4] = c;
-                    place = place.Compose(rot);
+            if (n.path.Empty()) continue;
+            const bool primitive = m.alongShape != MarkShape::Instance;
+            const Node* motif = primitive ? nullptr : doc.Find(m.motifRef);
+            if (!primitive && (!motif || motif == &n)) continue;
+
+            // Placements: AtAnchors keeps the legacy per-anchor sampling;
+            // every other distribution routes through the shared repeat
+            // engine (groups, gap/density modes, Inside/Outside sides).
+            struct Sample { DVec2 p; double ang; double offset; };
+            std::vector<Sample> samples;
+            if (m.distribute == AlongDistribute::AtAnchors) {
+                std::vector<DVec2>  pos;
+                std::vector<double> ang;
+                SampleAlongSpine(n.path, m, pos, ang);
+                for (std::size_t i = 0; i < pos.size(); ++i) {
+                    double off = m.alongSideOffset;
+                    if (m.alongSide == RepeatSide::Center) off = 0.0;
+                    else if (m.alongSide == RepeatSide::Right ||
+                             m.alongSide == RepeatSide::Outside) off = -off;
+                    samples.push_back({ pos[i], ang[i], off });
                 }
-                EmitContent(doc, *motif, world.Compose(place).Compose(rs),
-                            nodeScope, instDepth + 1,
-                            owner != kNullNode ? owner : n.id);
+            } else {
+                Stroke synth;                    // resolves nothing (% unused)
+                synth.width = 1.0;
+                StrokeRepeat rep;
+                rep.enabled = true;
+                rep.shape = primitive ? m.alongShape : MarkShape::Rectangle;
+                rep.sizePercent = false;
+                rep.size  = std::max(1e-3, m.alongSize);
+                rep.width = std::max(1e-3, m.alongWidth);
+                rep.rotation = 0.0;              // applied on the frame below
+                rep.side = m.alongSide;
+                rep.offsetPercent = false;
+                // Offset in % resolves against the shape size (there is no
+                // stroke width for a modifier).
+                rep.sideOffset = m.alongOffsetPercent
+                    ? m.alongSideOffset * 0.01 * std::max(1e-3, m.alongSize)
+                    : m.alongSideOffset;
+                switch (m.distribute) {
+                case AlongDistribute::BySpacing:
+                    rep.distribute = RepeatDistribute::Pitch;
+                    rep.pitch = std::max(1e-3, m.spacing);
+                    break;
+                case AlongDistribute::ByGap:
+                    rep.distribute = RepeatDistribute::Gap;
+                    rep.gap = std::max(0.0, m.alongGap);
+                    break;
+                case AlongDistribute::ByDensity:
+                    rep.distribute = RepeatDistribute::Density;
+                    rep.density = std::max(1e-3, m.alongDensity);
+                    break;
+                case AlongDistribute::ByCount:
+                default:
+                    rep.distribute = RepeatDistribute::Count;
+                    rep.count = std::max(1, m.alongCount);
+                    break;
+                }
+                rep.phase = m.alongPhase + m.startTrim;
+                rep.groupCount = std::max(1, m.alongGroupCount);
+                rep.groupPitch = m.alongGroupPitch;
+                const auto flatSp = geom::Flatten(n.path, 0.05);
+                for (int sub = 0; sub < (int)flatSp.size(); ++sub) {
+                    const auto& poly = flatSp[(std::size_t)sub];
+                    if (poly.points.size() < 2) continue;
+                    // Arc table (linear tangents suffice for HARD placement).
+                    const std::size_t nn = poly.points.size();
+                    const std::size_t sc2 = poly.closed ? nn : nn - 1;
+                    std::vector<double> arc(sc2 + 1, 0.0);
+                    for (std::size_t i2 = 0; i2 < sc2; ++i2) {
+                        const DVec2 a2 = poly.points[i2];
+                        const DVec2 b2 = poly.points[(i2 + 1) % nn];
+                        arc[i2 + 1] = arc[i2] + std::hypot(b2.x - a2.x,
+                                                           b2.y - a2.y);
+                    }
+                    const double subTotal2 = arc[sc2];
+                    if (subTotal2 < 1e-9) continue;
+                    auto sampleAt = [&](double s2, DVec2& p, double& a3) {
+                        s2 = std::clamp(s2, 0.0, subTotal2);
+                        std::size_t i2 = 1;
+                        while (i2 < arc.size() && arc[i2] < s2) ++i2;
+                        if (i2 >= arc.size()) i2 = arc.size() - 1;
+                        const double L = arc[i2] - arc[i2 - 1];
+                        const double t2 =
+                            L > 1e-9 ? (s2 - arc[i2 - 1]) / L : 0.0;
+                        const DVec2 a2 = poly.points[i2 - 1];
+                        const DVec2 b2 = poly.points[i2 % nn];
+                        p = { a2.x + (b2.x - a2.x) * t2,
+                              a2.y + (b2.y - a2.y) * t2 };
+                        a3 = std::atan2(b2.y - a2.y, b2.x - a2.x);
+                    };
+                    const double hiTrim = subTotal2 - m.endTrim;
+                    for (const geom::RepeatPlacement& rp :
+                         geom::RepeatObjectPlacements(poly, synth, rep, sub)) {
+                        if (rp.at < m.startTrim - 1e-9 ||
+                            rp.at > hiTrim + 1e-9) continue;
+                        Sample smp;
+                        sampleAt(rp.at, smp.p, smp.ang);
+                        smp.offset = rp.offset;
+                        samples.push_back(smp);
+                    }
+                }
+            }
+
+            // One shared parametric primitive per modifier (instanced draws).
+            const PathData* primShape = nullptr;
+            std::uint64_t primHash = 0;
+            if (primitive) {
+                MarkObject po;
+                po.shape = m.alongShape;
+                po.sizePercent = false;
+                po.size = std::max(1e-3, m.alongSize);
+                po.width = std::max(1e-3, m.alongWidth);
+                markShapes_.push_back(geom::MarkPrimitiveShape(po, 1.0));
+                if (markShapes_.back().Empty()) { markShapes_.pop_back(); continue; }
+                primShape = &markShapes_.back();
+                primHash = primShape->Hash();
+            }
+            Transform2D rsOnly;
+            if (motif) {
+                rsOnly = motif->transform;
+                rsOnly.tx = rsOnly.ty = 0.0;
+            }
+            // The motif's rotation/scale, then the modifier's extra uniform
+            // scale of every copy.
+            DMat23 rs = rsOnly.Matrix();
+            {
+                const double ms = std::max(1e-6, m.alongScale);
+                DMat23 sc; sc.m[0] = ms; sc.m[4] = ms;
+                rs = sc.Compose(rs);
+            }
+            for (const Sample& smp : samples) {
+                const double baseAng =
+                    m.align == AlongAlign::Tangent ? smp.ang : 0.0;
+                const double a2 = baseAng + m.alongRotation;
+                const double c = std::cos(a2), sn = std::sin(a2);
+                // Across-the-line offset along the local normal.
+                const double na = baseAng + 1.5707963267948966;
+                const DVec2 at{ smp.p.x + std::cos(na) * smp.offset,
+                                smp.p.y + std::sin(na) * smp.offset };
+                DMat23 place = DMat23::Translation(at.x, at.y);
+                DMat23 rot;
+                rot.m[0] = c; rot.m[1] = -sn; rot.m[3] = sn; rot.m[4] = c;
+                place = place.Compose(rot);
+                if (primitive) {
+                    Drawable d;
+                    d.node = n.id;
+                    d.owner = owner != kNullNode ? owner : n.id;
+                    d.world = world.Compose(place);
+                    d.path = primShape;
+                    d.pathHash = primHash;
+                    d.isStroke = false;
+                    d.rule = FillRule::NonZero;
+                    d.scope = nodeScope;
+                    if (m.alongMode == MarkObjectMode::Subtract) {
+                        d.color = Color{ 0, 0, 0,
+                            std::clamp(m.alongOpacity, 0.0f, 1.0f) };
+                        d.clip = ClipRole::EraseWrite;
+                        d.clipPinned = true;
+                    } else {
+                        d.color = m.alongColor;
+                        d.color.a *= std::clamp(m.alongOpacity, 0.0f, 1.0f);
+                    }
+                    drawables_.push_back(std::move(d));
+                } else {
+                    EmitContent(doc, *motif, world.Compose(place).Compose(rs),
+                                nodeScope, instDepth + 1,
+                                owner != kNullNode ? owner : n.id);
+                }
             }
         }
     }
@@ -686,6 +844,11 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
                      (o.shape == MarkShape::Instance ||
                       o.mode != MarkObjectMode::Fusion || !o.useStrokeColor)))
                     needsMarkEmit = true;
+        // A NON-Fusion repeat run emits its own drawables (Blend / Cut objects
+        // along the line); Fusion runs are baked into the stroke mesh.
+        for (const StrokeRepeat& rr : s.repeats)
+            if (rr.enabled && rr.mode != MarkObjectMode::Fusion)
+                needsMarkEmit = true;
         if (needsMarkEmit && !pinClip) {
             EmitStrokeMarks(doc, n, s, i, geo, world, scope, owner, 0);
             continue;
@@ -703,6 +866,34 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
 }
 
 namespace {
+
+// Point + unit tangent at arc length `d` along a flattened polyline.
+void SamplePolyArc(const geom::Polyline& pl, double d, DVec2& outP,
+                   DVec2& outT) {
+    const auto& pts = pl.points;
+    const std::size_t n = pts.size();
+    outP = n ? pts[0] : DVec2{ 0, 0 };
+    outT = { 1, 0 };
+    if (n < 2) return;
+    const std::size_t sc = pl.closed ? n : n - 1;
+    double acc = 0.0;
+    for (std::size_t i = 0; i < sc; ++i) {
+        const DVec2 a = pts[i], b = pts[(i + 1) % n];
+        const double L = std::hypot(b.x - a.x, b.y - a.y);
+        if (L < 1e-12) continue;
+        if (d <= acc + L) {
+            const double u = (d - acc) / L;
+            outP = { a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u };
+            outT = { (b.x - a.x) / L, (b.y - a.y) / L };
+            return;
+        }
+        acc += L;
+    }
+    const DVec2 a = pts[n - 2], b = pts[n - 1];
+    const double L = std::hypot(b.x - a.x, b.y - a.y);
+    outP = b;
+    if (L > 1e-12) outT = { (b.x - a.x) / L, (b.y - a.y) / L };
+}
 
 // A closed PathData from a ring of node-local points (Blend / Subtract mark
 // objects — a Fusion object is triangulated into the stroke mesh instead).
@@ -755,6 +946,8 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                     for (const MarkObject& so : *lst)
                         if (wantsScope(so)) needsScope = true;
         }
+    for (const StrokeRepeat& rr : s.repeats)
+        if (rr.enabled && rr.mode != MarkObjectMode::Fusion) needsScope = true;
 
     ScopeId strokeScope = scope;
     int isoDepth = scopes_[scope].depth;
@@ -836,37 +1029,130 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         if (obj.shape == MarkShape::Instance) {
             const Node* target = doc.Find(obj.nodeRef);
             if (!target || target == &n || instDepth >= 6) return;
-            // place = frame at the mark (translate + rotate to the tangent, plus
-            // the Bend shear). A single node's arbitrary geometry can't be truly
-            // Follow-bent, so an Instance set to Follow uses the Bend shear as its
-            // curve-lean — an instance now always gets a real bend transform.
-            MarkObject pobj = obj;
-            if (pobj.bend == MarkBend::Follow) pobj.bend = MarkBend::Bend;
             // Uniform scale: `size` is the factor (100 % = ×1, or the raw
             // doc-unit value read as a multiplier).
             const double k = obj.sizePercent ? obj.size * 0.01
                                              : std::max(1e-6, obj.size);
-            // Bend shear extent: the shear is the tangent turn measured over the
-            // shape's half-length along the curve. An instance's meaningful
-            // extent is its GEOMETRY's radius × the scale (obj.size is a scale
-            // factor for instances, not a length — the default SizeUnits gave a
-            // near-zero span, so Bend visually did nothing on instances).
-            double instR = 0.0;
-            for (const Subpath& tsp : target->path.subpaths)
-                for (const Anchor& ta : tsp.anchors)
-                    instR = std::max(instR, std::hypot(ta.pos.x, ta.pos.y));
-            const double bendExtent = std::max(1e-3, instR * k);
-            const DMat23 frame =
-                geom::MarkPlaceMatrix(spine, m, pobj, s.width, bendExtent);
-            DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
-            // The instance is anchored at the target's ORIGIN (its transform
-            // translation), decoupled like a linked instance: cancel the
-            // target's own transform, then place = frame · scale.
-            const DMat23 place = frame.Compose(scaleM);
-            const DMat23 corr =
-                place.Compose(InvertAffine(target->transform.Matrix()));
-            EmitNode(doc, *target, world.Compose(corr), objScope,
-                     instDepth + 1, owner, /*forceVisible=*/true);
+            // Bend / Follow: an affine can't truly bend arbitrary geometry, so
+            // the instance's PATH is DERIVED through the same curve frame the
+            // primitive rings use (perpendicular bounding sides on Bend, fully
+            // curved edges on Follow) and its fills/strokes emit as their own
+            // drawables — the exact transformation circles/diamonds/rectangles
+            // get. Rebuilt per scene compile (documented cost; Hard instances
+            // keep the shared-geometry fast path below).
+            const bool instBend = geom::BendsAlongCurve(obj.bend);
+            const bool instGeom =
+                target->kind == NodeKind::Path && !target->path.Empty();
+            // BLEND + HARD/Chord: keep the true-instance fast path (shared
+            // geometry, own colours, merged draws) — a Blend composites the
+            // real instance. Everything else (Fusion silhouette, Subtract
+            // erase, any BENT instance) needs the PLACED geometry below.
+            if (obj.mode == MarkObjectMode::Blend && !instBend) {
+                const DMat23 frame =
+                    geom::MarkPlaceMatrix(spine, m, obj, s.width);
+                DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
+                const DMat23 place = frame.Compose(scaleM);
+                const DMat23 corr =
+                    place.Compose(InvertAffine(target->transform.Matrix()));
+                EmitNode(doc, *target, world.Compose(corr), objScope,
+                         instDepth + 1, owner, /*forceVisible=*/true);
+                return;
+            }
+            if (instGeom) {
+                // Build the PLACED instance geometry (node-local; world = the
+                // node world): Bend/Follow derive it through the curve frame,
+                // Hard/Chord transform the target path by the rigid (or chord)
+                // frame · scale.
+                PathData placed;
+                if (instBend) {
+                    placed = geom::MarkBendPath(spine, m, obj, s.width,
+                                                target->path, k,
+                                                geom::kMarkRingTolerance);
+                } else {
+                    const DMat23 frame =
+                        geom::MarkPlaceMatrix(spine, m, obj, s.width);
+                    DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
+                    const DMat23 place = frame.Compose(scaleM);
+                    placed = target->path;
+                    for (Subpath& sp : placed.subpaths)
+                        for (Anchor& a : sp.anchors) {
+                            const DVec2 p = place.Apply(a.pos);
+                            // Handles are RELATIVE → linear part only.
+                            const DVec2 hin{ a.pos.x + a.in.x, a.pos.y + a.in.y };
+                            const DVec2 hout{ a.pos.x + a.out.x,
+                                              a.pos.y + a.out.y };
+                            const DVec2 pin = place.Apply(hin);
+                            const DVec2 pout = place.Apply(hout);
+                            a.pos = p;
+                            a.in  = { pin.x - p.x, pin.y - p.y };
+                            a.out = { pout.x - p.x, pout.y - p.y };
+                        }
+                }
+                if (placed.Empty()) return;
+                markShapes_.push_back(std::move(placed));
+                const PathData* g = &markShapes_.back();
+                const std::uint64_t gh = g->Hash();
+                auto baseDrawable = [&]() {
+                    Drawable d;
+                    d.node = n.id;  d.owner = owner;  d.world = world;
+                    d.path = g;     d.pathHash = gh;
+                    d.pieceIndex = (std::uint8_t)strokeIndex;
+                    d.ownerPiece = (std::uint8_t)strokeIndex;
+                    d.ownerPieceStroke = true;
+                    d.scope = objScope;
+                    return d;
+                };
+                const float op = std::clamp(obj.opacity, 0.0f, 1.0f);
+                if (obj.mode == MarkObjectMode::Subtract) {
+                    // Erase the instance's SILHOUETTE (its fill area).
+                    Drawable d = baseDrawable();
+                    d.isStroke = false;  d.rule = FillRule::NonZero;
+                    d.color = Color{ 0, 0, 0, op };
+                    d.clip = ClipRole::EraseWrite;
+                    d.clipPinned = true;
+                    drawables_.push_back(std::move(d));
+                } else if (obj.mode == MarkObjectMode::Fusion) {
+                    // FUSION: the instance's SHAPE in the STROKE colour (its own
+                    // colours are ignored) — a silhouette fused onto the line.
+                    Color sc = s.paint.color;  sc.a *= op;
+                    Drawable d = baseDrawable();
+                    d.isStroke = false;  d.rule = FillRule::NonZero;
+                    d.color = sc;
+                    drawables_.push_back(std::move(d));
+                    for (const Stroke& ts : target->style.strokes) {
+                        if (!ts.enabled || ts.width <= 0.0) continue;
+                        Drawable ds = baseDrawable();
+                        ds.isStroke = true;
+                        ds.stroke = ts;
+                        ds.stroke.width = ts.width * k;
+                        ds.stroke.marks.clear();
+                        ds.stroke.repeats.clear();
+                        ds.color = sc;                   // stroke colour too
+                        drawables_.push_back(std::move(ds));
+                    }
+                } else {   // Blend + Bent: the instance's OWN render, bent.
+                    for (const Fill& f : target->style.fills) {
+                        if (!f.enabled || f.kind != FillKind::Solid) continue;
+                        Drawable d = baseDrawable();
+                        d.isStroke = false;  d.rule = f.rule;
+                        d.color = f.paint.color;
+                        d.color.a *= f.opacity * op;
+                        drawables_.push_back(std::move(d));
+                    }
+                    for (const Stroke& ts : target->style.strokes) {
+                        if (!ts.enabled || ts.width <= 0.0) continue;
+                        Drawable d = baseDrawable();
+                        d.isStroke = true;
+                        d.stroke = ts;
+                        d.stroke.width = ts.width * k;
+                        d.stroke.marks.clear();
+                        d.stroke.repeats.clear();
+                        d.color = ts.paint.color;
+                        d.color.a *= op;
+                        drawables_.push_back(std::move(d));
+                    }
+                }
+            }
             return;
         }
 
@@ -940,6 +1226,117 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         for (const MarkObject& obj : m.objects)
             if (separate(obj) && effFront(obj))
                 emitObject(m, obj);
+
+    // ── REPEAT runs that are NOT stroke-coloured Fusion ──────────────────────
+    // (Blend / Cut / recoloured objects along the line — Fusion runs are baked
+    // into the stroke mesh by the stroker.) Every placement routes through
+    // emitObject: the Hard parametric shape is identical for the whole run, so
+    // the GeometryCache dedups it and the GPU merges the run into instanced
+    // draws.
+    for (const StrokeRepeat& rep : s.repeats) {
+        if (!rep.enabled) continue;
+        if (rep.mode == MarkObjectMode::Fusion) continue;   // baked by stroker
+        MarkObject obj;
+        obj.shape = rep.shape;
+        obj.mode = rep.mode;
+        obj.blend = rep.blend;
+        obj.bend = MarkBend::Hard;
+        obj.size = rep.size;
+        obj.width = rep.width;
+        obj.sizePercent = rep.sizePercent;
+        obj.rotation = rep.rotation;
+        obj.color = rep.color;
+        obj.useStrokeColor = rep.useStrokeColor;
+        obj.opacity = rep.opacity;
+        obj.sideInherit = true;   // the synthetic mark carries the offset
+        const bool isLine = rep.shape == MarkShape::Line;
+        const bool erase = rep.mode == MarkObjectMode::Subtract;
+        const double lhu = std::max(1e-6, rep.SizeUnits(s.width));
+        const double lhv = std::max(1e-6, rep.WidthUnits(s.width));
+        const bool centred = rep.side == RepeatSide::Center;
+        const double rc = std::cos(rep.rotation), rs = std::sin(rep.rotation);
+        for (int sub = 0; sub < (int)flat.size(); ++sub) {
+            const double subTot = subTotal(sub);
+            if (subTot < 1e-9) continue;
+            const geom::Polyline& poly = flat[(std::size_t)sub];
+            const auto places = geom::RepeatObjectPlacements(poly, s, rep, sub);
+            for (const geom::RepeatPlacement& rp : places) {
+                if (isLine) {
+                    // A Line's geometry depends on its offset (offset-start) —
+                    // build its NODE-space corners, clip the overflow past the
+                    // path if asked, and emit as a Blend/Cut/recoloured drawable
+                    // (Fusion-stroke-coloured Lines are baked by the stroker).
+                    DVec2 p0, t0;
+                    SamplePolyArc(poly, std::clamp(rp.at, 0.0, subTot), p0, t0);
+                    const DVec2 n0{ -t0.y, t0.x };
+                    const DVec2 at{ p0.x + n0.x * rp.offset,
+                                    p0.y + n0.y * rp.offset };
+                    const double ux = t0.x * rc - n0.x * rs;
+                    const double uy = t0.y * rc - n0.y * rs;
+                    const double vx = t0.x * rs + n0.x * rc;
+                    const double vy = t0.y * rs + n0.y * rc;
+                    const PathData lp = geom::MarkLineShape(
+                        lhu, lhv, rp.offset, rp.dir, centred, rep.lineJoin);
+                    if (lp.subpaths.empty()) continue;
+                    std::vector<DVec2> corners;
+                    for (const Anchor& a : lp.subpaths.front().anchors)
+                        corners.push_back({ at.x + ux * a.pos.x + vx * a.pos.y,
+                                            at.y + uy * a.pos.x + vy * a.pos.y });
+                    if (corners.size() < 3) continue;
+                    PathData linePath;
+                    if (rep.lineClip && !centred) {
+                        // Cut the far-side overflow along the real path curve.
+                        const double ext =
+                            2.0 * lhu + lhv + std::abs(rp.offset);
+                        for (auto& r : geom::ClipPolygonToPathSide(
+                                 corners, poly, rp.at, -rp.dir, ext)) {
+                            if (r.size() < 3) continue;
+                            Subpath sp; sp.closed = true;
+                            for (const DVec2& q : r) {
+                                Anchor a2; a2.pos = q; sp.anchors.push_back(a2);
+                            }
+                            linePath.subpaths.push_back(std::move(sp));
+                        }
+                    } else {
+                        linePath = RingToPath(corners);
+                    }
+                    if (linePath.Empty()) continue;
+                    markShapes_.push_back(std::move(linePath));
+                    const PathData* g = &markShapes_.back();
+                    if (g->Empty()) { markShapes_.pop_back(); continue; }
+                    Drawable d;
+                    d.node = n.id;  d.owner = owner;
+                    d.world = world;                 // corners already node-local
+                    d.path = g;  d.pathHash = g->Hash();
+                    d.isStroke = false;  d.rule = FillRule::NonZero;
+                    d.pieceIndex = (std::uint8_t)strokeIndex;
+                    d.ownerPiece = (std::uint8_t)strokeIndex;
+                    d.ownerPieceStroke = true;
+                    d.scope = strokeScope;
+                    if (erase) {
+                        d.color = Color{ 0, 0, 0,
+                            std::clamp(rep.opacity, 0.0f, 1.0f) };
+                        d.clip = ClipRole::EraseWrite;
+                        d.clipPinned = true;
+                    } else {
+                        d.color = rep.useStrokeColor ? s.paint.color : rep.color;
+                        d.color.a *= std::clamp(rep.opacity, 0.0f, 1.0f);
+                    }
+                    drawables_.push_back(std::move(d));
+                    continue;
+                }
+                StrokeMark vm;
+                vm.sub = sub;
+                vm.t = rp.at / subTot;
+                vm.side = rp.offset > 1e-12 ? MarkSide::Left
+                        : rp.offset < -1e-12 ? MarkSide::Right
+                                             : MarkSide::Center;
+                vm.offset = std::abs(rp.offset);
+                vm.offsetPercent = false;
+                emitObject(vm, obj);
+            }
+        }
+    }
 }
 
 void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
