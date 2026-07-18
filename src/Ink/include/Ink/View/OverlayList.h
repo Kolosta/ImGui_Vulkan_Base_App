@@ -47,6 +47,24 @@ public:
     void AddCircleFilled(Vec2 centre, float radius, const Color& col,
                          int segments = 48);
 
+    // ── Instanced MARKERS (many identical small glyphs) ───────────────────────
+    // For dense point sets — grid crossings, snap candidates, vertex dots — where
+    // AddCircle* is far too heavy (a filled 48-gon is 144 verts + 96 trig calls
+    // PER dot). Every marker reuses ONE precomputed unit template, expanded with
+    // adds/muls only (no per-item trig) into a handful of verts — the CPU analog
+    // of instancing (the overlay is already ONE batched draw, so the cost that
+    // matters is vertices, not draw calls). `radius` is the glyph half-extent.
+    enum class MarkerShape : std::uint8_t {
+        DotFilled,        // tiny filled square — cheapest, for dense grids (6 verts)
+        DiscFilled,       // filled octagon — a round point
+        RingOutline,      // octagon outline
+        SquareOutline,
+        TriangleOutline,  // apex up
+        DiamondOutline,
+    };
+    void AddMarker(Vec2 centre, float radius, const Color& col,
+                   MarkerShape shape, float thickness = 1.0f);
+
     // Open/close a dedup group around the triangles emitted in between.
     void BeginDedup();
     void EndDedup();

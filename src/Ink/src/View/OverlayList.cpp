@@ -6,6 +6,20 @@ namespace Ink {
 
 namespace {
 constexpr float kPi = 3.14159265358979323846f;
+
+// The shared unit octagon (cos/sin at 8 steps) — computed ONCE at load, so a
+// marker expands with only adds/muls, never per-item trig. This is what makes
+// thousands of identical glyphs cheap (see OverlayList::AddMarker).
+struct UnitOctagon {
+    Vec2 p[8];
+    UnitOctagon() {
+        for (int i = 0; i < 8; ++i) {
+            const float a = (2.0f * kPi * (float)i) / 8.0f;
+            p[i] = { std::cos(a), std::sin(a) };
+        }
+    }
+};
+const UnitOctagon kUnitOct;
 } // namespace
 
 void OverlayList::AddTriangle(Vec2 a, Vec2 b, Vec2 c, const Color& col) {
@@ -79,6 +93,46 @@ void OverlayList::AddCircleFilled(Vec2 c, float radius, const Color& col,
         const float y = c.y + std::sin(a) * radius;
         AddTriangle({ c.x, c.y }, { prevX, prevY }, { x, y }, col);
         prevX = x; prevY = y;
+    }
+}
+
+void OverlayList::AddMarker(Vec2 c, float r, const Color& col,
+                            MarkerShape shape, float thickness) {
+    auto oct = [&](int i) -> Vec2 {
+        return { c.x + kUnitOct.p[i & 7].x * r, c.y + kUnitOct.p[i & 7].y * r };
+    };
+    switch (shape) {
+        case MarkerShape::DotFilled:               // a 3-verts-each quad
+            AddRectFilled({ c.x - r, c.y - r }, { c.x + r, c.y + r }, col);
+            break;
+        case MarkerShape::DiscFilled:              // filled octagon (8 tris)
+            for (int i = 0; i < 8; ++i)
+                AddTriangle(c, oct(i), oct(i + 1), col);
+            break;
+        case MarkerShape::RingOutline:             // octagon outline
+            for (int i = 0; i < 8; ++i)
+                AddLine(oct(i), oct(i + 1), col, thickness);
+            break;
+        case MarkerShape::SquareOutline:
+            AddRect({ c.x - r, c.y - r }, { c.x + r, c.y + r }, col, thickness);
+            break;
+        case MarkerShape::TriangleOutline: {
+            const Vec2 p0{ c.x, c.y - r }, p1{ c.x - r, c.y + r },
+                       p2{ c.x + r, c.y + r };
+            AddLine(p0, p1, col, thickness);
+            AddLine(p1, p2, col, thickness);
+            AddLine(p2, p0, col, thickness);
+            break;
+        }
+        case MarkerShape::DiamondOutline: {
+            const Vec2 p0{ c.x, c.y - r }, p1{ c.x + r, c.y },
+                       p2{ c.x, c.y + r }, p3{ c.x - r, c.y };
+            AddLine(p0, p1, col, thickness);
+            AddLine(p1, p2, col, thickness);
+            AddLine(p2, p3, col, thickness);
+            AddLine(p3, p0, col, thickness);
+            break;
+        }
     }
 }
 
