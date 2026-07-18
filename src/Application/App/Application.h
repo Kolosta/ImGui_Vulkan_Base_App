@@ -505,9 +505,10 @@ private:
     void OutlinerRemoveFromCollections(const std::vector<Ink::NodeId>& ids);
     void OutlinerUnparent(const std::vector<Ink::NodeId>& ids);
     // The collection-colour picker popup (Custom… in the Icon Colour submenu).
-    void RenderOutlinerColorPicker();
+    void RenderOutlinerColorPicker(EditorState& st);
     Ink::NodeId outlinerColorPickColl_ = Ink::kNullNode;
     bool        outlinerColorPickRequested_ = false;
+    const void* outlinerColorPickOwner_ = nullptr;   // leaf owning the popup
     // Organisation commands (undoable), shared by the Outliner + shortcuts.
     void Action_SetBlendMode(const std::vector<Ink::NodeId>& ids, Ink::BlendMode mode);
     void Action_GroupSelection();
@@ -607,6 +608,15 @@ private:
                              const std::string& label);
     // The Outliner context-menu request (opened next frame at this position).
     bool   outlinerCtxOpen_ = false;
+    // Armed by the click sites; RenderOutlinerContextMenu opens the popup ONCE
+    // from its own (stable, scroll-child) scope — the same request pattern the
+    // viewport menus use, immune to open/render scope-ordering subtleties.
+    bool   outlinerCtxRequested_ = false;
+    // The OUTLINER LEAF owning the open menu: with several Outliners, every
+    // leaf calls RenderOutlinerContextMenu, but the popup id only resolves in
+    // the OWNER's scroll-child scope — a non-owner would read "closed" and
+    // wrongly clear the shared flag (the menu then closed instantly).
+    const void* outlinerCtxOwner_ = nullptr;
     ImVec2 outlinerCtxPos_{};
     Ink::NodeId outlinerCtxNode_ = Ink::kNullNode;
     // Non-null when the menu was opened on a LINKED-DATA row (the instance's

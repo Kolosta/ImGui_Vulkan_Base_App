@@ -178,7 +178,20 @@ Ink::Color TokenToInk(Tok t, const ImVec4& fallback) {
 } // namespace
 
 void Application::RenderOutlinerContextMenu(EditorState& st) {
-    if (!outlinerCtxOpen_) return;   // OpenPopup happened ONCE at the click site
+    // Request pattern (same as the viewport menus): the click sites only ARM
+    // the request; the popup is opened ONCE here — the exact scope that also
+    // renders it every frame, so open/render can never drift apart. The
+    // CLICKED leaf consumes its own request (its rows ran just above in the
+    // same child) and becomes the OWNER: with several Outliners open, only
+    // the owner renders/closes the menu — a non-owner scope can't see the
+    // popup id and would otherwise clear the shared flag instantly.
+    if (outlinerCtxRequested_) {
+        outlinerCtxRequested_ = false;
+        outlinerCtxOpen_ = true;
+        outlinerCtxOwner_ = &st;
+        ImGui::OpenPopup("##outlinerCtx");
+    }
+    if (!outlinerCtxOpen_ || outlinerCtxOwner_ != &st) return;
     Ink::Document& doc = *project_.document;
 
     std::vector<UI::MenuEntry> entries;
@@ -443,12 +456,16 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
 
 // The Custom… collection colour picker. Rendered every frame in the same
 // window scope (the Outliner scroll child); opened exactly once on request.
-void Application::RenderOutlinerColorPicker() {
+void Application::RenderOutlinerColorPicker(EditorState& st) {
+    // Owner-gated like the context menu: with several Outliners, only the
+    // leaf whose scope opened the popup may render/close it.
     if (outlinerColorPickRequested_) {
         outlinerColorPickRequested_ = false;
+        outlinerColorPickOwner_ = &st;
         ImGui::OpenPopup("##collColorPick");
     }
-    if (outlinerColorPickColl_ == Ink::kNullNode) return;
+    if (outlinerColorPickColl_ == Ink::kNullNode ||
+        outlinerColorPickOwner_ != &st) return;
     if (ImGui::BeginPopup("##collColorPick")) {
         const Ink::Collection* c = project_.document
             ? project_.document->FindCollection(outlinerColorPickColl_) : nullptr;

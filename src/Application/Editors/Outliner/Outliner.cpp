@@ -647,10 +647,10 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
             }
             // Right-click ONLY opens the menu — never selects (Blender rule).
             if (in.rightClicked) {
-                outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+                outlinerCtxRequested_ = true;
+                outlinerCtxPos_ = ImGui::GetIO().MousePos;
                 outlinerCtxNode_ = rrow.id;
                 outlinerCtxLinkedRef_ = Ink::kNullNode;
-                ImGui::OpenPopup("##outlinerCtx");
             }
         }
         return;
@@ -774,12 +774,12 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
                 }
             }
             if (in.rightClicked) {
-                outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+                outlinerCtxRequested_ = true;
+                outlinerCtxPos_ = ImGui::GetIO().MousePos;
                 outlinerCtxNode_ = rrow.id;
                 outlinerCtxLinkedRef_ =
                     rrow.kind == OutlinerRow::Kind::LinkedData ? rrow.refId
                                                               : Ink::kNullNode;
-                ImGui::OpenPopup("##outlinerCtx");
             }
         }
         return;
@@ -1002,10 +1002,10 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     // Right-click ONLY opens the menu — never a selection change (Blender rule:
     // the menu acts on the current selection; the row is context only).
     if (in.rightClicked) {
-        outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+        outlinerCtxRequested_ = true;
+        outlinerCtxPos_ = ImGui::GetIO().MousePos;
         outlinerCtxNode_ = rrow.id;
         outlinerCtxLinkedRef_ = Ink::kNullNode;
-        ImGui::OpenPopup("##outlinerCtx");
     }
 }
 
@@ -1251,10 +1251,10 @@ void Application::RenderOutliner(EditorState& st) {
             const bool belowRows = my > startY + (float)rows.size() * stripeH;
             if (belowRows && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) edit_.Clear();
             if (belowRows && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
-                outlinerCtxOpen_ = true; outlinerCtxPos_ = ImGui::GetIO().MousePos;
+                outlinerCtxRequested_ = true;
+                outlinerCtxPos_ = ImGui::GetIO().MousePos;
                 outlinerCtxNode_ = Ink::kNullNode;
                 outlinerCtxLinkedRef_ = Ink::kNullNode;
-                ImGui::OpenPopup("##outlinerCtx");
             }
         }
         // The empty area below the rows is a drop target: dropping an object
@@ -1273,7 +1273,7 @@ void Application::RenderOutliner(EditorState& st) {
         // (an id-string popup is scoped to the current window — opening and
         // rendering must share that scope).
         RenderOutlinerContextMenu(st);
-        RenderOutlinerColorPicker();
+        RenderOutlinerColorPicker(st);
         outlinerRows_ = nullptr;   // rows is loop-local; never dangle
     }
     UI::EndScroll();
