@@ -302,6 +302,11 @@ void Application::Update() {
     // right after the frame recorded it, BEFORE saves and action dispatch —
     // so undo, hit-testing and persistence only ever see the true document.
     ClearMarkPreviewStyle();
+    // The translucent draw-shape preview node lives only for the duration of a
+    // DrawShape drag — drop it whenever no such drag is active (covers Esc /
+    // mode switch / any gesture reset), so it never lingers in the outliner or
+    // a save. It is (re)created next frame while the drag continues.
+    if (canvasDrag_.kind != CanvasDrag::Kind::DrawShape) ClearShapePreview();
 
     FinishSavePass();
 

@@ -64,6 +64,103 @@ ImTextureID Application::PaintPatternPreview(Ink::NodeId id, int fillIndex) {
     return (ImTextureID)view->Texture();
 }
 
+bool Application::PaintPatternSwatch(ImDrawList* dl, ImVec2 mn, ImVec2 mx,
+                                     const Ink::Fill& f) {
+    if (!project_.document || f.kind != Ink::FillKind::Pattern) return false;
+    const Ink::Node* motif = project_.document->Find(f.pattern.motifRef);
+    if (!motif || motif->kind != Ink::NodeKind::Path || motif->path.Empty())
+        return false;
+    const float wpx = mx.x - mn.x, hpx = mx.y - mn.y;
+    if (wpx < 4.0f || hpx < 4.0f) return false;
+
+    // Tessellate the MOTIF's geometry ONCE, in motif-local doc units (the
+    // motif's own origin is the pattern anchor, exactly like the pipeline).
+    // CPU triangles — so a HIDDEN motif still renders (patterns instance a
+    // motif regardless of its visibility), and there are no texture / bounding
+    // box artefacts. Same geometry functions the Vulkan pipeline uses, so the
+    // swatch matches the on-canvas pattern.
+    struct Tri { ImVec2 a, b, c; ImU32 col; };
+    std::vector<Tri> tris;
+    const double motifTol = 0.15;   // legible, cheap
+    auto pushMesh = [&](const Ink::geom::Mesh& m, ImU32 col) {
+        for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
+            auto V = [&](std::uint32_t idx) {
+                return ImVec2((float)m.positions[idx * 2],
+                              (float)m.positions[idx * 2 + 1]);
+            };
+            tris.push_back({ V(m.indices[i]), V(m.indices[i + 1]),
+                             V(m.indices[i + 2]), col });
+        }
+    };
+    const float fOpac = std::clamp(f.opacity, 0.0f, 1.0f);
+    const auto motifFlat = Ink::geom::Flatten(motif->path, motifTol);
+    for (const Ink::Fill& mf : motif->style.fills) {
+        if (!mf.enabled || mf.kind != Ink::FillKind::Solid) continue;
+        ImVec4 c = pr::ToSrgb(mf.paint.color);
+        c.w *= mf.opacity * fOpac;
+        pushMesh(Ink::geom::TriangulateFill(motifFlat, mf.rule),
+                 ImGui::ColorConvertFloat4ToU32(c));
+    }
+    for (const Ink::Stroke& ms : motif->style.strokes) {
+        if (!ms.enabled || ms.width <= 0.0) continue;
+        ImVec4 c = pr::ToSrgb(ms.paint.color);
+        c.w *= fOpac;
+        Ink::Stroke bs = ms; bs.marks.clear(); bs.repeats.clear();
+        pushMesh(Ink::geom::TessellateStroke(motifFlat, bs, motifTol),
+                 ImGui::ColorConvertFloat4ToU32(c));
+    }
+    if (tris.empty()) return false;
+
+    // Re-create the lattice INSIDE the vignette at a legible zoom: about 2.4
+    // lattice periods across the tile, over a white plate, clipped to it —
+    // the exact EmitPattern layout (lattice rotation, per-motif rotation +
+    // scale, phase).
+    const Ink::PatternFill& pat = f.pattern;
+    const double sx = pat.spacingX > 1e-6 ? pat.spacingX : 40.0;
+    const double sy = pat.spacingY > 1e-6 ? pat.spacingY : 40.0;
+    const double unitPx = (double)std::min(wpx, hpx) / (2.4 * std::max(sx, sy));
+    const ImVec2 ctr((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+    dl->AddRectFilled(mn, mx, IM_COL32(255, 255, 255, 255));
+    dl->PushClipRect(mn, mx, true);
+    const double lc = std::cos(pat.rotation), ls = std::sin(pat.rotation);
+    const double mrot = pat.rotation + pat.motifRotation;
+    const double sc = std::max(1e-3, pat.scale);
+    const double mc = std::cos(mrot) * sc, msn = std::sin(mrot) * sc;
+    // Motif reach in px (cull cells whose motif can't touch the tile).
+    double motifR = 0.0;
+    for (const Tri& t : tris) {
+        motifR = std::max(motifR, (double)std::hypot(t.a.x, t.a.y));
+        motifR = std::max(motifR, (double)std::hypot(t.b.x, t.b.y));
+        motifR = std::max(motifR, (double)std::hypot(t.c.x, t.c.y));
+    }
+    const double reachPx = motifR * sc * unitPx;
+    const double Rpx = std::hypot(wpx, hpx) * 0.5 + reachPx;
+    const int gi1 = (int)std::ceil(Rpx / (sx * unitPx)) + 1;
+    const int gj1 = (int)std::ceil(Rpx / (sy * unitPx)) + 1;
+    int cells = 0;
+    for (int gi = -gi1; gi <= gi1 && cells < 200; ++gi)
+        for (int gj = -gj1; gj <= gj1 && cells < 200; ++gj) {
+            const double lx = (gi * sx + pat.phaseX) * unitPx;
+            const double ly = (gj * sy + pat.phaseY) * unitPx;
+            const double cx = ctr.x + (lx * lc - ly * ls);
+            const double cy = ctr.y + (lx * ls + ly * lc);
+            if (std::abs(cx - ctr.x) > Rpx || std::abs(cy - ctr.y) > Rpx)
+                continue;
+            ++cells;
+            auto place = [&](ImVec2 q) {
+                // q is motif-local doc units → scaled/rotated → px, at the cell.
+                const double qx = q.x, qy = q.y;
+                return ImVec2((float)(cx + unitPx * (qx * mc - qy * msn)),
+                              (float)(cy + unitPx * (qx * msn + qy * mc)));
+            };
+            for (const Tri& t : tris)
+                dl->AddTriangleFilled(place(t.a), place(t.b), place(t.c),
+                                      t.col);
+        }
+    dl->PopClipRect();
+    return true;
+}
+
 // ── Fills ─────────────────────────────────────────────────────────────────────
 
 void Application::PropFillsSection(Ink::NodeId id) {
@@ -149,14 +246,14 @@ void Application::DrawFillsStackBody(
                 rr.HandleCell(i, ImGui::IsItemActivated(), ImGui::IsItemActive(),
                               railOrigin.y + (float)i * cellH, railOrigin.y);
                 if (clicked && rr.Grabbed() < 0) sel = i;
-                ImTextureID patTex = (ImTextureID)0;
-                if (f.kind == Ink::FillKind::Pattern)
-                    patTex = PaintPatternPreview(node, i);
                 if (!isGrab) {
-                    if (patTex)
-                        ImGui::GetWindowDrawList()->AddImage(patTex, cmn, cmx);
-                    else
-                        pr::DrawFillSample(ImGui::GetWindowDrawList(), cmn, cmx, f);
+                    // Pattern vignettes RE-CREATE the fill in the tile (motif
+                    // lattice at a legible zoom, selection-independent).
+                    if (f.kind != Ink::FillKind::Pattern ||
+                        !PaintPatternSwatch(ImGui::GetWindowDrawList(),
+                                            cmn, cmx, f))
+                        pr::DrawFillSample(ImGui::GetWindowDrawList(),
+                                           cmn, cmx, f);
                 }
                 // Hover-dwell preview (only when nothing is being dragged).
                 if (grabbed < 0 &&
@@ -171,10 +268,11 @@ void Application::DrawFillsStackBody(
                     ImDrawList* tdl = ImGui::GetWindowDrawList();
                     tdl->AddRectFilled(mn, ImVec2(mn.x + big, mn.y + big),
                                        IM_COL32(255, 255, 255, 255));
-                    if (patTex)
-                        tdl->AddImage(patTex, mn, ImVec2(mn.x + big, mn.y + big));
-                    else
-                        pr::DrawFillSample(tdl, mn, ImVec2(mn.x + big, mn.y + big), f);
+                    if (f.kind != Ink::FillKind::Pattern ||
+                        !PaintPatternSwatch(tdl, mn,
+                                            ImVec2(mn.x + big, mn.y + big), f))
+                        pr::DrawFillSample(tdl, mn,
+                                           ImVec2(mn.x + big, mn.y + big), f);
                     if (f.kind == Ink::FillKind::Solid) {
                         const ImVec4 c = pr::ToSrgb(f.paint.color);
                         ImGui::Text("RGBA %.2f %.2f %.2f %.2f \xC2\xB7 opacity %.2f",
@@ -195,11 +293,9 @@ void Application::DrawFillsStackBody(
                 const ImVec2 gmn(railOrigin.x + ins, posY + ins);
                 const ImVec2 gmx(railOrigin.x + thumb - ins, posY + thumb - ins);
                 ImDrawList* fdl = ImGui::GetForegroundDrawList();
-                ImTextureID patTex = gf.kind == Ink::FillKind::Pattern
-                                         ? PaintPatternPreview(node, grabbed)
-                                         : (ImTextureID)0;
-                if (patTex) fdl->AddImage(patTex, gmn, gmx);
-                else        pr::DrawFillSample(fdl, gmn, gmx, gf);
+                if (gf.kind != Ink::FillKind::Pattern ||
+                    !PaintPatternSwatch(fdl, gmn, gmx, gf))
+                    pr::DrawFillSample(fdl, gmn, gmx, gf);
             }
             ImGui::SetCursorScreenPos(
                 ImVec2(railOrigin.x, railOrigin.y + (float)nF * cellH));
@@ -408,9 +504,14 @@ void Application::DrawFillsStackBody(
 bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
                                         Ink::Document& doc, Ink::NodeId hostId,
                                         bool& structural, const char*& structLabel) {
-    static const char* kShape[] = { "Circle", "Rectangle", "Diamond", "Instance" };
+    static const char* kShape[] = { "Circle", "Rectangle", "Diamond",
+                                    "Instance", "Triangle", "Half Circle" };
+    static const Ink::MarkShape kShapeVal[] = {
+        Ink::MarkShape::Circle, Ink::MarkShape::Rectangle,
+        Ink::MarkShape::Diamond, Ink::MarkShape::Instance,
+        Ink::MarkShape::Triangle, Ink::MarkShape::HalfCircle };
     static const char* kMode[]  = { "Fusion", "Blend", "Cut" };
-    static const char* kBend[]  = { "Hard", "Bend", "Follow" };
+    static const char* kBend[]  = { "Hard", "Bend", "Follow", "Chord" };
     static const char* kSide[]  = { "Center", "Left", "Right" };
     static const char* kUnit[]  = { "%", "px" };
     static const char* kBlend[] = {
@@ -421,9 +522,10 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
     bool changed = false;
     auto S = [&](const char* l) { structural = true; structLabel = l; changed = true; };
 
-    int shp = std::min((int)o.shape, 3);
-    if (pr::DropdownRow("Object", kShape, 4, &shp)) {
-        const Ink::MarkShape ns = (Ink::MarkShape)shp;
+    int shp = 0;
+    for (int i = 0; i < 6; ++i) if (o.shape == kShapeVal[i]) shp = i;
+    if (pr::DropdownRow("Object", kShape, 6, &shp)) {
+        const Ink::MarkShape ns = kShapeVal[shp];
         if (ns == Ink::MarkShape::Rectangle && o.shape != Ink::MarkShape::Rectangle
             && o.sizePercent && std::abs(o.size - 100.0) < 1e-6) o.size = 200.0;
         o.bend = Ink::DefaultBendFor(ns); o.shape = ns; S("Marker Object");
@@ -459,9 +561,12 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
             if (pr::DragFloat(l, &f, o.sizePercent ? 1.0f : 0.1f, 0.0f,
                               1000000.0f, 2, o.sizePercent ? "%" : "")) { *v = f; S("Marker Size"); }
         };
-        if (o.shape == Ink::MarkShape::Circle) sizeField("Radius", &o.size);
-        else if (o.shape == Ink::MarkShape::Rectangle) { sizeField("Length", &o.size); sizeField("Width", &o.width); }
-        else sizeField("Diagonal", &o.size);
+        if (o.shape == Ink::MarkShape::Circle ||
+            o.shape == Ink::MarkShape::HalfCircle) sizeField("Radius", &o.size);
+        else if (o.shape == Ink::MarkShape::Rectangle ||
+                 o.shape == Ink::MarkShape::Triangle) {
+            sizeField("Length", &o.size); sizeField("Width", &o.width);
+        } else sizeField("Diagonal", &o.size);
     }
     int un = o.sizePercent ? 0 : 1;
     if (pr::ButtonGroupRow("Unit", kUnit, 2, &un)) {
@@ -486,7 +591,7 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
             o.alongOffset = ao; S("Marker Along"); }
     }
     int bd = (int)o.bend;
-    if (pr::ButtonGroupRow("Shape", kBend, 3, &bd)) { o.bend = (Ink::MarkBend)bd; S("Marker Bend"); }
+    if (pr::DropdownRow("Bend", kBend, 4, &bd)) { o.bend = (Ink::MarkBend)bd; S("Marker Bend"); }
     if (o.mode == Ink::MarkObjectMode::Blend) {
         int bl = std::min((int)o.blend, 12);
         if (pr::DropdownRow("Blend mode", kBlend, 13, &bl)) { o.blend = (Ink::BlendMode)bl; S("Marker Blend"); }
@@ -773,6 +878,277 @@ void Application::DrawStrokesStackBody(
                 }
                 if (ImGui::IsItemDeactivatedAfterEdit())
                     liveApply("Dash Offset", true);
+                // With SEVERAL Dash/Gap phase marks the pattern stretches
+                // piecewise between them — this picks what absorbs the fit.
+                static const char* kFit[] = { "Scale Both", "Adapt Dashes",
+                                              "Adapt Gaps" };
+                int fit = (int)s.dashFit;
+                if (pr::DropdownRow("Anchor fit", kFit, 3, &fit)) {
+                    s.dashFit = (Ink::DashFit)fit;
+                    structural = true; structLabel = "Dash Fit";
+                }
+            }
+
+            // ── REPEATS: object runs along the stroke (the IOF fence-tick
+            // family) — groups of primitives at a regular pitch, on a side,
+            // inclined, added / blended / cut. Part of the stroke STYLE, so
+            // new objects inherit them and preview them while being drawn;
+            // marks can re-phase a run (repeat anchor, Marks side panel).
+            pr::GroupGap();
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text,
+                    pr::SafeColor(pr::Tok::S_Color_Text_Subtle,
+                                  ImVec4(0.6f, 0.6f, 0.6f, 1)));
+                ImGui::Text("Repeats (%d)", (int)s.repeats.size());
+                ImGui::PopStyleColor();
+                int removeRep = -1;
+                for (std::size_t ri = 0; ri < s.repeats.size(); ++ri) {
+                    Ink::StrokeRepeat& rp = s.repeats[ri];
+                    ImGui::PushID((int)(3000 + ri));
+                    bool en = rp.enabled;
+                    if (pr::CheckRow("Enabled", &en)) {
+                        rp.enabled = en;
+                        structural = true; structLabel = "Repeat Enabled";
+                    }
+                    static const char* kRShape[] = {
+                        "Circle", "Rectangle", "Diamond", "Triangle",
+                        "Half Circle", "Line" };
+                    static const Ink::MarkShape kRShapeVal[] = {
+                        Ink::MarkShape::Circle, Ink::MarkShape::Rectangle,
+                        Ink::MarkShape::Diamond, Ink::MarkShape::Triangle,
+                        Ink::MarkShape::HalfCircle, Ink::MarkShape::Line };
+                    int shIdx = 0;
+                    for (int i = 0; i < 6; ++i)
+                        if (rp.shape == kRShapeVal[i]) shIdx = i;
+                    if (pr::DropdownRow("Shape", kRShape, 6, &shIdx)) {
+                        rp.shape = kRShapeVal[shIdx];
+                        // Line defaults to a 0 % side offset (its START at the
+                        // stroke, reaching out).
+                        if (rp.shape == Ink::MarkShape::Line &&
+                            rp.side != Ink::RepeatSide::Center)
+                            rp.sideOffset = 0.0;
+                        structural = true; structLabel = "Repeat Shape";
+                    }
+                    static const char* kRMode[] = { "Add", "Blend", "Cut" };
+                    int mode = (int)rp.mode;
+                    if (pr::ButtonGroupRow("Mode", kRMode, 3, &mode)) {
+                        rp.mode = (Ink::MarkObjectMode)mode;
+                        structural = true; structLabel = "Repeat Mode";
+                    }
+                    const bool addMode = rp.mode == Ink::MarkObjectMode::Fusion;
+                    bool pct = rp.sizePercent;
+                    if (pr::CheckRow("Size in %", &pct)) {
+                        rp.sizePercent = pct;
+                        structural = true; structLabel = "Repeat Units";
+                    }
+                    float sz = (float)rp.size;
+                    if (pr::DragFloat("Length", &sz, 0.5f, 0.01f, 10000.0f, 2)) {
+                        rp.size = sz; liveApply("Repeat Size", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Repeat Size", true);
+                    if (rp.shape == Ink::MarkShape::Rectangle ||
+                        rp.shape == Ink::MarkShape::Triangle ||
+                        rp.shape == Ink::MarkShape::Line) {
+                        float wd = (float)rp.width;
+                        if (pr::DragFloat(rp.shape == Ink::MarkShape::Line
+                                              ? "Thickness" : "Width",
+                                          &wd, 0.5f, 0.01f, 10000.0f, 2)) {
+                            rp.width = wd; liveApply("Repeat Width", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Repeat Width", true);
+                    }
+                    float rot =
+                        (float)(rp.rotation * 180.0 / 3.14159265358979);
+                    if (pr::DragFloat("Incline", &rot, 0.5f, -360.0f, 360.0f,
+                                      1, "\xC2\xB0")) {
+                        rp.rotation = rot * 3.14159265358979 / 180.0;
+                        liveApply("Repeat Incline", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Repeat Incline", true);
+                    static const char* kRSide[] = { "Center", "Left", "Right",
+                                                    "Inside", "Outside" };
+                    int side = (int)rp.side;
+                    if (pr::DropdownRow("Side", kRSide, 5, &side)) {
+                        const bool wasCenter =
+                            rp.side == Ink::RepeatSide::Center;
+                        rp.side = (Ink::RepeatSide)side;
+                        // First time OFF Center → the natural default (Line
+                        // starts at the stroke = 0 %; other shapes 50 %).
+                        if (wasCenter && rp.side != Ink::RepeatSide::Center)
+                            rp.sideOffset =
+                                rp.shape == Ink::MarkShape::Line ? 0.0 : 50.0;
+                        structural = true; structLabel = "Repeat Side";
+                    }
+                    if (rp.side != Ink::RepeatSide::Center) {
+                        float so = (float)rp.sideOffset;
+                        // Negative offsets allowed (the other side / reversed).
+                        if (pr::DragFloat(rp.offsetPercent ? "Offset %"
+                                                           : "Offset",
+                                          &so, 0.5f, -10000.0f, 10000.0f, 1)) {
+                            rp.sideOffset = so;
+                            liveApply("Repeat Offset", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Repeat Offset", true);
+                        bool opct = rp.offsetPercent;
+                        if (pr::CheckRow("Offset in %", &opct)) {
+                            rp.offsetPercent = opct;
+                            structural = true; structLabel = "Repeat Offset";
+                        }
+                    }
+                    if (rp.shape == Ink::MarkShape::Line &&
+                        rp.side != Ink::RepeatSide::Center) {
+                        bool jn = rp.lineJoin;
+                        if (pr::CheckRow("Join to path", &jn)) {
+                            rp.lineJoin = jn;
+                            structural = true; structLabel = "Line Join";
+                        }
+                        bool cl = rp.lineClip;
+                        if (pr::CheckRow("Clip at path", &cl)) {
+                            rp.lineClip = cl;
+                            structural = true; structLabel = "Line Clip";
+                        }
+                    }
+                    static const char* kRDist[] = { "Pitch", "Gap", "Count",
+                                                    "Density" };
+                    int dist = (int)rp.distribute;
+                    if (pr::DropdownRow("Distribute", kRDist, 4, &dist)) {
+                        rp.distribute = (Ink::RepeatDistribute)dist;
+                        structural = true; structLabel = "Repeat Distribution";
+                    }
+                    if (rp.distribute == Ink::RepeatDistribute::Pitch) {
+                        float pv = (float)rp.pitch;
+                        if (pr::DragFloat("Spacing c-c", &pv, 0.2f, 0.01f,
+                                          10000.0f, 2)) {
+                            rp.pitch = pv; liveApply("Repeat Pitch", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Repeat Pitch", true);
+                    } else if (rp.distribute == Ink::RepeatDistribute::Gap) {
+                        float gv = (float)rp.gap;
+                        if (pr::DragFloat("Gap edge-edge", &gv, 0.2f, 0.0f,
+                                          10000.0f, 2)) {
+                            rp.gap = gv; liveApply("Repeat Gap", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Repeat Gap", true);
+                    } else if (rp.distribute == Ink::RepeatDistribute::Count) {
+                        int cv = rp.count;
+                        if (pr::DragInt("Count", &cv, 0.2f, 1, 10000)) {
+                            rp.count = cv; liveApply("Repeat Count", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Repeat Count", true);
+                    } else {
+                        float dv = (float)rp.density;
+                        if (pr::DragFloat("Per 100 units", &dv, 0.2f, 0.01f,
+                                          1000.0f, 2)) {
+                            rp.density = dv; liveApply("Repeat Density", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Repeat Density", true);
+                    }
+                    float ph = (float)rp.phase;
+                    if (pr::DragFloat("Phase", &ph, 0.2f, -10000.0f,
+                                      10000.0f, 2)) {
+                        rp.phase = ph; liveApply("Repeat Phase", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Repeat Phase", true);
+                    int gc = rp.groupCount;
+                    if (pr::DragInt("Group size", &gc, 0.1f, 1, 64)) {
+                        rp.groupCount = gc; liveApply("Repeat Group", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Repeat Group", true);
+                    if (rp.groupCount > 1) {
+                        float gp = (float)rp.groupPitch;
+                        if (pr::DragFloat("Group c-c", &gp, 0.1f, 0.01f,
+                                          10000.0f, 2)) {
+                            rp.groupPitch = gp;
+                            liveApply("Repeat Group Pitch", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Repeat Group Pitch", true);
+                    }
+                    // Trims.
+                    float ts0 = (float)rp.startTrim, ts1 = (float)rp.endTrim;
+                    if (pr::DragFloat("Trim start", &ts0, 0.5f, 0.0f,
+                                      1000000.0f, 1)) {
+                        rp.startTrim = ts0; liveApply("Repeat Trim", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Repeat Trim", true);
+                    if (pr::DragFloat("Trim end", &ts1, 0.5f, 0.0f,
+                                      1000000.0f, 1)) {
+                        rp.endTrim = ts1; liveApply("Repeat Trim", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Repeat Trim", true);
+                    // Anchor fit — how the pitch stretches between repeat
+                    // anchors (marks). ScaleBoth stretches the pitch; the
+                    // others keep it exact.
+                    static const char* kRFit[] = { "Stretch pitch",
+                                                   "Fixed pitch" };
+                    int fit = rp.fit == Ink::DashFit::ScaleBoth ? 0 : 1;
+                    if (pr::DropdownRow("Anchor fit", kRFit, 2, &fit)) {
+                        rp.fit = fit == 0 ? Ink::DashFit::ScaleBoth
+                                          : Ink::DashFit::ScaleDash;
+                        structural = true; structLabel = "Repeat Fit";
+                    }
+                    // Colour options: only BLEND exposes a colour choice. ADD
+                    // (Fusion) fuses in the stroke colour; CUT erases (no
+                    // colour). Opacity is the erase strength for Cut, the paint
+                    // alpha for Blend-with-stroke-colour; a Blend with a CUSTOM
+                    // colour already carries alpha, so opacity is hidden there.
+                    const bool cutMode = rp.mode == Ink::MarkObjectMode::Subtract;
+                    if (rp.mode == Ink::MarkObjectMode::Blend) {
+                        bool useSC = rp.useStrokeColor;
+                        if (pr::CheckRow("Stroke colour", &useSC)) {
+                            rp.useStrokeColor = useSC;
+                            structural = true; structLabel = "Repeat Colour";
+                        }
+                        if (!rp.useStrokeColor) {
+                            bool crel = false;
+                            if (pr::ColorRow("Colour", &rp.color, true, &crel))
+                                liveApply("Repeat Colour", false);
+                            if (crel) liveApply("Repeat Colour", true);
+                        }
+                    }
+                    const bool customAlpha =
+                        rp.mode == Ink::MarkObjectMode::Blend &&
+                        !rp.useStrokeColor;
+                    if (!addMode && !customAlpha) {
+                        float op = rp.opacity;
+                        if (pr::DragFloat(cutMode ? "Erase strength" : "Opacity",
+                                          &op, 0.01f, 0.0f, 1.0f, 2)) {
+                            rp.opacity = op;
+                            liveApply("Repeat Opacity", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Repeat Opacity", true);
+                    }
+                    if (ImGui::SmallButton("Remove repeat"))
+                        removeRep = (int)ri;
+                    ImGui::PopID();
+                    pr::GroupGap();
+                }
+                if (removeRep >= 0) {
+                    s.repeats.erase(s.repeats.begin() + removeRep);
+                    structural = true; structLabel = "Remove Repeat";
+                }
+                if (ImGui::SmallButton("Add repeat")) {
+                    Ink::StrokeRepeat rp;
+                    rp.shape = Ink::MarkShape::Rectangle;
+                    // A fence tick: SHORT along the line, TALL across it.
+                    rp.size = 8.0;    // half-length along the tangent
+                    rp.width = 40.0;  // half-height across
+                    s.repeats.push_back(rp);
+                    structural = true; structLabel = "Add Repeat";
+                }
             }
 
             // Line MARKS are no longer edited here — they moved to the viewport
@@ -1252,7 +1628,9 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
         "Color Dodge", "Color Burn", "Hard Light", "Soft Light", "Difference",
         "Exclusion", "Erase" };
     static const char* kShape[] = {
-        "Circle", "Rectangle", "Diamond", "Instance", "Gap" };
+        "Circle", "Rectangle", "Diamond", "Instance", "Gap", "Triangle",
+        "Half Circle" };
+    constexpr int kNShape = 7;   // dropdown order == MarkShape enum order
 
     // Position along the line.
     float t = (float)m.t;
@@ -1294,6 +1672,33 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
     if (pr::ButtonGroupRow("Dash phase", kPhase, 3, &ph)) {
         m.phase = (Ink::MarkPhase)ph; structural = true; structLabel = "Mark Phase";
     }
+    if (m.phase != Ink::MarkPhase::Neutral) {
+        // Forced size of the centred dash/gap (0 = the pattern's own length).
+        float asz = (float)m.anchorSize;
+        if (pr::DragFloat("Anchor size", &asz, 0.1f, 0.0f, 100000.0f, 2)) {
+            m.anchorSize = asz; liveApply("Mark Anchor Size", false);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            liveApply("Mark Anchor Size", true);
+    }
+    // Repeat-run anchoring: centre an object/group of every repeat here, or
+    // the space BETWEEN two groups.
+    static const char* kRAnchor[] = { "None", "Object", "Between" };
+    int ra = (int)m.repeatAnchor;
+    if (pr::ButtonGroupRow("Repeats", kRAnchor, 3, &ra)) {
+        m.repeatAnchor = (Ink::MarkRepeatAnchor)ra;
+        structural = true; structLabel = "Mark Repeat Anchor";
+    }
+    if (m.repeatAnchor != Ink::MarkRepeatAnchor::None) {
+        // The forced pitch (doc units) of the repeat segment starting here —
+        // the "Anchor Size" for repeats (0 = the run's own pitch).
+        float rg = (float)m.repeatGap;
+        if (pr::DragFloat("Repeat pitch", &rg, 0.1f, 0.0f, 100000.0f, 2)) {
+            m.repeatGap = rg; liveApply("Mark Repeat Pitch", false);
+        }
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            liveApply("Mark Repeat Pitch", true);
+    }
 
     // ── Objects on this mark ──────────────────────────────────────────────────
     int removeObj = -1;
@@ -1301,7 +1706,7 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
         Ink::MarkObject& o = m.objects[oi];
         ImGui::PushID((int)(50 + oi));
         int shp = (int)o.shape;
-        if (pr::DropdownRow("Object", kShape, 5, &shp)) {
+        if (pr::DropdownRow("Object", kShape, kNShape, &shp)) {
             const Ink::MarkShape ns = (Ink::MarkShape)shp;
             if ((ns == Ink::MarkShape::Rectangle || ns == Ink::MarkShape::Gap) &&
                 o.shape != ns && o.sizePercent && std::abs(o.size - 100.0) < 1e-6)
@@ -1439,8 +1844,10 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
                 if (ImGui::IsItemDeactivatedAfterEdit())
                     liveApply("Mark Object Size", true);
             };
-            if (o.shape == Ink::MarkShape::Circle) sizeField("Radius", &o.size);
-            else if (o.shape == Ink::MarkShape::Rectangle) {
+            if (o.shape == Ink::MarkShape::Circle ||
+                o.shape == Ink::MarkShape::HalfCircle) sizeField("Radius", &o.size);
+            else if (o.shape == Ink::MarkShape::Rectangle ||
+                     o.shape == Ink::MarkShape::Triangle) {
                 sizeField("Length", &o.size); sizeField("Width", &o.width);
             } else sizeField("Diagonal", &o.size);
             static const char* kUnit[] = { "%", "px" };
@@ -1472,9 +1879,9 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
             if (ImGui::IsItemDeactivatedAfterEdit()) liveApply("Mark Along", true);
         }
         {
-            static const char* kBend[] = { "Hard", "Bend", "Follow" };
+            static const char* kBend[] = { "Hard", "Bend", "Follow", "Chord" };
             int bd = (int)o.bend;
-            if (pr::ButtonGroupRow("Shape", kBend, 3, &bd)) {
+            if (pr::DropdownRow("Bend", kBend, 4, &bd)) {
                 o.bend = (Ink::MarkBend)bd; structural = true; structLabel = "Mark Bend";
             }
         }

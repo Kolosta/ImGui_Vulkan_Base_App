@@ -247,6 +247,9 @@ void Application::LoadProjectFromFile(const std::string& path) {
     viewportCtxOpen_ = false;
     osCursorHidden_  = false;
     markPreviewSaved_.clear();   // saved styles referenced the OLD document
+    penActive_ = false;          // any pen construction referenced it too
+    penHasPending_ = false;
+    penNode_ = penFillNode_ = Ink::kNullNode;
     if (ink_) ink_->SetDocument(project_.document.get());
 
     // Restore the module the file was made with (Lot 11): activate it WITHOUT

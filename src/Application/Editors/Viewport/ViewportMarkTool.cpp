@@ -348,6 +348,24 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         return true;
     };
 
+    // A faint ghost of a mark's CURRENT (pre-move) position, so a drag shows
+    // both where it WAS and where it WILL be. The real mark keeps its stored
+    // `t` until commit, so markWorld gives the origin position.
+    auto drawOldPos = [&](const EditContext::MarkRef& r) {
+        Ink::DVec2 p, tn;
+        if (!markWorld(r, p, tn)) return;
+        const Ink::Vec2 c = d2v(p);
+        const Ink::Color faint = MkCol(Tok::S_Color_Text_Subtle, 0.5f);
+        for (int i = 0; i < 8; ++i) {   // dashed ring
+            const float a0 = (float)i / 8.0f * 6.2831853f;
+            const float a1 = a0 + 0.5f * 6.2831853f / 8.0f;
+            ov.AddLine({ c.x + std::cos(a0) * 6.0f, c.y + std::sin(a0) * 6.0f },
+                       { c.x + std::cos(a1) * 6.0f, c.y + std::sin(a1) * 6.0f },
+                       faint, 1.0f);
+        }
+        ov.AddCircleFilled(c, 1.5f, faint);
+    };
+
     struct StylePair { Ink::NodeId id; Ink::Style before, after; };
     auto commitStyles = [&](std::vector<StylePair> ps, const char* label) {
         if (ps.empty()) return;
@@ -363,6 +381,11 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         LogInfoAction(label);
     };
     auto snapshotStyles = [&](const std::vector<EditContext::MarkRef>& refs) {
+        // A ghost drawn EARLIER THIS FRAME may have live-applied a preview
+        // style; restore the true document first, or the snapshot (and the
+        // commit built on it) would capture the preview — and the end-of-frame
+        // restore would then silently UNDO the committed edit.
+        ClearMarkPreviewStyle();
         std::vector<StylePair> ps;
         for (const EditContext::MarkRef& r : refs) {
             bool seen = false;
@@ -402,71 +425,156 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         const float alpha = 0.55f;
         const Ink::Color base = sk.paint.color;
 
-        // ── LIVE pipeline preview (Subtract / Gap) ───────────────────────────
-        // Apply a temporary style where the ghost mark replaces (or joins) the
-        // real one: its Subtract objects run at PARTIAL erase strength, and
-        // each Gap span keeps a DIMMED companion copy of the stroke (its own
-        // dashes preserved, cut to exactly the opening) — the canvas shows the
-        // stroke below turning semi-transparent, rendered by the real Vulkan
-        // pipeline. Restored right after this frame records (Update()).
-        bool wantsLive = false;
+        // Arc length of the placement spine (gap-end sub-object positions).
+        double spineTot = 0.0;
+        {
+            const auto& pts = spine.points;
+            const std::size_t nn = pts.size();
+            const std::size_t sc = spine.closed ? nn : (nn ? nn - 1 : 0);
+            for (std::size_t i = 0; i < sc; ++i)
+                spineTot += std::hypot(pts[(i + 1) % nn].x - pts[i].x,
+                                       pts[(i + 1) % nn].y - pts[i].y);
+        }
+
+        // ── LIVE pipeline preview (re-phasing + erase/gap) ───────────────────
+        // Apply a temporary style so the REAL pipeline shows, live at the
+        // preview position: the DASH RE-PHASING (any non-Neutral mark, whatever
+        // its objects — dash/gap re-phase follows the ghost), a Subtract
+        // object's PARTIAL erase, and a GAP swapped for a PARTIAL-ERASE BAND
+        // over exactly the opening (its Subtract sub-objects erase at the gap
+        // ends too). Fusion/Blend objects are ghosted separately, so they are
+        // stripped here (a pipeline copy would double them). Nothing temporary
+        // ever shows in the Stroke editor. Restored right after this frame
+        // records (Update()) and before any commit (snapshotStyles).
+        // Also live for a REPEAT ANCHOR (Object/Between): the temp mark at the
+        // preview position re-phases the stroke's repeat runs, so moving it
+        // shifts the repeats live — exactly like the dash/gap re-phasing.
+        bool wantsLive = m.phase != Ink::MarkPhase::Neutral ||
+                         m.repeatAnchor != Ink::MarkRepeatAnchor::None;
         for (const Ink::MarkObject& o : m.objects)
             wantsLive = wantsLive || o.shape == Ink::MarkShape::Gap ||
                         o.mode == Ink::MarkObjectMode::Subtract;
         if (wantsLive) {
             Ink::Style ps = n->style;
             Ink::Stroke& host = ps.strokes[(std::size_t)strokeIdx];
-            Ink::StrokeMark pm = m;
-            for (Ink::MarkObject& o : pm.objects)
-                if (o.mode == Ink::MarkObjectMode::Subtract)
-                    o.opacity = 0.45f;          // partial erase while previewing
+            Ink::StrokeMark pm = m;            // keeps position + phase
+            std::vector<Ink::MarkObject> keep;
+            std::vector<Ink::StrokeMark>  extra;   // gap-end erase sub-objects
+            for (const Ink::MarkObject& o : m.objects) {
+                if (o.shape == Ink::MarkShape::Gap) {
+                    // The Gap's SIZE is the full opening length; a Rectangle's
+                    // `size` is a HALF-extent — so halve it for the band.
+                    Ink::MarkObject band;
+                    band.shape = Ink::MarkShape::Rectangle;
+                    band.mode  = Ink::MarkObjectMode::Subtract;
+                    band.bend  = Ink::MarkBend::Follow;   // hug the curve
+                    band.sizePercent = o.sizePercent;
+                    band.size  = o.size * 0.5;
+                    band.width = o.sizePercent ? 60.0 : sk.width * 0.6;
+                    band.opacity = 0.45f;
+                    keep.push_back(band);
+                    // Subtract sub-objects at the gap ends erase live too.
+                    if (spineTot > 1e-9) {
+                        const double half =
+                            std::max(1e-4, o.SizeUnits(sk.width)) * 0.5;
+                        const double tc =
+                            std::clamp(m.t, 0.0, 1.0) * spineTot;
+                        auto addEnds =
+                            [&](double endArc,
+                                const std::vector<Ink::MarkObject>& objs) {
+                            std::vector<Ink::MarkObject> subs;
+                            for (const Ink::MarkObject& so : objs)
+                                if (so.shape != Ink::MarkShape::Gap &&
+                                    so.mode == Ink::MarkObjectMode::Subtract) {
+                                    Ink::MarkObject c = so; c.opacity = 0.45f;
+                                    subs.push_back(c);
+                                }
+                            if (!subs.empty()) {
+                                Ink::StrokeMark vm = m;
+                                vm.phase = Ink::MarkPhase::Neutral;
+                                vm.objects = subs;
+                                vm.t = std::clamp(endArc / spineTot, 0.0, 1.0);
+                                extra.push_back(vm);
+                            }
+                        };
+                        addEnds(tc - half, o.gapStartObjects);
+                        addEnds(tc + half, o.gapEndObjects);
+                    }
+                } else if (o.mode == Ink::MarkObjectMode::Subtract) {
+                    Ink::MarkObject c = o; c.opacity = 0.45f;
+                    keep.push_back(c);
+                }
+                // Fusion / Blend objects: ghosted separately (stripped here).
+            }
+            pm.objects = std::move(keep);
             if (replaceIndex >= 0 && replaceIndex < (int)host.marks.size())
                 host.marks[(std::size_t)replaceIndex] = pm;
             else
                 host.marks.push_back(pm);
-            // Arc total of THIS subpath at the placement tolerance (the same
-            // parameterisation the stroker's gap cut uses).
-            double liveTot = 0.0;
-            {
-                const auto& pts = spine.points;
-                const std::size_t nn = pts.size();
-                const std::size_t sc = spine.closed ? nn : (nn ? nn - 1 : 0);
-                for (std::size_t i = 0; i < sc; ++i)
-                    liveTot += std::hypot(pts[(i + 1) % nn].x - pts[i].x,
-                                          pts[(i + 1) % nn].y - pts[i].y);
-            }
-            if (liveTot > 1e-9) {
-                for (const Ink::MarkObject& o : m.objects) {
-                    if (o.shape != Ink::MarkShape::Gap) continue;
-                    const double half =
-                        std::max(1e-4, o.SizeUnits(sk.width)) * 0.5;
-                    const double c  = std::clamp(m.t, 0.0, 1.0) * liveTot;
-                    const double lo = std::max(0.0, c - half);
-                    const double hi = std::min(liveTot, c + half);
-                    if (hi - lo < 1e-6) continue;
-                    // Dimmed copy restricted to [lo,hi]: two synthetic gaps cut
-                    // everything OUTSIDE the span (butt-capped, no re-phasing).
-                    Ink::Stroke dim = n->style.strokes[(std::size_t)strokeIdx];
-                    dim.marks.clear();
-                    dim.paint.color.a *= 0.4f;
-                    auto cutOutside = [&](double from, double to) {
-                        if (to - from < 1e-6) return;
-                        Ink::MarkObject g;
-                        g.shape = Ink::MarkShape::Gap;
-                        g.sizePercent = false;
-                        g.size = to - from;
-                        Ink::StrokeMark gm;
-                        gm.sub = m.sub;
-                        gm.t = ((from + to) * 0.5) / liveTot;
-                        gm.objects.push_back(g);
-                        dim.marks.push_back(gm);
-                    };
-                    cutOutside(0.0, lo);
-                    cutOutside(hi, liveTot);
-                    ps.strokes.push_back(std::move(dim));
-                }
-            }
+            for (const Ink::StrokeMark& e : extra) host.marks.push_back(e);
             ApplyMarkPreviewStyle(nodeId, ps);
+        }
+        // An OBJECTLESS mark has no shape to preview — draw a construction
+        // glyph at its future position matching the handle CONVENTION: the
+        // phase decides both COLOUR and SHAPE (Neutral = blue circle, Dash =
+        // violet diamond, Gap = green square), traced dashed.
+        if (m.objects.empty()) {
+            const double total2 = PolyTotal(worldPoly);
+            if (total2 > 1e-9) {
+                Ink::DVec2 bp, bt;
+                PointAtT(worldPoly, m.t, bp, bt);
+                const Ink::DVec2 nrm{ -bt.y, bt.x };
+                double off2 = 0.0;
+                if (m.side == Ink::MarkSide::Left)
+                    off2 =  m.OffsetUnits(sk.width) * wsc;
+                if (m.side == Ink::MarkSide::Right)
+                    off2 = -m.OffsetUnits(sk.width) * wsc;
+                const Ink::Vec2 c2 =
+                    d2v({ bp.x + nrm.x * off2, bp.y + nrm.y * off2 });
+                const bool isDash = m.phase == Ink::MarkPhase::Dash;
+                const bool isGap  = m.phase == Ink::MarkPhase::Gap;
+                const Ink::Color cc2 =
+                    isDash ? MkCol(Tok::C_EditHandle_Vector, 0.95f)
+                  : isGap  ? MkCol(Tok::C_EditHandle_Mirrored, 0.95f)
+                           : MkCol(Tok::C_EditHandle_Free, 0.95f);
+                // Tangent frame so the glyph aligns to the curve like handles.
+                Ink::Vec2 tv = d2v({ bp.x + bt.x, bp.y + bt.y });
+                float tx = tv.x - d2v(bp).x, ty = tv.y - d2v(bp).y;
+                const float tl = std::sqrt(tx * tx + ty * ty);
+                if (tl < 1e-4f) { tx = 1.0f; ty = 0.0f; }
+                else            { tx /= tl; ty /= tl; }
+                const float nx2 = -ty, ny2 = tx;
+                auto P2 = [&](float a, float b) {
+                    return Ink::Vec2{ c2.x + tx * a + nx2 * b,
+                                      c2.y + ty * a + ny2 * b };
+                };
+                auto dashSeg = [&](Ink::Vec2 a, Ink::Vec2 b) {
+                    DashLine(ov, a, b, cc2, 1.3f, 3.5f, 2.5f);
+                };
+                const float rr2 = 7.0f;
+                if (isDash) {          // diamond
+                    dashSeg(P2(rr2, 0), P2(0, rr2));
+                    dashSeg(P2(0, rr2), P2(-rr2, 0));
+                    dashSeg(P2(-rr2, 0), P2(0, -rr2));
+                    dashSeg(P2(0, -rr2), P2(rr2, 0));
+                } else if (isGap) {    // square
+                    const float hh2 = rr2 * 0.8f;
+                    dashSeg(P2(hh2, hh2), P2(-hh2, hh2));
+                    dashSeg(P2(-hh2, hh2), P2(-hh2, -hh2));
+                    dashSeg(P2(-hh2, -hh2), P2(hh2, -hh2));
+                    dashSeg(P2(hh2, -hh2), P2(hh2, hh2));
+                } else {               // circle
+                    for (int i2 = 0; i2 < 8; ++i2) {
+                        const float a0 = (float)i2 / 8.0f * 6.2831853f;
+                        const float a1 = a0 + 0.5f * 6.2831853f / 8.0f;
+                        ov.AddLine({ c2.x + std::cos(a0) * rr2,
+                                     c2.y + std::sin(a0) * rr2 },
+                                   { c2.x + std::cos(a1) * rr2,
+                                     c2.y + std::sin(a1) * rr2 }, cc2, 1.3f);
+                    }
+                }
+                ov.AddCircleFilled(c2, 2.0f, cc2);
+            }
         }
         // The side/offset guide: a dashed line from the spine point to the
         // offset mark point (world space).
@@ -494,61 +602,103 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 col = { o.color.r * alpha, o.color.g * alpha,
                         o.color.b * alpha, alpha };
             if (o.shape == Ink::MarkShape::Instance) {
-                // A translucent preview of the referenced node's geometry placed
-                // at the mark (frame · scale · cancel-target-transform), exactly
-                // as the Scene will render it. Follow falls back to the Bend shear
-                // (a node's geometry can't be truly Follow-bent).
-                Ink::MarkObject po = o;
-                if (po.bend == Ink::MarkBend::Follow) po.bend = Ink::MarkBend::Bend;
+                // A translucent preview of the target's FULL rendering (fills
+                // AND strokes), through the exact geometry the Scene emits:
+                // Bend/Follow derive the bent path (MarkBendPath — the same
+                // deformation the primitive rings get), Hard places the raw
+                // geometry by the rigid frame.
                 const Ink::Node* tgt = doc.Find(o.nodeRef);
                 if (!tgt || tgt->kind != Ink::NodeKind::Path ||
                     tgt->path.Empty()) {
                     // No geometry: mark the placement with a ring at the frame
                     // origin (world), so a missing Instance is still visible.
                     const Ink::DMat23 fr =
-                        Ink::geom::MarkPlaceMatrix(spine, mk, po, sk.width);
+                        Ink::geom::MarkPlaceMatrix(spine, mk, o, sk.width);
                     ov.AddCircle(d2v(w.Apply(fr.Apply({ 0, 0 }))), 6.0f,
                                  MkCol(Tok::S_Color_Accent_Default, 0.7f), 1.5f);
                     return;
                 }
                 const double k = o.sizePercent ? o.size * 0.01
                                                : std::max(1e-6, o.size);
-                // Bend shear extent = the instance geometry's radius × scale
-                // (mirrors the Scene, so the ghost leans exactly like the
-                // final render).
-                double instR = 0.0;
-                for (const Ink::Subpath& tsp : tgt->path.subpaths)
-                    for (const Ink::Anchor& ta : tsp.anchors)
-                        instR = std::max(instR,
-                                         std::hypot(ta.pos.x, ta.pos.y));
-                const Ink::DMat23 frame = Ink::geom::MarkPlaceMatrix(
-                    spine, mk, po, sk.width, std::max(1e-3, instR * k));
-                Ink::DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
-                // The target's OWN transform is cancelled by the Scene, so its
-                // local geometry lands under place = frame · scale.
-                const Ink::DMat23 place = frame.Compose(scaleM);
-                Ink::Color tcol = tgt->style.fills.empty()
-                    ? MkCol(Tok::S_Color_Accent_Default, alpha)
-                    : Ink::Color{ tgt->style.fills.front().paint.color.r * alpha,
-                                  tgt->style.fills.front().paint.color.g * alpha,
-                                  tgt->style.fills.front().paint.color.b * alpha,
-                                  alpha };
-                ov.BeginDedup();   // fans overlap — blend the ghost once
-                for (const auto& pl : Ink::geom::Flatten(tgt->path, localTol)) {
-                    if (pl.points.size() < 3) continue;
-                    Ink::DVec2 cn{ 0, 0 };
-                    for (const Ink::DVec2& p : pl.points) { cn.x+=p.x; cn.y+=p.y; }
-                    cn.x /= (double)pl.points.size();
-                    cn.y /= (double)pl.points.size();
-                    const Ink::Vec2 cvv = d2v(w.Apply(place.Apply(cn)));
-                    for (std::size_t i = 0; i < pl.points.size(); ++i) {
-                        const Ink::DVec2 aw = w.Apply(place.Apply(pl.points[i]));
-                        const Ink::DVec2 bw = w.Apply(place.Apply(
-                            pl.points[(i + 1) % pl.points.size()]));
-                        ov.AddTriangle(cvv, d2v(aw), d2v(bw), tcol);
+                Ink::PathData gp;   // node-local, scale baked in
+                if (Ink::geom::BendsAlongCurve(o.bend)) {
+                    gp = Ink::geom::MarkBendPath(spine, mk, o, sk.width,
+                                                 tgt->path, k, localTol);
+                } else {
+                    const Ink::DMat23 place =
+                        Ink::geom::MarkPlaceMatrix(spine, mk, o, sk.width);
+                    Ink::DMat23 scaleM; scaleM.m[0] = k; scaleM.m[4] = k;
+                    const Ink::DMat23 pk = place.Compose(scaleM);
+                    for (const auto& pl :
+                         Ink::geom::Flatten(tgt->path, localTol / k)) {
+                        if (pl.points.size() < 2) continue;
+                        Ink::Subpath sp2;
+                        sp2.closed = pl.closed;
+                        for (const Ink::DVec2& q : pl.points) {
+                            Ink::Anchor an2;
+                            an2.pos = pk.Apply(q);
+                            sp2.anchors.push_back(an2);
+                        }
+                        gp.subpaths.push_back(std::move(sp2));
                     }
                 }
-                ov.EndDedup();
+                if (gp.Empty()) return;
+                const auto gpFlat = Ink::geom::Flatten(gp, localTol);
+                auto vp2 = [&](const Ink::geom::Mesh& mesh,
+                               std::uint32_t idx) {
+                    const Ink::DVec2 lp{ mesh.positions[idx * 2],
+                                         mesh.positions[idx * 2 + 1] };
+                    return d2v(w.Apply(lp));
+                };
+                // FUSION shows the instance's SHAPE in the STROKE colour (its
+                // own colours ignored — matches the Scene); BLEND shows its
+                // real render (own colours).
+                const bool fuse = o.mode == Ink::MarkObjectMode::Fusion;
+                auto emitMesh = [&](const Ink::geom::Mesh& mesh,
+                                    const Ink::Color& c) {
+                    ov.BeginDedup();
+                    for (std::size_t i = 0; i + 2 < mesh.indices.size(); i += 3)
+                        ov.AddTriangle(vp2(mesh, mesh.indices[i]),
+                                       vp2(mesh, mesh.indices[i + 1]),
+                                       vp2(mesh, mesh.indices[i + 2]), c);
+                    ov.EndDedup();
+                };
+                if (fuse) {
+                    // Silhouette fill + strokes, all in the stroke colour.
+                    const Ink::Color kc = base;
+                    const float fa = kc.a * alpha;
+                    const Ink::Color tc2{ kc.r * fa, kc.g * fa, kc.b * fa, fa };
+                    emitMesh(Ink::geom::TriangulateFill(gpFlat,
+                                 Ink::FillRule::NonZero), tc2);
+                    for (const Ink::Stroke& ts : tgt->style.strokes) {
+                        if (!ts.enabled || ts.width <= 0.0) continue;
+                        Ink::Stroke ss2 = ts;
+                        ss2.width = ts.width * k;
+                        ss2.marks.clear(); ss2.repeats.clear();
+                        emitMesh(Ink::geom::TessellateStroke(gpFlat, ss2,
+                                     localTol), tc2);
+                    }
+                    return;
+                }
+                // Blend: fills then strokes with the target's own colours.
+                const Ink::geom::Mesh fm =
+                    Ink::geom::TriangulateFill(gpFlat, Ink::FillRule::NonZero);
+                for (const Ink::Fill& f : tgt->style.fills) {
+                    if (!f.enabled || f.kind != Ink::FillKind::Solid) continue;
+                    const Ink::Color fc = f.paint.color;
+                    const float fa = fc.a * f.opacity * alpha;
+                    emitMesh(fm, { fc.r * fa, fc.g * fa, fc.b * fa, fa });
+                }
+                for (const Ink::Stroke& ts : tgt->style.strokes) {
+                    if (!ts.enabled || ts.width <= 0.0) continue;
+                    Ink::Stroke ss2 = ts;
+                    ss2.width = ts.width * k;
+                    ss2.marks.clear(); ss2.repeats.clear();
+                    const Ink::Color kc = ts.paint.color;
+                    const float ea2 = kc.a * alpha;
+                    emitMesh(Ink::geom::TessellateStroke(gpFlat, ss2, localTol),
+                             { kc.r * ea2, kc.g * ea2, kc.b * ea2, ea2 });
+                }
                 return;
             }
             // The real filled shape (as it renders): Follow curves the outline
@@ -590,14 +740,19 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
 
         // A SUBTRACT object previews as a dashed construction OUTLINE — the
         // erase itself already renders live through the temporary style above,
-        // so no filled ghost is painted over it.
+        // so no filled ghost is painted over it. The dash PHASE is continuous
+        // around the whole ring (a per-segment dash restart on a densely
+        // resampled Follow ring reads as a solid line), and the outline ring
+        // uses a bounded tolerance (it is a guide — no need for the render
+        // density, which also made the ghost laggy).
         auto drawCutOutline = [&](const Ink::StrokeMark& mk,
                                   const Ink::MarkObject& o) {
             if (o.shape == Ink::MarkShape::Instance) return;   // live erase only
+            const double outlineTol = std::max(localTol, 0.02);
             std::vector<Ink::DVec2> ring;
             if (Ink::geom::BendsAlongCurve(o.bend)) {
                 if (!Ink::geom::MarkFollowContour(spine, mk, o, sk.width,
-                                                  localTol, ring))
+                                                  outlineTol, ring))
                     return;
             } else {
                 const Ink::PathData shape =
@@ -605,16 +760,37 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 if (shape.Empty()) return;
                 const Ink::DMat23 place =
                     Ink::geom::MarkPlaceMatrix(spine, mk, o, sk.width);
-                for (const auto& pl : Ink::geom::Flatten(shape, localTol))
+                for (const auto& pl : Ink::geom::Flatten(shape, outlineTol))
                     for (const Ink::DVec2& q : pl.points)
                         ring.push_back(place.Apply(q));
             }
             if (ring.size() < 2) return;
             const Ink::Color oc = MkCol(Tok::S_Color_Text_Subtle, 0.9f);
-            for (std::size_t i = 0; i < ring.size(); ++i) {
-                const Ink::DVec2 aw = w.Apply(ring[i]);
-                const Ink::DVec2 bw2 = w.Apply(ring[(i + 1) % ring.size()]);
-                DashLine(ov, d2v(aw), d2v(bw2), oc, 1.2f, 4.0f, 3.0f);
+            const float dash = 4.0f, gapPx = 3.0f, period = dash + gapPx;
+            float phase = 0.0f;   // runs continuously across ring segments
+            Ink::Vec2 prev = d2v(w.Apply(ring[0]));
+            for (std::size_t i = 1; i <= ring.size(); ++i) {
+                const Ink::Vec2 cur = d2v(w.Apply(ring[i % ring.size()]));
+                const float dx = cur.x - prev.x, dy = cur.y - prev.y;
+                const float len = std::sqrt(dx * dx + dy * dy);
+                if (len > 1e-3f) {
+                    const float ux = dx / len, uy = dy / len;
+                    float p = 0.0f;
+                    while (p < len) {
+                        const float cyc = std::fmod(phase + p, period);
+                        if (cyc < dash) {           // inside a dash run
+                            const float run = std::min(dash - cyc, len - p);
+                            ov.AddLine({ prev.x + ux * p, prev.y + uy * p },
+                                       { prev.x + ux * (p + run),
+                                         prev.y + uy * (p + run) }, oc, 1.2f);
+                            p += run;
+                        } else {                    // inside a gap run
+                            p += std::min(period - cyc, len - p);
+                        }
+                    }
+                    phase += len;
+                }
+                prev = cur;
             }
         };
 
@@ -641,9 +817,16 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                                         const std::vector<Ink::MarkObject>& objs) {
                         Ink::StrokeMark vm = m;
                         vm.t = std::clamp(endArc / sTot, 0.0, 1.0);
-                        for (const Ink::MarkObject& so : objs)
-                            if (so.shape != Ink::MarkShape::Gap)
+                        for (const Ink::MarkObject& so : objs) {
+                            if (so.shape == Ink::MarkShape::Gap) continue;
+                            // A Subtract sub-object erases live (temp style
+                            // above) and previews as a dashed outline, exactly
+                            // like a top-level Cut object — never a filled ghost.
+                            if (so.mode == Ink::MarkObjectMode::Subtract)
+                                drawCutOutline(vm, so);
+                            else
                                 drawObject(vm, so);
+                        }
                     };
                     stampEnd(stc - sHalf, o.gapStartObjects);
                     stampEnd(stc + sHalf, o.gapEndObjects);
@@ -725,6 +908,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                     drawGhost(id, si, g, polys[(std::size_t)sub]);
             }
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                ClearMarkPreviewStyle();   // drop this frame's ghost style first
                 struct SP { Ink::NodeId id; Ink::Style before, after; };
                 const Ink::Node* n = doc.Find(id);
                 if (n && si >= 0 && si < (int)n->style.strokes.size()) {
@@ -785,6 +969,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 const EditContext::MarkRef& r = markGrab_.refs[k];
                 const Ink::StrokeMark* m = markOf(r);
                 if (!m) continue;
+                drawOldPos(r);            // where it was
                 Ink::StrokeMark ghost = *m;
                 ghost.t = previewT(k);
                 auto polys = FlattenWorld(doc, r.node, zoom);
@@ -906,6 +1091,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
             const double target = ClosestT(poly, mdoc);
             deltaT = (target - markDrag_.dragT0) * precision;
             markDrag_.dragT = std::clamp(markDrag_.dragT0 + deltaT, 0.0, 1.0);
+            drawOldPos(markDrag_.ref);      // where it was
             Ink::StrokeMark ghost = *m;
             ghost.t = markDrag_.dragT;
             drawGhost(markDrag_.ref.node, markDrag_.ref.stroke, ghost, poly,
@@ -916,6 +1102,7 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
                 if (!om) continue;
                 auto opolys = FlattenWorld(doc, r.node, zoom);
                 if (om->sub < 0 || om->sub >= (int)opolys.size()) continue;
+                drawOldPos(r);
                 Ink::StrokeMark og = *om;
                 og.t = std::clamp(og.t + deltaT, 0.0, 1.0);
                 drawGhost(r.node, r.stroke, og, opolys[(std::size_t)om->sub],
@@ -1142,12 +1329,14 @@ void Application::HandleMarkTool(EditorState& st, const ViewCam& cam,
         (void)sk;
         if (ctrl) {
             m.phase = Ink::MarkPhase::Dash;   // objectless re-phaser
-        } else {
+        } else if (!markPlaceEmpty_) {
             Ink::MarkObject obj = DefaultMarkObject(markPlaceShape_);
             obj.mode = markPlaceSubtract_ ? Ink::MarkObjectMode::Subtract
                                           : Ink::MarkObjectMode::Fusion;
             m.objects.push_back(obj);
         }
+        // markPlaceEmpty_: a pure OBJECTLESS mark (position / phase / repeat
+        // anchor) — the ghost draws its construction glyph.
         auto polys = FlattenWorld(doc, best.id, zoom);
         // Hovered only: the placement ghost now drives a LIVE style preview —
         // it must not fire while the pointer is on UI (palette, popups).

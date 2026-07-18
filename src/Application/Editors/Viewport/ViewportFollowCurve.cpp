@@ -385,7 +385,7 @@ bool Application::UpdatePenFollowCurve(const ViewCam& cam, bool hovered,
                     Ink::Anchor a; a.pos = bestPt; sp.anchors.push_back(a);
                     p.subpaths.push_back(std::move(sp));
                     Ink::Style ps = DefaultStyle();
-                    if (!penIsArea_) ps.fills.clear();   // a curve has no fill
+                    ps.fills.clear();   // fills preview on the companion node
                     penNode_ = doc.AddPath(doc.Pages().front().id, std::move(p),
                                            std::move(ps), penIsArea_ ? "Free" : "Bézier");
                 } else {

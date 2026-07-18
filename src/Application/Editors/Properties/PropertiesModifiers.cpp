@@ -222,30 +222,95 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         }
                     }
                 } else if (m.kind == Ink::ModifierKind::AlongPath) {
-                    // The modifier lives on THIS path; it instances the picked
-                    // OBJECT along the path's own spine (Blender's rule).
-                    bool pickReq = false;
-                    if (pr::NodePickerRow("Object", doc, &m.motifRef, id,
-                                          /*allowNone=*/true,
-                                          /*pathsOnly=*/false, &pickReq)) {
-                        structural = true; structLabel = "Along Path Object";
+                    // The modifier lives on THIS path; it distributes either a
+                    // PRIMITIVE shape or instances of the picked OBJECT along
+                    // the path's own spine (Blender's rule) — groups, sides,
+                    // inclination, add/cut like the stroke repeats (but NEVER
+                    // mark-aware).
+                    static const char* kContent[] = {
+                        "Object", "Circle", "Rectangle", "Diamond",
+                        "Triangle", "Half Circle" };
+                    const Ink::MarkShape kContentShape[] = {
+                        Ink::MarkShape::Instance, Ink::MarkShape::Circle,
+                        Ink::MarkShape::Rectangle, Ink::MarkShape::Diamond,
+                        Ink::MarkShape::Triangle, Ink::MarkShape::HalfCircle };
+                    int content = 0;
+                    for (int ci = 1; ci < 6; ++ci)
+                        if (m.alongShape == kContentShape[ci]) content = ci;
+                    if (pr::DropdownRow("Content", kContent, 6, &content)) {
+                        m.alongShape = kContentShape[content];
+                        structural = true; structLabel = "Along Content";
                     }
-                    if (pickReq) {
-                        const std::size_t mIdx = i;
-                        BeginObjectPick(nullptr, [this, id, mIdx](Ink::NodeId picked) {
-                            if (!project_.document) return;
-                            const Ink::Node* nn = project_.document->Find(id);
-                            if (!nn || mIdx >= nn->modifiers.size()) return;
-                            std::vector<Ink::Modifier> before = nn->modifiers, after = before;
-                            after[mIdx].motifRef = picked;
-                            project_.document->SetModifiers(id, after);
-                            CommitModifiersEdit(id, before, "Along Path Object");
-                        });
+                    if (m.alongShape == Ink::MarkShape::Instance) {
+                        bool pickReq = false;
+                        if (pr::NodePickerRow("Object", doc, &m.motifRef, id,
+                                              /*allowNone=*/true,
+                                              /*pathsOnly=*/false, &pickReq)) {
+                            structural = true; structLabel = "Along Path Object";
+                        }
+                        if (pickReq) {
+                            const std::size_t mIdx = i;
+                            BeginObjectPick(nullptr, [this, id, mIdx](Ink::NodeId picked) {
+                                if (!project_.document) return;
+                                const Ink::Node* nn = project_.document->Find(id);
+                                if (!nn || mIdx >= nn->modifiers.size()) return;
+                                std::vector<Ink::Modifier> before = nn->modifiers, after = before;
+                                after[mIdx].motifRef = picked;
+                                project_.document->SetModifiers(id, after);
+                                CommitModifiersEdit(id, before, "Along Path Object");
+                            });
+                        }
+                        float ascl = (float)m.alongScale;
+                        if (pr::DragFloat("Scale", &ascl, 0.01f, 0.001f,
+                                          1000.0f, 3, "\xC3\x97")) {
+                            m.alongScale = ascl; liveApply("Along Scale", false);
+                        }
+                        dragCommit("Along Scale");
+                    } else {
+                        float asz = (float)m.alongSize;
+                        if (pr::DragFloat("Length", &asz, 0.2f, 0.01f,
+                                          100000.0f, 2)) {
+                            m.alongSize = asz;
+                            liveApply("Along Size", false);
+                        }
+                        dragCommit("Along Size");
+                        if (m.alongShape == Ink::MarkShape::Rectangle ||
+                            m.alongShape == Ink::MarkShape::Triangle) {
+                            float awd = (float)m.alongWidth;
+                            if (pr::DragFloat("Width", &awd, 0.2f, 0.01f,
+                                              100000.0f, 2)) {
+                                m.alongWidth = awd;
+                                liveApply("Along Width", false);
+                            }
+                            dragCommit("Along Width");
+                        }
+                        static const char* kAMode[] = { "Add", "Blend", "Cut" };
+                        int amode = (int)m.alongMode;
+                        if (pr::ButtonGroupRow("Mode", kAMode, 3, &amode)) {
+                            m.alongMode = (Ink::MarkObjectMode)amode;
+                            structural = true; structLabel = "Along Mode";
+                        }
+                        if (m.alongMode != Ink::MarkObjectMode::Subtract) {
+                            bool crel = false;
+                            if (pr::ColorRow("Colour", &m.alongColor, true,
+                                             &crel))
+                                liveApply("Along Colour", false);
+                            if (crel) liveApply("Along Colour", true);
+                        }
+                        float aop = m.alongOpacity;
+                        if (pr::DragFloat("Opacity", &aop, 0.01f, 0.0f, 1.0f,
+                                          2)) {
+                            m.alongOpacity = aop;
+                            liveApply("Along Opacity", false);
+                        }
+                        dragCommit("Along Opacity");
                     }
                     static const char* kDist[] = { "Count", "Spacing",
-                                                   "Anchors" };
+                                                   "Anchors", "Gap",
+                                                   "Density" };
                     int dist = (int)m.distribute;
-                    if (pr::ButtonGroupRow("Distribute", kDist, 3, &dist)) {
+                    if (pr::DropdownRow("Distribute along path", kDist, 5,
+                                        &dist)) {
                         m.distribute = (Ink::AlongDistribute)dist;
                         structural = true; structLabel = "Along Distribution";
                     }
@@ -258,13 +323,92 @@ void Application::PropModifiersSection(Ink::NodeId id) {
                         dragCommit("Along Count");
                     } else if (m.distribute == Ink::AlongDistribute::BySpacing) {
                         float sp = (float)m.spacing;
-                        if (pr::DragFloat("Spacing", &sp, 0.2f, 0.01f,
+                        if (pr::DragFloat("Spacing c-c", &sp, 0.2f, 0.01f,
                                           100000.0f, 2)) {
                             m.spacing = sp;
                             liveApply("Along Spacing", false);
                         }
                         dragCommit("Along Spacing");
+                    } else if (m.distribute == Ink::AlongDistribute::ByGap) {
+                        float gp = (float)m.alongGap;
+                        if (pr::DragFloat("Gap edge-edge", &gp, 0.2f, 0.0f,
+                                          100000.0f, 2)) {
+                            m.alongGap = gp;
+                            liveApply("Along Gap", false);
+                        }
+                        dragCommit("Along Gap");
+                    } else if (m.distribute == Ink::AlongDistribute::ByDensity) {
+                        float dv = (float)m.alongDensity;
+                        if (pr::DragFloat("Per 100 units", &dv, 0.2f, 0.01f,
+                                          1000.0f, 2)) {
+                            m.alongDensity = dv;
+                            liveApply("Along Density", false);
+                        }
+                        dragCommit("Along Density");
                     }
+                    if (m.distribute != Ink::AlongDistribute::AtAnchors) {
+                        float aph = (float)m.alongPhase;
+                        if (pr::DragFloat("Phase", &aph, 0.2f, -100000.0f,
+                                          100000.0f, 2)) {
+                            m.alongPhase = aph;
+                            liveApply("Along Phase", false);
+                        }
+                        dragCommit("Along Phase");
+                        int gc = m.alongGroupCount;
+                        if (pr::DragInt("Group size", &gc, 0.1f, 1, 64)) {
+                            m.alongGroupCount = gc;
+                            liveApply("Along Group", false);
+                        }
+                        dragCommit("Along Group");
+                        if (m.alongGroupCount > 1) {
+                            float gp2 = (float)m.alongGroupPitch;
+                            if (pr::DragFloat("Group c-c", &gp2, 0.1f, 0.01f,
+                                              100000.0f, 2)) {
+                                m.alongGroupPitch = gp2;
+                                liveApply("Along Group Pitch", false);
+                            }
+                            dragCommit("Along Group Pitch");
+                        }
+                    }
+                    static const char* kSide[] = { "Center", "Left", "Right",
+                                                   "Inside", "Outside" };
+                    int aside = (int)m.alongSide;
+                    if (pr::DropdownRow("Side", kSide, 5, &aside)) {
+                        const bool wasCenter =
+                            m.alongSide == Ink::RepeatSide::Center;
+                        m.alongSide = (Ink::RepeatSide)aside;
+                        // First time OFF Center → 50 % default.
+                        if (wasCenter && m.alongSide != Ink::RepeatSide::Center
+                            && std::abs(m.alongSideOffset) < 1e-9) {
+                            m.alongOffsetPercent = true;
+                            m.alongSideOffset = 50.0;
+                        }
+                        structural = true; structLabel = "Along Side";
+                    }
+                    if (m.alongSide != Ink::RepeatSide::Center) {
+                        float aoff = (float)m.alongSideOffset;
+                        if (pr::DragFloat(m.alongOffsetPercent ? "Offset %"
+                                                               : "Offset",
+                                          &aoff, 0.2f, -100000.0f,
+                                          100000.0f, 2)) {
+                            m.alongSideOffset = aoff;
+                            liveApply("Along Offset", false);
+                        }
+                        dragCommit("Along Offset");
+                        bool aopct = m.alongOffsetPercent;
+                        if (pr::CheckRow("Offset in %", &aopct)) {
+                            m.alongOffsetPercent = aopct;
+                            structural = true; structLabel = "Along Offset Unit";
+                        }
+                    }
+                    float arot =
+                        (float)(m.alongRotation * 180.0 / 3.14159265358979);
+                    if (pr::DragFloat("Incline", &arot, 0.5f, -360.0f, 360.0f,
+                                      1, "\xC2\xB0")) {
+                        m.alongRotation = arot * 3.14159265358979 / 180.0;
+                        liveApply("Along Incline", false);
+                    }
+                    dragCommit("Along Incline");
                     static const char* kAlign[] = { "None", "Tangent" };
                     int align = (int)m.align;
                     if (pr::ButtonGroupRow("Align", kAlign, 2, &align)) {

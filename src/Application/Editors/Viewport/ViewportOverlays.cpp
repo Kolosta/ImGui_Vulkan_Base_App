@@ -240,6 +240,10 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
             ov.AddCircleFilled(cam.DocToView(penPending_.pos.x, penPending_.pos.y),
                                3.5f, activeCol);
         if (!following && penNode_ != Ink::kNullNode) {
+            // LIVE fill preview: the companion fill node re-follows the pen
+            // path (frozen + pending, closed) each frame — real pipeline,
+            // patterns included, curved closing edge.
+            UpdatePenFillPreview(doc);
             const Ink::Node* pn = doc.Find(penNode_);
             if (pn && !pn->path.subpaths.empty()) {
               const auto& frozen = pn->path.subpaths.front().anchors;
@@ -272,59 +276,99 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
                   ov.AddCircleFilled(cam.DocToView(penPending_.pos.x,
                                                    penPending_.pos.y), 3.5f, activeCol);
 
-              // Preview a stroke SEGMENT as the REAL tessellated strokes at a
-              // translucent alpha (so it reads like the finished object, not a
-              // thin guide): EVERY enabled stroke of the pen node, each at
-              // HALF ITS OWN alpha (a translucent stroke previews even more
-              // translucent — never re-opaqued), each mesh in a DEDUP group so
-              // its join self-overlaps blend exactly once. A thin construction
-              // line always draws ON TOP (a strokeless style would otherwise
-              // preview nothing). The node's FILLS need no ghost: open paths
-              // fill implicitly, so the content pipeline shows them live.
-              auto previewSeg = [&](const Ink::Anchor& a, const Ink::Anchor& b) {
-                  Ink::PathData seg; Ink::Subpath sp; sp.spline = Ink::SplineType::Bezier;
-                  sp.anchors = { a, b }; sp.closed = false;
-                  seg.subpaths.push_back(std::move(sp));
-                  const auto segFlat = Ink::geom::Flatten(seg, tol);
-                  for (const Ink::Stroke& stk : pn->style.strokes) {
-                      if (!stk.enabled || stk.width <= 0.0) continue;
-                      const Ink::geom::Mesh m =
-                          Ink::geom::TessellateStroke(segFlat, stk, tol);
-                      const Ink::Color k = stk.paint.color;
-                      const float ea = k.a * 0.5f;       // scales EXISTING alpha
-                      const Ink::Color tc{ k.r * ea, k.g * ea, k.b * ea, ea };
-                      ov.BeginDedup();
-                      for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3) {
+              // TRUE single-curve preview. Build the FULL in-progress path
+              // (frozen anchors + the pending/ghost/closing anchor) — one
+              // continuous curve with proper joins throughout, real caps only at
+              // the two TRUE ends. The pen node's own solid strokes are BLANKED
+              // for this frame (frame-scoped, restored in Update) so the pipeline
+              // never double-draws; the overlay renders the whole stroke. The
+              // validated part is drawn OPAQUE and the in-progress section
+              // TRANSLUCENT by tessellating the FROZEN curve and the FULL curve
+              // and layering them in one dedup group (see below) — no cap at the
+              // junction (it is mid-curve). FILLS render live via the fill node.
+              Ink::PathData fullPath = pn->path;   // frozen (bezier, open)
+              Ink::Subpath& fsp = fullPath.subpaths.front();
+              bool haveExtra = false;
+              if (penHasPending_) {
+                  fsp.anchors.push_back(penPending_); haveExtra = true;
+              } else if (closeHover) {
+                  fsp.closed = true; haveExtra = true;
+              } else if (nFrozen >= 1) {
+                  Ink::Anchor g; g.pos = md;
+                  fsp.anchors.push_back(g); haveExtra = true;
+              }
+              if (haveExtra && fsp.anchors.size() >= 2) {
+                  // TWO flattenings of the SAME segments: the FULL in-progress
+                  // curve (validated + in-progress, one continuous walk so the
+                  // junction anchor keeps a proper JOIN) and the FROZEN-only
+                  // curve (the validated part alone). Because both flatten the
+                  // shared Bézier segments identically, the frozen mesh coincides
+                  // pixel-for-pixel with the full mesh's validated portion — so
+                  // we never have to CLASSIFY triangles (the old arc split was
+                  // fooled wherever the in-progress end crossed back over the
+                  // validated part, dropping/leaking triangles as it moved).
+                  Ink::PathData frozenPath;
+                  Ink::Subpath fz;
+                  fz.spline = pn->path.subpaths.front().spline;
+                  fz.anchors = frozen; fz.closed = false;
+                  frozenPath.subpaths.push_back(std::move(fz));
+                  const auto frozenFlat = Ink::geom::Flatten(frozenPath, tol);
+                  const auto fullFlat   = Ink::geom::Flatten(fullPath, tol);
+                  // Capture the strokes BEFORE blanking (blanking clears the
+                  // node's own list, which we still iterate below).
+                  const std::vector<Ink::Stroke> penStrokes = pn->style.strokes;
+                  // Blank the pen node's solid strokes this frame (restored in
+                  // Update) so only the overlay renders the stroke.
+                  { Ink::Style blank = pn->style; blank.strokes.clear();
+                    ApplyMarkPreviewStyle(penNode_, blank); }
+                  bool anyStroke = false;
+                  for (const Ink::Stroke& src : penStrokes) {
+                      if (!src.enabled || src.width <= 0.0) continue;
+                      anyStroke = true;
+                      const Ink::Color k = src.paint.color;
+                      const Ink::Color solid{ k.r*k.a, k.g*k.a, k.b*k.a, k.a };
+                      const float ha = k.a * 0.5f;
+                      const Ink::Color trans{ k.r*ha, k.g*ha, k.b*ha, ha };
+                      auto emit = [&](const Ink::geom::Mesh& m,
+                                      const Ink::Color& col) {
                           auto vp = [&](std::uint32_t idx) {
                               return cam.DocToView(m.positions[idx*2],
                                                    m.positions[idx*2+1]);
                           };
-                          ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
-                                         vp(m.indices[i+2]), tc);
-                      }
+                          for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3)
+                              ov.AddTriangle(vp(m.indices[i]), vp(m.indices[i+1]),
+                                             vp(m.indices[i+2]), col);
+                      };
+                      const Ink::geom::Mesh mFrozen =
+                          Ink::geom::TessellateStroke(frozenFlat, src, tol);
+                      const Ink::geom::Mesh mFull =
+                          Ink::geom::TessellateStroke(fullFlat, src, tol);
+                      // ONE dedup group (shared stencil, first-wins per pixel).
+                      // The VALIDATED mesh (solid) is emitted FIRST so it claims
+                      // its pixels: its join self-overlaps blend exactly once,
+                      // and it stays solid no matter where the in-progress end
+                      // later crosses back over it. The FULL mesh (translucent)
+                      // comes second — rejected on every already-solid pixel, so
+                      // the validated part never shows the preview colour and no
+                      // triangle drops out; it only paints the in-progress
+                      // section (blending its own overlaps once too) and the
+                      // junction keeps its true continuous JOIN. No spatial arc
+                      // split, so nothing can be misclassified at a self-crossing.
+                      ov.BeginDedup();
+                      emit(mFrozen, solid);
+                      emit(mFull, trans);
                       ov.EndDedup();
                   }
-                  for (const auto& pl : segFlat)
-                      for (std::size_t i = 0; i + 1 < pl.points.size(); ++i)
-                          ov.AddLine(cam.DocToView(pl.points[i].x,
-                                                   pl.points[i].y),
-                                     cam.DocToView(pl.points[i + 1].x,
-                                                   pl.points[i + 1].y),
-                                     activeCol, 1.0f);
-              };
-
-              // The LAST/in-progress segment as a translucent REAL stroke:
-              //  • dragging → last frozen anchor → the pending (its handles);
-              //  • hovering closed → last frozen → first frozen (cyclic close);
-              //  • hovering       → last frozen → a ghost anchor at the cursor.
-              if (penHasPending_) {
-                  if (nFrozen >= 1) previewSeg(frozen.back(), penPending_);
-              } else if (nFrozen >= 1) {
-                  if (closeHover) {
-                      previewSeg(frozen.back(), frozen.front());
-                  } else {
-                      Ink::Anchor ghost; ghost.pos = md;
-                      previewSeg(frozen.back(), ghost);
+                  // Strokeless style: a thin construction line on the preview
+                  // section so the in-progress curve still reads.
+                  if (!anyStroke) {
+                      for (const auto& pl : fullFlat)
+                          for (std::size_t i = 0; i + 1 < pl.points.size(); ++i)
+                              ov.AddLine(cam.DocToView(pl.points[i].x,
+                                                       pl.points[i].y),
+                                         cam.DocToView(pl.points[i+1].x,
+                                                       pl.points[i+1].y),
+                                         activeCol, 1.0f);
                   }
               }
             }
@@ -416,10 +460,13 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
         ov.AddRect({ std::min(a.x,b.x), std::min(a.y,b.y) },
                    { std::max(a.x,b.x), std::max(a.y,b.y) }, selCol, 1.0f);
     } else if (canvasDrag_.kind == CanvasDrag::Kind::DrawShape) {
-        // Shape-tool ghost: the REAL result at reduced alpha — the default
-        // fill triangulated + the default stroke tessellated over the shape
-        // built at the dragged box size — plus a subtle box outline.
+        // Shape-tool preview: a REAL translucent node (UpdateShapePreview) so
+        // the pipeline renders the fills cut at the contour, patterns with the
+        // right anchor, exactly like the final object. The overlay only adds
+        // the construction contour (so a strokeless shape still reads) and the
+        // subtle drag box.
         const Ink::DVec2 sa = canvasDrag_.startDoc, sb = canvasDrag_.curDoc;
+        UpdateShapePreview(doc, canvasDrag_.shapeKind.c_str(), sa, sb);
         const double cx = (sa.x + sb.x) * 0.5, cy = (sa.y + sb.y) * 0.5;
         const double hw = std::max(1.0, std::abs(sb.x - sa.x) * 0.5);
         const double hh = std::max(1.0, std::abs(sb.y - sa.y) * 0.5);
@@ -427,46 +474,7 @@ void Application::DrawEditOverlays(EditorState& st, const ViewCam& cam,
         Ink::PathData gp = BuildShapeGeometry(canvasDrag_.shapeKind.c_str(),
                                               hw, hh, nm);
         const double localTol = std::max(1e-4, 0.25 / std::max(1e-6, cam.zoom));
-        const auto flat = Ink::geom::Flatten(gp, localTol);
-        auto vpAt = [&](const Ink::geom::Mesh& m, std::uint32_t idx) {
-            return cam.DocToView(cx + m.positions[idx * 2],
-                                 cy + m.positions[idx * 2 + 1]);
-        };
-        // EVERY enabled default fill, translucent — each mesh in a DEDUP group
-        // (self-overlaps blend once), the alpha SCALING the fill's own.
-        const Ink::geom::Mesh fillMesh =
-            Ink::geom::TriangulateFill(flat, Ink::FillRule::NonZero);
-        for (const Ink::Fill& fl : edit_.defaultFills) {
-            if (!fl.enabled) continue;
-            const Ink::Color fc = fl.paint.color;
-            const float fa = fc.a * fl.opacity * 0.4f;
-            const Ink::Color tri{ fc.r * fa, fc.g * fa, fc.b * fa, fa };
-            ov.BeginDedup();
-            for (std::size_t i = 0; i + 2 < fillMesh.indices.size(); i += 3)
-                ov.AddTriangle(vpAt(fillMesh, fillMesh.indices[i]),
-                               vpAt(fillMesh, fillMesh.indices[i + 1]),
-                               vpAt(fillMesh, fillMesh.indices[i + 2]), tri);
-            ov.EndDedup();
-        }
-        // EVERY enabled default stroke, translucent, real width/caps/joins —
-        // dedup'd so the join self-overlaps of a translucent preview blend once.
-        for (const Ink::Stroke& sk : edit_.defaultStrokes) {
-            if (!sk.enabled || sk.width <= 0.0) continue;
-            const Ink::Color kc = sk.paint.color;
-            const float ea = kc.a * 0.5f;              // scales EXISTING alpha
-            const Ink::Color tc{ kc.r * ea, kc.g * ea, kc.b * ea, ea };
-            const Ink::geom::Mesh m =
-                Ink::geom::TessellateStroke(flat, sk, localTol);
-            ov.BeginDedup();
-            for (std::size_t i = 0; i + 2 < m.indices.size(); i += 3)
-                ov.AddTriangle(vpAt(m, m.indices[i]), vpAt(m, m.indices[i + 1]),
-                               vpAt(m, m.indices[i + 2]), tc);
-            ov.EndDedup();
-        }
-        // The construction outline ALWAYS draws on top of the ghost (a shape
-        // with no stroke would otherwise be invisible): the shape's flattened
-        // contour, plus the subtle drag box.
-        for (const auto& pl : flat) {
+        for (const auto& pl : Ink::geom::Flatten(gp, localTol)) {
             const std::size_t np = pl.points.size();
             if (np < 2) continue;
             const std::size_t last = pl.closed ? np : np - 1;

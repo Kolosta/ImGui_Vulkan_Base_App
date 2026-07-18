@@ -202,6 +202,26 @@ private:
     void BeginPenDraw(const char* kind);
     bool HandlePenInput(EditorState& st, const ViewCam& cam, bool hovered);
     void CommitPenDraw(bool keep);
+    // The pen's companion FILL-ONLY node: while a FREE shape is drawn, it
+    // carries the default fills over the CLOSED preview path (frozen anchors
+    // + the pending one), kept just BELOW the pen node — the real pipeline
+    // shows every fill (patterns included) live, with the closing edge
+    // following the outer handles. Removed on commit/cancel (the fills then
+    // move onto the finished node).
+    void UpdatePenFillPreview(Ink::Document& doc);
+    Ink::NodeId    penFillNode_ = Ink::kNullNode;
+    // The DRAG-shape (rect/ellipse/triangle/curve-box) preview: a REAL node
+    // identical to what a release would spawn (same geometry, centred origin,
+    // default fills+strokes) but at a reduced node OPACITY — so the pipeline
+    // renders the translucent preview EXACTLY like the final object (fills cut
+    // at the contour, patterns instanced with the correct Object/Document
+    // anchor). Rebuilt each frame while dragging, removed on release/cancel.
+    void UpdateShapePreview(Ink::Document& doc, const char* kind,
+                            Ink::DVec2 boxMin, Ink::DVec2 boxMax);
+    void ClearShapePreview();
+    Ink::NodeId    shapePreviewNode_ = Ink::kNullNode;
+    // The node opacity used for every in-progress draw preview.
+    static constexpr float kDrawPreviewAlpha = 0.5f;
     bool           penActive_   = false;
     bool           penDragging_ = false;       // pulling the new anchor's handles
     Ink::NodeId    penNode_     = Ink::kNullNode;
@@ -264,9 +284,12 @@ private:
     std::vector<Ink::StrokeMark> markClipboard_;
     bool markPasteActive_ = false;
     // The default object a click drops on the line (top-bar picker): a shape
-    // and whether it ADDS to or SUBTRACTS from the stroke.
+    // and whether it ADDS to or SUBTRACTS from the stroke. The picker's clear
+    // cross empties the selection ("Empty Mark"): a click then places an
+    // OBJECTLESS mark (a pure position/phase anchor).
     Ink::MarkShape markPlaceShape_ = Ink::MarkShape::Circle;
     bool           markPlaceSubtract_ = false;
+    bool           markPlaceEmpty_ = false;
     // LIVE mark preview: while a Subtract/Gap mark is placed or moved, a
     // TEMPORARY style is applied to the host node so the REAL pipeline shows
     // the effect (partial erase / dimmed gap span). Strictly frame-scoped:
@@ -608,6 +631,13 @@ private:
     // zoom, the fill isolated via the per-piece preview filter) for the
     // PATTERN vignettes + their hover tooltips. 0 when unavailable.
     ImTextureID PaintPatternPreview(Ink::NodeId id, int fillIndex);
+    // A SELF-CONTAINED pattern swatch: the fill is RE-CREATED inside the
+    // vignette (white plate + a lattice of the motif's own render at a legible
+    // zoom) — never a crop of the host shape, so it reads identically with or
+    // without a selected object and fills the whole tile. False = no drawable
+    // motif (the caller falls back to the flat sample).
+    bool PaintPatternSwatch(ImDrawList* dl, ImVec2 mn, ImVec2 mx,
+                            const Ink::Fill& f);
 
     // ── Info log (Blender-style action feed) + Dev data editor ───────────────
     struct InfoEntry { uint64_t frame; std::string text; std::string detail; };

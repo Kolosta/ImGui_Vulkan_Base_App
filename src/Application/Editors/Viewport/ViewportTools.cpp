@@ -99,6 +99,48 @@ Ink::NodeId Application::FinishSpawn(Ink::NodeId id, const std::string& name) {
     return id;
 }
 
+// ── Unified draw preview (shapes) ─────────────────────────────────────────────
+// A DRAG shape (rectangle / ellipse / triangle / curve box) previews through a
+// REAL node — identical geometry, centred origin and default fills+strokes to
+// what a release spawns — at a reduced node OPACITY. The pipeline then renders
+// the preview exactly like the finished object: fills cut at the contour and
+// patterns instanced with the correct Object/Document anchor, just translucent.
+
+void Application::UpdateShapePreview(Ink::Document& doc, const char* kind,
+                                     Ink::DVec2 boxMin, Ink::DVec2 boxMax) {
+    if (doc.Pages().empty()) return;
+    const double cx = (boxMin.x + boxMax.x) * 0.5;
+    const double cy = (boxMin.y + boxMax.y) * 0.5;
+    const double hw = std::max(1.0, std::abs(boxMax.x - boxMin.x) * 0.5);
+    const double hh = std::max(1.0, std::abs(boxMax.y - boxMin.y) * 0.5);
+    // Geometry centred on the LOCAL origin, node transform at the box centre —
+    // so pattern Object anchor pins to the shape centre, exactly like the
+    // spawned object (SpawnShapeInRect).
+    std::string name;
+    Ink::PathData path = BuildShapeGeometry(kind, hw, hh, name);
+    if (shapePreviewNode_ == Ink::kNullNode) {
+        shapePreviewNode_ = doc.AddPath(doc.Pages().front().id, std::move(path),
+                                        DefaultStyle(), "Preview");
+        if (shapePreviewNode_ == Ink::kNullNode) return;
+    } else if (doc.Find(shapePreviewNode_)) {
+        doc.SetPath(shapePreviewNode_, std::move(path));
+        doc.SetStyle(shapePreviewNode_, DefaultStyle());   // live default style
+    } else {
+        shapePreviewNode_ = Ink::kNullNode;                // vanished — recreate
+        return;
+    }
+    Ink::Transform2D t; t.tx = cx; t.ty = cy;
+    doc.SetTransform(shapePreviewNode_, t);
+    doc.SetOpacity(shapePreviewNode_, kDrawPreviewAlpha);
+}
+
+void Application::ClearShapePreview() {
+    if (shapePreviewNode_ == Ink::kNullNode) return;
+    if (project_.document && project_.document->Find(shapePreviewNode_))
+        project_.document->Remove(shapePreviewNode_);
+    shapePreviewNode_ = Ink::kNullNode;
+}
+
 // ── Pen: draw-on-create live path construction ────────────────────────────────
 // The legacy pen workflow on the Ink model. Anchors are laid in DOCUMENT
 // coordinates on a node with an identity transform while drawing; on commit
@@ -124,8 +166,18 @@ void Application::BeginPenDraw(const char* kind) {
 void Application::CommitPenDraw(bool keep) {
     penActive_ = false;
     penDragging_ = false;
-    if (!project_.document) { penNode_ = Ink::kNullNode; penHasPending_ = false; return; }
+    if (!project_.document) {
+        penNode_ = penFillNode_ = Ink::kNullNode;
+        penHasPending_ = false;
+        return;
+    }
     Ink::Document& doc = *project_.document;
+    // The transient fill-preview node never survives the pen (the fills land
+    // on the FINISHED node's own style below).
+    if (penFillNode_ != Ink::kNullNode) {
+        if (doc.Find(penFillNode_)) doc.Remove(penFillNode_);
+        penFillNode_ = Ink::kNullNode;
+    }
     // Freeze the pending anchor into the node (unless we are cancelling) so the
     // last placed point is part of the finished object.
     if (keep && penHasPending_) {
@@ -133,7 +185,7 @@ void Application::CommitPenDraw(bool keep) {
             Ink::PathData p; Ink::Subpath sp; sp.spline = penSpline_;
             p.subpaths.push_back(std::move(sp));
             Ink::Style ps = DefaultStyle();
-            if (!penIsArea_) ps.fills.clear();
+            ps.fills.clear();   // fills live on the fill-preview node until commit
             penNode_ = doc.AddPath(doc.Pages().front().id, std::move(p),
                                    std::move(ps), penIsArea_ ? "Free" : "Bézier");
         }
@@ -153,6 +205,13 @@ void Application::CommitPenDraw(bool keep) {
         penNode_ = Ink::kNullNode;
         return;
     }
+    // An AREA gets its fills back on the finished object (they previewed on
+    // the companion node while drawing).
+    if (penIsArea_) {
+        Ink::Style st2 = n->style;
+        st2.fills = DefaultStyle().fills;
+        doc.SetStyle(penNode_, st2);
+    }
     // Origin onto the geometry centre, then ONE undo command for the whole
     // construction (remove/restore the finished subtree verbatim).
     Ink::DRect bb;
@@ -166,6 +225,59 @@ void Application::CommitPenDraw(bool keep) {
         [snap](Ink::Document& d) { d.RestoreSubtree(snap); });
     LogInfoAction("Draw Path");
     penNode_ = Ink::kNullNode;
+}
+
+void Application::UpdatePenFillPreview(Ink::Document& doc) {
+    if (!penIsArea_ || penNode_ == Ink::kNullNode) return;
+    const Ink::Node* pn = doc.Find(penNode_);
+    if (!pn || pn->path.subpaths.empty()) return;
+    // The preview path: frozen anchors + the pending one (its in-progress
+    // handles included), CLOSED — the closing segment is the Bézier through
+    // last.out / first.in, exactly what the finished close will look like.
+    Ink::PathData fp = pn->path;
+    Ink::Subpath& sp = fp.subpaths.front();
+    if (penHasPending_) sp.anchors.push_back(penPending_);
+    sp.closed = true;
+    if (sp.anchors.size() < 2) {
+        // Backspace shrank the path below a fillable area — drop the preview.
+        if (penFillNode_ != Ink::kNullNode && doc.Find(penFillNode_)) {
+            doc.Remove(penFillNode_);
+            penFillNode_ = Ink::kNullNode;
+        }
+        return;
+    }
+    // Re-base the geometry onto its own centre and place the node transform
+    // there — so the fill's pattern Object anchor pins to the shape centre,
+    // exactly like the committed object (CommitPenDraw → MoveOriginTo(centre)).
+    // With an identity transform the geometry sits at absolute coordinates and
+    // an Object anchor would always read as a Document anchor. The node renders
+    // at a reduced opacity so the fills preview translucent, like a drag shape.
+    Ink::DRect cbb;
+    for (const Ink::Subpath& s : fp.subpaths)
+        for (const Ink::Anchor& a : s.anchors) cbb.Grow(a.pos);
+    const Ink::DVec2 c = cbb.valid ? cbb.Center() : Ink::DVec2{ 0, 0 };
+    for (Ink::Subpath& s : fp.subpaths)
+        for (Ink::Anchor& a : s.anchors) { a.pos.x -= c.x; a.pos.y -= c.y; }
+    Ink::Transform2D t; t.tx = c.x; t.ty = c.y;
+    if (penFillNode_ == Ink::kNullNode) {
+        if (doc.Pages().empty()) return;
+        Ink::Style fs;
+        fs.fills = DefaultStyle().fills;
+        if (fs.fills.empty()) return;         // nothing to preview
+        penFillNode_ = doc.AddPath(doc.Pages().front().id, std::move(fp),
+                                   std::move(fs), "Fill Preview");
+        // Just BELOW the pen node — the solid strokes render above the fill.
+        doc.MoveTo(penFillNode_, doc.Pages().front().id,
+                   doc.IndexInParent(penNode_));
+        doc.SetTransform(penFillNode_, t);
+        doc.SetOpacity(penFillNode_, kDrawPreviewAlpha);
+    } else if (doc.Find(penFillNode_)) {
+        doc.SetPath(penFillNode_, fp);
+        doc.SetTransform(penFillNode_, t);
+        doc.SetOpacity(penFillNode_, kDrawPreviewAlpha);
+    } else {
+        penFillNode_ = Ink::kNullNode;        // vanished (undo) — recreate later
+    }
 }
 
 bool Application::HandlePenInput(EditorState& st, const ViewCam& cam,
@@ -202,7 +314,7 @@ bool Application::HandlePenInput(EditorState& st, const ViewCam& cam,
         Ink::PathData p; Ink::Subpath sp; sp.spline = penSpline_;
         p.subpaths.push_back(std::move(sp));
         Ink::Style ps = DefaultStyle();
-        if (!penIsArea_) ps.fills.clear();   // a curve has no fill
+        ps.fills.clear();   // fills live on the fill-preview node until commit
         penNode_ = doc.AddPath(doc.Pages().front().id, std::move(p), std::move(ps),
                                penIsArea_ ? "Free"
                                : penSpline_ == Ink::SplineType::Nurbs ? "NURBS Path"
@@ -598,15 +710,13 @@ void Application::Action_EnterEditMode() {
     if (edit_.active == Ink::kNullNode || !project_.document) return;
     const Ink::Node* n = project_.document->Find(edit_.active);
     if (!n || n->kind != Ink::NodeKind::Path) return;   // only paths editable
-    edit_.mode = EditorMode::Edit;
-    edit_.elemSel.clear();
-    LogInfoAction("Enter Edit Mode");
+    // Through SetEditorMode ALWAYS: it owns the per-mode tool switch (a
+    // creation tool must never stay active in a mode that doesn't have it).
+    SetEditorMode(EditorMode::Edit);
 }
 
 void Application::Action_ExitEditMode() {
-    edit_.mode = EditorMode::Object;
-    edit_.elemSel.clear();
-    LogInfoAction("Exit Edit Mode");
+    SetEditorMode(EditorMode::Object);
 }
 
 void Application::Action_ToggleEditMode() {

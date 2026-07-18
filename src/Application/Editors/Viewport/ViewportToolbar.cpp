@@ -429,23 +429,43 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
         if (markMode) {
             ImGui::SameLine(0.0f, 8.0f * gs);
             // The placeable shapes + GAP (an opening cut in the line). While
-            // Gap is picked the Subtract toggle disappears — a gap always cuts.
-            static const char* kShapes[] = { "Circle", "Rectangle", "Diamond",
-                                             "Gap" };
-            const bool gapPicked = markPlaceShape_ == Ink::MarkShape::Gap;
+            // Gap is picked the Subtract toggle disappears — a gap always
+            // cuts. The picker's trailing CROSS clears the selection ("Empty
+            // Mark" placeholder): clicks then drop an objectless mark.
+            struct ShapeOpt { const char* name; Ink::MarkShape shape; };
+            static const ShapeOpt kShapes[] = {
+                { "Circle",      Ink::MarkShape::Circle },
+                { "Rectangle",   Ink::MarkShape::Rectangle },
+                { "Diamond",     Ink::MarkShape::Diamond },
+                { "Triangle",    Ink::MarkShape::Triangle },
+                { "Half Circle", Ink::MarkShape::HalfCircle },
+                { "Gap",         Ink::MarkShape::Gap },
+            };
+            constexpr int kNShapes = 6;
+            int shp = -1;
+            for (int i = 0; i < kNShapes; ++i)
+                if (!markPlaceEmpty_ && markPlaceShape_ == kShapes[i].shape)
+                    shp = i;
+            const bool gapPicked =
+                !markPlaceEmpty_ && markPlaceShape_ == Ink::MarkShape::Gap;
             UI::DropdownConfig cfg; cfg.id = "##markshape";
             cfg.triggerIcon = "line-end-diamond";
-            const int shp = gapPicked ? 3 : std::min((int)markPlaceShape_, 2);
-            cfg.triggerLabel = kShapes[shp];
-            for (int i = 0; i < 4; ++i) {
-                UI::DropdownItem it; it.label = kShapes[i];
+            cfg.objectPicker = true;
+            cfg.objectPickerHasValue = !markPlaceEmpty_;
+            cfg.objectPickerNoEyedropper = true;   // clearable, but no pick
+            cfg.placeholder = "Empty Mark";
+            cfg.triggerLabel = shp >= 0 ? kShapes[shp].name : "";
+            for (int i = 0; i < kNShapes; ++i) {
+                UI::DropdownItem it; it.label = kShapes[i].name;
                 cfg.items.push_back(it);
             }
             cfg.selectedIndex = shp;
             UI::DropdownResult r = UI::Dropdown(cfg);
-            if (r.changed && r.selected >= 0 && r.selected < 4)
-                markPlaceShape_ = r.selected == 3 ? Ink::MarkShape::Gap
-                                                  : (Ink::MarkShape)r.selected;
+            if (r.cleared) markPlaceEmpty_ = true;
+            if (r.changed && r.selected >= 0 && r.selected < kNShapes) {
+                markPlaceShape_ = kShapes[r.selected].shape;
+                markPlaceEmpty_ = false;
+            }
             if (!gapPicked) {
                 // Subtract as an ICON TOGGLE (eraser): on = the object cuts
                 // the stroke (dst-out) instead of fusing into it.

@@ -347,6 +347,7 @@ void Application::ToolMouseRelease(EditorState& st, const ViewCam& cam, Ink::DVe
         // Shape/Curve tool: build the armed kind in the dragged box. A
         // near-zero drag (a plain click) falls back to a preset at the click.
         // The tool stays ARMED — the next drag draws another one.
+        ClearShapePreview();          // drop the translucent preview node
         const Ink::DVec2 a = canvasDrag_.startDoc, b = canvasDrag_.curDoc;
         const std::string kind = canvasDrag_.shapeKind;
         const double w = std::abs(a.x - b.x), h = std::abs(a.y - b.y);
