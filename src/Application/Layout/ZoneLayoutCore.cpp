@@ -714,6 +714,75 @@ void ZoneLayout::Render() {
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
 
+    // ── Corner input BLOCKER ──────────────────────────────────────────────────
+    // The corner hot-zones (and the drag gestures they arm) are GEOMETRIC —
+    // the editor content underneath still received the same press/drag, so a
+    // corner drag also grabbed an Outliner row or a zone tab. This small
+    // INPUT-ENABLED child (created after everything, so it is the top-most
+    // layout window) sits exactly over the hovered corner square — the press
+    // lands on it, never on the content — and, while a corner gesture runs,
+    // over the whole layout so the drag crosses rows/tabs inertly. It is a
+    // CHILD of ##LayoutBody, so overlayHov_ (native ChildWindows hover) stays
+    // true and the geometric gesture code keeps working. Simple clicks do
+    // nothing (the corner arms on press and a release-in-place is a no-op).
+    if (overlayHov_ || addArm_.armed) {
+        ImVec2 bMin{}, bMax{};
+        bool   block = false;
+        if (addArm_.armed || splitArm_.active ||
+            (join_.active && join_.fromDrag)) {
+            bMin = origin;
+            bMax = ImVec2(origin.x + avail.x, origin.y + avail.y);
+            block = true;
+        } else if (!sepDragging_ && !tabDrag_.armed && !tabDrag_.active &&
+                   !join_.active) {
+            const float corner = 14.0f * gs;
+            const ImVec2 m = ImGui::GetIO().MousePos;
+            std::function<void(Node*)> find = [&](Node* n) {
+                if (!n || block) return;
+                if (!n->isLeaf()) { find(n->a.get()); find(n->b.get()); return; }
+                const float lL = n->pos.x, lR = n->pos.x + n->size.x;
+                const float lT = n->pos.y, lB = n->pos.y + n->size.y;
+                const struct { float x0, y0, x1, y1; } cs[4] = {
+                    { lL, lT, lL + corner, lT + corner },
+                    { lR - corner, lT, lR, lT + corner },
+                    { lL, lB - corner, lL + corner, lB },
+                    { lR - corner, lB - corner, lR, lB },
+                };
+                for (const auto& c : cs)
+                    if (m.x >= c.x0 && m.x <= c.x1 && m.y >= c.y0 &&
+                        m.y <= c.y1) {
+                        bMin = ImVec2(c.x0, c.y0);
+                        bMax = ImVec2(c.x1, c.y1);
+                        block = true;
+                        return;
+                    }
+            };
+            find(root_.get());
+        }
+        if (block && bMax.x > bMin.x && bMax.y > bMin.y) {
+            ImGui::SetCursorScreenPos(bMin);
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::BeginChild("##ZoneCornerBlocker",
+                              ImVec2(bMax.x - bMin.x, bMax.y - bMin.y),
+                              ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse |
+                              ImGuiWindowFlags_NoBackground |
+                              ImGuiWindowFlags_NoNav);
+            // Claim press/hover so nothing underneath reacts (both buttons).
+            ImGui::InvisibleButton("##blk",
+                                   ImVec2(std::max(1.0f, bMax.x - bMin.x),
+                                          std::max(1.0f, bMax.y - bMin.y)),
+                                   ImGuiButtonFlags_MouseButtonLeft |
+                                   ImGuiButtonFlags_MouseButtonRight |
+                                   ImGuiButtonFlags_MouseButtonMiddle);
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+        }
+    }
+
     // Right-click separator menu, rendered in the ##LayoutBody context (the
     // overlay is NoInputs and cannot host an interactive popup). DrawSeparator
     // recorded which split was right-clicked into menuSplit_.
