@@ -29,6 +29,7 @@ struct PanelFrame {
     float  width   = 0.0f;
     float  radius  = 0.0f;
     float  borderW = 0.0f;
+    float  contentInset = 0.0f;   // horizontal content margin (undone in EndPanel)
     // True when this (level-1) panel pushed ItemSpacing twice: once at depth-1
     // to zero the parent's inter-panel spacing (so the gap is exactly the gap
     // token, not gap + 2×ItemSpacing.y), and once inside the child to restore
@@ -366,6 +367,18 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
     // zero-height Dummy to validate the cursor.
     ImGui::Dummy(ImVec2(0.0f, open ? 4.0f * gs : 0.0f));   // inset before content
 
+    // Horizontal content margin (left + right), token-driven like the top /
+    // bottom insets — otherwise inputs touch the right edge and the fill/stroke
+    // thumbnails touch the left. Applied to the content only (the header was
+    // already drawn full-width above): Indent shifts every row's left start,
+    // and the WorkRect right edge is pulled in so `GetContentRegionAvail`
+    // narrows on BOTH sides. Undone in EndPanel.
+    const float cInset = open ? Flt(Tok::C_Panel_CornerRadius) * gs : 0.0f;
+    if (cInset > 0.0f) {
+        ImGui::Indent(cInset);
+        ImGui::GetCurrentWindow()->WorkRect.Max.x -= cInset;
+    }
+
     PanelFrame f;
     f.depth   = depth;
     f.level1  = level1;
@@ -374,6 +387,7 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
     f.width   = innerW;
     f.radius  = radius;
     f.borderW = borderW;   // already gated by the global borders toggle above
+    f.contentInset = cInset;
     f.spacingPushed = spacingPushed;
     Stack().push_back(f);
 
@@ -385,6 +399,13 @@ void EndPanel() {
     if (Stack().empty()) return;
     PanelFrame f = Stack().back();
     Stack().pop_back();
+
+    // Undo the horizontal content margin (balances the Indent + WorkRect pull-in
+    // from BeginPanel) while this child is still current.
+    if (f.contentInset > 0.0f) {
+        ImGui::GetCurrentWindow()->WorkRect.Max.x += f.contentInset;
+        ImGui::Unindent(f.contentInset);
+    }
 
     // Bottom inset (open level-1 panels) so the last content clears the rounded
     // bottom corners — added here, not as window padding, so the header stays

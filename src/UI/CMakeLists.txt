@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 add_library(UI STATIC
+    src/Units.cpp
     src/Text/FontManager.cpp
     src/Widgets/IconWidgets.cpp
     src/Widgets/ButtonGroup.cpp

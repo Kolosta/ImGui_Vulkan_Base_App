@@ -220,8 +220,10 @@ void EditorSidePanel(const char* id, ImVec2 cMin, ImVec2 cMax,
     {
         // The first tab starts a corner-radius below the panel top, so a
         // selected tab's concave fillet never bows above the panel's rounded
-        // top-right corner.
-        float y = barMin.y + margin + zoneRnd;
+        // top-right corner. The TABS get an extra top margin (one more `margin`)
+        // so they clear the ruler/menu chrome above — the content PANEL keeps its
+        // own `margin` top inset (availTop below), unchanged.
+        float y = barMin.y + margin * 2.0f + zoneRnd;
         for (int i = 0; i < nTabs; ++i) {
             float textLen = AddTextVertical(dl, font, fontSz, 0.f, 0.f, 0,
                                             tabs[(size_t)i].name.c_str());
