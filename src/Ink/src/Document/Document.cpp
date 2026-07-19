@@ -912,14 +912,32 @@ void Document::ApplyScale(NodeId node) {
         for (double& d : st.dashPattern) d *= s;
         st.dashOffset *= s;
     }
-    for (Fill& f : n->style.fills)
+    for (Fill& f : n->style.fills) {
         if (f.kind == FillKind::Pattern) {
             f.pattern.spacingX *= std::abs(sx);
             f.pattern.spacingY *= std::abs(sy);
             f.pattern.phaseX   *= std::abs(sx);
             f.pattern.phaseY   *= std::abs(sy);
             f.pattern.scale    *= s;
+        } else if (f.kind == FillKind::Instanced) {
+            // The layout carries no X/Y-aligned pitch (its axes are angled), so
+            // scale every length by the uniform-equivalent factor.
+            InstancedFill& in = f.instanced;
+            for (double& sp : in.spacing) sp *= s;
+            in.scatterMinDist *= s;
+            in.scatterMaxDist *= s;
+            in.posJitter *= s;
+            for (InstElement& e : in.elements) {
+                e.sizeA *= s; e.sizeB *= s; e.sizeC *= s;
+            }
+            for (InstLineSet& l : in.lines) {
+                l.spacing *= s;  l.phase *= s;
+                l.line.width *= s;
+                for (double& d : l.line.dashPattern) d *= s;
+                l.line.dashOffset *= s;
+            }
         }
+    }
     n->transform.sx = n->transform.sy = 1.0;
     Log(node, ChangeKind::Geometry);       // re-tessellate (+ covers style)
     Log(node, ChangeKind::Moved);          // transform changed too

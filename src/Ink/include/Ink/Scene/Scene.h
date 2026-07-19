@@ -156,6 +156,16 @@ private:
                      const geom::BoolProgram* geoProg,
                      const DMat23& world, ScopeId scope, NodeId owner,
                      std::size_t fillIndex);
+    // Expand an INSTANCED fill: procedurally generated primitive shapes and/or
+    // families of parallel lines on a grid or scatter layout, each cut by the
+    // host's stencil clip mask (same clip machinery as EmitPattern). Fusion
+    // elements of one colour paint their union ONCE (translucent fields never
+    // double-darken); Blend stack; Subtract erase.
+    void EmitInstancedFill(const Document& doc, const Fill& fill, const Node& host,
+                           const PathData* geo, std::uint64_t geoHash,
+                           const geom::BoolProgram* geoProg,
+                           const DMat23& world, ScopeId scope, NodeId owner,
+                           std::size_t fillIndex);
     // A group that composites as a unit opens a scope; returns its id (or the
     // parent scope when the group is a plain pass-through layer).
     ScopeId OpenScopeIfNeeded(const Document& doc, const Node& group,
@@ -173,6 +183,14 @@ private:
     // Stable storage for the primitive mark-object shapes (circle/rect/diamond)
     // the Scene generates — drawables borrow these until the next compile.
     std::deque<PathData> markShapes_;
+
+    // Instanced-fill placement CACHE — the generated poses (grid/scatter, in
+    // anchor space, with jitter + element choice baked in) keyed by a hash of
+    // everything that affects them. SURVIVES recompiles so a pure move/pan/zoom
+    // (or an unrelated edit) never re-scatters tens of thousands of instances.
+    // One pose = an instance's anchor-space transform + which element it stamps.
+    struct InstPose { DVec2 pos; double rot; std::int32_t elem; };
+    std::vector<std::pair<std::uint64_t, std::vector<InstPose>>> instPoseCache_;
 
     std::vector<Drawable>       drawables_;
     std::vector<CompositeScope> scopes_;

@@ -25,7 +25,7 @@ struct Paint {
 };
 
 enum class FillRule : std::uint8_t { NonZero = 0, EvenOdd = 1 };
-enum class FillKind : std::uint8_t { Solid = 0, Pattern = 1 };
+enum class FillKind : std::uint8_t { Solid = 0, Pattern = 1, Instanced = 2 };
 
 // Where a pattern fill is cut (the legacy Compositor "fill clip"): at the
 // host's bounding box (fast, no per-cell clipping), exactly at the path
@@ -64,15 +64,8 @@ struct PatternFill {
     PatternAnchor anchor = PatternAnchor::Object;
 };
 
-struct Fill {
-    FillKind    kind    = FillKind::Solid;
-    Paint       paint;             // Solid
-    PatternFill pattern;           // Pattern
-    FillRule    rule    = FillRule::NonZero;
-    float       opacity = 1.0f;    // layer opacity (multiplies the paint /
-                                   // every motif colour of a pattern)
-    bool        enabled = true;
-};
+// Fill is defined AFTER Stroke — an Instanced fill's line-sets embed a Stroke
+// (for cap/dash/repeat reuse), so Fill must see the full stroke vocabulary.
 
 enum class StrokeAlign : std::uint8_t { Center = 0, Inside = 1, Outside = 2 };
 enum class CapStyle    : std::uint8_t { Butt = 0, Round = 1, Square = 2 };
@@ -451,6 +444,111 @@ struct Stroke {
         for (const StrokeRepeat& r : repeats) h = r.Hash(h);
         return h;
     }
+};
+
+// ── Procedural instanced fill (FillKind::Instanced) ──────────────────────────
+// A region filled with GENERATED primitive shapes and/or families of parallel
+// lines — laid out on a lattice (2- or 3-axis grid) or scattered randomly
+// (min/max spacing, seeded, optional collision relaxation), with per-instance
+// position/rotation jitter. Several elements (shapes) and line-sets share one
+// layout; each carries a MarkObjectMode: Fusion overlaps paint ONCE (a
+// translucent field never double-darkens where instances cross), Blend stacks
+// with alpha, Subtract erases. Reuses the pattern clip/anchor vocabulary; each
+// stamp is cut at the fill clip (Scene::EmitInstancedFill).
+
+// A primitive shape an instanced fill can stamp.
+enum class InstShape : std::uint8_t {
+    Circle     = 0,
+    Rectangle  = 1,
+    Triangle   = 2,   // three configurable side lengths (SSS)
+    Diamond    = 3,
+    HalfCircle = 4,
+};
+inline constexpr std::uint8_t kInstShapeMax = 4;
+
+// One stamped element: a shape, its size, colour and compositing mode. Several
+// elements share one layout (mix shapes/colours); distinct colours never fuse
+// (Fusion is per-element, so a multi-colour layout must not use one shared
+// isolation group).
+struct InstElement {
+    InstShape shape = InstShape::Circle;
+    // Size in node-local doc units. Circle: sizeA = radius. Rectangle: sizeA =
+    // half-width, sizeB = half-height. Triangle: the THREE side lengths
+    // sizeA/sizeB/sizeC (SSS construction). Diamond: sizeA/sizeB = the two
+    // half-diagonals. HalfCircle: sizeA = radius.
+    double sizeA = 6.0;
+    double sizeB = 6.0;
+    double sizeC = 6.0;
+    double rotation = 0.0;              // base orientation (radians)
+    MarkObjectMode mode = MarkObjectMode::Fusion;
+    bool  useFillColor = false;         // inherit the fill's solid paint colour
+    Color color{ 0, 0, 0, 1 };
+    float opacity = 1.0f;
+    bool  enabled = true;
+};
+
+// A family of parallel lines across the region — cap / dash / repeats only (no
+// align, join or marks). Two sets at 0°/90° read as a line grid.
+struct InstLineSet {
+    bool   enabled = true;
+    double angle   = 0.0;              // line direction (radians)
+    double spacing = 20.0;            // perpendicular pitch (doc units)
+    double phase   = 0.0;             // perpendicular offset (doc units)
+    // Only width / cap / dashPattern / dashOffset / dashFit / repeats are used;
+    // align, join and marks are ignored (a straight line has no joins).
+    Stroke line;
+    MarkObjectMode mode = MarkObjectMode::Fusion;
+    bool   useFillColor = false;       // inherit the fill's solid paint colour
+    Color  color{ 0, 0, 0, 1 };
+};
+
+enum class InstLayout : std::uint8_t { Grid = 0, Scatter = 1 };
+
+// How a scatter's density is driven: a target COUNT spread over the region, or a
+// DISTANCE band (min/max centre spacing) that FILLS the whole region at that
+// density (no count cap).
+enum class InstScatterMode : std::uint8_t { Count = 0, Distance = 1 };
+
+struct InstancedFill {
+    InstLayout layout = InstLayout::Grid;
+    // Grid: 2 = a parallelogram lattice (two basis axes); 3 = a triangular /
+    // hexagonal lattice (basis at axisAngle[0] and +60°). Per-axis pitch +
+    // orientation (radians).
+    int    gridAxes = 2;
+    double spacing[3]   = { 24.0, 24.0, 24.0 };
+    double axisAngle[3] = { 0.0, 1.5707963267948966 /*90°*/, 0.0 };
+    // Scatter: blue-noise poses filling the whole region. In Count mode `count`
+    // poses spread over the area; in Distance mode the region is filled with
+    // centre spacing in [minDist, maxDist] (no count cap). Optional collision
+    // avoidance keeps whole SHAPES from overlapping (spacing ≥ the two radii),
+    // deterministic per seed.
+    InstScatterMode scatterMode = InstScatterMode::Distance;
+    int    scatterCount   = 200;
+    double scatterMinDist = 8.0;
+    double scatterMaxDist = 24.0;
+    bool   avoidCollisions = true;
+    // Per-instance jitter — the MAX magnitude of a symmetric random offset.
+    // posJitter (doc units) applies to the GRID only (a scatter is already
+    // random and collision-controlled); rotJitter (radians) applies to both.
+    double posJitter = 0.0;
+    double rotJitter = 0.0;
+    std::uint32_t seed = 1;
+    double rotation = 0.0;             // whole-layout rotation (radians)
+    std::vector<InstElement> elements;
+    std::vector<InstLineSet> lines;
+    PatternClip   clip   = PatternClip::Contour;
+    PatternAnchor anchor = PatternAnchor::Object;
+};
+
+struct Fill {
+    FillKind      kind    = FillKind::Solid;
+    Paint         paint;               // Solid
+    PatternFill   pattern;             // Pattern
+    InstancedFill instanced;           // Instanced
+    FillRule      rule    = FillRule::NonZero;
+    float         opacity = 1.0f;      // layer opacity (multiplies the paint /
+                                       // every motif colour of a pattern)
+    bool          enabled = true;
 };
 
 struct Style {

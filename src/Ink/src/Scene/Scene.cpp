@@ -816,6 +816,11 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
             EmitPattern(doc, f, n, geo, pathHash, prog, world, scope, owner, i);
             continue;
         }
+        if (f.kind == FillKind::Instanced) {
+            EmitInstancedFill(doc, f, n, geo, pathHash, prog, world, scope,
+                              owner, i);
+            continue;
+        }
         Drawable d;
         d.node = n.id;  d.owner = owner;  d.world = world;
         d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
@@ -1562,6 +1567,551 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
             drawables_.push_back(std::move(b));
         }
     }
+}
+
+namespace {
+
+// Deterministic per-instance RNG: splitmix64. Mix a seed with an index to draw
+// an independent stream — reproducible across platforms (no <random> state).
+inline std::uint64_t Mix64(std::uint64_t x) {
+    x += 0x9E3779B97F4A7C15ULL;
+    x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    x = (x ^ (x >> 27)) * 0x94D049BB133111EBULL;
+    return x ^ (x >> 31);
+}
+// A uniform double in [0,1) from a 64-bit state.
+inline double U01(std::uint64_t h) {
+    return (double)(h >> 11) * (1.0 / 9007199254740992.0);   // 2^53
+}
+
+// The primitive ring for an instanced-fill element — node-local, centred at the
+// origin, unrotated. Béziers are preserved (re-tessellated per tier). Returns an
+// empty path for a degenerate element (a bad triangle), which the caller skips.
+PathData InstElementPath(const InstElement& e) {
+    const double a = std::max(1e-6, e.sizeA);
+    switch (e.shape) {
+        case InstShape::Circle:
+            return PathData::Ellipse(0, 0, a, a);
+        case InstShape::Rectangle: {
+            const double b = std::max(1e-6, e.sizeB);
+            return PathData::Rect(-a, -b, a * 2.0, b * 2.0);
+        }
+        case InstShape::Diamond: {
+            const double b = std::max(1e-6, e.sizeB);
+            return PathData::Polygon(
+                { { a, 0 }, { 0, b }, { -a, 0 }, { 0, -b } }, true);
+        }
+        case InstShape::HalfCircle: {
+            PathData p; Subpath sp; sp.closed = true;
+            const double k = 0.5522847498307936 * a;   // circle kappa
+            Anchor a0; a0.pos = { -a, 0 }; a0.hasOut = true; a0.out = { 0, k };
+            Anchor a1; a1.pos = { 0, a };
+            a1.hasIn = true;  a1.in  = { -k, 0 };
+            a1.hasOut = true; a1.out = { k, 0 };
+            Anchor a2; a2.pos = { a, 0 }; a2.hasIn = true; a2.in = { 0, k };
+            sp.anchors = { a0, a1, a2 };
+            p.subpaths.push_back(std::move(sp));
+            return p;
+        }
+        case InstShape::Triangle: default: break;
+    }
+    // Triangle by three side lengths (SSS). Sides: P0P1 = sizeA, P1P2 = sizeB,
+    // P2P0 = sizeC. Solve P2, then centre on the centroid.
+    const double sA = std::max(1e-6, e.sizeA);   // base P0→P1
+    const double sB = std::max(1e-6, e.sizeB);   // P1→P2
+    const double sC = std::max(1e-6, e.sizeC);   // P2→P0
+    const double x = (sC * sC - sB * sB + sA * sA) / (2.0 * sA);
+    const double y2 = sC * sC - x * x;
+    if (y2 <= 1e-9) return PathData{};           // degenerate (violates SSS)
+    const double y = std::sqrt(y2);
+    const double cx = (0.0 + sA + x) / 3.0;
+    const double cy = (0.0 + 0.0 + y) / 3.0;
+    return PathData::Polygon({ { -cx, -cy }, { sA - cx, -cy }, { x - cx, y - cy } },
+                             true);
+}
+
+// A conservative half-extent of an element (node-local units) for cull margins.
+double InstElementRadius(const InstElement& e) {
+    switch (e.shape) {
+        case InstShape::Circle:     return std::max(1e-6, e.sizeA);
+        case InstShape::Rectangle:  return std::hypot(e.sizeA, e.sizeB);
+        case InstShape::Diamond:    return std::max(e.sizeA, e.sizeB);
+        case InstShape::HalfCircle: return std::max(1e-6, e.sizeA);
+        default: break;
+    }
+    return std::max({ e.sizeA, e.sizeB, e.sizeC });   // Triangle (over-estimate)
+}
+
+} // namespace
+
+void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
+                              const Node& host, const PathData* geo,
+                              std::uint64_t geoHash,
+                              const geom::BoolProgram* geoProg,
+                              const DMat23& world, ScopeId scope, NodeId owner,
+                              std::size_t fillIndex) {
+    if (!geo || geo->Empty()) return;
+    const InstancedFill& in = fill.instanced;
+
+    // Enabled elements (shapes) and line-sets — nothing enabled → done.
+    std::vector<std::size_t> enabledIdx, lineIdx;
+    for (std::size_t i = 0; i < in.elements.size(); ++i)
+        if (in.elements[i].enabled) enabledIdx.push_back(i);
+    for (std::size_t i = 0; i < in.lines.size(); ++i)
+        if (in.lines[i].enabled) lineIdx.push_back(i);
+    if (enabledIdx.empty() && lineIdx.empty()) return;
+
+    // Host local bbox (the layout extent).
+    DVec2 lo{ 1e300, 1e300 }, hi{ -1e300, -1e300 };
+    for (const Subpath& sp : geo->subpaths)
+        for (const Anchor& a : sp.anchors) {
+            lo.x = std::min(lo.x, a.pos.x); lo.y = std::min(lo.y, a.pos.y);
+            hi.x = std::max(hi.x, a.pos.x); hi.y = std::max(hi.y, a.pos.y);
+        }
+    if (lo.x > hi.x) return;
+
+    const bool docAnchor = in.anchor == PatternAnchor::Document;
+    const DMat23 invWorld = InvertAffine(world);
+    double invScale = 1.0;
+    if (docAnchor) {
+        const double r0 = std::hypot(invWorld.m[0], invWorld.m[3]);
+        const double r1 = std::hypot(invWorld.m[1], invWorld.m[4]);
+        invScale = std::max(r0, r1);
+    }
+
+    // Conservative per-element extent (node-local), for cull margins, the mask
+    // edge band, and shape-radius collision avoidance (borders never overlap
+    // when centres are ≥ the two radii apart, for ANY rotation).
+    std::vector<double> elemR(in.elements.size(), 0.0);
+    double maxR = 0.0;
+    for (std::size_t k : enabledIdx) {
+        elemR[k] = InstElementRadius(in.elements[k]);
+        maxR = std::max(maxR, elemR[k]);
+    }
+    const double margin = maxR + std::max(0.0, in.posJitter);
+    const double testR = margin * (docAnchor ? invScale : 1.0);
+
+    // Region bbox in ANCHOR space (node-local for Object, document for Document)
+    // — the box scatter samples in and line-sets span.
+    DVec2 rlo{ 1e300, 1e300 }, rhi{ -1e300, -1e300 };
+    {
+        const DVec2 nc[4] = { { lo.x, lo.y }, { hi.x, lo.y },
+                              { hi.x, hi.y }, { lo.x, hi.y } };
+        for (const DVec2& q : nc) {
+            const DVec2 c = docAnchor ? world.Apply(q) : q;
+            rlo.x = std::min(rlo.x, c.x); rlo.y = std::min(rlo.y, c.y);
+            rhi.x = std::max(rhi.x, c.x); rhi.y = std::max(rhi.y, c.y);
+        }
+    }
+
+    // ── The clip mask (identical to EmitPattern): host fill ± the widest
+    // Document-space stroke band → stencil; each stamp draws Clipped against it.
+    const bool useMask = in.clip != PatternClip::Bounds;
+    const Stroke* edgeStroke = nullptr;
+    double outward = 0.0;
+    if (in.clip == PatternClip::StrokeInner || in.clip == PatternClip::StrokeOuter) {
+        double best = 0.0;
+        for (const Stroke& st : host.style.strokes) {
+            if (!st.enabled || st.width <= 0.0 ||
+                st.widthSpace != WidthSpace::Document) continue;
+            if (st.width > best) { best = st.width; edgeStroke = &st; }
+        }
+        if (edgeStroke)
+            outward = edgeStroke->align == StrokeAlign::Center
+                          ? edgeStroke->width * 0.5
+                      : edgeStroke->align == StrokeAlign::Outside
+                          ? edgeStroke->width : 0.0;
+    }
+    std::vector<std::vector<DVec2>> cullRings;
+    if (useMask) {
+        for (auto& pl : geom::Flatten(*geo, 1.0))
+            if (pl.closed && pl.points.size() >= 3)
+                cullRings.push_back(std::move(pl.points));
+        if (cullRings.empty()) return;   // open path — nothing to fill against
+    }
+
+    // Is an anchor-space point inside the host region? `interiorOnly` keeps only
+    // points whose CENTRE is inside the contour (scatter); otherwise a testR
+    // margin admits boundary cells (grid — the mask trims the overhang).
+    auto inRegion = [&](DVec2 pA, bool interiorOnly) -> bool {
+        const DVec2 pL = docAnchor ? invWorld.Apply(pA) : pA;
+        if (useMask) {
+            if (PointInRings(cullRings, pL)) return true;
+            if (interiorOnly) return false;
+            return DistToRings(cullRings, pL) <= testR;
+        }
+        return pL.x >= lo.x - maxR && pL.x <= hi.x + maxR &&
+               pL.y >= lo.y - maxR && pL.y <= hi.y + maxR;
+    };
+    // The host silhouette (± the widest Document-space stroke band) as a stencil
+    // in the given scope, then erased — so a scope's clipped stamps are cut at
+    // the contour and the next region starts clean.
+    auto emitMaskWrite = [&](ScopeId sc) {
+        Drawable m;
+        m.node = host.id;  m.owner = owner;  m.world = world;
+        m.pathHash = geoHash;  m.path = geo;  m.boolProg = geoProg;
+        m.isStroke = false;
+        m.ownerPiece = (std::uint8_t)fillIndex;  m.ownerPieceStroke = false;
+        m.rule = fill.rule;  m.scope = sc;
+        m.clip = ClipRole::MaskWrite;  m.isClipSource = true;
+        drawables_.push_back(m);
+        if (edgeStroke) {
+            Drawable b = m;
+            b.isStroke = true;  b.stroke = *edgeStroke;
+            b.clip = in.clip == PatternClip::StrokeInner ? ClipRole::MaskClear
+                                                         : ClipRole::MaskWrite;
+            drawables_.push_back(std::move(b));
+        }
+    };
+    auto emitMaskClear = [&](ScopeId sc) {
+        Drawable m;
+        m.node = host.id;  m.owner = owner;  m.world = world;
+        m.pathHash = geoHash;  m.path = geo;  m.boolProg = geoProg;
+        m.isStroke = false;
+        m.ownerPiece = (std::uint8_t)fillIndex;  m.ownerPieceStroke = false;
+        m.rule = fill.rule;  m.scope = sc;
+        m.clip = ClipRole::MaskClear;  m.isClipSource = true;
+        drawables_.push_back(m);
+        if (edgeStroke && in.clip == PatternClip::StrokeOuter) {
+            Drawable b = m;
+            b.isStroke = true;  b.stroke = *edgeStroke;
+            drawables_.push_back(std::move(b));
+        }
+    };
+
+    // ── Placements → POSES (anchor space; jitter + element choice baked in),
+    // CACHED by a hash of everything that affects them. So a pure move / pan /
+    // zoom (Object-anchor poses are node-local → world-independent) or an
+    // unrelated edit reuses the poses — tens of thousands never re-scatter.
+    std::vector<InstPose> poses;
+    if (!enabledIdx.empty()) {
+        std::uint64_t key = 0x9E3779B9ULL;
+        key = HashBytes(&geoHash, sizeof geoHash, key);
+        auto mixd = [&](double v) { key = HashDouble(v, key); };
+        auto mixu = [&](std::uint64_t v) { key = HashBytes(&v, sizeof v, key); };
+        mixu((std::uint64_t)in.layout);
+        mixu((std::uint64_t)in.gridAxes);
+        for (double v : in.spacing)   mixd(v);
+        for (double v : in.axisAngle) mixd(v);
+        mixu((std::uint64_t)in.scatterMode);
+        mixu((std::uint64_t)(std::uint32_t)in.scatterCount);
+        mixd(in.scatterMinDist); mixd(in.scatterMaxDist);
+        mixu(in.avoidCollisions ? 1u : 0u);
+        mixd(in.posJitter); mixd(in.rotJitter);
+        mixu(in.seed); mixd(in.rotation);
+        for (std::size_t k : enabledIdx) {
+            const InstElement& e = in.elements[k];
+            mixu((std::uint64_t)k);
+            mixu((std::uint64_t)e.shape);
+            mixd(e.sizeA); mixd(e.sizeB); mixd(e.sizeC); mixd(e.rotation);
+        }
+        mixu(docAnchor ? 1u : 0u);
+        if (docAnchor) for (double v : world.m) mixd(v);
+
+        bool hit = false;
+        for (auto& ent : instPoseCache_)
+            if (ent.first == key) { poses = ent.second; hit = true; break; }
+
+        if (!hit) {
+            std::uint64_t rs = Mix64(((std::uint64_t)in.seed << 5) ^ 0xB16B00B5ULL);
+            auto rnd = [&]() { rs = Mix64(rs); return U01(rs); };
+            auto pickElem = [&]() -> std::size_t {
+                if (enabledIdx.size() == 1) return enabledIdx[0];
+                std::size_t k = (std::size_t)(rnd() * (double)enabledIdx.size());
+                if (k >= enabledIdx.size()) k = enabledIdx.size() - 1;
+                return enabledIdx[k];
+            };
+            if (in.layout == InstLayout::Grid) {
+                const double a0 = in.axisAngle[0] + in.rotation;
+                const double s0 = in.spacing[0] > 1e-6 ? in.spacing[0] : 24.0;
+                DVec2 b0{ std::cos(a0) * s0, std::sin(a0) * s0 };
+                DVec2 b1;
+                if (in.gridAxes >= 3) {   // triangular: second axis at +60°
+                    const double a1 = a0 + 1.0471975511965976;  // π/3
+                    b1 = { std::cos(a1) * s0, std::sin(a1) * s0 };
+                } else {
+                    const double a1 = in.axisAngle[1] + in.rotation;
+                    const double s1 = in.spacing[1] > 1e-6 ? in.spacing[1] : 24.0;
+                    b1 = { std::cos(a1) * s1, std::sin(a1) * s1 };
+                }
+                const double det = b0.x * b1.y - b1.x * b0.y;
+                if (std::abs(det) >= 1e-9) {
+                    const DVec2 nc[4] = { { lo.x, lo.y }, { hi.x, lo.y },
+                                          { hi.x, hi.y }, { lo.x, hi.y } };
+                    double iMin = 1e300, iMax = -1e300, jMin = 1e300, jMax = -1e300;
+                    for (const DVec2& q : nc) {
+                        const DVec2 cc = docAnchor ? world.Apply(q) : q;
+                        const double ii = ( b1.y * cc.x - b1.x * cc.y) / det;
+                        const double jj = (-b0.y * cc.x + b0.x * cc.y) / det;
+                        iMin = std::min(iMin, ii); iMax = std::max(iMax, ii);
+                        jMin = std::min(jMin, jj); jMax = std::max(jMax, jj);
+                    }
+                    const double bl = std::min(std::hypot(b0.x, b0.y),
+                                               std::hypot(b1.x, b1.y));
+                    const int mrg = (int)std::ceil(margin / std::max(bl, 1e-6)) + 1;
+                    const long i0 = (long)std::floor(iMin) - mrg;
+                    const long i1 = (long)std::ceil(iMax) + mrg;
+                    const long j0 = (long)std::floor(jMin) - mrg;
+                    const long j1 = (long)std::ceil(jMax) + mrg;
+                    if ((double)(i1 - i0 + 1) * (double)(j1 - j0 + 1) <= 5.0e5)
+                        for (long j = j0; j <= j1 && poses.size() < 300000u; ++j)
+                            for (long i = i0; i <= i1; ++i) {
+                                const DVec2 pA{ i * b0.x + j * b1.x,
+                                                i * b0.y + j * b1.y };
+                                if (!inRegion(pA, false)) continue;
+                                const std::size_t el = pickElem();
+                                double dx = 0, dy = 0, dr = 0;
+                                if (in.posJitter > 0.0) {
+                                    dx = (rnd() * 2.0 - 1.0) * in.posJitter;
+                                    dy = (rnd() * 2.0 - 1.0) * in.posJitter;
+                                }
+                                if (in.rotJitter > 0.0)
+                                    dr = (rnd() * 2.0 - 1.0) * in.rotJitter;
+                                poses.push_back({ { pA.x + dx, pA.y + dy },
+                                    in.rotation + in.elements[el].rotation + dr,
+                                    (std::int32_t)el });
+                            }
+                }
+            } else {
+                // ── Scatter: seeded blue-noise Bridson filling the WHOLE region.
+                // Count mode: ~N poses (radius from area/N). Distance mode: fill
+                // at centre spacing in [min, max]. Collision keeps whole SHAPES
+                // apart (centres ≥ the two circumscribed radii). All O(N).
+                const double diag = std::hypot(rhi.x - rlo.x, rhi.y - rlo.y);
+                const double collFloor = in.avoidCollisions ? 2.0 * maxR : 0.0;
+                double minEff, maxEff; int target;
+                if (in.scatterMode == InstScatterMode::Count) {
+                    target = std::clamp(in.scatterCount, 0, 200000);
+                    const double area =
+                        std::max(1.0, (rhi.x - rlo.x) * (rhi.y - rlo.y));
+                    const double r = target > 0
+                        ? std::sqrt(area / (double)target) * 0.75 : diag * 0.05;
+                    minEff = std::max({ r, collFloor, 1e-3 });
+                    maxEff = minEff * 1.8;
+                } else {   // Distance — fill the whole region
+                    const double minU = std::max(0.0, in.scatterMinDist);
+                    const double maxU = in.scatterMaxDist;
+                    double base = std::max(minU, collFloor);
+                    if (base <= 1e-6)
+                        base = maxU > 1e-6 ? maxU * 0.35
+                                           : std::max(1e-3, diag * 0.02);
+                    minEff = base;
+                    maxEff = maxU > minEff ? maxU : minEff * 1.8;
+                    target = 200000;
+                }
+                const double cell = std::max(1e-3, std::max(minEff, collFloor));
+                auto ckey = [](long cx, long cy) {
+                    return ((long long)cx << 32) ^ (long long)(unsigned long)cy;
+                };
+                std::unordered_map<long long, std::vector<int>> grid;
+                std::vector<double> poseR;
+                auto cellX = [&](double x){ return (long)std::floor((x-rlo.x)/cell); };
+                auto cellY = [&](double y){ return (long)std::floor((y-rlo.y)/cell); };
+                auto add = [&](DVec2 p, double rot, std::size_t el, double rr) {
+                    const int idx = (int)poses.size();
+                    poses.push_back({ p, rot, (std::int32_t)el });
+                    poseR.push_back(rr);
+                    grid[ckey(cellX(p.x), cellY(p.y))].push_back(idx);
+                };
+                auto blocked = [&](DVec2 p, double rr) -> bool {
+                    const long cx = cellX(p.x), cy = cellY(p.y);
+                    for (long dy = -1; dy <= 1; ++dy)
+                        for (long dx = -1; dx <= 1; ++dx) {
+                            auto it = grid.find(ckey(cx + dx, cy + dy));
+                            if (it == grid.end()) continue;
+                            for (int idx : it->second) {
+                                const double ex = poses[idx].pos.x - p.x;
+                                const double ey = poses[idx].pos.y - p.y;
+                                double rej = minEff;
+                                if (in.avoidCollisions)
+                                    rej = std::max(rej, rr + poseR[idx]);
+                                if (ex * ex + ey * ey < rej * rej) return true;
+                            }
+                        }
+                    return false;
+                };
+                const double kTwoPi = 6.283185307179586;
+                std::vector<int> active;
+                for (int t = 0; t < 4000 && poses.empty(); ++t) {
+                    const DVec2 c{ rlo.x + rnd() * (rhi.x - rlo.x),
+                                   rlo.y + rnd() * (rhi.y - rlo.y) };
+                    if (!inRegion(c, true)) continue;
+                    const std::size_t el = pickElem();
+                    const double dr = in.rotJitter > 0.0
+                        ? (rnd() * 2.0 - 1.0) * in.rotJitter : 0.0;
+                    add(c, in.rotation + in.elements[el].rotation + dr, el, elemR[el]);
+                    active.push_back(0);
+                }
+                while (!active.empty() && (int)poses.size() < target) {
+                    int ai = (int)(rnd() * (double)active.size());
+                    if (ai >= (int)active.size()) ai = (int)active.size() - 1;
+                    const DVec2 baseP = poses[active[ai]].pos;
+                    bool placed = false;
+                    for (int k = 0; k < 24; ++k) {
+                        const double ang = rnd() * kTwoPi;
+                        const double rr = minEff + rnd() * (maxEff - minEff);
+                        const DVec2 c{ baseP.x + std::cos(ang) * rr,
+                                       baseP.y + std::sin(ang) * rr };
+                        if (!inRegion(c, true)) continue;
+                        const std::size_t el = pickElem();
+                        if (blocked(c, elemR[el])) continue;
+                        const double dr = in.rotJitter > 0.0
+                            ? (rnd() * 2.0 - 1.0) * in.rotJitter : 0.0;
+                        add(c, in.rotation + in.elements[el].rotation + dr, el,
+                            elemR[el]);
+                        active.push_back((int)poses.size() - 1);
+                        placed = true;  break;
+                    }
+                    if (!placed) { active[ai] = active.back(); active.pop_back(); }
+                }
+            }
+            if (instPoseCache_.size() >= 16)
+                instPoseCache_.erase(instPoseCache_.begin());
+            instPoseCache_.push_back({ key, poses });
+        }
+    }
+
+    if (poses.empty() && lineIdx.empty()) return;
+
+    // ── ONE isolation scope for the WHOLE fill. It composites as a unit at the
+    // fill opacity, so:
+    //   • Add   — instances drawn OPAQUE (own RGB) never double-darken where
+    //             they overlap, shapes WITH shapes AND with lines; the scope
+    //             opacity makes the union translucent once.
+    //   • Blend — instances keep their own alpha and stack.
+    //   • Cut   — instances ERASE (dst-out) the fill's own content, drawn last.
+    // The scope's own contour mask clips everything. Shapes are shared-mesh
+    // INSTANCED drawables (one tessellation per element, N transforms), so tens
+    // of thousands stay light — editing re-emits transforms only.
+    CompositeScope fscope;
+    fscope.node = host.id;  fscope.parent = scope;
+    fscope.opacity = std::clamp(fill.opacity, 0.0f, 1.0f);
+    fscope.blend = BlendMode::Normal;  fscope.isolate = true;
+    fscope.depth = scopes_[scope].depth + 1;
+    maxDepth_ = std::max(maxDepth_, fscope.depth);
+    const ScopeId fs = (ScopeId)scopes_.size();
+    scopes_.push_back(fscope);
+
+    if (useMask) emitMaskWrite(fs);
+    const ClipRole role = useMask ? ClipRole::Clipped : ClipRole::None;
+
+    // Base ring per enabled element (ONE shared mesh, GPU-instanced). Indexed by
+    // absolute element index (poses store that). markShapes_ is a deque — the
+    // pointers stay valid as more paths are pushed.
+    std::vector<const PathData*> baseRing(in.elements.size(), nullptr);
+    std::vector<std::uint64_t>   baseHash(in.elements.size(), 0);
+    for (std::size_t k : enabledIdx) {
+        markShapes_.push_back(InstElementPath(in.elements[k]));
+        if (markShapes_.back().Empty()) { markShapes_.pop_back(); continue; }
+        baseRing[k] = &markShapes_.back();
+        baseHash[k] = markShapes_.back().Hash();
+    }
+
+    // A shape instance → one shared-mesh drawable. `cutPass` splits the two
+    // rounds (positive content first, then the erasing Cut content).
+    auto emitShape = [&](const InstPose& p, bool cutPass) {
+        const InstElement& e = in.elements[(std::size_t)p.elem];
+        const bool cut = e.mode == MarkObjectMode::Subtract;
+        if (cut != cutPass) return;
+        const PathData* g = baseRing[(std::size_t)p.elem];
+        if (!g) return;
+        const double c = std::cos(p.rot), s = std::sin(p.rot);
+        DMat23 rot; rot.m[0] = c; rot.m[1] = -s; rot.m[3] = s; rot.m[4] = c;
+        const DMat23 place = DMat23::Translation(p.pos.x, p.pos.y).Compose(rot);
+        Drawable d;
+        d.node = host.id;  d.owner = owner;
+        d.world = docAnchor ? place : world.Compose(place);
+        d.path = g;  d.pathHash = baseHash[(std::size_t)p.elem];
+        d.isStroke = false;  d.rule = FillRule::NonZero;
+        d.ownerPiece = (std::uint8_t)fillIndex;  d.ownerPieceStroke = false;
+        d.scope = fs;
+        const float op = std::clamp(e.opacity, 0.0f, 1.0f);
+        if (cut) {
+            d.color = Color{ 0, 0, 0, op };
+            d.clip = ClipRole::EraseWrite;  d.clipPinned = true;
+        } else {
+            d.color = e.useFillColor ? fill.paint.color : e.color;
+            if (e.mode == MarkObjectMode::Fusion) d.color.a = 1.0f;  // paint once
+            else d.color.a *= op;                                    // Blend stacks
+            d.clip = role;
+        }
+        drawables_.push_back(std::move(d));
+    };
+
+    // ── Line-sets: parallel lines across the region (cap / dash / repeats).
+    // `genLines` yields each spine's endpoints; `emitLine` strokes it in the
+    // fill scope with the set's mode.
+    auto genLines = [&](const InstLineSet& l,
+                        const std::function<void(DVec2, DVec2)>& fn) {
+        const double la = l.angle + in.rotation;
+        const DVec2 dir{ std::cos(la), std::sin(la) };
+        const DVec2 nrm{ -dir.y, dir.x };
+        const DVec2 rc[4] = { { rlo.x, rlo.y }, { rhi.x, rlo.y },
+                              { rhi.x, rhi.y }, { rlo.x, rhi.y } };
+        double tMin = 1e300, tMax = -1e300, dMin = 1e300, dMax = -1e300;
+        for (const DVec2& q : rc) {
+            const double t = dir.x * q.x + dir.y * q.y;
+            const double d = nrm.x * q.x + nrm.y * q.y;
+            tMin = std::min(tMin, t); tMax = std::max(tMax, t);
+            dMin = std::min(dMin, d); dMax = std::max(dMax, d);
+        }
+        const double sp = l.spacing > 1e-6 ? l.spacing : 20.0;
+        tMin -= sp; tMax += sp;                       // overshoot; the mask trims
+        const long k0 = (long)std::floor((dMin - l.phase) / sp);
+        const long k1 = (long)std::ceil((dMax - l.phase) / sp);
+        if ((double)(k1 - k0 + 1) > 2.0e4) return;    // runaway guard
+        for (long k = k0; k <= k1; ++k) {
+            const double d = l.phase + (double)k * sp;
+            const DVec2 cC{ d * nrm.x, d * nrm.y };
+            fn({ cC.x + tMin * dir.x, cC.y + tMin * dir.y },
+               { cC.x + tMax * dir.x, cC.y + tMax * dir.y });
+        }
+    };
+    auto emitLine = [&](DVec2 p0, DVec2 p1, const InstLineSet& l) {
+        const bool cut = l.mode == MarkObjectMode::Subtract;
+        PathData lp; Subpath spn; spn.closed = false;
+        Anchor a0; a0.pos = p0;  Anchor a1; a1.pos = p1;
+        spn.anchors = { a0, a1 };
+        lp.subpaths.push_back(std::move(spn));
+        markShapes_.push_back(std::move(lp));
+        const PathData* g = &markShapes_.back();
+        Drawable d;
+        d.node = host.id;  d.owner = owner;
+        d.world = docAnchor ? DMat23{} : world;
+        d.path = g;  d.pathHash = g->Hash();
+        d.isStroke = true;
+        d.stroke = l.line;                       // width / cap / dash / repeats
+        d.stroke.align = StrokeAlign::Center;
+        d.stroke.marks.clear();                  // marks unused on line-sets
+        d.ownerPiece = (std::uint8_t)fillIndex;  d.ownerPieceStroke = false;
+        d.scope = fs;
+        if (cut) {
+            d.color = Color{ 0, 0, 0, 1.0f };
+            d.clip = ClipRole::EraseWrite;  d.clipPinned = true;
+        } else {
+            d.color = l.useFillColor ? fill.paint.color : l.color;
+            if (l.mode == MarkObjectMode::Fusion) d.color.a = 1.0f;  // paint once
+            d.clip = role;                        // Blend keeps its own alpha
+        }
+        drawables_.push_back(std::move(d));
+    };
+
+    // POSITIVE content first (Add + Blend), then CUT content — so a cut erases
+    // everything the fill drew before it, all clipped to the contour.
+    for (const InstPose& p : poses) emitShape(p, /*cutPass=*/false);
+    for (std::size_t li : lineIdx) {
+        const InstLineSet& l = in.lines[li];
+        if (l.mode == MarkObjectMode::Subtract) continue;
+        genLines(l, [&](DVec2 a, DVec2 b) { emitLine(a, b, l); });
+    }
+    for (const InstPose& p : poses) emitShape(p, /*cutPass=*/true);
+    for (std::size_t li : lineIdx) {
+        const InstLineSet& l = in.lines[li];
+        if (l.mode != MarkObjectMode::Subtract) continue;
+        genLines(l, [&](DVec2 a, DVec2 b) { emitLine(a, b, l); });
+    }
+
+    if (useMask) emitMaskClear(fs);
 }
 
 bool Scene::Compile(Document& doc, bool force) {
