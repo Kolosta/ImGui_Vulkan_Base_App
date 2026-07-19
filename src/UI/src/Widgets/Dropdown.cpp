@@ -490,6 +490,10 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
             ImVec2 content = ImGui::GetItemRectSize();
             s_bodySize[bodyKey] = ImVec2(content.x + mPad.x * 2.0f,
                                          content.y + mPad.y * 2.0f);
+            // Esc closes the dropdown (like click-outside / right-click), unless
+            // an inner field is being edited (then Esc cancels that edit first).
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::IsAnyItemActive())
+                ImGui::CloseCurrentPopup();
             ImGui::EndPopup();
         }
         ImGui::PopStyleColor(2);
@@ -771,6 +775,10 @@ DropdownResult Dropdown(const DropdownConfig& cfg) {
                 }
             }
             if (closeMenu) ImGui::CloseCurrentPopup();
+            // Esc closes the menu — unless a field (e.g. the search box) is being
+            // edited, where Esc cancels/clears that edit first.
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::IsAnyItemActive())
+                ImGui::CloseCurrentPopup();
 
             ImGui::EndPopup();
         }

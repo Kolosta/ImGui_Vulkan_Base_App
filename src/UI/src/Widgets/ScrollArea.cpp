@@ -34,7 +34,19 @@ ImVec4 LerpCol(const ImVec4& a, const ImVec4& b, float t) {
                   Lerp(a.z, b.z, t), Lerp(a.w, b.w, t));
 }
 
+// The active editor-resize band (screen px), published by the layout each frame.
+ImVec4 g_resizeBand{ 0, 0, 0, 0 };
+bool MouseInResizeBand() {
+    if (g_resizeBand.z <= g_resizeBand.x || g_resizeBand.w <= g_resizeBand.y)
+        return false;
+    const ImVec2 m = ImGui::GetIO().MousePos;
+    return m.x >= g_resizeBand.x && m.x <= g_resizeBand.z &&
+           m.y >= g_resizeBand.y && m.y <= g_resizeBand.w;
+}
+
 } // namespace
+
+void SetResizeReservedBand(const ImVec4& r) { g_resizeBand = r; }
 
 bool BeginScroll(const char* id, const ImVec2& size,
                  ImGuiChildFlags childFlags, ImGuiWindowFlags extraFlags) {
@@ -120,10 +132,14 @@ void EndScroll() {
     const bool overTrack =
         mouse.x >= trackX - halfHit && mouse.x <= trackX + halfHit && inRow;
 
-    if (!st.dragging && overGrab && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    // A press inside an editor-resize band is that resize's alone — never a
+    // scrollbar grab (both hit-tests are geometric; the resize takes priority).
+    const bool resizeClaims = MouseInResizeBand();
+    if (!st.dragging && !resizeClaims && overGrab &&
+        ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         st.dragging = true;
         st.dragGrabOffset = mouse.y - grabTop;
-    } else if (!st.dragging && overTrack && !overGrab &&
+    } else if (!st.dragging && !resizeClaims && overTrack && !overGrab &&
                ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         st.dragging = true;             // track click: grab jumps under cursor
         st.dragGrabOffset = grabH * 0.5f;

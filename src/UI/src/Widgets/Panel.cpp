@@ -375,8 +375,14 @@ PanelResult BeginPanel(const PanelConfig& cfg) {
     // narrows on BOTH sides. Undone in EndPanel.
     const float cInset = open ? Flt(Tok::C_Panel_CornerRadius) * gs : 0.0f;
     if (cInset > 0.0f) {
-        ImGui::Indent(cInset);
-        ImGui::GetCurrentWindow()->WorkRect.Max.x -= cInset;
+        ImGui::Indent(cInset);                         // left margin (cursor)
+        // GetContentRegionAvail() reads ContentRegionRect.Max (NOT WorkRect), so
+        // this is what actually narrows every row AND every NESTED child created
+        // with the available width (e.g. the fill/stroke "props" child) on the
+        // RIGHT. WorkRect too, for the column/table paths.
+        ImGuiWindow* w = ImGui::GetCurrentWindow();
+        w->ContentRegionRect.Max.x -= cInset;
+        w->WorkRect.Max.x -= cInset;
     }
 
     PanelFrame f;
@@ -400,10 +406,12 @@ void EndPanel() {
     PanelFrame f = Stack().back();
     Stack().pop_back();
 
-    // Undo the horizontal content margin (balances the Indent + WorkRect pull-in
+    // Undo the horizontal content margin (balances the Indent + region pull-in
     // from BeginPanel) while this child is still current.
     if (f.contentInset > 0.0f) {
-        ImGui::GetCurrentWindow()->WorkRect.Max.x += f.contentInset;
+        ImGuiWindow* w = ImGui::GetCurrentWindow();
+        w->ContentRegionRect.Max.x += f.contentInset;
+        w->WorkRect.Max.x += f.contentInset;
         ImGui::Unindent(f.contentInset);
     }
 
