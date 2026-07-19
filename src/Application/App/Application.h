@@ -139,6 +139,10 @@ private:
     void RenderViewportSidePanel(EditorState& st, ImVec2 cMin, ImVec2 cMax);
     void DrawSidePanelItemTab(ImVec2 cMin, ImVec2 cMax);
     void DrawSidePanelMarksTab(ImVec2 cMin, ImVec2 cMax);
+    // The object the N-panel Item tab shows: the active one, or — once the
+    // selection is fully cleared — the LAST active one (kept until deleted), so
+    // the tab keeps editing it while deselected. kNullNode = the tab is hidden.
+    Ink::NodeId ItemTabNode() const;
 
     // ── Editing loop (ViewportInput.cpp / ViewportTools.cpp / ViewportModal.cpp) ─
     // Camera helpers, shared by input + overlay drawing.

@@ -420,6 +420,10 @@ private:
                                            // short delay so quick moves between
                                            // editors don't flash a resize line
     Node*        sepDragging_  = nullptr;  // split whose separator is dragging
+    // Screen band (min.x,min.y,max.x,max.y) of the separator currently
+    // hovered / dragged — the corner blocker seals it so a resize click never
+    // also lands on the neighbour editor's overlay scrollbar or content.
+    ImVec4       sepBlockRect_{0, 0, 0, 0};
     ImVec2       contextMenuPos_{0, 0};    // mouse pos captured at right-click
     Node*        menuSplit_    = nullptr;  // split whose context menu is open
     bool         menuOpenRequest_ = false; // ask to OpenPopup next (in body)

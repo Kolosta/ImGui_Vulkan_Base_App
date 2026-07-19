@@ -197,6 +197,11 @@ inline Ink::Color SrgbToLinearStraight(float r, float g, float b, float a = 1.0f
 struct EditContext {
     std::vector<Ink::NodeId> selection;      // insertion order
     Ink::NodeId active = Ink::kNullNode;     // last selected
+    // The last object that was active, KEPT after a full deselect (Blender: an
+    // object stays "active" though nothing is selected). ONLY the N-panel Item
+    // tab uses it, so it keeps showing / editing that object once deselected.
+    // Cleared when the node is deleted (Prune) or the document resets.
+    Ink::NodeId lastActive = Ink::kNullNode;
     EditorMode  mode = EditorMode::Object;
     PivotMode   pivot = PivotMode::MedianPoint;
     TransformOrientation orientation = TransformOrientation::Global;
@@ -326,6 +331,8 @@ struct EditContext {
                         selection.end());
         if (active != Ink::kNullNode && !doc.Find(active))
             active = selection.empty() ? Ink::kNullNode : selection.back();
+        if (lastActive != Ink::kNullNode && !doc.Find(lastActive))
+            lastActive = Ink::kNullNode;
         if (selection.empty()) elemSel.clear();
         markSel.erase(std::remove_if(markSel.begin(), markSel.end(),
                           [&](const MarkRef& r) {

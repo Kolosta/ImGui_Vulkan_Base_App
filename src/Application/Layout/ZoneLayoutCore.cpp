@@ -2,6 +2,7 @@
 #include <UI/Widgets/IconWidgets.h>
 #include <UI/Widgets/Dropdown.h>
 #include <UI/Widgets/PopupMenu.h>
+#include <UI/Widgets/ScrollArea.h>
 #include <VectorGraphics/IconManager.h>
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ShortcutManager.h>
@@ -720,6 +721,12 @@ void ZoneLayout::Render() {
         catch (...) {}
         if (show) DrawCornerZones(root_.get());
     }
+    // Publish LAST frame's separator band (stable while the mouse dwells on it,
+    // as it does before a resize click) so THIS frame's editors — their overlay
+    // scrollbars use a geometric hit-test that no ImGui blocker can stop — skip
+    // a grab inside it. Then reset; DrawSeparator republishes for next frame.
+    UI::SetResizeReservedBand(sepBlockRect_);
+    sepBlockRect_ = ImVec4(0, 0, 0, 0);
     DrawNode(root_.get(), gap);
     DrawSplitPreview();
     // Tab drag: promote/draw/dispatch on the overlay draw list (above zones).
@@ -746,6 +753,13 @@ void ZoneLayout::Render() {
             (join_.active && join_.fromDrag)) {
             bMin = origin;
             bMax = ImVec2(origin.x + avail.x, origin.y + avail.y);
+            block = true;
+        } else if (sepBlockRect_.z > sepBlockRect_.x &&
+                   sepBlockRect_.w > sepBlockRect_.y) {
+            // A separator is hovered / dragged → seal its grab band so the
+            // resize press is the ONLY action (no neighbour scrollbar / content).
+            bMin = ImVec2(sepBlockRect_.x, sepBlockRect_.y);
+            bMax = ImVec2(sepBlockRect_.z, sepBlockRect_.w);
             block = true;
         } else if (!sepDragging_ && !tabDrag_.armed && !tabDrag_.active &&
                    !join_.active) {

@@ -35,18 +35,12 @@ static void EndTabChild() {}
 // active object's world Dimensions (read-only, from the rendered bounds).
 void Application::DrawSidePanelItemTab(ImVec2 cMin, ImVec2 cMax) {
     if (!BeginTabChild("##itemTab", cMin, cMax)) return;
-    if (!project_.document || edit_.active == Ink::kNullNode) {
-        ImGui::PushStyleColor(ImGuiCol_Text,
-            pr::SafeColor(Tok::S_Color_Text_Subtle, ImVec4(0.6f, 0.6f, 0.6f, 1)));
-        ImGui::TextUnformatted("No active object.");
-        ImGui::PopStyleColor();
-        EndTabChild();
-        return;
-    }
-    Ink::Document& doc = *project_.document;
-    const Ink::NodeId id = edit_.active;
-    const Ink::Node* n = doc.Find(id);
+    // The ACTIVE object (kept while deselected, so its data stays editable).
+    const Ink::NodeId id = ItemTabNode();
+    const Ink::Node* n = (project_.document && id != Ink::kNullNode)
+                             ? project_.document->Find(id) : nullptr;
     if (!n) { EndTabChild(); return; }
+    Ink::Document& doc = *project_.document;
 
     Ink::Transform2D t = n->transform;
     float loc[2] = { (float)t.tx, (float)t.ty };
@@ -160,28 +154,44 @@ void Application::DrawSidePanelMarksTab(ImVec2 cMin, ImVec2 cMax) {
     EndTabChild();
 }
 
+// The object the Item tab edits: active, else the last-active (kept while
+// deselected), validated against the document. kNullNode → the tab is hidden.
+Ink::NodeId Application::ItemTabNode() const {
+    Ink::NodeId id = edit_.active != Ink::kNullNode ? edit_.active : edit_.lastActive;
+    if (id != Ink::kNullNode && project_.document && project_.document->Find(id))
+        return id;
+    return Ink::kNullNode;
+}
+
 // ── Panel host ──────────────────────────────────────────────────────────────
 void Application::RenderViewportSidePanel(EditorState& st, ImVec2 cMin, ImVec2 cMax) {
     // The Item-tab inputs follow this VIEWPORT's display unit (the ruler unit),
     // not the document one.
     sidePanelUnitSys_ = ViewportUnitSystem(st);
+    // Remember the active object so the Item tab keeps showing it once the user
+    // deselects (Prune clears it if the node is deleted).
+    if (edit_.active != Ink::kNullNode) edit_.lastActive = edit_.active;
+
     std::vector<UI::SidePanelTab> tabs;
-    // Item — always available.
-    {
+    // Item — only when there IS an (active / last-active) object to show; the
+    // empty "No active object" panel is hidden with its tab.
+    if (ItemTabNode() != Ink::kNullNode) {
         UI::SidePanelTab item; item.name = "Item";
         item.draw = [this](ImVec2 conMin, ImVec2 conMax) {
             DrawSidePanelItemTab(conMin, conMax);
         };
         tabs.push_back(std::move(item));
     }
-    // Marks — only in Line-Mark mode.
-    if (MarkModeActive()) {
+    // Marks — only in Line-Mark mode AND with a mark selected (else hidden).
+    if (MarkModeActive() && !edit_.markSel.empty()) {
         UI::SidePanelTab marks; marks.name = "Marks";
         marks.draw = [this](ImVec2 conMin, ImVec2 conMax) {
             DrawSidePanelMarksTab(conMin, conMax);
         };
         tabs.push_back(std::move(marks));
     }
+    // No tab has data → hide the whole panel (no empty bar/handle).
+    if (tabs.empty()) return;
     // Keep the active tab in range as tabs appear/disappear with the mode.
     if (st.sidePanel.tab >= (int)tabs.size())
         st.sidePanel.tab = 0;
