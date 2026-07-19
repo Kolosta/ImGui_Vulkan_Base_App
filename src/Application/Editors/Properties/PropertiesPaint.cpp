@@ -346,14 +346,18 @@ void Application::DrawFillsStackBody(
             if (pr::CheckRow("Enabled", &enabled)) {
                 f.enabled = enabled; structural = true;
             }
-            static const char* kKind[] = { "Solid", "Pattern" };
+            static const char* kKind[] = { "Solid", "Pattern", "Instanced" };
             int kind = (int)f.kind;
-            if (pr::DropdownRow("Type", kKind, 2, &kind)) {
+            if (pr::DropdownRow("Type", kKind, 3, &kind)) {
                 f.kind = (Ink::FillKind)kind; structural = true;
                 // A fresh pattern defaults to the exact contour clip.
                 if (f.kind == Ink::FillKind::Pattern &&
                     f.pattern.motifRef == Ink::kNullNode)
                     f.pattern.clip = Ink::PatternClip::Contour;
+                // A fresh instanced fill seeds one circle so it shows at once.
+                if (f.kind == Ink::FillKind::Instanced &&
+                    f.instanced.elements.empty() && f.instanced.lines.empty())
+                    f.instanced.elements.push_back(Ink::InstElement{});
             }
 
             if (f.kind == Ink::FillKind::Solid) {
@@ -367,7 +371,7 @@ void Application::DrawFillsStackBody(
                 if (pr::DropdownRow("Rule", kRule, 2, &rule)) {
                     f.rule = (Ink::FillRule)rule; structural = true;
                 }
-            } else {
+            } else if (f.kind == Ink::FillKind::Pattern) {
                 // ── Pattern fill (legacy fill-layer feature set) ──
                 bool pickReq = false;
                 if (pr::NodePickerRow("Motif", doc, &f.pattern.motifRef, node,
@@ -475,6 +479,268 @@ void Application::DrawFillsStackBody(
                         "or to the document origin (the shape slides over "
                         "a static field)",
                         ImGui::GetIO().MousePos, 1.0f);
+            } else {
+                // ── Instanced fill: generated shapes + line-sets on a grid or
+                // scatter layout (Scene::EmitInstancedFill) ──
+                Ink::InstancedFill& in = f.instanced;
+                constexpr double kD2R = 3.14159265358979 / 180.0;
+                constexpr double kR2D = 180.0 / 3.14159265358979;
+                // A unit-aware drag over a DOUBLE store: render + live-apply +
+                // release-commit, all correctly sequenced. `s2d`/`d2s` convert
+                // store↔display (radians↔degrees for an angle; identity else).
+                auto dragD = [&](const char* label, double* dst, float speed,
+                                 double mn, double mx, int dec, pr::Quantity q,
+                                 const char* lbl, double s2d = 1.0,
+                                 double d2s = 1.0) {
+                    float v = (float)((*dst) * s2d);
+                    const bool ch = pr::DragFloat(label, &v, speed, (float)mn,
+                                                  (float)mx, dec, "", q);
+                    if (ch) { *dst = (double)v * d2s; liveApply(lbl, false); }
+                    if (ImGui::IsItemDeactivatedAfterEdit()) liveApply(lbl, true);
+                };
+                static const char* kMode[] = { "Add", "Blend", "Cut" };
+
+                // The fill's base colour — shapes/lines with "Fill colour" on
+                // inherit it (a single knob to recolour the whole field).
+                {
+                    bool crel = false;
+                    if (pr::ColorRow("Fill colour", &f.paint.color, true, &crel))
+                        liveApply("Fill Colour", false);
+                    if (crel) liveApply("Fill Colour", true);
+                }
+
+                static const char* kLayout[] = { "Grid", "Scatter" };
+                int layout = (int)in.layout;
+                if (pr::ButtonGroupRow("Layout", kLayout, 2, &layout)) {
+                    in.layout = (Ink::InstLayout)layout;
+                    structural = true; structLabel = "Instanced Layout";
+                }
+
+                if (in.layout == Ink::InstLayout::Grid) {
+                    static const char* kAxes[] = { "2 axes", "3 axes" };
+                    int axes = in.gridAxes >= 3 ? 1 : 0;
+                    if (pr::ButtonGroupRow("Grid", kAxes, 2, &axes)) {
+                        in.gridAxes = axes == 1 ? 3 : 2;
+                        structural = true; structLabel = "Grid Axes";
+                    }
+                    dragD("Spacing 1", &in.spacing[0], 0.2f, 0.1, 100000.0, 2,
+                          pr::Quantity::Length, "Grid Spacing");
+                    dragD("Angle 1", &in.axisAngle[0], 0.5f, -360.0, 360.0, 1,
+                          pr::Quantity::Angle, "Grid Angle", kR2D, kD2R);
+                    if (in.gridAxes < 3) {
+                        dragD("Spacing 2", &in.spacing[1], 0.2f, 0.1, 100000.0, 2,
+                              pr::Quantity::Length, "Grid Spacing");
+                        dragD("Angle 2", &in.axisAngle[1], 0.5f, -360.0, 360.0, 1,
+                              pr::Quantity::Angle, "Grid Angle", kR2D, kD2R);
+                    }
+                } else {
+                    // Density is driven by a COUNT (N spread over the area) OR a
+                    // DISTANCE band (fills the whole area at that spacing) — never
+                    // both. The area is always filled either way.
+                    static const char* kSMode[] = { "Count", "Distance" };
+                    int smode = (int)in.scatterMode;
+                    if (pr::ButtonGroupRow("Density", kSMode, 2, &smode)) {
+                        in.scatterMode = (Ink::InstScatterMode)smode;
+                        structural = true; structLabel = "Scatter Density";
+                    }
+                    if (in.scatterMode == Ink::InstScatterMode::Count) {
+                        int count = in.scatterCount;
+                        if (pr::DragInt("Count", &count, 1.0f, 0, 100000)) {
+                            in.scatterCount = count;
+                            liveApply("Scatter Count", false);
+                        }
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            liveApply("Scatter Count", true);
+                    } else {
+                        dragD("Min distance", &in.scatterMinDist, 0.2f, 0.0,
+                              100000.0, 2, pr::Quantity::Length, "Scatter Min");
+                        dragD("Max distance", &in.scatterMaxDist, 0.2f, 0.0,
+                              100000.0, 2, pr::Quantity::Length, "Scatter Max");
+                    }
+                    bool avoid = in.avoidCollisions;
+                    if (pr::CheckRow("No overlap", &avoid)) {
+                        in.avoidCollisions = avoid;
+                        structural = true; structLabel = "Scatter Collisions";
+                    }
+                    if (ImGui::IsItemHovered())
+                        UI::DrawTooltipTranslucent(
+                            "Keep whole shapes from overlapping — centres stay at "
+                            "least the two shapes' radii apart",
+                            ImGui::GetIO().MousePos, 1.0f);
+                }
+
+                pr::GroupGap();
+                // Position jitter only applies to the regular grid — a scatter
+                // is already random and its spacing/overlap is controlled above.
+                if (in.layout == Ink::InstLayout::Grid)
+                    dragD("Pos jitter", &in.posJitter, 0.2f, 0.0, 100000.0, 2,
+                          pr::Quantity::Length, "Position Jitter");
+                dragD("Rot jitter", &in.rotJitter, 0.5f, 0.0, 360.0, 1,
+                      pr::Quantity::Angle, "Rotation Jitter", kR2D, kD2R);
+                int seed = (int)in.seed;
+                if (pr::DragInt("Seed", &seed, 1.0f, 0, 1000000)) {
+                    in.seed = (std::uint32_t)std::max(0, seed);
+                    liveApply("Seed", false);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit()) liveApply("Seed", true);
+                dragD("Rotation", &in.rotation, 0.5f, -360.0, 360.0, 1,
+                      pr::Quantity::Angle, "Layout Rotation", kR2D, kD2R);
+
+                // ── Shapes ──
+                pr::GroupGap();
+                ImGui::TextUnformatted("Shapes");
+                static const char* kShape[] = { "Circle", "Rectangle",
+                                                "Triangle", "Diamond",
+                                                "Half-circle" };
+                int removeElem = -1;
+                for (int ei = 0; ei < (int)in.elements.size(); ++ei) {
+                    ImGui::PushID(2000 + ei);
+                    Ink::InstElement& e = in.elements[(std::size_t)ei];
+                    int shape = (int)e.shape;
+                    if (pr::DropdownRow("Shape", kShape, 5, &shape)) {
+                        e.shape = (Ink::InstShape)shape;
+                        structural = true; structLabel = "Shape";
+                    }
+                    if (e.shape == Ink::InstShape::Triangle) {
+                        dragD("Side A", &e.sizeA, 0.2f, 0.1, 100000.0, 2,
+                              pr::Quantity::Length, "Shape Size");
+                        dragD("Side B", &e.sizeB, 0.2f, 0.1, 100000.0, 2,
+                              pr::Quantity::Length, "Shape Size");
+                        dragD("Side C", &e.sizeC, 0.2f, 0.1, 100000.0, 2,
+                              pr::Quantity::Length, "Shape Size");
+                    } else if (e.shape == Ink::InstShape::Circle ||
+                               e.shape == Ink::InstShape::HalfCircle) {
+                        dragD("Radius", &e.sizeA, 0.2f, 0.1, 100000.0, 2,
+                              pr::Quantity::Length, "Shape Size");
+                    } else {   // Rectangle / Diamond — half extents
+                        dragD("Width", &e.sizeA, 0.2f, 0.1, 100000.0, 2,
+                              pr::Quantity::Length, "Shape Size");
+                        dragD("Height", &e.sizeB, 0.2f, 0.1, 100000.0, 2,
+                              pr::Quantity::Length, "Shape Size");
+                    }
+                    dragD("Angle", &e.rotation, 0.5f, -360.0, 360.0, 1,
+                          pr::Quantity::Angle, "Shape Angle", kR2D, kD2R);
+                    int mode = (int)e.mode;
+                    if (pr::ButtonGroupRow("Mode", kMode, 3, &mode)) {
+                        e.mode = (Ink::MarkObjectMode)mode;
+                        structural = true; structLabel = "Shape Mode";
+                    }
+                    if (e.mode != Ink::MarkObjectMode::Subtract) {
+                        bool ufc = e.useFillColor;
+                        if (pr::CheckRow("Fill colour", &ufc)) {
+                            e.useFillColor = ufc;
+                            structural = true; structLabel = "Shape Colour";
+                        }
+                        if (!e.useFillColor) {
+                            bool crel = false;
+                            if (pr::ColorRow("Colour", &e.color, true, &crel))
+                                liveApply("Shape Colour", false);
+                            if (crel) liveApply("Shape Colour", true);
+                        }
+                    }
+                    float eo = e.opacity;
+                    if (pr::DragFloat(
+                            e.mode == Ink::MarkObjectMode::Subtract
+                                ? "Erase strength" : "Opacity",
+                            &eo, 0.5f, 0.0f, 1.0f, 0, "", pr::Quantity::Percent)) {
+                        e.opacity = eo; liveApply("Shape Opacity", false);
+                    }
+                    if (ImGui::IsItemDeactivatedAfterEdit())
+                        liveApply("Shape Opacity", true);
+                    if (ImGui::SmallButton("Remove shape")) removeElem = ei;
+                    ImGui::PopID();
+                    pr::GroupGap();
+                }
+                if (removeElem >= 0) {
+                    in.elements.erase(in.elements.begin() + removeElem);
+                    structural = true; structLabel = "Remove Shape";
+                }
+                if (ImGui::SmallButton("Add shape")) {
+                    in.elements.push_back(Ink::InstElement{});
+                    structural = true; structLabel = "Add Shape";
+                }
+
+                // ── Line-sets ──
+                pr::GroupGap();
+                ImGui::TextUnformatted("Line sets");
+                static const char* kCap[] = { "Butt", "Round", "Square" };
+                int removeLine = -1;
+                for (int li = 0; li < (int)in.lines.size(); ++li) {
+                    ImGui::PushID(3000 + li);
+                    Ink::InstLineSet& l = in.lines[(std::size_t)li];
+                    dragD("Angle", &l.angle, 0.5f, -360.0, 360.0, 1,
+                          pr::Quantity::Angle, "Line Angle", kR2D, kD2R);
+                    dragD("Spacing", &l.spacing, 0.2f, 0.1, 100000.0, 2,
+                          pr::Quantity::Length, "Line Spacing");
+                    dragD("Offset", &l.phase, 0.2f, -100000.0, 100000.0, 2,
+                          pr::Quantity::Length, "Line Offset");
+                    dragD("Width", &l.line.width, 0.1f, 0.01, 100000.0, 2,
+                          pr::Quantity::Length, "Line Width");
+                    int cap = (int)l.line.cap;
+                    if (pr::DropdownRow("Cap", kCap, 3, &cap)) {
+                        l.line.cap = (Ink::CapStyle)cap;
+                        structural = true; structLabel = "Line Cap";
+                    }
+                    bool dashed = !l.line.dashPattern.empty();
+                    if (pr::CheckRow("Dashed", &dashed)) {
+                        if (dashed) l.line.dashPattern = { l.line.width * 4.0,
+                                                           l.line.width * 3.0 };
+                        else l.line.dashPattern.clear();
+                        structural = true; structLabel = "Line Dash";
+                    }
+                    if (dashed && l.line.dashPattern.size() >= 2) {
+                        dragD("Dash", &l.line.dashPattern[0], 0.2f, 0.1, 100000.0,
+                              2, pr::Quantity::Length, "Line Dash");
+                        dragD("Gap", &l.line.dashPattern[1], 0.2f, 0.1, 100000.0,
+                              2, pr::Quantity::Length, "Line Dash");
+                    }
+                    int lmode = (int)l.mode;
+                    if (pr::ButtonGroupRow("Mode", kMode, 3, &lmode)) {
+                        l.mode = (Ink::MarkObjectMode)lmode;
+                        structural = true; structLabel = "Line Mode";
+                    }
+                    if (l.mode != Ink::MarkObjectMode::Subtract) {
+                        bool ufc = l.useFillColor;
+                        if (pr::CheckRow("Fill colour", &ufc)) {
+                            l.useFillColor = ufc;
+                            structural = true; structLabel = "Line Colour";
+                        }
+                        if (!l.useFillColor) {
+                            bool crel = false;
+                            if (pr::ColorRow("Colour", &l.color, true, &crel))
+                                liveApply("Line Colour", false);
+                            if (crel) liveApply("Line Colour", true);
+                        }
+                    }
+                    if (ImGui::SmallButton("Remove line set")) removeLine = li;
+                    ImGui::PopID();
+                    pr::GroupGap();
+                }
+                if (removeLine >= 0) {
+                    in.lines.erase(in.lines.begin() + removeLine);
+                    structural = true; structLabel = "Remove Line Set";
+                }
+                if (ImGui::SmallButton("Add line set")) {
+                    Ink::InstLineSet l;
+                    l.line.width = 2.0;
+                    in.lines.push_back(l);
+                    structural = true; structLabel = "Add Line Set";
+                }
+
+                // ── Clip + anchor (shared pattern vocabulary) ──
+                pr::GroupGap();
+                static const char* kClip[] = { "Box", "Shape", "Inner", "Outer" };
+                int clip = (int)in.clip;
+                if (pr::ButtonGroupRow("Fill clip", kClip, 4, &clip)) {
+                    in.clip = (Ink::PatternClip)clip;
+                    structural = true; structLabel = "Instanced Clip";
+                }
+                static const char* kAnchor[] = { "Object", "Document" };
+                int anchor = (int)in.anchor;
+                if (pr::ButtonGroupRow("Anchor", kAnchor, 2, &anchor)) {
+                    in.anchor = (Ink::PatternAnchor)anchor;
+                    structural = true; structLabel = "Instanced Anchor";
+                }
             }
 
             float op = f.opacity;

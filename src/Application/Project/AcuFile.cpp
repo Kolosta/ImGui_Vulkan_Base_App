@@ -41,7 +41,7 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 12;  // v3: subpath spline params +
+constexpr std::uint32_t kDocVersion = 14;  // v3: subpath spline params +
                                            //     anchor weight (+ dead marks)
                                            // v4-v8: generic marks (dead)
                                            // v9: marks — per-object side/offset +
@@ -54,6 +54,10 @@ constexpr std::uint32_t kDocVersion = 12;  // v3: subpath spline params +
                                            //      repeatAnchor, new shapes,
                                            //      along-path modifier options
                                            // v12: document display-unit system
+                                           // v13: Instanced fill (shapes +
+                                           //      line-sets, grid/scatter)
+                                           // v14: instanced scatter mode
+                                           //      (count vs distance)
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -274,6 +278,179 @@ Ink::MarkObject ReadMarkObject(Reader& r, std::uint32_t ver, int depth = 0) {
     return o;
 }
 
+// ── Stroke repeat run (shared by strokes and instanced-fill line-sets) ────────
+void WriteStrokeRepeat(Writer& w, const Ink::StrokeRepeat& rp) {
+    w.u8(rp.enabled ? 1 : 0);
+    w.u8((std::uint8_t)rp.shape);
+    w.u8((std::uint8_t)rp.mode);
+    w.u8((std::uint8_t)rp.blend);
+    w.f64(rp.size);
+    w.f64(rp.width);
+    w.u8(rp.sizePercent ? 1 : 0);
+    w.f64(rp.rotation);
+    w.u8((std::uint8_t)rp.side);
+    w.f64(rp.sideOffset);
+    w.u8(rp.offsetPercent ? 1 : 0);
+    w.u8((std::uint8_t)rp.distribute);
+    w.f64(rp.pitch);
+    w.f64(rp.gap);
+    w.u32((std::uint32_t)rp.count);
+    w.f64(rp.density);
+    w.f64(rp.phase);
+    w.u32((std::uint32_t)rp.groupCount);
+    w.f64(rp.groupPitch);
+    w.f64(rp.startTrim);
+    w.f64(rp.endTrim);
+    w.u8((std::uint8_t)rp.fit);
+    w.u8(rp.lineJoin ? 1 : 0);
+    w.u8(rp.lineClip ? 1 : 0);
+    WriteColor(w, rp.color);
+    w.u8(rp.useStrokeColor ? 1 : 0);
+    w.f32(rp.opacity);
+}
+Ink::StrokeRepeat ReadStrokeRepeat(Reader& r) {
+    Ink::StrokeRepeat rp;
+    rp.enabled = r.u8() != 0;
+    rp.shape = (Ink::MarkShape)std::min<std::uint8_t>(r.u8(), Ink::kMarkShapeMax);
+    rp.mode  = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
+    rp.blend = (Ink::BlendMode)std::min<std::uint8_t>(
+        r.u8(), (std::uint8_t)Ink::BlendMode::Erase);
+    rp.size = r.f64();
+    rp.width = r.f64();
+    rp.sizePercent = r.u8() != 0;
+    rp.rotation = r.f64();
+    rp.side = (Ink::RepeatSide)std::min<std::uint8_t>(r.u8(), 4);
+    rp.sideOffset = r.f64();
+    rp.offsetPercent = r.u8() != 0;
+    rp.distribute = (Ink::RepeatDistribute)std::min<std::uint8_t>(r.u8(), 3);
+    rp.pitch = r.f64();
+    rp.gap = r.f64();
+    rp.count = (int)r.u32();
+    rp.density = r.f64();
+    rp.phase = r.f64();
+    rp.groupCount = (int)r.u32();
+    rp.groupPitch = r.f64();
+    rp.startTrim = r.f64();
+    rp.endTrim = r.f64();
+    rp.fit = (Ink::DashFit)std::min<std::uint8_t>(r.u8(), 2);
+    rp.lineJoin = r.u8() != 0;
+    rp.lineClip = r.u8() != 0;
+    rp.color = ReadColor(r);
+    rp.useStrokeColor = r.u8() != 0;
+    rp.opacity = r.f32();
+    return rp;
+}
+
+// ── Instanced fill (v13): elements, line-sets, layout ─────────────────────────
+void WriteInstElement(Writer& w, const Ink::InstElement& e) {
+    w.u8((std::uint8_t)e.shape);
+    w.f64(e.sizeA); w.f64(e.sizeB); w.f64(e.sizeC);
+    w.f64(e.rotation);
+    w.u8((std::uint8_t)e.mode);
+    w.u8(e.useFillColor ? 1 : 0);
+    WriteColor(w, e.color);
+    w.f32(e.opacity);
+    w.u8(e.enabled ? 1 : 0);
+}
+Ink::InstElement ReadInstElement(Reader& r) {
+    Ink::InstElement e;
+    e.shape = (Ink::InstShape)std::min<std::uint8_t>(r.u8(), Ink::kInstShapeMax);
+    e.sizeA = r.f64(); e.sizeB = r.f64(); e.sizeC = r.f64();
+    e.rotation = r.f64();
+    e.mode = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
+    e.useFillColor = r.u8() != 0;
+    e.color = ReadColor(r);
+    e.opacity = r.f32();
+    e.enabled = r.u8() != 0;
+    return e;
+}
+void WriteInstLineSet(Writer& w, const Ink::InstLineSet& l) {
+    w.u8(l.enabled ? 1 : 0);
+    w.f64(l.angle);
+    w.f64(l.spacing);
+    w.f64(l.phase);
+    w.u8((std::uint8_t)l.mode);
+    w.u8(l.useFillColor ? 1 : 0);
+    WriteColor(w, l.color);
+    // The line style: only the fields a straight line uses.
+    w.f64(l.line.width);
+    w.u8((std::uint8_t)l.line.cap);
+    w.u32((std::uint32_t)l.line.dashPattern.size());
+    for (double d : l.line.dashPattern) w.f64(d);
+    w.f64(l.line.dashOffset);
+    w.u8((std::uint8_t)l.line.dashFit);
+    w.u32((std::uint32_t)l.line.repeats.size());
+    for (const Ink::StrokeRepeat& rp : l.line.repeats) WriteStrokeRepeat(w, rp);
+}
+Ink::InstLineSet ReadInstLineSet(Reader& r) {
+    Ink::InstLineSet l;
+    l.enabled = r.u8() != 0;
+    l.angle = r.f64();
+    l.spacing = r.f64();
+    l.phase = r.f64();
+    l.mode = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
+    l.useFillColor = r.u8() != 0;
+    l.color = ReadColor(r);
+    l.line.width = r.f64();
+    l.line.cap = (Ink::CapStyle)std::min<std::uint8_t>(r.u8(), 2);
+    const std::uint32_t nD = r.u32();
+    for (std::uint32_t j = 0; j < nD && r.ok; ++j)
+        l.line.dashPattern.push_back(r.f64());
+    l.line.dashOffset = r.f64();
+    l.line.dashFit = (Ink::DashFit)std::min<std::uint8_t>(r.u8(), 2);
+    const std::uint32_t nR = r.u32();
+    for (std::uint32_t j = 0; j < nR && r.ok; ++j)
+        l.line.repeats.push_back(ReadStrokeRepeat(r));
+    return l;
+}
+void WriteInstancedFill(Writer& w, const Ink::InstancedFill& in) {
+    w.u8((std::uint8_t)in.layout);
+    w.u8((std::uint8_t)in.scatterMode);   // v14
+    w.u32((std::uint32_t)in.gridAxes);
+    for (int i = 0; i < 3; ++i) w.f64(in.spacing[i]);
+    for (int i = 0; i < 3; ++i) w.f64(in.axisAngle[i]);
+    w.u32((std::uint32_t)in.scatterCount);
+    w.f64(in.scatterMinDist);
+    w.f64(in.scatterMaxDist);
+    w.u8(in.avoidCollisions ? 1 : 0);
+    w.f64(in.posJitter);
+    w.f64(in.rotJitter);
+    w.u32(in.seed);
+    w.f64(in.rotation);
+    w.u8((std::uint8_t)in.clip);
+    w.u8((std::uint8_t)in.anchor);
+    w.u32((std::uint32_t)in.elements.size());
+    for (const Ink::InstElement& e : in.elements) WriteInstElement(w, e);
+    w.u32((std::uint32_t)in.lines.size());
+    for (const Ink::InstLineSet& l : in.lines) WriteInstLineSet(w, l);
+}
+Ink::InstancedFill ReadInstancedFill(Reader& r, std::uint32_t ver) {
+    Ink::InstancedFill in;
+    in.layout = (Ink::InstLayout)std::min<std::uint8_t>(r.u8(), 1);
+    if (ver >= 14)
+        in.scatterMode = (Ink::InstScatterMode)std::min<std::uint8_t>(r.u8(), 1);
+    in.gridAxes = (int)r.u32();
+    for (int i = 0; i < 3; ++i) in.spacing[i] = r.f64();
+    for (int i = 0; i < 3; ++i) in.axisAngle[i] = r.f64();
+    in.scatterCount = (int)r.u32();
+    in.scatterMinDist = r.f64();
+    in.scatterMaxDist = r.f64();
+    in.avoidCollisions = r.u8() != 0;
+    in.posJitter = r.f64();
+    in.rotJitter = r.f64();
+    in.seed = r.u32();
+    in.rotation = r.f64();
+    in.clip   = (Ink::PatternClip)std::min<std::uint8_t>(r.u8(), 3);
+    in.anchor = (Ink::PatternAnchor)std::min<std::uint8_t>(r.u8(), 1);
+    const std::uint32_t nE = r.u32();
+    for (std::uint32_t i = 0; i < nE && r.ok; ++i)
+        in.elements.push_back(ReadInstElement(r));
+    const std::uint32_t nL = r.u32();
+    for (std::uint32_t i = 0; i < nL && r.ok; ++i)
+        in.lines.push_back(ReadInstLineSet(r));
+    return in;
+}
+
 void WriteStyle(Writer& w, const Ink::Style& s) {
     w.u32((std::uint32_t)s.fills.size());
     for (const Ink::Fill& f : s.fills) {
@@ -289,6 +466,7 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
         w.f64(f.pattern.scale);
         w.u8((std::uint8_t)f.pattern.clip);
         w.u8((std::uint8_t)f.pattern.anchor);
+        WriteInstancedFill(w, f.instanced);   // v13
     }
     w.u32((std::uint32_t)s.strokes.size());
     for (const Ink::Stroke& st : s.strokes) {
@@ -324,35 +502,7 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
         }
         // v11: the stroke REPEAT runs.
         w.u32((std::uint32_t)st.repeats.size());
-        for (const Ink::StrokeRepeat& rp : st.repeats) {
-            w.u8(rp.enabled ? 1 : 0);
-            w.u8((std::uint8_t)rp.shape);
-            w.u8((std::uint8_t)rp.mode);
-            w.u8((std::uint8_t)rp.blend);
-            w.f64(rp.size);
-            w.f64(rp.width);
-            w.u8(rp.sizePercent ? 1 : 0);
-            w.f64(rp.rotation);
-            w.u8((std::uint8_t)rp.side);
-            w.f64(rp.sideOffset);
-            w.u8(rp.offsetPercent ? 1 : 0);
-            w.u8((std::uint8_t)rp.distribute);
-            w.f64(rp.pitch);
-            w.f64(rp.gap);
-            w.u32((std::uint32_t)rp.count);
-            w.f64(rp.density);
-            w.f64(rp.phase);
-            w.u32((std::uint32_t)rp.groupCount);
-            w.f64(rp.groupPitch);
-            w.f64(rp.startTrim);
-            w.f64(rp.endTrim);
-            w.u8((std::uint8_t)rp.fit);
-            w.u8(rp.lineJoin ? 1 : 0);
-            w.u8(rp.lineClip ? 1 : 0);
-            WriteColor(w, rp.color);
-            w.u8(rp.useStrokeColor ? 1 : 0);
-            w.f32(rp.opacity);
-        }
+        for (const Ink::StrokeRepeat& rp : st.repeats) WriteStrokeRepeat(w, rp);
     }
 }
 Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
@@ -360,7 +510,7 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
     const std::uint32_t nF = r.u32();
     for (std::uint32_t i = 0; i < nF && r.ok; ++i) {
         Ink::Fill f;
-        f.kind    = (Ink::FillKind)std::min<std::uint8_t>(r.u8(), 1);
+        f.kind    = (Ink::FillKind)std::min<std::uint8_t>(r.u8(), 2);
         f.enabled = r.u8() != 0;
         f.rule    = (Ink::FillRule)std::min<std::uint8_t>(r.u8(), 1);
         f.opacity = r.f32();
@@ -372,6 +522,7 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         f.pattern.scale    = r.f64();
         f.pattern.clip   = (Ink::PatternClip)std::min<std::uint8_t>(r.u8(), 3);
         f.pattern.anchor = (Ink::PatternAnchor)std::min<std::uint8_t>(r.u8(), 1);
+        if (ver >= 13) f.instanced = ReadInstancedFill(r, ver);
         s.fills.push_back(f);
     }
     const std::uint32_t nS = r.u32();
@@ -485,40 +636,8 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         }
         if (ver >= 11) {   // stroke REPEAT runs
             const std::uint32_t nRp = r.u32();
-            for (std::uint32_t j = 0; j < nRp && r.ok; ++j) {
-                Ink::StrokeRepeat rp;
-                rp.enabled = r.u8() != 0;
-                rp.shape = (Ink::MarkShape)std::min<std::uint8_t>(
-                    r.u8(), Ink::kMarkShapeMax);
-                rp.mode  = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
-                rp.blend = (Ink::BlendMode)std::min<std::uint8_t>(
-                    r.u8(), (std::uint8_t)Ink::BlendMode::Erase);
-                rp.size = r.f64();
-                rp.width = r.f64();
-                rp.sizePercent = r.u8() != 0;
-                rp.rotation = r.f64();
-                rp.side = (Ink::RepeatSide)std::min<std::uint8_t>(r.u8(), 4);
-                rp.sideOffset = r.f64();
-                rp.offsetPercent = r.u8() != 0;
-                rp.distribute =
-                    (Ink::RepeatDistribute)std::min<std::uint8_t>(r.u8(), 3);
-                rp.pitch = r.f64();
-                rp.gap = r.f64();
-                rp.count = (int)r.u32();
-                rp.density = r.f64();
-                rp.phase = r.f64();
-                rp.groupCount = (int)r.u32();
-                rp.groupPitch = r.f64();
-                rp.startTrim = r.f64();
-                rp.endTrim = r.f64();
-                rp.fit = (Ink::DashFit)std::min<std::uint8_t>(r.u8(), 2);
-                rp.lineJoin = r.u8() != 0;
-                rp.lineClip = r.u8() != 0;
-                rp.color = ReadColor(r);
-                rp.useStrokeColor = r.u8() != 0;
-                rp.opacity = r.f32();
-                st.repeats.push_back(rp);
-            }
+            for (std::uint32_t j = 0; j < nRp && r.ok; ++j)
+                st.repeats.push_back(ReadStrokeRepeat(r));
         }
         s.strokes.push_back(std::move(st));
     }
