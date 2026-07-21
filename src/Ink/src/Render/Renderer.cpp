@@ -115,16 +115,22 @@ bool CreateLayoutsAndPool(RendererImpl& r) {
     if (vkCreatePipelineLayout(dev, &li, nullptr, &r.compositeLayout) != VK_SUCCESS)
         return false;
 
-    // Ink's own descriptor pool. Composite sets are allocated per frame per
-    // scope and retired via the garbage ring, so size generously.
+    // Ink's own descriptor pool. Every VIEW holds a persistent scene set (3
+    // storage buffers); composite sets (2 samplers) are allocated per frame per
+    // scope and retired via the garbage ring (so a dirty frame briefly needs
+    // DOUBLE its sets). A module symbol browser shows dozens of live preview
+    // views at once (each an off-screen vignette), and a document edit dirties
+    // ALL of them the same frame — so the pool must hold hundreds of scene sets
+    // + their transient composites, not a handful. Undersizing exhausts the
+    // pool mid-frame → null sets → skipped composites → flickering previews.
     VkDescriptorPoolSize sizes[2] = {
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         128 },
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 512 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,         3072 },  // ~512 views × 3, ×2 GC
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 4096 },
     };
     VkDescriptorPoolCreateInfo di{};
     di.sType         = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
     di.flags         = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-    di.maxSets       = 512;
+    di.maxSets       = 4096;
     di.poolSizeCount = 2;
     di.pPoolSizes    = sizes;
     return vkCreateDescriptorPool(dev, &di, nullptr, &r.descriptorPool) == VK_SUCCESS;
@@ -792,6 +798,10 @@ void Renderer::EndFrame() {
             for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
                 const Drawable& d = drawables[i];
                 if (d.scope != run.scope) continue;
+                // Library content (Node::previewOnly): drawn ONLY when a
+                // preview filter is active (which then owner-filters below) —
+                // never in a normal view.
+                if (d.previewOnly && !preview) continue;
                 ClipRole role = d.clip;
                 if (preview) {
                     // A node's thumbnail shows its OWN subtree in isolation.

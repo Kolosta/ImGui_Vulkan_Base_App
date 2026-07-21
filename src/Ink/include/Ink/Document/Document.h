@@ -28,6 +28,23 @@ namespace Ink {
 // Instance: renders another node's subtree with this node's transform (Lot 5).
 enum class NodeKind : std::uint8_t { Group = 0, Path = 1, Instance = 2 };
 
+// Per-PROPERTY edit locks (a bitmask on Node::propLocks). A locked property is
+// read-only in the editors (shown with a closed padlock) and refused by the
+// viewport transform ops. Distinct from Node::locked (which locks the WHOLE
+// object): these freeze individual channels — a module (IOF) locks exactly the
+// channels its specification fixes (a north-locked symbol: rotation; a
+// fixed-size symbol: scale + dimensions; spec colours: style).
+enum PropLock : std::uint32_t {
+    PropLockPosition   = 1u << 0,   // location (tx/ty)
+    PropLockRotation   = 1u << 1,   // rotation
+    PropLockScale      = 1u << 2,   // scale sx/sy
+    PropLockDimensions = 1u << 3,   // derived W/H dimensions
+    PropLockStyle      = 1u << 4,   // fills/strokes (paints, widths, dashes…)
+    // A module OWNS this node's locks: the padlock toggles are read-only in the
+    // UI (the user cannot unlock a spec-fixed property).
+    PropLockManaged    = 1u << 31,
+};
+
 struct Node {
     NodeId      id   = kNullNode;
     NodeKind    kind = NodeKind::Path;
@@ -42,6 +59,12 @@ struct Node {
     Transform2D transform;
     bool        visible = true;
     bool        locked  = false;
+    // Per-property edit locks (see PropLock above). 0 = everything editable.
+    std::uint32_t propLocks = 0;
+    // Library/data-block node: compiled into the Scene but dropped from normal
+    // views — it renders ONLY when a preview filter selects it (module symbol
+    // libraries: real nodes powering real-pipeline vignettes, never on canvas).
+    bool        previewOnly = false;
     float       opacity = 1.0f;                    // compositing (Lot 4)
     BlendMode   blend   = BlendMode::Normal;       // compositing (Lot 4)
     bool        isolate = false;                   // compositing (Lot 4)
@@ -154,6 +177,13 @@ public:
     // ── Organisation ops the editors drive (Lot 9) ───────────────────────────
     void   SetName(NodeId node, std::string name);
     void   SetLocked(NodeId node, bool locked);
+    // Per-property edit locks (PropLock bitmask) — editor/module policy carried
+    // by the document so it persists and travels with the file.
+    void   SetPropLocks(NodeId node, std::uint32_t locks);
+    // Mark a node (subtree root) as a preview-only library block (see
+    // Node::previewOnly). Applies to the node itself; the renderer drops the
+    // whole subtree from normal views because children inherit the owner.
+    void   SetPreviewOnly(NodeId node, bool previewOnly);
     // Reorder a node among its siblings (page or group children): move it to
     // absolute index `to` (clamped). No-op if it has no sibling list.
     void   ReorderChild(NodeId node, int to);

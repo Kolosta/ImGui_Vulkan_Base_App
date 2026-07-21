@@ -475,6 +475,22 @@ void Document::SetLocked(NodeId node, bool locked) {
     if (Node* n = FindMutable(node)) { n->locked = locked; Log(node, ChangeKind::StyleChanged); }
 }
 
+void Document::SetPropLocks(NodeId node, std::uint32_t locks) {
+    if (Node* n = FindMutable(node)) {
+        if (n->propLocks == locks) return;
+        n->propLocks = locks;
+        Log(node, ChangeKind::StyleChanged);   // metadata only (no re-tess)
+    }
+}
+
+void Document::SetPreviewOnly(NodeId node, bool previewOnly) {
+    if (Node* n = FindMutable(node)) {
+        if (n->previewOnly == previewOnly) return;
+        n->previewOnly = previewOnly;
+        Log(node, ChangeKind::Hierarchy);      // changes what normal views draw
+    }
+}
+
 void Document::ReorderChild(NodeId node, int to) {
     Node* n = FindMutable(node);
     if (!n) return;

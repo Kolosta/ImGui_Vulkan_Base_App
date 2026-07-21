@@ -408,7 +408,14 @@ struct ArcFrame {
         total = acc;
     }
     bool Valid() const { return pts.size() >= 2 && total > 1e-9; }
-    void Sample(double d, DVec2& outP, V2& outT) const {
+    // `smooth` picks the tangent model. SMOOTHED blends the per-vertex bisector
+    // tangents across each segment: on a flattened CURVE that recovers the true
+    // tangent, but on a HARD corner the bisector is not the curve's direction —
+    // the angle then sweeps toward it as the sample nears the vertex, which
+    // leans everything placed near a corner. SEGMENT (smooth = false) takes the
+    // exact segment direction, so a mark is square to the edge it sits on right
+    // up to the corner. Positions are identical either way.
+    void Sample(double d, DVec2& outP, V2& outT, bool smooth = true) const {
         d = d < 0.0 ? 0.0 : (d > total ? total : d);
         std::size_t k = (std::size_t)(std::upper_bound(cum.begin(), cum.end(), d)
                                       - cum.begin());
@@ -418,8 +425,16 @@ struct ArcFrame {
         const double u = L > 1e-12 ? (d - cum[k]) / L : 0.0;
         outP = { pts[k].x + (pts[k + 1].x - pts[k].x) * u,
                  pts[k].y + (pts[k + 1].y - pts[k].y) * u };
-        const double a = ang[k] + (ang[k + 1] - ang[k]) * u;
-        outT = { std::cos(a), std::sin(a) };
+        if (smooth) {
+            const double a = ang[k] + (ang[k + 1] - ang[k]) * u;
+            outT = { std::cos(a), std::sin(a) };
+        } else {
+            outT = Norm(Sub(pts[k + 1], pts[k]));
+            if (outT.x == 0.0 && outT.y == 0.0) {
+                const double a = ang[k];
+                outT = { std::cos(a), std::sin(a) };
+            }
+        }
     }
 };
 
@@ -533,11 +548,145 @@ Polyline OffsetSpine(const Polyline& pl, double shift) {
     return out;
 }
 
-// ── 3. Center stroke of one piece ────────────────────────────────────────────
-void CenterStroke(const Polyline& pl, const Stroke& st, double halfW,
-                  double tol, Emitter& em) {
+// Per-vertex side sign for an OPEN path stroked Inside / Outside. There is no
+// enclosed side, so the LOCAL CURVATURE picks it: at each vertex the turn's
+// sense says which side is convex — the same rule the joins use to find their
+// outer wedge. A straight stretch has no turn of its own and inherits the sign
+// it arrived with, so a run keeps one side until the path really does bend the
+// other way. Returns +1/−1 per vertex; +1 means the +normal side.
+std::vector<double> CurvatureSides(const Polyline& pl, bool outside) {
     const std::size_t n = pl.points.size();
-    if (n < 2 || halfW <= 0.0) return;
+    std::vector<double> sgn(n, 1.0);
+    if (n < 3) return sgn;
+    // Turn at vertex i (1 … n−2) — the endpoints inherit their neighbour.
+    double carried = 0.0;
+    for (std::size_t i = 1; i + 1 < n; ++i) {
+        const V2 a = Norm(Sub(pl.points[i], pl.points[i - 1]));
+        const V2 b = Norm(Sub(pl.points[i + 1], pl.points[i]));
+        const double turn = Cross(a, b);
+        if (std::abs(turn) > 1e-12) carried = turn < 0.0 ? 1.0 : -1.0;
+        // `carried` is now the OUTER side; flip it for Inside.
+        sgn[i] = carried == 0.0 ? 1.0 : (outside ? carried : -carried);
+    }
+    // Endpoints follow the first / last vertex that had a real turn.
+    sgn[0] = sgn[1];
+    sgn[n - 1] = sgn[n - 2];
+    // A path that never turned at all: everything is still the default +1, so
+    // fall back to the fixed side the old uniform offset used.
+    if (carried == 0.0)
+        for (double& v : sgn) v = outside ? -1.0 : 1.0;
+    return sgn;
+}
+
+// Offset a spine by `amount` on a side that may FLIP along the path (`sgn` per
+// vertex, ±1). Where the sign changes between two vertices, BOTH offset points
+// of the boundary vertex are emitted — so the spine crosses the path along its
+// own NORMAL there and the side swap reads as a perpendicular step, not a
+// diagonal one. The spine stays a single continuous polyline, so dashes, marks
+// and repeats keep running through the transition unbroken.
+Polyline OffsetSpineSigned(const Polyline& pl, double amount,
+                           const std::vector<double>& sgn) {
+    Polyline out;
+    out.closed = false;   // a flipping offset cannot close on itself
+    const std::size_t n = pl.points.size();
+    if (n < 2 || sgn.size() != n) return pl;
+    // The miter-aware normal at vertex i (same construction as OffsetSpine).
+    auto normalAt = [&](std::size_t i, double& cosHalf) {
+        V2 nPrev{ 0, 0 }, nNext{ 0, 0 };
+        if (i > 0)     nPrev = Perp(Norm(Sub(pl.points[i], pl.points[i - 1])));
+        if (i + 1 < n) nNext = Perp(Norm(Sub(pl.points[i + 1], pl.points[i])));
+        V2 m = Norm({ nPrev.x + nNext.x, nPrev.y + nNext.y });
+        if (m.x == 0.0 && m.y == 0.0) m = (nNext.x || nNext.y) ? nNext : nPrev;
+        cosHalf = Dot(m, (nNext.x || nNext.y) ? nNext : nPrev);
+        if (cosHalf < 0.25) cosHalf = 0.25;
+        return m;
+    };
+    out.points.reserve(n + 8);
+    for (std::size_t i = 0; i < n; ++i) {
+        double cosHalf = 1.0;
+        const V2 m = normalAt(i, cosHalf);
+        const double d = amount / cosHalf;
+        // A sign change ARRIVING at this vertex: close out the previous side
+        // first, so the pair of points spans the path along the normal.
+        if (i > 0 && sgn[i] != sgn[i - 1])
+            out.points.push_back({ pl.points[i].x + m.x * d * sgn[i - 1],
+                                   pl.points[i].y + m.y * d * sgn[i - 1] });
+        out.points.push_back({ pl.points[i].x + m.x * d * sgn[i],
+                               pl.points[i].y + m.y * d * sgn[i] });
+    }
+    return out;
+}
+
+// Shorten an OPEN polyline by `tStart` / `tEnd` of arc length at its two ends,
+// dropping any vertex the trim swallows. Unchanged if the trim would eat it.
+Polyline TrimPolylineEnds(const Polyline& pl, double tStart, double tEnd) {
+    if (pl.closed || pl.points.size() < 2) return pl;
+    if (tStart <= 0.0 && tEnd <= 0.0) return pl;
+    if (tStart < 0.0) tStart = 0.0;
+    if (tEnd   < 0.0) tEnd   = 0.0;
+    double total = 0.0;
+    for (std::size_t i = 1; i < pl.points.size(); ++i)
+        total += Len(Sub(pl.points[i], pl.points[i - 1]));
+    if (total <= tStart + tEnd + 1e-9) return pl;
+    Polyline out;
+    out.closed = false;
+    double acc = 0.0;
+    const double lo = tStart, hi = total - tEnd;
+    // Walk the segments, emitting the clipped run [lo, hi].
+    for (std::size_t i = 1; i < pl.points.size(); ++i) {
+        const DVec2 a = pl.points[i - 1], b = pl.points[i];
+        const double L = Len(Sub(b, a));
+        if (L < 1e-12) continue;
+        const double s0 = acc, s1 = acc + L;
+        acc = s1;
+        if (s1 < lo || s0 > hi) continue;
+        auto at = [&](double s) {
+            const double u = (s - s0) / L;
+            return DVec2{ a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u };
+        };
+        if (out.points.empty()) out.points.push_back(at(std::max(s0, lo)));
+        out.points.push_back(at(std::min(s1, hi)));
+    }
+    return out.points.size() >= 2 ? out : pl;
+}
+
+// ── 3. Center stroke of one piece ────────────────────────────────────────────
+// `offStart` / `offEnd` are the signed distances (along each end's own +normal)
+// by which this spine was ALIGNED off the construction path — 0 for a Center
+// stroke. A tilted butt cap pivots on the construction path's VERTEX, so it
+// needs to know where that vertex is relative to the spine it is capping.
+void CenterStroke(const Polyline& plIn, const Stroke& st, double halfW,
+                  double tol, Emitter& em,
+                  double offStart = 0.0, double offEnd = 0.0) {
+    if (plIn.points.size() < 2 || halfW <= 0.0) return;
+    // TILTED BUTT CAP. The end edge is the line through the construction
+    // VERTEX turned by `capAngle` off the normal. Measured forward from the
+    // spine's own end, that line meets the +normal rail at (halfW + off)·k and
+    // the −normal rail at (off − halfW)·k. With no align offset those are ±
+    // symmetric about the end (the classic centred tilt); with one, BOTH slide
+    // by off·k — which is exactly the pivot moving off the stroke's middle onto
+    // the vertex, out to the stroke's edge at 50 % and past it beyond.
+    // Whichever rail ends up FURTHEST BACK sets how far the body must stop
+    // short; the cap quad then fills from there out to the tilted edge.
+    // Trimming only changes what is OUTLINED here — the caller's arc-length
+    // work (dashes, marks, repeats) ran on the full spine and is untouched.
+    const double tiltK =
+        (st.cap == CapStyle::Butt && std::abs(st.capAngle) > 1e-9)
+            ? std::tan(std::clamp(st.capAngle, -0.7853981634, 0.7853981634))
+            : 0.0;
+    // Per end: the two rail intersections, and the trim they imply.
+    auto railA = [&](double off) { return (halfW + off) * tiltK; };
+    auto railB = [&](double off) { return (off - halfW) * tiltK; };
+    auto trimFor = [&](double off) {
+        return -std::min(0.0, std::min(railA(off), railB(off)));
+    };
+    Polyline trimmed;
+    if (tiltK != 0.0 && !plIn.closed)
+        trimmed = TrimPolylineEnds(plIn, trimFor(offStart), trimFor(offEnd));
+    const Polyline& pl = trimmed.points.size() >= 2 ? trimmed : plIn;
+
+    const std::size_t n = pl.points.size();
+    if (n < 2) return;
     const std::size_t segCount = pl.closed ? n : n - 1;
 
     // Per-segment unit direction + left normal.
@@ -602,10 +751,30 @@ void CenterStroke(const Polyline& pl, const Stroke& st, double halfW,
         }
     }
 
-    // Caps on open ends.
-    if (!pl.closed && st.cap != CapStyle::Butt) {
-        auto cap = [&](DVec2 p, V2 d, V2 nrm) {   // d points OUT of the piece
-            if (st.cap == CapStyle::Square) {
+    // Caps on open ends. A plain Butt cap adds nothing (the quads already end
+    // square) — unless it is TILTED, which is real geometry.
+    const bool tiltedButt = tiltK != 0.0;
+    if (!pl.closed && (st.cap != CapStyle::Butt || tiltedButt)) {
+        const double taperLen = st.taperLength > 1e-9 ? st.taperLength
+                                                      : halfW * 4.0;
+        // Tilt: the body was trimmed back above so this quad can run each rail
+        // out to where the tilted edge crosses it — an end cut at exactly
+        // `capAngle`, pivoting on the CONSTRUCTION VERTEX.
+        auto cap = [&](DVec2 p, V2 d, V2 nrm, double off) {  // d points OUT
+            if (tiltedButt) {
+                // Both rails measured from the TRIMMED end, so the shorter of
+                // the two lands at 0 and the quad below never folds back.
+                const double t = trimFor(off);
+                const double eA = t + railA(off), eB = t + railB(off);
+                const DVec2 p1{ p.x + nrm.x * halfW, p.y + nrm.y * halfW };
+                const DVec2 p2{ p.x - nrm.x * halfW, p.y - nrm.y * halfW };
+                const std::uint32_t i1 = em.V(p1.x, p1.y);
+                const std::uint32_t i2 = em.V(p2.x, p2.y);
+                const std::uint32_t ia = em.V(p1.x + d.x * eA, p1.y + d.y * eA);
+                const std::uint32_t ib = em.V(p2.x + d.x * eB, p2.y + d.y * eB);
+                em.Tri(i1, ia, ib);
+                em.Tri(i1, ib, i2);
+            } else if (st.cap == CapStyle::Square) {
                 const DVec2 q{ p.x + d.x * halfW, p.y + d.y * halfW };
                 const std::uint32_t a = em.V(p.x + nrm.x * halfW, p.y + nrm.y * halfW);
                 const std::uint32_t b = em.V(q.x + nrm.x * halfW, q.y + nrm.y * halfW);
@@ -613,13 +782,21 @@ void CenterStroke(const Polyline& pl, const Stroke& st, double halfW,
                 const std::uint32_t e = em.V(p.x - nrm.x * halfW, p.y - nrm.y * halfW);
                 em.Tri(a, b, c);
                 em.Tri(a, c, e);
+            } else if (st.cap == CapStyle::Taper) {
+                // A triangle from the two rim points to a tip `taperLen` ahead
+                // along the outward direction — the ISOM erosion-gully point.
+                const std::uint32_t a = em.V(p.x + nrm.x * halfW, p.y + nrm.y * halfW);
+                const std::uint32_t b = em.V(p.x - nrm.x * halfW, p.y - nrm.y * halfW);
+                const std::uint32_t tip =
+                    em.V(p.x + d.x * taperLen, p.y + d.y * taperLen);
+                em.Tri(a, b, tip);
             } else {   // Round: half-disc through the outward direction
                 em.Arc(p, nrm, { -nrm.x, -nrm.y }, halfW,
                        Cross(nrm, d) > 0.0 ? 1 : -1, tol);
             }
         };
-        cap(pl.points[0], { -dir[0].x, -dir[0].y }, nor[0]);
-        cap(pl.points[n - 1], dir[segCount - 1], nor[segCount - 1]);
+        cap(pl.points[0], { -dir[0].x, -dir[0].y }, nor[0], offStart);
+        cap(pl.points[n - 1], dir[segCount - 1], nor[segCount - 1], offEnd);
     }
 }
 
@@ -687,7 +864,10 @@ void StrokeIntervalsWithGaps(const Polyline& spine, const Stroke& stroke,
         if (iv.to - iv.from < 1e-9) continue;
         Polyline run = ExtractRun(spine, iv.from, iv.to);
         if (run.points.size() < 2) continue;
-        Stroke bs = stroke; bs.cap = CapStyle::Butt;   // caps added below
+        // Caps are added below, per end. A dashed run keeps SQUARE ends: the
+        // butt tilt is a solid-stroke feature (tilting every dash boundary
+        // would fight the explicit gap caps).
+        Stroke bs = stroke; bs.cap = CapStyle::Butt; bs.capAngle = 0.0;
         CenterStroke(run, bs, w * 0.5, tol, em);
         // FROM end extends backwards (−1); TO end forwards (+1).
         emitCap(iv.from, -1.0, iv.gapFrom ? iv.capFrom : strokeCap);
@@ -739,19 +919,35 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
         const Polyline& src = polylines[subI];
         if (src.points.size() < 2) continue;
 
-        // Alignment → a center stroke on a shifted spine. Open paths: Inside
-        // is the +normal (left in shoelace orientation = right-hand side on
-        // the y-down canvas) — the documented walk-direction rule. Closed
-        // paths: the winding decides which side the interior is.
-        double side = 1.0;
-        if (src.closed && stroke.align != StrokeAlign::Center)
-            side = SignedArea(src.points) > 0.0 ? 1.0 : -1.0;
+        // Alignment → a center stroke on a shifted spine (StrokeAlign). Left /
+        // Right offset by a fixed sign along the walk direction. Inside /
+        // Outside are shape-relative: a CLOSED path takes its winding, an OPEN
+        // one has no interior so the LOCAL CURVATURE decides and the side SWAPS
+        // at every inflection — `sgn` carries that per-vertex sign and the
+        // offset crosses the path along its normal there.
+        const double amt = stroke.AlignOffsetUnits();
         double shift = 0.0;
-        if (stroke.align == StrokeAlign::Inside)  shift =  side * w * 0.5;
-        if (stroke.align == StrokeAlign::Outside) shift = -side * w * 0.5;
+        std::vector<double> sgn;
+        switch (stroke.align) {
+        case StrokeAlign::Center: break;
+        case StrokeAlign::Right:  shift =  amt; break;
+        case StrokeAlign::Left:   shift = -amt; break;
+        default: {
+            const bool outside = stroke.align == StrokeAlign::Outside;
+            if (src.closed) {
+                const double side = SignedArea(src.points) > 0.0 ? 1.0 : -1.0;
+                shift = (outside ? -side : side) * amt;
+            } else {
+                sgn = CurvatureSides(src, outside);
+            }
+            break;
+        }
+        }
 
         const Polyline spine =
-            (shift != 0.0) ? OffsetSpine(src, shift) : src;
+            !sgn.empty()     ? OffsetSpineSigned(src, amt, sgn)
+          : (shift != 0.0)   ? OffsetSpine(src, shift)
+                             : src;
 
         // ── This subpath's marks → dash re-phasing only ─────────────────────
         // A mark with a non-Neutral phase forces a dash element (Dash) or a
@@ -815,16 +1011,23 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
             // cyclic path keeps its start/end seam joined. ExtractRun would drop
             // the `closed` flag and leave the seam open.
             if (stroke.dashPattern.empty()) {
-                CenterStroke(spine, stroke, w * 0.5, tol, em);
+                // The alignment offset at each end — what a tilted butt cap
+                // needs to find the construction vertex it pivots on.
+                const double offS = sgn.empty() ? shift : amt * sgn.front();
+                const double offE = sgn.empty() ? shift : amt * sgn.back();
+                CenterStroke(spine, stroke, w * 0.5, tol, em, offS, offE);
             } else {
                 double offset = stroke.dashOffset;
                 if (!anchors.empty())
                     offset = AnchorDashOffset(stroke.dashPattern,
                                               anchors.front().elementCentred,
                                               anchors.front().at, offset);
+                // Dashes keep SQUARE ends: tilting every dash boundary is not
+                // what the cap angle is for (it caps the LINE, not each dash).
+                Stroke ds = stroke; ds.capAngle = 0.0;
                 for (const Polyline& piece :
                      DashSplit(spine, stroke.dashPattern, offset))
-                    CenterStroke(piece, stroke, w * 0.5, tol, em);
+                    CenterStroke(piece, ds, w * 0.5, tol, em);
             }
         } else {
             // Gap objects open the line LOCALLY on top of the dashing (never
@@ -963,9 +1166,11 @@ Mesh TessellateStroke(const std::vector<Polyline>& polylines,
             const double lhu = std::max(1e-6, rep.SizeUnits(w));
             const double lhv = std::max(1e-6, rep.WidthUnits(w));
             const bool centred = rep.side == RepeatSide::Center;
+            const bool repSmooth = rep.orient == MarkOrient::Smoothed;
             for (const RepeatPlacement& rp2 : places) {
                 DVec2 p0; V2 t0;
-                raf.Sample(std::clamp(rp2.at, 0.0, raf.total), p0, t0);
+                raf.Sample(std::clamp(rp2.at, 0.0, raf.total), p0, t0,
+                           repSmooth);
                 const V2 n0 = Perp(t0);
                 const DVec2 at{ p0.x + n0.x * rp2.offset,
                                 p0.y + n0.y * rp2.offset };
@@ -1067,24 +1272,27 @@ PathData MarkPrimitiveShape(const MarkObject& obj, double strokeWidth) {
     if (obj.shape == MarkShape::Line) {
         // A rigid rectangle CENTRED (the side-aware placement of a repeat Line
         // uses MarkLineShape instead — a mark-object Line just reads as a
-        // rectangle across the line).
+        // rectangle across the line). `size` is the FULL length across the
+        // line, `width` the FULL thickness along it.
         const double hv = std::max(1e-6, obj.WidthUnits(strokeWidth));
-        return PathData::Rect(-hv, -hu, hv * 2.0, hu * 2.0);
+        return PathData::Rect(-hv * 0.5, -hu * 0.5, hv, hu);
     }
     // Diamond: a 4-point polygon, `size` = the half-diagonal.
     return PathData::Polygon({ { hu, 0 }, { 0, hu }, { -hu, 0 }, { 0, -hu } },
                              true);
 }
 
-PathData MarkLineShape(double halfLen, double halfThick, double offset,
+PathData MarkLineShape(double lineLen, double lineThick, double offset,
                        double dir, bool centred, bool join) {
-    const double hu = std::max(1e-6, halfLen);
-    const double hv = std::max(1e-6, halfThick);
+    // `lineLen` / `lineThick` are the FULL length / thickness (the values the
+    // user sets), so half-extents are half of them.
+    const double hu = std::max(1e-6, lineLen * 0.5);
+    const double hv = std::max(1e-6, lineThick * 0.5);
     // Local frame: +y is the left normal, origin at the placement (offset)
     // point. Thickness spans x ∈ [−hv, hv]; length spans y (across the line).
     double yLo, yHi;
     if (centred) {
-        yLo = -hu; yHi = hu;               // straddles the stroke
+        yLo = -hu; yHi = hu;               // straddles the stroke (total lineLen)
     } else {
         const double d = dir >= 0.0 ? 1.0 : -1.0;   // side direction (≠ 0)
         double yNear = 0.0;                // the offset point
@@ -1171,7 +1379,8 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
                 + obj.AlongUnits(strokeWidth);
     d0 = d0 < 0 ? 0 : (d0 > total ? total : d0);
     DVec2 p0; V2 t0;
-    af.Sample(d0, p0, t0);
+    const bool smoothTan = obj.orient == MarkOrient::Smoothed;
+    af.Sample(d0, p0, t0, smoothTan);
     V2 n0 = Perp(t0);
     // Side across the line: the object's own side/offset when it overrides,
     // else the mark's.
@@ -1191,8 +1400,8 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
                               ? bendHalfExtent
                               : std::max(1e-6, obj.SizeUnits(strokeWidth));
         DVec2 pa, pb; V2 ta, tb;
-        af.Sample(std::clamp(d0 + hu, 0.0, total), pa, ta);
-        af.Sample(std::clamp(d0 - hu, 0.0, total), pb, tb);
+        af.Sample(std::clamp(d0 + hu, 0.0, total), pa, ta, smoothTan);
+        af.Sample(std::clamp(d0 - hu, 0.0, total), pb, tb, smoothTan);
         p0 = { (pa.x + pb.x) * 0.5, (pa.y + pb.y) * 0.5 };
         V2 chord{ (pa.x - pb.x) / (2.0 * hu), (pa.y - pb.y) / (2.0 * hu) };
         if (std::abs(chord.x) < 1e-12 && std::abs(chord.y) < 1e-12)
@@ -1218,8 +1427,8 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
                               ? bendHalfExtent
                               : std::max(1e-6, obj.SizeUnits(strokeWidth));
         DVec2 pa, pb; V2 ta, tb;
-        af.Sample(std::clamp(d0 + hu, 0.0, total), pa, ta);
-        af.Sample(std::clamp(d0 - hu, 0.0, total), pb, tb);
+        af.Sample(std::clamp(d0 + hu, 0.0, total), pa, ta, smoothTan);
+        af.Sample(std::clamp(d0 - hu, 0.0, total), pb, tb, smoothTan);
         double dth = 0.5 * std::atan2(Cross(tb, ta), Dot(tb, ta));  // half-turn
         dth = std::clamp(dth, -1.3, 1.3);                           // stable
         const double shear = std::tan(dth);
@@ -1231,6 +1440,18 @@ DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
     m.m[0] = ux;  m.m[1] = vx;  m.m[2] = at.x;
     m.m[3] = uy;  m.m[4] = vy;  m.m[5] = at.y;
     return m;
+}
+
+void SampleSpineFrame(const Polyline& spine, double at, bool smooth,
+                      DVec2& outP, DVec2& outT) {
+    outP = spine.points.empty() ? DVec2{ 0, 0 } : spine.points.front();
+    outT = { 1, 0 };
+    ArcFrame af;
+    af.Build(spine);
+    if (!af.Valid()) return;
+    V2 t;
+    af.Sample(at, outP, t, smooth);
+    outT = { t.x, t.y };
 }
 
 bool MarkFollowContour(const Polyline& spine, const StrokeMark& mark,
@@ -1398,9 +1619,21 @@ std::vector<RepeatPlacement> RepeatObjectPlacements(const Polyline& spine,
     default:                        P = rep.pitch;                           break;
     }
     P = std::max(P, 1e-3);
-    // Trim the usable range at both ends.
-    const double lo = std::clamp(rep.startTrim, 0.0, total);
-    const double hi = std::clamp(total - rep.endTrim, lo, total);
+    // Trim the usable range at both ends. An OUTSIDE-measured trim is to the
+    // group's outer EDGE, so the centre has to sit a further half-extent in —
+    // the trim then reads as the clear gap before the first object starts.
+    // A ZERO trim is "no trim" whatever the measure says: adding the half
+    // extent there would be a phantom trim that shifts the whole run.
+    const bool outsideTrim = rep.trimMeasure == RepeatTrimMeasure::Outside;
+    const bool hasStart = rep.startTrim > 1e-9, hasEnd = rep.endTrim > 1e-9;
+    const double loPad = (outsideTrim && hasStart) ? gHalf : 0.0;
+    const double hiPad = (outsideTrim && hasEnd)   ? gHalf : 0.0;
+    const double lo = std::clamp(rep.startTrim + loPad, 0.0, total);
+    const double hi = std::clamp(total - rep.endTrim - hiPad, lo, total);
+    // A trim PINS the run to its boundary: the first group lands exactly there,
+    // which is what asking for a trim means. Untrimmed, there is nothing to pin
+    // to, so the run centres itself in its first cell as before.
+    const double lead = hasStart ? 0.0 : P * 0.5;
     const bool stretch = rep.fit == DashFit::ScaleBoth;  // else keep exact P
 
     // Repeat-anchor marks of THIS subpath → pinned group centres. A Between
@@ -1426,7 +1659,7 @@ std::vector<RepeatPlacement> RepeatObjectPlacements(const Polyline& spine,
             centres.push_back(std::clamp(c, lo, hi));
     };
     if (csts.empty()) {
-        for (double c = lo + rep.phase + P * 0.5;
+        for (double c = lo + rep.phase + lead;
              c <= hi + 1e-9 && centres.size() < kMaxPlacements; c += P)
             push(c);
     } else {

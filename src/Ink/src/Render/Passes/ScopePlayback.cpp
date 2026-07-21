@@ -50,8 +50,18 @@ std::uint32_t BuildScopePlan(const Scene& scene, ViewImpl& v) {
     // child COMPOSITES onto the parent right after its own subtree finished.
     // So: content pre-order, composites post-order.
     std::vector<std::vector<ScopeId>> childrenOf(scopes.size());
-    for (std::size_t i = 1; i < scopes.size(); ++i)
+    const bool previewing = !v.previewOwners.empty();
+    for (std::size_t i = 1; i < scopes.size(); ++i) {
+        // Library scopes (preview-only content) play only in the preview view
+        // whose owner set contains THEIR node — a normal view skips them all,
+        // and a vignette skips every OTHER symbol's scopes (with a big symbol
+        // library that is hundreds of empty content/composite passes saved).
+        if (scopes[i].previewOnly &&
+            (!previewing ||
+             v.previewOwners.find(scopes[i].node) == v.previewOwners.end()))
+            continue;
         childrenOf[scopes[i].parent].push_back((ScopeId)i);
+    }
 
     std::function<void(ScopeId)> emit = [&](ScopeId s) {
         ScopeRun content;
@@ -182,6 +192,11 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
         IsoTarget& parent = v.iso[run.parentLevel];
         VkDescriptorSet compSet =
             MakeCompositeSet(r, iso.Cur().view, parent.Cur().view);
+        // Descriptor exhaustion (a burst of scopes/views): SKIP the composite
+        // and keep the parent's current image — this scope's content is lost
+        // for the frame, but the view never turns black (the old behaviour
+        // cleared the ping target and flipped onto it).
+        if (compSet == VK_NULL_HANDLE) continue;
         rhi::Image& dst = parent.Other();
 
         graph::RenderGraph::ColorTarget comp{};
@@ -221,6 +236,7 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
         IsoTarget& root = v.iso[0];
         VkDescriptorSet compSet =
             MakeCompositeSet(r, ov.Cur().view, root.Cur().view);
+        if (compSet == VK_NULL_HANDLE) return;   // exhaustion: skip, keep root
         graph::RenderGraph::ColorTarget comp{};
         comp.image = &root.Other();
         comp.clear = true;

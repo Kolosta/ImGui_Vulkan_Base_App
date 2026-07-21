@@ -111,14 +111,21 @@ ClipPolygonToPathSide(const std::vector<DVec2>& poly, const Polyline& path,
 // `mark.sub`: translate to the mark point (honouring side + resolved offset),
 // rotate to the tangent + the object's own rotation, and — for Bend — shear
 // along the tangent to lean with the local slope. `strokeWidth` resolves the
-// offset. Tangents are sampled SMOOTHLY (angle-interpolated over the spine's
-// vertices), so the frame turns continuously as the mark slides — no facet
-// jumps. `bendHalfExtent` (> 0) overrides the along-curve half-length the Bend
-// shear is measured over (used by INSTANCES, whose `size` is a scale factor,
-// not a length). Returns identity if the spine is degenerate.
+// offset. `obj.orient` picks the tangent model (MarkOrient) — Perpendicular
+// takes the segment's own direction, Smoothed angle-interpolates over the
+// spine's vertices. `bendHalfExtent` (> 0) overrides the along-curve
+// half-length the Bend shear is measured over (used by INSTANCES, whose `size`
+// is a scale factor, not a length). Returns identity if the spine is degenerate.
 DMat23 MarkPlaceMatrix(const Polyline& spine, const StrokeMark& mark,
                        const MarkObject& obj, double strokeWidth,
                        double bendHalfExtent = -1.0);
+
+// Sample a flattened spine at arc length `at`: position + UNIT tangent, using
+// the same two tangent models as MarkPlaceMatrix (see MarkOrient). Exposed so
+// callers that place their own geometry along a stroke (the Scene's Line
+// repeats) orient it exactly like the baked ones.
+void SampleSpineFrame(const Polyline& spine, double at, bool smooth,
+                      DVec2& outP, DVec2& outT);
 
 // True for the mark bend modes that CURVE the outline along the line (Bend and
 // Follow); Hard keeps a rigid placed primitive.

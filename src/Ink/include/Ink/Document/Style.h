@@ -67,8 +67,26 @@ struct PatternFill {
 // Fill is defined AFTER Stroke — an Instanced fill's line-sets embed a Stroke
 // (for cap/dash/repeat reuse), so Fill must see the full stroke vocabulary.
 
-enum class StrokeAlign : std::uint8_t { Center = 0, Inside = 1, Outside = 2 };
-enum class CapStyle    : std::uint8_t { Butt = 0, Round = 1, Square = 2 };
+// Which SIDE of the path the stroke sits on — the same vocabulary as a stroke
+// repeat's RepeatSide, and by the same rules:
+//   Center           — straddles the path; the offset below does not apply.
+//   Left / Right     — always the SAME side, judged from the start of the path
+//                      looking along it. Never flips, whatever the path does.
+//   Inside / Outside — relative to the shape. On a CLOSED path the winding
+//                      decides (inside = the enclosed side). On an OPEN one
+//                      there is no enclosed side, so the LOCAL CURVATURE
+//                      decides: inside is the concave side, and the stroke
+//                      SWAPS sides wherever the curvature changes sign. The
+//                      swap runs along the path's normal, so the transition is
+//                      perpendicular to the line.
+// Values 0/1/2 are frozen — documents store them.
+enum class StrokeAlign : std::uint8_t {
+    Center = 0, Inside = 1, Outside = 2, Left = 3, Right = 4 };
+inline constexpr std::uint8_t kStrokeAlignMax = 4;
+// Taper: a triangle extending the line in its own direction, its length set by
+// Stroke::taperLength (0 = auto, 2× the width) — the ISOM erosion-gully end.
+enum class CapStyle    : std::uint8_t { Butt = 0, Round = 1, Square = 2,
+                                        Taper = 3 };
 enum class JoinStyle   : std::uint8_t { Miter = 0, Round = 1, Bevel = 2 };
 // Document: width in node-local units (scales with the object — the Blender
 // semantics). Viewport: width in view pixels (non-scaling hairlines /
@@ -143,6 +161,17 @@ enum class MarkObjectMode : std::uint8_t { Fusion = 0, Blend = 1, Subtract = 2 }
 enum class MarkBend : std::uint8_t { Hard = 0, Bend = 1, Follow = 2, Chord = 3 };
 inline constexpr std::uint8_t kMarkBendMax = 3;
 
+// How an object reads the line's DIRECTION at its position:
+//   Perpendicular — the exact direction of the flattened SEGMENT it sits on, so
+//                   the object stays square to the edge right up to a corner.
+//                   On a curve the segments follow the curve, so this reads as
+//                   the true tangent there too. The default.
+//   Smoothed      — per-vertex bisector tangents blended along each segment. It
+//                   is the smoother model on a flattened curve, but at a HARD
+//                   corner the bisector is not the line's direction: objects
+//                   lean further and further over as they near the vertex.
+enum class MarkOrient : std::uint8_t { Perpendicular = 0, Smoothed = 1 };
+
 // The default bend for a shape: Rectangle follows the curve, Diamond spans as
 // a chord (its angles on the line), Circle and Instance are rigid.
 inline MarkBend DefaultBendFor(MarkShape s) {
@@ -155,6 +184,7 @@ struct MarkObject {
     MarkShape       shape = MarkShape::Circle;
     MarkObjectMode  mode  = MarkObjectMode::Fusion;
     MarkBend        bend  = MarkBend::Hard;
+    MarkOrient      orient = MarkOrient::Perpendicular;
     BlendMode       blend = BlendMode::Normal;   // BLEND mode only
     // Size, in % of the stroke width (default) or in node-local doc-units.
     // `size` = radius (circle) / diagonal-half (diamond) / HALF-LENGTH along
@@ -217,12 +247,13 @@ struct MarkObject {
     }
 
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[11] = {
+        const std::uint8_t packed[12] = {
             (std::uint8_t)shape, (std::uint8_t)mode, (std::uint8_t)bend,
             (std::uint8_t)blend, (std::uint8_t)(sizePercent ? 1 : 0),
             (std::uint8_t)(front ? 1 : 0), (std::uint8_t)gapStart,
             (std::uint8_t)gapEnd, (std::uint8_t)(gapCutsObjects ? 1 : 0),
-            (std::uint8_t)(sideInherit ? 1 : 0), (std::uint8_t)side };
+            (std::uint8_t)(sideInherit ? 1 : 0), (std::uint8_t)side,
+            (std::uint8_t)orient };
         h = HashBytes(packed, sizeof packed, h);
         const std::uint8_t uc = useStrokeColor ? 1 : 0;
         h = HashBytes(&uc, 1, h);
@@ -317,6 +348,11 @@ enum class RepeatSide : std::uint8_t {
     Center = 0, Left = 1, Right = 2, Inside = 3, Outside = 4,
 };
 
+// What a run's start/end trim is measured TO — the group's CENTRE, or its
+// OUTER EDGE (half the group's span plus the object's own half-size, so the
+// trim reads as the clear gap before the first object actually starts).
+enum class RepeatTrimMeasure : std::uint8_t { Center = 0, Outside = 1 };
+
 // How the run's group centres are laid out along the line.
 enum class RepeatDistribute : std::uint8_t {
     Pitch   = 0,   // fixed group centre-to-centre distance (doc units)
@@ -336,6 +372,7 @@ struct StrokeRepeat {
     double  width = 25.0;
     bool    sizePercent = true;
     double  rotation = 0.0;        // inclination about each point (radians)
+    MarkOrient orient = MarkOrient::Perpendicular;   // tangent model
     RepeatSide side = RepeatSide::Center;
     double  sideOffset = 50.0;     // % of the stroke width (or doc units)
     bool    offsetPercent = true;
@@ -349,6 +386,12 @@ struct StrokeRepeat {
     double  groupPitch = 2.0;      // object centre-to-centre inside a group
     double  startTrim = 0.0;       // skip this arc length at the start …
     double  endTrim   = 0.0;       // … and at the end
+    // What the trim is measured TO: the group's CENTRE, or the OUTER EDGE of
+    // the whole group (so the trim is the clear gap you actually see between
+    // the path's end and the first object). A non-zero trim also PINS the run
+    // to that boundary — the first group lands exactly there. With no trim
+    // there is nothing to pin to and the run centres in its first cell.
+    RepeatTrimMeasure trimMeasure = RepeatTrimMeasure::Center;
     DashFit fit = DashFit::ScaleBoth;   // how the pitch stretches between two
                                         // repeat anchors (ScaleBoth stretches
                                         // the pitch; the others keep it fixed)
@@ -363,11 +406,11 @@ struct StrokeRepeat {
 
     // Geometry-affecting fields only (color/opacity are paint-level).
     std::uint64_t Hash(std::uint64_t h) const {
-        const std::uint8_t packed[7] = {
+        const std::uint8_t packed[8] = {
             (std::uint8_t)(enabled ? 1 : 0), (std::uint8_t)shape,
             (std::uint8_t)mode, (std::uint8_t)blend,
             (std::uint8_t)(sizePercent ? 1 : 0), (std::uint8_t)side,
-            (std::uint8_t)distribute };
+            (std::uint8_t)distribute, (std::uint8_t)orient };
         h = HashBytes(packed, sizeof packed, h);
         const std::uint8_t p2[2] = { (std::uint8_t)(offsetPercent ? 1 : 0),
                                      (std::uint8_t)(useStrokeColor ? 1 : 0) };
@@ -382,6 +425,8 @@ struct StrokeRepeat {
         h = HashBytes(&groupCount, sizeof groupCount, h);
         h = HashDouble(groupPitch, h);
         h = HashDouble(startTrim, h);  h = HashDouble(endTrim, h);
+        const std::uint8_t tm = (std::uint8_t)trimMeasure;
+        h = HashBytes(&tm, 1, h);
         const std::uint8_t p3[3] = { (std::uint8_t)fit,
                                      (std::uint8_t)(lineJoin ? 1 : 0),
                                      (std::uint8_t)(lineClip ? 1 : 0) };
@@ -409,9 +454,25 @@ struct Stroke {
     Paint       paint;
     double      width      = 1.0;
     StrokeAlign align      = StrokeAlign::Center;
+    // How far off the path a non-Center stroke sits, as a % of the stroke WIDTH
+    // (default) or in node-local units. 50 % = half the width, which puts the
+    // stroke exactly beside the path with one edge on it — the classic
+    // inside/outside placement. Any other value slides it, and a NEGATIVE one
+    // sends it across to the other side. Ignored by Center.
+    double      alignOffset = 50.0;
+    bool        alignOffsetPercent = true;
     CapStyle    cap        = CapStyle::Butt;
     JoinStyle   join       = JoinStyle::Miter;
     double      miterLimit = 4.0;
+    // CapStyle::Taper: the length of the tapering triangle at each open end
+    // (node-local units). 0 = auto (2× the stroke width — the ISOM gully tip).
+    double      taperLength = 0.0;
+    // CapStyle::Butt: TILT the flat end by this angle (radians, ±45° usable).
+    // The cap pivots on one rim and the opposite rim runs forward, so the end
+    // is cut on a slant instead of square — an open V whose two arms both need
+    // horizontal ends takes ONE angle (the arms' own frames mirror it). 0 = the
+    // plain square end. Only Butt caps on a SOLID stroke are tilted.
+    double      capAngle   = 0.0;
     WidthSpace  widthSpace = WidthSpace::Document;
     // SVG-style dash pattern (on/off run lengths along the spine, node-local
     // units; empty = solid) + phase offset. Applied before outlining so every
@@ -427,17 +488,39 @@ struct Stroke {
     // Repeated object runs along the stroke (see StrokeRepeat).
     std::vector<StrokeRepeat> repeats;
 
+    // The align offset in node-local units (a % resolves against the width).
+    double AlignOffsetUnits() const {
+        return alignOffsetPercent ? alignOffset * 0.01 * width : alignOffset;
+    }
+    // How far the stroke's OUTER edge reaches beyond the path contour — what a
+    // pattern clipped at the stroke edge has to allow for. Left/Right are not
+    // radially defined, so they report the widest they could reach.
+    double OuterExtent() const {
+        if (align == StrokeAlign::Center) return width * 0.5;
+        const double a = AlignOffsetUnits();
+        if (align == StrokeAlign::Outside) return a + width * 0.5;
+        if (align == StrokeAlign::Inside)  return width * 0.5 - a;
+        return (a < 0.0 ? -a : a) + width * 0.5;
+    }
+
     // Geometry-affecting parameters only (paints excluded — a color edit must
     // NOT re-tessellate; docs/Ink/GEOMETRY.md §3).
     std::uint64_t GeometryHash() const {
         std::uint64_t h = 0x57120CEULL;
         h = HashDouble(width, h);
+        if (align != StrokeAlign::Center) {
+            h = HashDouble(alignOffset, h);
+            const std::uint8_t ap = alignOffsetPercent ? 1 : 0;
+            h = HashBytes(&ap, 1, h);
+        }
         const std::uint8_t packed[5] = { (std::uint8_t)align, (std::uint8_t)cap,
                                          (std::uint8_t)join,
                                          (std::uint8_t)widthSpace,
                                          (std::uint8_t)dashFit };
         h = HashBytes(packed, sizeof packed, h);
         h = HashDouble(miterLimit, h);
+        if (cap == CapStyle::Taper) h = HashDouble(taperLength, h);
+        if (cap == CapStyle::Butt)  h = HashDouble(capAngle, h);
         for (double d : dashPattern) h = HashDouble(d, h);
         if (!dashPattern.empty()) h = HashDouble(dashOffset, h);
         for (const StrokeMark& m : marks) h = m.Hash(h);
@@ -489,11 +572,26 @@ struct InstElement {
 
 // A family of parallel lines across the region — cap / dash / repeats only (no
 // align, join or marks). Two sets at 0°/90° read as a line grid.
+// How `InstLineSet::spacing` is measured between two neighbouring lines:
+//  • Center — the classic pitch, axis to axis; the visible GAP shrinks as the
+//    line gets thicker (ISOM quotes its line spacings this way).
+//  • Border — the visible gap between the two facing EDGES; the real pitch is
+//    then spacing + line width, so thickening a line spreads the set instead of
+//    closing it up.
+enum class InstLineSpacing : std::uint8_t { Center = 0, Border = 1 };
+
 struct InstLineSet {
     bool   enabled = true;
     double angle   = 0.0;              // line direction (radians)
     double spacing = 20.0;            // perpendicular pitch (doc units)
+    InstLineSpacing spacingMode = InstLineSpacing::Center;
     double phase   = 0.0;             // perpendicular offset (doc units)
+    // STAGGER: each successive line is shifted ALONG its own direction by this
+    // fraction of the dash period (0.5 = every other line half a period out of
+    // step — the ISOM indistinct-marsh look). The LINE moves, not the dash
+    // pattern, so anything that rides the line (gradients later) follows it.
+    // Ignored when the line has no dash pattern.
+    double stagger = 0.0;
     // Only width / cap / dashPattern / dashOffset / dashFit / repeats are used;
     // align, join and marks are ignored (a straight line has no joins).
     Stroke line;

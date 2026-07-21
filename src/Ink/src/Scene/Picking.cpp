@@ -97,6 +97,7 @@ NodeId PickTop(const Scene& scene, DVec2 point, const PickOptions& opt) {
     for (auto it = drawables.rbegin(); it != drawables.rend(); ++it) {
         const Drawable& d = *it;
         if (d.isClipSource) continue;
+        if (d.previewOnly) continue;          // library content — never on canvas
         if (d.owner == kNullNode) continue;   // page substrate — not an object
         if (!d.path || d.path->Empty()) continue;
 
@@ -140,7 +141,7 @@ std::vector<NodeId> PickBox(const Scene& scene, DVec2 boxMin, DVec2 boxMax) {
     std::vector<NodeId> out;
     std::unordered_set<NodeId> seen;
     for (const Drawable& d : scene.Drawables()) {
-        if (d.isClipSource || d.owner == kNullNode) continue;
+        if (d.isClipSource || d.previewOnly || d.owner == kNullNode) continue;
         if (!seen.insert(d.owner).second) continue;
         DRect nb;
         if (scene.NodeBounds(d.owner, nb) && box.Intersects(nb))

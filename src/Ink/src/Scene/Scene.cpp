@@ -315,6 +315,15 @@ double DistToRings(const std::vector<std::vector<DVec2>>& rings, DVec2 p) {
 void Scene::EmitNode(const Document& doc, const Node& n,
                      const DMat23& parentWorld, ScopeId scope, int instDepth,
                      NodeId owner, bool forceVisible) {
+    // A preview-only LIBRARY root is deferred out of the main walk (no canvas
+    // drawables, no bounds, no picking) and compiled by the dedicated pass at
+    // the end of Compile — its drawables render only under a preview filter.
+    // An INSTANCE whose target lives in the library still renders (instDepth):
+    // the placed copy is normal content, only the library originals are hidden.
+    if (!pvPass_ && n.previewOnly && instDepth == 0) {
+        pvPending_.push_back({ n.id, parentWorld });
+        return;
+    }
     // Hidden by ANY route — layer visibility or an invisible collection it
     // belongs to (docs/Ink/DOCUMENT_MODEL.md §7). Culling a hidden node never
     // affects the correctness of what IS drawn. `forceVisible` bypasses the
@@ -796,9 +805,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         for (const Stroke& s : n.style.strokes) {
             if (!s.enabled || s.width <= 0.0 ||
                 s.widthSpace != WidthSpace::Document) continue;
-            const double e = s.align == StrokeAlign::Center ? s.width * 0.5
-                           : s.align == StrokeAlign::Outside ? s.width : 0.0;
-            outward = std::max(outward, e);
+            outward = std::max(outward, s.OuterExtent());
         }
         if (outward > 0.0) {
             const double sx = std::sqrt(world.m[0]*world.m[0] + world.m[3]*world.m[3]);
@@ -872,33 +879,8 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
 
 namespace {
 
-// Point + unit tangent at arc length `d` along a flattened polyline.
-void SamplePolyArc(const geom::Polyline& pl, double d, DVec2& outP,
-                   DVec2& outT) {
-    const auto& pts = pl.points;
-    const std::size_t n = pts.size();
-    outP = n ? pts[0] : DVec2{ 0, 0 };
-    outT = { 1, 0 };
-    if (n < 2) return;
-    const std::size_t sc = pl.closed ? n : n - 1;
-    double acc = 0.0;
-    for (std::size_t i = 0; i < sc; ++i) {
-        const DVec2 a = pts[i], b = pts[(i + 1) % n];
-        const double L = std::hypot(b.x - a.x, b.y - a.y);
-        if (L < 1e-12) continue;
-        if (d <= acc + L) {
-            const double u = (d - acc) / L;
-            outP = { a.x + (b.x - a.x) * u, a.y + (b.y - a.y) * u };
-            outT = { (b.x - a.x) / L, (b.y - a.y) / L };
-            return;
-        }
-        acc += L;
-    }
-    const DVec2 a = pts[n - 2], b = pts[n - 1];
-    const double L = std::hypot(b.x - a.x, b.y - a.y);
-    outP = b;
-    if (L > 1e-12) outT = { (b.x - a.x) / L, (b.y - a.y) / L };
-}
+// (Spine sampling now goes through geom::SampleSpineFrame, so both the baked
+// and the Blend/Cut repeats orient by the same MarkOrient rule.)
 
 // A closed PathData from a ring of node-local points (Blend / Subtract mark
 // objects — a Fusion object is triangulated into the stroke mesh instead).
@@ -1246,6 +1228,7 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         obj.mode = rep.mode;
         obj.blend = rep.blend;
         obj.bend = MarkBend::Hard;
+        obj.orient = rep.orient;
         obj.size = rep.size;
         obj.width = rep.width;
         obj.sizePercent = rep.sizePercent;
@@ -1272,7 +1255,9 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                     // path if asked, and emit as a Blend/Cut/recoloured drawable
                     // (Fusion-stroke-coloured Lines are baked by the stroker).
                     DVec2 p0, t0;
-                    SamplePolyArc(poly, std::clamp(rp.at, 0.0, subTot), p0, t0);
+                    geom::SampleSpineFrame(
+                        poly, std::clamp(rp.at, 0.0, subTot),
+                        rep.orient == MarkOrient::Smoothed, p0, t0);
                     const DVec2 n0{ -t0.y, t0.x };
                     const DVec2 at{ p0.x + n0.x * rp.offset,
                                     p0.y + n0.y * rp.offset };
@@ -1354,12 +1339,20 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
     if (!geo || geo->Empty()) return;
     const PatternFill& pat = fill.pattern;
 
-    // Local bbox of the host geometry (the lattice extent).
+    // Local bbox of the host geometry (the lattice extent). The Bézier/NURBS
+    // curve can bulge PAST the anchor points, so the box must include the
+    // control HANDLES (a cubic lies inside its control-point hull) — else the
+    // lattice stops short and the pattern misses the shape's rounded edges.
     DVec2 lo{ 1e300, 1e300 }, hi{ -1e300, -1e300 };
     for (const Subpath& sp : geo->subpaths)
         for (const Anchor& a : sp.anchors) {
-            lo.x = std::min(lo.x, a.pos.x); lo.y = std::min(lo.y, a.pos.y);
-            hi.x = std::max(hi.x, a.pos.x); hi.y = std::max(hi.y, a.pos.y);
+            auto grow = [&](double x, double y) {
+                lo.x = std::min(lo.x, x); lo.y = std::min(lo.y, y);
+                hi.x = std::max(hi.x, x); hi.y = std::max(hi.y, y);
+            };
+            grow(a.pos.x, a.pos.y);
+            if (a.hasIn)  grow(a.pos.x + a.in.x,  a.pos.y + a.in.y);
+            if (a.hasOut) grow(a.pos.x + a.out.x, a.pos.y + a.out.y);
         }
     if (lo.x > hi.x) return;
     const double sx = pat.spacingX > 1e-6 ? pat.spacingX : 40.0;
@@ -1418,10 +1411,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
             if (st.width > best) { best = st.width; edgeStroke = &st; }
         }
         if (edgeStroke)
-            outward = edgeStroke->align == StrokeAlign::Center
-                          ? edgeStroke->width * 0.5
-                      : edgeStroke->align == StrokeAlign::Outside
-                          ? edgeStroke->width : 0.0;
+            outward = edgeStroke->OuterExtent();
     }
     std::vector<std::vector<DVec2>> cullRings;
     if (useMask) {
@@ -1661,12 +1651,19 @@ void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
         if (in.lines[i].enabled) lineIdx.push_back(i);
     if (enabledIdx.empty() && lineIdx.empty()) return;
 
-    // Host local bbox (the layout extent).
+    // Host local bbox (the layout extent) — include the Bézier/NURBS control
+    // HANDLES so the box covers the curve where it bulges past the anchors
+    // (else the field stops short of the shape's rounded edges).
     DVec2 lo{ 1e300, 1e300 }, hi{ -1e300, -1e300 };
     for (const Subpath& sp : geo->subpaths)
         for (const Anchor& a : sp.anchors) {
-            lo.x = std::min(lo.x, a.pos.x); lo.y = std::min(lo.y, a.pos.y);
-            hi.x = std::max(hi.x, a.pos.x); hi.y = std::max(hi.y, a.pos.y);
+            auto grow = [&](double x, double y) {
+                lo.x = std::min(lo.x, x); lo.y = std::min(lo.y, y);
+                hi.x = std::max(hi.x, x); hi.y = std::max(hi.y, y);
+            };
+            grow(a.pos.x, a.pos.y);
+            if (a.hasIn)  grow(a.pos.x + a.in.x,  a.pos.y + a.in.y);
+            if (a.hasOut) grow(a.pos.x + a.out.x, a.pos.y + a.out.y);
         }
     if (lo.x > hi.x) return;
 
@@ -1708,7 +1705,6 @@ void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
     // Document-space stroke band → stencil; each stamp draws Clipped against it.
     const bool useMask = in.clip != PatternClip::Bounds;
     const Stroke* edgeStroke = nullptr;
-    double outward = 0.0;
     if (in.clip == PatternClip::StrokeInner || in.clip == PatternClip::StrokeOuter) {
         double best = 0.0;
         for (const Stroke& st : host.style.strokes) {
@@ -1716,11 +1712,6 @@ void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
                 st.widthSpace != WidthSpace::Document) continue;
             if (st.width > best) { best = st.width; edgeStroke = &st; }
         }
-        if (edgeStroke)
-            outward = edgeStroke->align == StrokeAlign::Center
-                          ? edgeStroke->width * 0.5
-                      : edgeStroke->align == StrokeAlign::Outside
-                          ? edgeStroke->width : 0.0;
     }
     std::vector<std::vector<DVec2>> cullRings;
     if (useMask) {
@@ -1973,24 +1964,42 @@ void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
 
     if (poses.empty() && lineIdx.empty()) return;
 
-    // ── ONE isolation scope for the WHOLE fill. It composites as a unit at the
-    // fill opacity, so:
-    //   • Add   — instances drawn OPAQUE (own RGB) never double-darken where
-    //             they overlap, shapes WITH shapes AND with lines; the scope
-    //             opacity makes the union translucent once.
-    //   • Blend — instances keep their own alpha and stack.
-    //   • Cut   — instances ERASE (dst-out) the fill's own content, drawn last.
-    // The scope's own contour mask clips everything. Shapes are shared-mesh
-    // INSTANCED drawables (one tessellation per element, N transforms), so tens
-    // of thousands stay light — editing re-emits transforms only.
-    CompositeScope fscope;
-    fscope.node = host.id;  fscope.parent = scope;
-    fscope.opacity = std::clamp(fill.opacity, 0.0f, 1.0f);
-    fscope.blend = BlendMode::Normal;  fscope.isolate = true;
-    fscope.depth = scopes_[scope].depth + 1;
-    maxDepth_ = std::max(maxDepth_, fscope.depth);
-    const ScopeId fs = (ScopeId)scopes_.size();
-    scopes_.push_back(fscope);
+    // ── Isolation ONLY when the fill actually needs to composite as a unit:
+    //   • the fill is TRANSLUCENT (Add overlaps must blend once at the fill
+    //     opacity — shapes with shapes AND with lines), or a translucent Add
+    //     colour would double-darken at crossings;
+    //   • a CUT element/line erases (dst-out) — it must cut THIS fill's
+    //     content, never the backdrop under it.
+    // A fully OPAQUE Add/Blend fill needs none of that: its instances draw
+    // straight into the parent scope (no extra render passes — a page full of
+    // area symbols stays flat). Shapes are shared-mesh INSTANCED drawables, so
+    // tens of thousands stay light either way.
+    bool needScope = fill.opacity < 0.999f;
+    for (std::size_t k : enabledIdx) {
+        const InstElement& el = in.elements[k];
+        if (el.mode == MarkObjectMode::Subtract) needScope = true;
+        const float a = (el.useFillColor ? fill.paint.color.a : el.color.a) *
+                        std::clamp(el.opacity, 0.0f, 1.0f);
+        if (el.mode == MarkObjectMode::Fusion && a < 0.999f) needScope = true;
+    }
+    for (std::size_t li : lineIdx) {
+        const InstLineSet& l = in.lines[li];
+        if (l.mode == MarkObjectMode::Subtract) needScope = true;
+        const float a = l.useFillColor ? fill.paint.color.a : l.color.a;
+        if (l.mode == MarkObjectMode::Fusion && a < 0.999f) needScope = true;
+    }
+
+    ScopeId fs = scope;
+    if (needScope) {
+        CompositeScope fscope;
+        fscope.node = host.id;  fscope.parent = scope;
+        fscope.opacity = std::clamp(fill.opacity, 0.0f, 1.0f);
+        fscope.blend = BlendMode::Normal;  fscope.isolate = true;
+        fscope.depth = scopes_[scope].depth + 1;
+        maxDepth_ = std::max(maxDepth_, fscope.depth);
+        fs = (ScopeId)scopes_.size();
+        scopes_.push_back(fscope);
+    }
 
     if (useMask) emitMaskWrite(fs);
     const ClipRole role = useMask ? ClipRole::Clipped : ClipRole::None;
@@ -2055,14 +2064,36 @@ void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
             tMin = std::min(tMin, t); tMax = std::max(tMax, t);
             dMin = std::min(dMin, d); dMax = std::max(dMax, d);
         }
-        const double sp = l.spacing > 1e-6 ? l.spacing : 20.0;
+        // SPACING MODE: Center measures axis to axis (the pitch IS the spacing);
+        // Border measures the visible gap between the facing edges, so the real
+        // pitch has to carry the line's own width on top of it.
+        double sp = l.spacing > 1e-6 ? l.spacing : 20.0;
+        if (l.spacingMode == InstLineSpacing::Border)
+            sp += std::max(0.0, l.line.width);
+        if (sp < 1e-6) sp = 20.0;
         tMin -= sp; tMax += sp;                       // overshoot; the mask trims
+        // STAGGER: shift each successive line ALONG its own direction by a
+        // fraction of the dash PERIOD, so consecutive lines fall out of step
+        // (the dash pattern itself is untouched — the whole line slides, so
+        // anything riding it stays consistent).
+        double period = 0.0;
+        for (double dsh : l.line.dashPattern) period += dsh;
+        const double step = (l.stagger != 0.0 && period > 1e-9)
+                                ? l.stagger * period : 0.0;
         const long k0 = (long)std::floor((dMin - l.phase) / sp);
         const long k1 = (long)std::ceil((dMax - l.phase) / sp);
         if ((double)(k1 - k0 + 1) > 2.0e4) return;    // runaway guard
         for (long k = k0; k <= k1; ++k) {
             const double d = l.phase + (double)k * sp;
-            const DVec2 cC{ d * nrm.x, d * nrm.y };
+            // Keep the shift bounded to one period (a k-proportional slide
+            // would run away across a large region).
+            double slide = 0.0;
+            if (step != 0.0) {
+                slide = std::fmod((double)k * step, period);
+                if (slide < 0.0) slide += period;
+            }
+            const DVec2 cC{ d * nrm.x + slide * dir.x,
+                            d * nrm.y + slide * dir.y };
             fn({ cC.x + tMin * dir.x, cC.y + tMin * dir.y },
                { cC.x + tMax * dir.x, cC.y + tMax * dir.y });
         }
@@ -2130,6 +2161,8 @@ bool Scene::Compile(Document& doc, bool force) {
     nodeBounds_.clear();
     markShapes_.clear();
     scopes_.clear();
+    pvPending_.clear();
+    pvPass_ = false;
     maxDepth_ = 0;
     boundsValid_ = false;
     bounds_ = {};
@@ -2158,6 +2191,32 @@ bool Scene::Compile(Document& doc, bool force) {
         for (NodeId c : page.children)
             if (const Node* child = doc.Find(c))
                 EmitNode(doc, *child, pageWorld, kRootScope, 0);
+    }
+
+    // ── Preview-only (library) pass: compile the deferred subtrees, tag their
+    // drawables + scopes, and revert their bounds/pick contribution — vignette-
+    // only content (Node::previewOnly).
+    if (!pvPending_.empty()) {
+        const Rect savedBounds  = bounds_;
+        const bool savedValid   = boundsValid_;
+        const std::size_t firstPvDraw  = drawables_.size();
+        const std::size_t firstPvScope = scopes_.size();
+        pvPass_ = true;
+        auto pending = std::move(pvPending_);
+        pvPending_.clear();
+        for (const auto& [id, world] : pending)
+            if (const Node* n = doc.Find(id))
+                EmitNode(doc, *n, world, kRootScope, 0);
+        pvPass_ = false;
+        // Tag drawables/scopes; nodeBounds_ entries are KEPT (the vignette
+        // camera frames a specimen through NodeBounds) — picking skips the
+        // tagged drawables instead.
+        for (std::size_t i = firstPvDraw; i < drawables_.size(); ++i)
+            drawables_[i].previewOnly = true;
+        for (std::size_t i = firstPvScope; i < scopes_.size(); ++i)
+            scopes_[i].previewOnly = true;
+        bounds_      = savedBounds;
+        boundsValid_ = savedValid;
     }
 
     // Scope clip masks (SVG clip-path semantics): route each clip scope's

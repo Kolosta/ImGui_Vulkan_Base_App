@@ -43,6 +43,9 @@ struct CompositeScope {
     // (Affinity layer, whose children clip to the path's / mask child's
     // coverage). Drives the Compile post-pass that tags scope drawables.
     bool      hasClipMask = false;
+    // Opened during the preview-only pass (library content): a normal view
+    // skips this scope entirely (no empty content/composite passes).
+    bool      previewOnly = false;
     // Filled by the Renderer while playing the scope tree (transient).
     int       depth = 0;
 };
@@ -90,6 +93,9 @@ struct Drawable {
     // the GeometryCache (vector-exact at any zoom). `path`/`pathHash` then
     // hold the Scene's coarse evaluation (picking) / the PROGRAM hash.
     const geom::BoolProgram* boolProg = nullptr;
+    // Library (Node::previewOnly) content: compiled but dropped from normal
+    // views, picking and bounds — drawn only when a preview filter selects it.
+    bool previewOnly = false;
 };
 
 class Scene {
@@ -191,6 +197,13 @@ private:
     // One pose = an instance's anchor-space transform + which element it stamps.
     struct InstPose { DVec2 pos; double rot; std::int32_t elem; };
     std::vector<std::pair<std::uint64_t, std::vector<InstPose>>> instPoseCache_;
+
+    // Preview-only (library) subtrees: the main walk records them and returns;
+    // a second pass compiles them with pvPass_ set, then tags their drawables/
+    // scopes previewOnly and reverts their bounds contribution — so the library
+    // renders in vignettes but never on canvas, in picking or in fit-view.
+    bool pvPass_ = false;
+    std::vector<std::pair<NodeId, DMat23>> pvPending_;
 
     std::vector<Drawable>       drawables_;
     std::vector<CompositeScope> scopes_;
