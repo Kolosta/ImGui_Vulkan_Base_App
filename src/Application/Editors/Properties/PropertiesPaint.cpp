@@ -194,8 +194,17 @@ void Application::PropFillsSection(Ink::NodeId id) {
             }
         };
 
+        // Style lock (Node::propLocks): the whole paint stack renders
+        // read-only (IOF: spec-fixed symbol colours/patterns).
+        const bool styleLocked = (n->propLocks & Ink::PropLockStyle) != 0;
+        if (pr::LockToggle("##lkFillStyle", styleLocked,
+                           (n->propLocks & Ink::PropLockManaged) != 0))
+            TogglePropLock(id, Ink::PropLockStyle);
+        ImGui::BeginDisabled(styleLocked);
         DrawFillsStackBody(style, id, propFillSel_, liveApply,
                            structural, structLabel);
+        ImGui::EndDisabled();
+        if (styleLocked) structural = false;   // belt & braces: no writes
 
         if (structural) {
             const Ink::Style before = n->style;
@@ -672,6 +681,19 @@ void Application::DrawFillsStackBody(
                           pr::Quantity::Angle, "Line Angle", kR2D, kD2R);
                     dragD("Spacing", &l.spacing, 0.2f, 0.1, 100000.0, 2,
                           pr::Quantity::Length, "Line Spacing");
+                    // How that spacing is MEASURED: axis to axis (the pitch is
+                    // the spacing — thicker lines close the gap up) or edge to
+                    // edge (the visible gap is the spacing — thicker lines
+                    // spread the set out instead).
+                    {
+                        static const char* kSpMode[] = { "Center to center",
+                                                         "Border to border" };
+                        int spm = (int)l.spacingMode;
+                        if (pr::DropdownRow("Measured", kSpMode, 2, &spm)) {
+                            l.spacingMode = (Ink::InstLineSpacing)spm;
+                            structural = true; structLabel = "Line Spacing Mode";
+                        }
+                    }
                     dragD("Offset", &l.phase, 0.2f, -100000.0, 100000.0, 2,
                           pr::Quantity::Length, "Line Offset");
                     dragD("Width", &l.line.width, 0.1f, 0.01, 100000.0, 2,
@@ -693,6 +715,16 @@ void Application::DrawFillsStackBody(
                               2, pr::Quantity::Length, "Line Dash");
                         dragD("Gap", &l.line.dashPattern[1], 0.2f, 0.1, 100000.0,
                               2, pr::Quantity::Length, "Line Dash");
+                        // Stagger: shift each successive LINE along itself by a
+                        // % of the dash period, so neighbours fall out of step.
+                        dragD("Stagger", &l.stagger, 0.5f, 0.0, 1.0, 0,
+                              pr::Quantity::Percent, "Line Stagger");
+                        if (ImGui::IsItemHovered())
+                            UI::DrawTooltipTranslucent(
+                                "Offset each next line along its own direction "
+                                "by this share of the dash period (50 % = every "
+                                "other line half a period out of step)",
+                                ImGui::GetIO().MousePos, 1.0f);
                     }
                     int lmode = (int)l.mode;
                     if (pr::ButtonGroupRow("Mode", kMode, 3, &lmode)) {
@@ -925,8 +957,17 @@ void Application::PropStrokesSection(Ink::NodeId id) {
             }
         };
 
+        // Style lock — shared with the Fills section (one bit for the whole
+        // paint stack).
+        const bool styleLocked = (n->propLocks & Ink::PropLockStyle) != 0;
+        if (pr::LockToggle("##lkStrokeStyle", styleLocked,
+                           (n->propLocks & Ink::PropLockManaged) != 0))
+            TogglePropLock(id, Ink::PropLockStyle);
+        ImGui::BeginDisabled(styleLocked);
         DrawStrokesStackBody(style, propStrokeSel_, liveApply,
                              structural, structLabel);
+        ImGui::EndDisabled();
+        if (styleLocked) structural = false;
 
         if (structural) {
             const Ink::Style before = n->style;
@@ -945,8 +986,10 @@ void Application::DrawStrokesStackBody(
     const std::function<void(const char*, bool)>& liveApply,
     bool& structural, const char*& structLabel) {
     const float gs = pr::Gs();
-    static const char* kAlign[] = { "Center", "Inner", "Outer" };
-    static const char* kCap[]   = { "Butt", "Round", "Square" };
+    // Same vocabulary as a repeat's Side (Ink::StrokeAlign), in the enum's
+    // frozen order: Center, Inside, Outside, Left, Right.
+    static const char* kAlign[] = { "Center", "Inner", "Outer", "Left", "Right" };
+    static const char* kCap[]   = { "Butt", "Round", "Square", "Taper" };
     static const char* kJoin[]  = { "Miter", "Round", "Bevel" };
     static const char* kSpace[] = { "Document", "Viewport px" };
     {
@@ -1109,11 +1152,70 @@ void Application::DrawStrokesStackBody(
                     ImGui::GetIO().MousePos, 1.0f);
 
             int align = (int)s.align, cap = (int)s.cap, join = (int)s.join;
-            if (pr::DropdownRow("Align", kAlign, 3, &align)) {
+            if (pr::DropdownRow("Align", kAlign, 5, &align)) {
                 s.align = (Ink::StrokeAlign)align; structural = true;
             }
-            if (pr::DropdownRow("Cap", kCap, 3, &cap)) {
+            if (ImGui::IsItemHovered())
+                UI::DrawTooltipTranslucent(
+                    "Left/Right stay on one side of the path for its whole "
+                    "length; Inner/Outer follow the shape — on an open path "
+                    "they swap sides wherever the curvature does",
+                    ImGui::GetIO().MousePos, 1.0f);
+            if (s.align != Ink::StrokeAlign::Center) {
+                // How far off the path. 50 % of the width puts one edge on the
+                // path (the classic placement); negative crosses to the other
+                // side. Percent or doc units, like a repeat's own offset.
+                float ao = (float)s.alignOffset;
+                if (pr::DragFloat(s.alignOffsetPercent ? "Offset %" : "Offset",
+                                  &ao, 0.5f, -10000.0f, 10000.0f, 1,
+                                  s.alignOffsetPercent ? "%" : "",
+                                  s.alignOffsetPercent ? pr::Quantity::Scalar
+                                                       : pr::Quantity::Length)) {
+                    s.alignOffset = ao; liveApply("Stroke Offset", false);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    liveApply("Stroke Offset", true);
+                bool aop = s.alignOffsetPercent;
+                if (pr::CheckRow("Offset in %", &aop)) {
+                    // Keep the same distance when the unit changes.
+                    if (aop && !s.alignOffsetPercent && s.width > 1e-9)
+                        s.alignOffset = s.alignOffset / s.width * 100.0;
+                    else if (!aop && s.alignOffsetPercent)
+                        s.alignOffset = s.alignOffset * 0.01 * s.width;
+                    s.alignOffsetPercent = aop;
+                    structural = true; structLabel = "Stroke Offset Unit";
+                }
+            }
+            if (pr::DropdownRow("Cap", kCap, 4, &cap)) {
                 s.cap = (Ink::CapStyle)cap; structural = true;
+            }
+            if (s.cap == Ink::CapStyle::Taper) {
+                // 0 = auto (2× width); a positive value is the triangle length.
+                float tl = (float)s.taperLength;
+                if (pr::DragFloat("Taper length", &tl, 0.2f, 0.0f, 100000.0f, 2,
+                                  "", pr::Quantity::Length)) {
+                    s.taperLength = tl; liveApply("Taper Length", false);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    liveApply("Taper Length", true);
+            }
+            if (s.cap == Ink::CapStyle::Butt) {
+                // TILT the flat end: the cap pivots on one rim so the stroke is
+                // cut on a slant. An open V whose arms must both finish
+                // horizontal takes a single angle (their frames mirror it).
+                float ca = (float)(s.capAngle * 180.0 / 3.14159265358979);
+                if (pr::DragFloat("Cap angle", &ca, 0.5f, -45.0f, 45.0f, 1,
+                                  "", pr::Quantity::Angle)) {
+                    s.capAngle = ca * 3.14159265358979 / 180.0;
+                    liveApply("Cap Angle", false);
+                }
+                if (ImGui::IsItemDeactivatedAfterEdit())
+                    liveApply("Cap Angle", true);
+                if (ImGui::IsItemHovered())
+                    UI::DrawTooltipTranslucent(
+                        "Slant the butt cap: 0 cuts the end square, ±45 tilts "
+                        "it as far as the end can lean",
+                        ImGui::GetIO().MousePos, 1.0f);
             }
             if (pr::DropdownRow("Join", kJoin, 3, &join)) {
                 s.join = (Ink::JoinStyle)join; structural = true;
@@ -1261,6 +1363,26 @@ void Application::DrawStrokesStackBody(
                     }
                     if (ImGui::IsItemDeactivatedAfterEdit())
                         liveApply("Repeat Incline", true);
+                    {
+                        // How the object reads the line's direction. Segment
+                        // keeps it square to the edge right up to a corner;
+                        // Smoothed blends the vertex tangents, which leans
+                        // objects over as they approach a hard corner.
+                        static const char* kOrient[] = { "Perpendicular",
+                                                         "Smoothed" };
+                        int ori = (int)rp.orient;
+                        if (pr::DropdownRow("Orient", kOrient, 2, &ori)) {
+                            rp.orient = (Ink::MarkOrient)ori;
+                            structural = true;
+                            structLabel = "Repeat Orientation";
+                        }
+                        if (ImGui::IsItemHovered())
+                            UI::DrawTooltipTranslucent(
+                                "Perpendicular squares each object to the "
+                                "segment it sits on, all the way into a hard "
+                                "corner; Smoothed blends the vertex tangents",
+                                ImGui::GetIO().MousePos, 1.0f);
+                    }
                     static const char* kRSide[] = { "Center", "Left", "Right",
                                                     "Inside", "Outside" };
                     int side = (int)rp.side;
@@ -1384,6 +1506,23 @@ void Application::DrawStrokesStackBody(
                     }
                     if (ImGui::IsItemDeactivatedAfterEdit())
                         liveApply("Repeat Trim", true);
+                    {
+                        // What the trim is measured TO.
+                        static const char* kTrimM[] = { "To centre",
+                                                        "To outer edge" };
+                        int tm = (int)rp.trimMeasure;
+                        if (pr::DropdownRow("Trim from", kTrimM, 2, &tm)) {
+                            rp.trimMeasure = (Ink::RepeatTrimMeasure)tm;
+                            structural = true;
+                            structLabel = "Repeat Trim Measure";
+                        }
+                        if (ImGui::IsItemHovered())
+                            UI::DrawTooltipTranslucent(
+                                "Whether the trim reaches the object's centre "
+                                "or the outer edge of the whole group — the "
+                                "second is the clear gap you actually see",
+                                ImGui::GetIO().MousePos, 1.0f);
+                    }
                     // Anchor fit — how the pitch stretches between repeat
                     // anchors (marks). ScaleBoth stretches the pitch; the
                     // others keep it exact.

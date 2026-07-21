@@ -318,11 +318,21 @@ void Application::UpdateTransform(const ViewCam& cam) {
     }
 
     for (const auto& o : transformOp_.nodes) {
+        // Per-property locks (Blender semantics): a locked channel keeps its
+        // original value — a rotation-locked node still ORBITS a group pivot
+        // (position is its own channel) but never spins.
+        const Ink::Node* nn = doc.Find(o.id);
+        const std::uint32_t lk = nn ? nn->propLocks : 0u;
         Ink::Transform2D t = o.t;
-        const Ink::DVec2 no = xf({ o.t.tx, o.t.ty });
-        t.tx = no.x;  t.ty = no.y;
-        if (transformOp_.kind == TransformOp::Kind::Rotate) t.rotation = o.t.rotation + ang;
-        else if (transformOp_.kind == TransformOp::Kind::Scale) { t.sx = o.t.sx*fx; t.sy = o.t.sy*fy; }
+        if (!(lk & Ink::PropLockPosition)) {
+            const Ink::DVec2 no = xf({ o.t.tx, o.t.ty });
+            t.tx = no.x;  t.ty = no.y;
+        }
+        if (transformOp_.kind == TransformOp::Kind::Rotate) {
+            if (!(lk & Ink::PropLockRotation)) t.rotation = o.t.rotation + ang;
+        } else if (transformOp_.kind == TransformOp::Kind::Scale) {
+            if (!(lk & Ink::PropLockScale)) { t.sx = o.t.sx*fx; t.sy = o.t.sy*fy; }
+        }
         doc.SetTransform(o.id, t);
     }
 }

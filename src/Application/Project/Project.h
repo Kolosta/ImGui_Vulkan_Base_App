@@ -38,6 +38,13 @@ struct Project {
     // Geometry is stored once in the base unit (px); this only changes display.
     UI::Units::UnitSystem docUnitSystem = UI::Units::UnitSystem::Pixel;
 
+    // Document COLOUR MODE (a Document-properties setting): how colours are
+    // AUTHORED — RGB (screen) or CMYK (print separations; pickers edit C/M/Y/K
+    // and convert for display). Stored values stay linear RGB either way; a
+    // module (IOF) can pin the mode. Persisted in the .acu DOC section.
+    enum class ColorModeKind : std::uint8_t { Rgb = 0, Cmyk = 1 };
+    ColorModeKind colorMode = ColorModeKind::Rgb;
+
     // Reset to a brand-new empty project: fresh document with one default
     // page (size overridable — a module supplies its own via DefaultPageSize).
     // The caller re-hands the new document to the engine.
@@ -47,6 +54,7 @@ struct Project {
         moduleId.clear();
         dirty = false;
         docUnitSystem = UI::Units::UnitSystem::Pixel;
+        colorMode = ColorModeKind::Rgb;
         document = std::make_unique<Ink::Document>();
         document->AddPage("Page 1", { 0, 0 }, { pageW, pageH });
     }

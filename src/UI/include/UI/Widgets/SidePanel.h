@@ -34,6 +34,10 @@ struct SidePanelState {
     int   stage = 0;        // 0 closed, 1 tab-bar only, 2 full panel
     float width = 320.0f;   // full-panel width (px), resizable
     int   tab   = 0;        // active tab index
+    // Identity of the active tab BY NAME: the host reconciles `tab` against it
+    // when the tab list composition changes (tabs appear/disappear with modes),
+    // so the selection never silently jumps to a different tab.
+    std::string tabName;
     // OUTPUT (filled by EditorSidePanel each frame): the screen rects the panel
     // ACTUALLY occupies — the tab-bar column (full height; the closed handle at
     // stage 0) and the height-FITTED content panel incl. its resize grip (zero

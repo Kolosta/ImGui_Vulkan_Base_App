@@ -175,6 +175,23 @@ void Application::Update() {
     // shapes in print-layer z-order) before any UI / viewport reads the document.
     if (activeModule_) activeModule_->OnFrameSync();
 
+    // Module NUMPAD shortcut: while Shift is held, numpad digit presses build a
+    // sequence; on Shift release it is delivered to the module (IOF: a symbol
+    // code / theme tool). Ignored while a text field is focused.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (!activeModule_ || io.WantTextInput) {
+            moduleNumpadSeq_.clear();
+        } else if (io.KeyShift) {
+            for (int d = 0; d <= 9; ++d)
+                if (ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_Keypad0 + d), false))
+                    moduleNumpadSeq_ += (char)('0' + d);
+        } else if (!moduleNumpadSeq_.empty()) {
+            activeModule_->OnNumpadSequence(moduleNumpadSeq_);
+            moduleNumpadSeq_.clear();
+        }
+    }
+
     // Reset component-usage tracking at the start of every frame, so the
     // Tokens viewer reads the previous frame's counts cleanly without
     // unbounded growth. ComponentScope RAII populates it as widgets render.

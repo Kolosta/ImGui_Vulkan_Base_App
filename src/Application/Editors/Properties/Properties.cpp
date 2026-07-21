@@ -49,6 +49,21 @@ void Application::CommitModifiersEdit(Ink::NodeId id,
         [id, after](Ink::Document& d)  { d.SetModifiers(id, after); });
 }
 
+// Flip one per-property lock bit as an undoable command (the padlock toggles).
+void Application::TogglePropLock(Ink::NodeId id, std::uint32_t bit) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(id);
+    if (!n) return;
+    const std::uint32_t before = n->propLocks;
+    const std::uint32_t after  = before ^ bit;
+    doc.SetPropLocks(id, after);
+    PushDocCommand("Property Lock",
+        [id, before](Ink::Document& d) { d.SetPropLocks(id, before); },
+        [id, after](Ink::Document& d)  { d.SetPropLocks(id, after);  });
+    LogInfoAction("Property Lock");
+}
+
 // ── Transform panel (legacy layout: Location X/Y group, Rotation, Scale X/Y
 //    group — the group title written once, groups separated by the gap) ──────
 
@@ -86,22 +101,46 @@ void Application::PropTransformSection(Ink::NodeId id) {
             }
         };
 
+        // Per-property padlocks (Node::propLocks): a locked group renders
+        // read-only; a module-managed lock (IOF spec-fixed channels) is inert.
+        const std::uint32_t locks = n->propLocks;
+        const bool managed = (locks & Ink::PropLockManaged) != 0;
+        auto lockRow = [&](const char* lid, std::uint32_t bit) {
+            if (pr::LockToggle(lid, (locks & bit) != 0, managed))
+                TogglePropLock(id, bit);
+            return (locks & bit) != 0;
+        };
+
         bool dx = false, dy = false;
+        pr::GroupGap();
+        bool lk = lockRow("##lkPos", Ink::PropLockPosition);
+        ImGui::BeginDisabled(lk);
         unsigned ch = pr::Vec2Group("Location", loc, 0.5f, 0.0f, 0.0f, 3, "",
-                                    &dx, &dy, true, pr::Quantity::Length);
+                                    &dx, &dy, false, pr::Quantity::Length);
+        ImGui::EndDisabled();
         if (ch & 1u) applyLive([&](Ink::Transform2D& x) { x.tx = loc[0]; });
         if (ch & 2u) applyLive([&](Ink::Transform2D& x) { x.ty = loc[1]; });
         commitOnRelease(dx || dy);
 
         pr::GroupGap();
-        if (pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600, 1, "",
-                          pr::Quantity::Angle))
+        lk = lockRow("##lkRot", Ink::PropLockRotation);
+        ImGui::BeginDisabled(lk);
+        const bool rotCh = pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600,
+                                         1, "", pr::Quantity::Angle);
+        const bool rotRel = ImGui::IsItemDeactivatedAfterEdit();
+        ImGui::EndDisabled();
+        if (rotCh)
             applyLive([&](Ink::Transform2D& x) {
                 x.rotation = rotDeg * 3.14159265358979 / 180.0;
             });
-        commitOnRelease(ImGui::IsItemDeactivatedAfterEdit());
+        commitOnRelease(rotRel);
 
-        ch = pr::Vec2Group("Scale", scl, 0.01f, 0.0f, 0.0f, 3, "", &dx, &dy);
+        pr::GroupGap();
+        lk = lockRow("##lkScl", Ink::PropLockScale);
+        ImGui::BeginDisabled(lk);
+        ch = pr::Vec2Group("Scale", scl, 0.01f, 0.0f, 0.0f, 3, "", &dx, &dy,
+                           false);
+        ImGui::EndDisabled();
         if (ch & 1u) applyLive([&](Ink::Transform2D& x) { x.sx = scl[0]; });
         if (ch & 2u) applyLive([&](Ink::Transform2D& x) { x.sy = scl[1]; });
         commitOnRelease(dx || dy);
@@ -447,6 +486,29 @@ void Application::DrawPropertiesDocument() {
         project_.docUnitSystem = (UI::Units::UnitSystem)sys;
         project_.dirty = true;
     }
+
+    pr::GroupGap();
+    ImGui::PushStyleColor(ImGuiCol_Text, ds.GetColor(pr::Tok::S_Color_Text_Subtle));
+    ImGui::TextUnformatted("Colour");
+    ImGui::PopStyleColor();
+    ImGui::Separator();
+
+    // Colour MODE (RGB screen / CMYK print separations). A module may PIN it
+    // (IOF: the ISOM inks are CMYK-defined) — the switch then renders inert.
+    static const char* kModes[] = { "RGB", "CMYK" };
+    const bool pinned = activeCapabilities_.colorMode >= 0;
+    int cm = (int)project_.colorMode;
+    ImGui::BeginDisabled(pinned);
+    if (pr::ButtonGroupRow("Colour mode", kModes, 2, &cm) && !pinned) {
+        project_.colorMode = cm ? Project::ColorModeKind::Cmyk
+                                : Project::ColorModeKind::Rgb;
+        project_.dirty = true;
+    }
+    ImGui::EndDisabled();
+    if (pinned && ImGui::IsItemHovered())
+        UI::DrawTooltipTranslucent(
+            "Fixed by the active module (its colour definitions are CMYK)",
+            ImGui::GetIO().MousePos, 1.0f);
 }
 
 } // namespace App

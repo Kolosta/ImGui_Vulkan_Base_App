@@ -69,6 +69,7 @@ void TypographyModule::ConfigureCapabilities(Capabilities& caps) const {
     caps.corePrimitivesAddMenu = false;   // no rectangles/curves in a font module
     caps.pages                 = false;    // glyphs, not pages
     caps.editMode              = true;     // (point editing makes sense later)
+    caps.documentUnit          = 2;        // Typographic — points
 }
 
 std::vector<std::string> TypographyModule::AllowedEditors() const {

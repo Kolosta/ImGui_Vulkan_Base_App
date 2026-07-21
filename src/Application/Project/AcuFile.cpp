@@ -41,7 +41,7 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 14;  // v3: subpath spline params +
+constexpr std::uint32_t kDocVersion = 20;  // v3: subpath spline params +
                                            //     anchor weight (+ dead marks)
                                            // v4-v8: generic marks (dead)
                                            // v9: marks — per-object side/offset +
@@ -58,6 +58,20 @@ constexpr std::uint32_t kDocVersion = 14;  // v3: subpath spline params +
                                            //      line-sets, grid/scatter)
                                            // v14: instanced scatter mode
                                            //      (count vs distance)
+                                           // v15: node previewOnly flag +
+                                           //      per-property lock bitmask
+                                           // v16: document colour mode (RGB /
+                                           //      CMYK) + stroke taper length
+                                           // v17: line-set dash stagger
+                                           // v18: line-set spacing mode
+                                           //      (centre vs border) + stroke
+                                           //      butt-cap tilt angle
+                                           // v19: stroke align offset (+ its
+                                           //      unit) and repeat tangent
+                                           //      model (perpendicular vs
+                                           //      smoothed)
+                                           // v20: repeat trim measure (to the
+                                           //      group centre or its edge)
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -307,8 +321,10 @@ void WriteStrokeRepeat(Writer& w, const Ink::StrokeRepeat& rp) {
     WriteColor(w, rp.color);
     w.u8(rp.useStrokeColor ? 1 : 0);
     w.f32(rp.opacity);
+    w.u8((std::uint8_t)rp.orient);        // v19
+    w.u8((std::uint8_t)rp.trimMeasure);   // v20
 }
-Ink::StrokeRepeat ReadStrokeRepeat(Reader& r) {
+Ink::StrokeRepeat ReadStrokeRepeat(Reader& r, std::uint32_t ver) {
     Ink::StrokeRepeat rp;
     rp.enabled = r.u8() != 0;
     rp.shape = (Ink::MarkShape)std::min<std::uint8_t>(r.u8(), Ink::kMarkShapeMax);
@@ -338,6 +354,14 @@ Ink::StrokeRepeat ReadStrokeRepeat(Reader& r) {
     rp.color = ReadColor(r);
     rp.useStrokeColor = r.u8() != 0;
     rp.opacity = r.f32();
+    // v19 introduced the tangent model. A file written before it was drawn with
+    // the smoothed one, so that is what it must keep reading back as.
+    rp.orient = ver >= 19
+        ? (Ink::MarkOrient)std::min<std::uint8_t>(r.u8(), 1)
+        : Ink::MarkOrient::Smoothed;
+    if (ver >= 20)
+        rp.trimMeasure =
+            (Ink::RepeatTrimMeasure)std::min<std::uint8_t>(r.u8(), 1);
     return rp;
 }
 
@@ -369,6 +393,8 @@ void WriteInstLineSet(Writer& w, const Ink::InstLineSet& l) {
     w.f64(l.angle);
     w.f64(l.spacing);
     w.f64(l.phase);
+    w.f64(l.stagger);            // v17
+    w.u8((std::uint8_t)l.spacingMode);   // v18
     w.u8((std::uint8_t)l.mode);
     w.u8(l.useFillColor ? 1 : 0);
     WriteColor(w, l.color);
@@ -382,17 +408,20 @@ void WriteInstLineSet(Writer& w, const Ink::InstLineSet& l) {
     w.u32((std::uint32_t)l.line.repeats.size());
     for (const Ink::StrokeRepeat& rp : l.line.repeats) WriteStrokeRepeat(w, rp);
 }
-Ink::InstLineSet ReadInstLineSet(Reader& r) {
+Ink::InstLineSet ReadInstLineSet(Reader& r, std::uint32_t ver) {
     Ink::InstLineSet l;
     l.enabled = r.u8() != 0;
     l.angle = r.f64();
     l.spacing = r.f64();
     l.phase = r.f64();
+    if (ver >= 17) l.stagger = r.f64();
+    if (ver >= 18)
+        l.spacingMode = (Ink::InstLineSpacing)std::min<std::uint8_t>(r.u8(), 1);
     l.mode = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
     l.useFillColor = r.u8() != 0;
     l.color = ReadColor(r);
     l.line.width = r.f64();
-    l.line.cap = (Ink::CapStyle)std::min<std::uint8_t>(r.u8(), 2);
+    l.line.cap = (Ink::CapStyle)std::min<std::uint8_t>(r.u8(), 3);
     const std::uint32_t nD = r.u32();
     for (std::uint32_t j = 0; j < nD && r.ok; ++j)
         l.line.dashPattern.push_back(r.f64());
@@ -400,7 +429,7 @@ Ink::InstLineSet ReadInstLineSet(Reader& r) {
     l.line.dashFit = (Ink::DashFit)std::min<std::uint8_t>(r.u8(), 2);
     const std::uint32_t nR = r.u32();
     for (std::uint32_t j = 0; j < nR && r.ok; ++j)
-        l.line.repeats.push_back(ReadStrokeRepeat(r));
+        l.line.repeats.push_back(ReadStrokeRepeat(r, ver));
     return l;
 }
 void WriteInstancedFill(Writer& w, const Ink::InstancedFill& in) {
@@ -447,7 +476,7 @@ Ink::InstancedFill ReadInstancedFill(Reader& r, std::uint32_t ver) {
         in.elements.push_back(ReadInstElement(r));
     const std::uint32_t nL = r.u32();
     for (std::uint32_t i = 0; i < nL && r.ok; ++i)
-        in.lines.push_back(ReadInstLineSet(r));
+        in.lines.push_back(ReadInstLineSet(r, ver));
     return in;
 }
 
@@ -477,6 +506,10 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
         w.u8((std::uint8_t)st.cap);
         w.u8((std::uint8_t)st.join);
         w.f64(st.miterLimit);
+        w.f64(st.taperLength);            // v16
+        w.f64(st.capAngle);               // v18
+        w.f64(st.alignOffset);            // v19
+        w.u8(st.alignOffsetPercent ? 1 : 0);
         w.u8((std::uint8_t)st.widthSpace);
         w.u32((std::uint32_t)st.dashPattern.size());
         for (double d : st.dashPattern) w.f64(d);
@@ -531,10 +564,17 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         st.enabled     = r.u8() != 0;
         st.paint.color = ReadColor(r);
         st.width       = r.f64();
-        st.align = (Ink::StrokeAlign)std::min<std::uint8_t>(r.u8(), 2);
-        st.cap   = (Ink::CapStyle)std::min<std::uint8_t>(r.u8(), 2);
+        st.align = (Ink::StrokeAlign)std::min<std::uint8_t>(
+            r.u8(), Ink::kStrokeAlignMax);
+        st.cap   = (Ink::CapStyle)std::min<std::uint8_t>(r.u8(), 3);
         st.join  = (Ink::JoinStyle)std::min<std::uint8_t>(r.u8(), 2);
         st.miterLimit = r.f64();
+        if (ver >= 16) st.taperLength = r.f64();
+        if (ver >= 18) st.capAngle    = r.f64();
+        if (ver >= 19) {
+            st.alignOffset = r.f64();
+            st.alignOffsetPercent = r.u8() != 0;
+        }
         st.widthSpace = (Ink::WidthSpace)std::min<std::uint8_t>(r.u8(), 1);
         const std::uint32_t nD = r.u32();
         for (std::uint32_t j = 0; j < nD && r.ok; ++j)
@@ -637,7 +677,7 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         if (ver >= 11) {   // stroke REPEAT runs
             const std::uint32_t nRp = r.u32();
             for (std::uint32_t j = 0; j < nRp && r.ok; ++j)
-                st.repeats.push_back(ReadStrokeRepeat(r));
+                st.repeats.push_back(ReadStrokeRepeat(r, ver));
         }
         s.strokes.push_back(std::move(st));
     }
@@ -752,6 +792,9 @@ void WriteNode(Writer& w, const Ink::Node& n) {
                         (n.isMask ? 16 : 0) |
                         (n.instCopyLoc ? 32 : 0) | (n.instCopyRot ? 64 : 0) |
                         (n.instCopyScale ? 128 : 0)));
+    // v15: a second flags byte (previewOnly) + the per-property lock bitmask.
+    w.u8((std::uint8_t)(n.previewOnly ? 1 : 0));
+    w.u32(n.propLocks);
     w.f32(n.opacity);
     w.u8((std::uint8_t)n.blend);
     w.u32((std::uint32_t)n.children.size());
@@ -780,6 +823,11 @@ Ink::Node ReadNode(Reader& r, std::uint32_t ver) {
     n.instCopyLoc   = (flags & 32) != 0;   // v1 wrote 0s = the new default
     n.instCopyRot   = (flags & 64) != 0;
     n.instCopyScale = (flags & 128) != 0;
+    if (ver >= 15) {
+        const std::uint8_t flags2 = r.u8();
+        n.previewOnly = (flags2 & 1) != 0;
+        n.propLocks   = r.u32();
+    }
     n.opacity = r.f32();
     n.blend   = (Ink::BlendMode)std::min<std::uint8_t>(
         r.u8(), (std::uint8_t)Ink::BlendMode::Erase);
@@ -805,7 +853,8 @@ void WriteSubtree(Writer& w, const Ink::Document& doc, Ink::NodeId id,
 }
 
 std::vector<std::uint8_t> EncodeDoc(const Ink::Document& doc,
-                                    std::uint8_t docUnitSystem) {
+                                    std::uint8_t docUnitSystem,
+                                    std::uint8_t colorMode) {
     Writer w;
     w.u32(kDocVersion);
     w.u64(doc.PeekNextId());
@@ -844,6 +893,8 @@ std::vector<std::uint8_t> EncodeDoc(const Ink::Document& doc,
     }
     // v12: the document display-unit system (app-level, one byte).
     w.u8(docUnitSystem);
+    // v16: the document colour mode (0 RGB · 1 CMYK).
+    w.u8(colorMode);
     return std::move(w.bytes);
 }
 
@@ -888,6 +939,8 @@ bool DecodeDoc(const std::uint8_t* p, std::size_t n, AcuData& out) {
     }
     // v12: the document display-unit system (defaults to Pixel for older files).
     out.docUnitSystem = ver >= 12 ? r.u8() : 3;
+    // v16: the document colour mode (defaults to RGB for older files).
+    out.colorMode = ver >= 16 ? r.u8() : 0;
     return r.ok;
 }
 
@@ -908,7 +961,7 @@ namespace AcuFile {
 
 bool Save(const std::string& path, const std::string& projectName,
           const std::string& moduleId, const Ink::Document& doc,
-          std::uint8_t docUnitSystem,
+          std::uint8_t docUnitSystem, std::uint8_t colorMode,
           const std::vector<std::uint8_t>& layoutBlob,
           const std::vector<std::uint8_t>& editorBlob, const AcuThumb& thumb,
           std::string* error) {
@@ -926,7 +979,7 @@ bool Save(const std::string& path, const std::string& projectName,
         meta.str(moduleId);
         WriteSection(file, kTagMeta, meta.bytes);
     }
-    WriteSection(file, kTagDoc, EncodeDoc(doc, docUnitSystem));
+    WriteSection(file, kTagDoc, EncodeDoc(doc, docUnitSystem, colorMode));
     if (!layoutBlob.empty()) WriteSection(file, kTagLay, layoutBlob);
     if (!editorBlob.empty()) WriteSection(file, kTagEdst, editorBlob);
     if (!thumb.png.empty()) {

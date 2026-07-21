@@ -35,6 +35,8 @@ struct AcuData {
     // The document display-unit system index (0 Metric · 1 Imperial ·
     // 2 Typographic · 3 Pixel). Defaults to Pixel for pre-v12 documents.
     std::uint8_t                 docUnitSystem = 3;
+    // Document colour mode (0 RGB · 1 CMYK). Defaults to RGB pre-v16.
+    std::uint8_t                 colorMode = 0;
     std::vector<std::uint8_t>    layoutBlob;  // ZoneLayout blob (empty = none)
     // EDST section: opaque, self-versioned editing-session blob written by the
     // Application (per-mode active tools + tool variants). Empty = none.
@@ -57,7 +59,7 @@ inline constexpr std::uint32_t kContainerVersion = 2;
 // user-displayable reason).
 bool Save(const std::string& path, const std::string& projectName,
           const std::string& moduleId, const Ink::Document& doc,
-          std::uint8_t docUnitSystem,
+          std::uint8_t docUnitSystem, std::uint8_t colorMode,
           const std::vector<std::uint8_t>& layoutBlob,
           const std::vector<std::uint8_t>& editorBlob, const AcuThumb& thumb,
           std::string* error = nullptr);

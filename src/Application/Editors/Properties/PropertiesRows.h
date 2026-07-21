@@ -5,6 +5,8 @@
 #include <UI/Widgets/Checkbox.h>
 #include <UI/Widgets/Dropdown.h>
 #include <UI/Widgets/ButtonGroup.h>
+#include <UI/Widgets/PopupMenu.h>
+#include <VectorGraphics/IconManager.h>
 #include <Ink/Document/Document.h>
 #include <imgui.h>
 #include <algorithm>
@@ -49,6 +51,50 @@ inline float RowH() { return SafeFloat(Tok::S_Size_ControlHeight, 22.0f) * Gs();
 // plain item rows around it (token-driven, larger than ItemSpacing).
 inline void GroupGap() {
     ImGui::Dummy(ImVec2(0.0f, SafeFloat(Tok::C_PropertyGroup_Gap, 6.0f) * Gs()));
+}
+
+// A small padlock toggle for a per-property lock (Ink::PropLock bits): drawn
+// as a floating icon in the row's LEFT margin, then the cursor is restored so
+// the property group lays out exactly as before. Returns true on a click
+// (the caller flips the bit). `managed` = the active module owns the lock
+// (spec-fixed): rendered in the notice colour and inert. Call it immediately
+// BEFORE the group's first row.
+inline bool LockToggle(const char* id, bool locked, bool managed) {
+    const ImVec2 rowStart = ImGui::GetCursorScreenPos();
+    const float h  = RowH();
+    const float sz = h * 0.85f;
+    ImGui::PushID(id);
+    const bool clicked = ImGui::InvisibleButton("##lock", ImVec2(sz, h));
+    ImGui::PopID();
+    const bool hov = ImGui::IsItemHovered();
+    // `managed` only TINTS the padlock (a module spec-lock) — it stays
+    // clickable so the property can be temporarily unlocked for testing.
+    auto& im = VectorGraphics::IconManager::Instance();
+    const char* icon = locked ? "lock" : "lock-open";
+    if (im.HasIcon(icon)) {
+        ImVec4 col = locked
+            ? SafeColor(managed ? Tok::S_Color_Notice_Default
+                                : Tok::S_Color_Accent_Default,
+                        ImVec4(0.95f, 0.6f, 0.2f, 1))
+            : SafeColor(hov ? Tok::S_Color_Text_Default : Tok::S_Color_Text_Subtle,
+                        ImVec4(0.6f, 0.6f, 0.6f, 1));
+        if (!hov && !locked) col.w *= 0.55f;   // unlocked at rest: discreet
+        auto md = im.GetDefaultMetadata(icon);
+        if (!md.colorZones.empty()) md.colorZones[0].customColor = col;
+        const float isz = sz * 0.82f;
+        im.RenderIcon(ImGui::GetWindowDrawList(), icon,
+                      ImVec2(rowStart.x + (sz - isz) * 0.5f,
+                             rowStart.y + (h - isz) * 0.5f), isz, md);
+    }
+    if (hov)
+        UI::DrawTooltip(managed
+            ? (locked ? "Module lock (spec) — click to unlock for testing"
+                      : "Module property — click to re-lock")
+            : (locked ? "Unlock this property" : "Lock this property"),
+            ImGui::GetIO().MousePos);
+    // Same-row restore: the group renders from the original row start.
+    ImGui::SetCursorScreenPos(rowStart);
+    return clicked;
 }
 
 // sRGB (UI pickers) ↔ linear (document colours).

@@ -50,10 +50,11 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
     // HandleMarkTool (overlay phase), so the router must stay inert.
     if (markGrab_.Active()) return;
 
-    // Esc (no modal op): clear the mark selection (Line-Mark mode), the
-    // selection (Object) or leave Edit mode.
+    // Esc (no modal op): disarm the module place tool first, else clear the
+    // mark selection (Line-Mark mode), the selection (Object) or leave Edit.
     if (hovered && ImGui::IsKeyPressed(ImGuiKey_Escape) && !io.WantTextInput) {
-        if (MarkModeActive()) edit_.markSel.clear();
+        if (modulePlace_.armed) CancelPlacement();
+        else if (MarkModeActive()) edit_.markSel.clear();
         else if (edit_.mode == EditorMode::Edit) Action_ExitEditMode();
         else edit_.Clear();
     }
@@ -104,6 +105,20 @@ void Application::HandleViewportInput(EditorState& st, const ViewCam& cam,
             else CancelObjectPick();
         } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
             CancelObjectPick();
+        }
+        return;
+    }
+
+    // Armed module "place symbol" tool: LEFT click drops the symbol at the
+    // cursor (the module's callback creates + routes the object); RIGHT click
+    // disarms (Esc is handled above). Repeat placements stay armed.
+    if (modulePlace_.armed) {
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            const auto req = modulePlace_.req;   // survives a disarm in onPlace
+            if (req.onPlace) req.onPlace(doc.x, doc.y);
+            if (!req.repeat) CancelPlacement();
+        } else if (ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+            CancelPlacement();
         }
         return;
     }

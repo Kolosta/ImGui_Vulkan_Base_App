@@ -106,7 +106,7 @@ void Application::ApplyEditorStateBlob(const std::vector<std::uint8_t>& blob) {
     // newer build may name tools this build doesn't have).
     for (int i = 0; i < 3; ++i) {
         bool allowed = false;
-        for (const char* id : ToolsForMode((EditorMode)i))
+        for (const std::string& id : ToolsForMode((EditorMode)i))
             allowed = allowed || tools[i] == id;
         if (allowed && tm.GetTool(tools[i])) edit_.toolByMode[i] = tools[i];
     }
@@ -231,6 +231,9 @@ void Application::LoadProjectFromFile(const std::string& path) {
     project_.dirty = false;
     project_.docUnitSystem = (UI::Units::UnitSystem)std::min<std::uint8_t>(
         data.docUnitSystem, (std::uint8_t)(UI::Units::kUnitSystemCount - 1));
+    project_.colorMode = data.colorMode
+                             ? Project::ColorModeKind::Cmyk
+                             : Project::ColorModeKind::Rgb;
 
     // Fresh editing state for the restored document (mirrors ResetDocument,
     // minus the demo seed).
@@ -251,7 +254,9 @@ void Application::LoadProjectFromFile(const std::string& path) {
     markPreviewSaved_.clear();   // saved styles referenced the OLD document
     penActive_ = false;          // any pen construction referenced it too
     penHasPending_ = false;
-    penNode_ = penFillNode_ = Ink::kNullNode;
+    penNode_ = penFillNode_ = penTailNode_ = Ink::kNullNode;
+    penFollowTail_.clear(); penTailJoinHasOut_ = false;
+    followLocked_ = false;
     if (ink_) ink_->SetDocument(project_.document.get());
 
     // Restore the module the file was made with (Lot 11): activate it WITHOUT
@@ -335,6 +340,7 @@ void Application::FinishSavePass() {
     std::string err;
     if (!AcuFile::Save(path, name, project_.moduleId, *project_.document,
                        (std::uint8_t)project_.docUnitSystem,
+                       (std::uint8_t)project_.colorMode,
                        zoneLayout_.Serialize(), BuildEditorStateBlob(), thumb,
                        &err)) {
         LogInfoAction("Save File", err);

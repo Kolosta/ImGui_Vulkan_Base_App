@@ -116,8 +116,12 @@ void Application::DrawRulers(EditorState& st, ImVec2 cMin, ImVec2 size) {
     auto hRuler = [&](float edgeY, int td) {
         if (majorPx <= 4.0f) return;
         const float labY = edgeY + td * (majTick + rw) * 0.5f;
-        const double d0 = std::floor(sxToDoc(innerL) / majorDoc) * majorDoc;
-        for (double dx = d0; ; dx += majorDoc) {
+        // Walk the tick INDEX, not the coordinate: accumulating `+= majorDoc`
+        // drifts, so the tick that should be the origin lands a few ulps off 0
+        // and prints as "-5.87e-17". `i * majorDoc` is exact at i = 0.
+        const long long i0 = (long long)std::floor(sxToDoc(innerL) / majorDoc);
+        for (long long i = i0; ; ++i) {
+            const double dx = (double)i * majorDoc;
             const float sx = docToSx(dx);
             if (sx > innerR) break;
             if (sx >= innerL) {
@@ -139,8 +143,9 @@ void Application::DrawRulers(EditorState& st, ImVec2 cMin, ImVec2 size) {
     auto vRuler = [&](float edgeX, int td) {
         if (majorPx <= 4.0f) return;
         const float labX = edgeX + td * (majTick + rw) * 0.5f;
-        const double d0 = std::floor(syToDoc(innerT) / majorDoc) * majorDoc;
-        for (double dy = d0; ; dy += majorDoc) {
+        const long long i0 = (long long)std::floor(syToDoc(innerT) / majorDoc);
+        for (long long i = i0; ; ++i) {
+            const double dy = (double)i * majorDoc;
             const float sy = docToSy(dy);
             if (sy > innerB) break;
             if (sy >= innerT) {

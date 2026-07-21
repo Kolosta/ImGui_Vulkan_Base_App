@@ -173,8 +173,14 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     const Ink::Color frameCol  = TokenColor(ds, Tok::S_Color_Text_Subtle, 0.85f);
     const Ink::Color accentCol = TokenColor(ds, Tok::S_Color_Accent_Default, 0.95f);
 
-    // Demo page frame (the 1920×1080 page of the demo scene).
-    ov.AddRect(docToView(0.0f, 0.0f), docToView(1920.0f, 1080.0f), frameCol, 1.5f);
+    // Page frames — the REAL document pages (not a hardcoded demo size).
+    if (project_.document)
+        for (const Ink::Page& pg : project_.document->Pages())
+            if (pg.size.x > 0.0 && pg.size.y > 0.0)
+                ov.AddRect(docToView((float)pg.pos.x, (float)pg.pos.y),
+                           docToView((float)(pg.pos.x + pg.size.x),
+                                     (float)(pg.pos.y + pg.size.y)),
+                           frameCol, 1.5f);
     // Document origin cross.
     {
         const Ink::Vec2 o = docToView(0.0f, 0.0f);
@@ -257,6 +263,47 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     RenderViewportSidePanel(st,
         ImVec2(cMin.x + ins.x, cMin.y + ins.y),
         ImVec2(cMin.x + size.x - ins.z, cMin.y + size.y - ins.w));
+
+    // ── Active-module viewport extensions ────────────────────────────────────
+    // Per-frame module overlay (IOF: the course line over its controls), in
+    // screen space via this viewport's camera.
+    if (activeModule_) {
+        auto docToScreen = [&](ImVec2 p) {
+            return ImVec2(cMin.x + (float)((p.x - st.panX) * st.zoom),
+                          cMin.y + (float)((p.y - st.panY) * st.zoom));
+        };
+        activeModule_->DrawViewportOverlay(
+            cMin, ImVec2(cMin.x + size.x, cMin.y + size.y), docToScreen);
+    }
+    // The symbol vignette riding the cursor (armed placement or symbol draw):
+    // the real-pipeline preview of the library specimen, bottom-right of the
+    // pointer — the user always sees WHICH symbol the tool will produce.
+    {
+        const std::uint64_t icon =
+            modulePlace_.armed ? modulePlace_.req.iconNode
+          : moduleDraw_.active ? moduleDraw_.iconNode : 0;
+        // Suppressed while ANY popup is open — including over the popup itself:
+        // the pointer is on UI there and must read as the plain OS cursor, not
+        // as the armed symbol. (The popup hierarchy keeps `hovered` true, so the
+        // explicit popup test is what excludes it — same as the crosshair.)
+        if (icon != 0 && hovered && !onOverlay && !anyPopup) {
+            const float gs2  = ds.GetGlobalScale();
+            const float side = 40.0f * gs2;
+            if (auto tex = NodePreviewTexture(icon, (int)side)) {
+                const ImVec2 mn(io.MousePos.x + 16.0f * gs2,
+                                io.MousePos.y + 16.0f * gs2);
+                const ImVec2 mx(mn.x + side, mn.y + side);
+                const float rnd = ds.GetFloat(Tok::C_Window_CornerRadius) * gs2 * 0.6f;
+                ImDrawList* fg = ImGui::GetForegroundDrawList();
+                fg->AddRectFilled(mn, mx, IM_COL32(255, 255, 255, 235), rnd);
+                fg->AddImageRounded((ImTextureID)tex, mn, mx, ImVec2(0, 0),
+                                    ImVec2(1, 1), IM_COL32_WHITE, rnd);
+                fg->AddRect(mn, mx,
+                            ImGui::GetColorU32(ds.GetColor(Tok::S_Color_Border_Default)),
+                            rnd);
+            }
+        }
+    }
     // NB: the Add / context popups are rendered ONCE per frame from Update()
     // (after the whole layout), not here — a popup gated by per-zone hover
     // freezes when the cursor leaves the canvas onto the popup.

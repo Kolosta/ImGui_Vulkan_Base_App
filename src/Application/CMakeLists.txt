@@ -57,12 +57,15 @@ add_library(Application STATIC
     Dev/DevPanels.cpp
     Dev/Windows.cpp
 
-    # Modules: the module system + built-in modules (Typography).
-    # IofMapping is quarantined under src/_legacy/Modules/ until it is rebuilt
-    # on Ink (ROADMAP Lot 11). ModuleAPI.h is the stable contract.
+    # Modules: the module system + built-in modules (Typography, IOF Mapping).
+    # ModuleAPI.h is the stable contract external plugins build against.
     ../Modules/ModuleRegistry.cpp
     ../Modules/ModuleManager.cpp
     ../Modules/Typography/TypographyModule.cpp
+    ../Modules/IofMapping/IofSpec.cpp
+    ../Modules/IofMapping/IofStyles.cpp
+    ../Modules/IofMapping/IofMappingModule.cpp
+    ../Modules/IofMapping/IofMappingPanels.cpp
 )
 
 # Every sub-folder is on the include path so the flat relative includes

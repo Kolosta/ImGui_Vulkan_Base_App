@@ -87,9 +87,25 @@ std::vector<Ink::NodeId> Application::OutlinerDraggedIds(Ink::NodeId trigger) co
 
 // ── Drop operations (each = one undo command) ────────────────────────────────
 
+// Module policy gate for STRUCTURAL outliner drags. With an active module,
+// every dragged id is submitted to AllowReparent(id, target) — IOF keeps its
+// symbols inside their fixed print-layer groups and whitelists only its
+// editable layout layers. Without a module, lockOutlinerTree (a capability a
+// module could leave armed) refuses everything; Classic allows everything.
+bool Application::OutlinerStructureAllowed(const std::vector<Ink::NodeId>& ids,
+                                           Ink::NodeId target) const {
+    if (activeModule_) {
+        for (Ink::NodeId id : ids)
+            if (!activeModule_->AllowReparent(id, target)) return false;
+        return true;
+    }
+    return !activeCapabilities_.lockOutlinerTree;
+}
+
 void Application::OutlinerDropParentTo(const std::vector<Ink::NodeId>& ids,
                                        Ink::NodeId parent) {
     if (!project_.document || parent == Ink::kNullNode) return;
+    if (!OutlinerStructureAllowed(ids, parent)) return;
     Ink::Document& doc = *project_.document;
     std::vector<ObjPlacement> before;
     std::vector<Ink::NodeId> done;
@@ -111,6 +127,7 @@ void Application::OutlinerDropParentTo(const std::vector<Ink::NodeId>& ids,
 void Application::OutlinerDropToCollection(const std::vector<Ink::NodeId>& ids,
                                            Ink::NodeId coll) {
     if (!project_.document || !project_.document->FindCollection(coll)) return;
+    if (!OutlinerStructureAllowed(ids, coll)) return;
     Ink::Document& doc = *project_.document;
     std::vector<ObjPlacement> before;
     for (Ink::NodeId id : ids) before.push_back(CapturePlacement(doc, id));
@@ -131,6 +148,7 @@ void Application::OutlinerDropToCollection(const std::vector<Ink::NodeId>& ids,
 
 void Application::OutlinerDropToRoot(const std::vector<Ink::NodeId>& ids) {
     if (!project_.document) return;
+    if (!OutlinerStructureAllowed(ids, Ink::kNullNode)) return;
     Ink::Document& doc = *project_.document;
     std::vector<ObjPlacement> before;
     for (Ink::NodeId id : ids) before.push_back(CapturePlacement(doc, id));
@@ -165,6 +183,7 @@ void Application::OutlinerDropClipMask(const std::vector<Ink::NodeId>& ids,
     if (!project_.document) return;
     Ink::Document& doc = *project_.document;
     if (!doc.Find(target)) return;
+    if (!OutlinerStructureAllowed(ids, target)) return;
 
     struct Place { Ink::NodeId id; Ink::NodeId parent; int index;
                    Ink::Transform2D t; bool mask; };
@@ -208,6 +227,7 @@ void Application::OutlinerDropReorder(const std::vector<Ink::NodeId>& ids,
     if (!tn) return;
     const Ink::NodeId destParent =
         tn->parent != Ink::kNullNode ? tn->parent : tn->page;
+    if (!OutlinerStructureAllowed(ids, destParent)) return;
 
     // Capture the full sibling orders for undo (simple + exact).
     struct Order { Ink::NodeId id; Ink::NodeId parent; int index; Ink::Transform2D t; };
@@ -501,7 +521,9 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
 
     if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kCollPayload, kPeek)) {
         const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
-        if (row.kind == OutlinerRow::Kind::CollectionHeader) {
+        // Module policy: a module can freeze the collection hierarchy too.
+        const bool collAllowed = OutlinerStructureAllowed({ dragged }, row.id);
+        if (collAllowed && row.kind == OutlinerRow::Kind::CollectionHeader) {
             const DropZone z = ZoneAt(lr, /*edgesAllowed=*/true);
             if (z == DropZone::Into) DrawIntoHighlight(lr);
             else DrawInsertLine(lr, z == DropZone::Above);
@@ -539,13 +561,13 @@ void Application::OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow&
                     LogInfoAction("Reorder Collection");
                 }
             }
-        } else if (row.kind == OutlinerRow::Kind::ProjectRoot) {
+        } else if (collAllowed && row.kind == OutlinerRow::Kind::ProjectRoot) {
             DrawIntoHighlight(lr);   // un-nest to the top level
             if (p->IsDelivery() && doc.IsChildCollection(dragged)) {
                 doc.MoveCollection(dragged, Ink::kNullNode);
                 LogInfoAction("Un-nest Collection");
             }
-        } else if (collectionsMode &&
+        } else if (collAllowed && collectionsMode &&
                    (row.kind == OutlinerRow::Kind::Object ||
                     row.kind == OutlinerRow::Kind::Modifier ||
                     row.kind == OutlinerRow::Kind::LinkedData)) {
@@ -609,8 +631,10 @@ void Application::OutlinerBackgroundDropTarget(ImVec2 rectMin, ImVec2 rectMax) {
     }
     if (const ImGuiPayload* p = ImGui::AcceptDragDropPayload(kCollPayload)) {
         const Ink::NodeId dragged = *(const Ink::NodeId*)p->Data;
-        project_.document->MoveCollection(dragged, Ink::kNullNode);
-        LogInfoAction("Un-nest Collection");
+        if (OutlinerStructureAllowed({ dragged }, Ink::kNullNode)) {
+            project_.document->MoveCollection(dragged, Ink::kNullNode);
+            LogInfoAction("Un-nest Collection");
+        }
     }
     ImGui::EndDragDropTarget();
 }

@@ -241,6 +241,9 @@ void CollectPathNodes(const Ink::Document& doc, std::vector<Ink::NodeId>& out) {
             stack.pop_back();
             const Ink::Node* n = doc.Find(id);
             if (!n || !n->visible) continue;
+            // Library data-blocks (module symbol specimens) are not canvas
+            // geometry — prune the whole subtree, never a follow target.
+            if (n->previewOnly) continue;
             for (auto it = n->children.rbegin(); it != n->children.rend(); ++it)
                 stack.push_back(*it);
             if (n->kind == Ink::NodeKind::Path && !n->path.Empty())
@@ -293,9 +296,16 @@ bool Application::UpdatePenFollowCurve(const ViewCam& cam, bool hovered,
     committed = false;
     if (!project_.document) { followLocked_ = false; return false; }
     ImGuiIO& io = ImGui::GetIO();
-    if (!io.KeyShift) { followLocked_ = false; return false; }
     Ink::Document& doc = *project_.document;
+    if (!io.KeyShift) { followLocked_ = false; ClearPenTailPreview(doc); return false; }
     const double zoom = std::max(1e-4, cam.zoom);
+    // While this function owns the frame (it returns true) the overlay skips its
+    // own preview refresh — so the previews must be driven from here, or the
+    // fill/stroke would stay frozen on the shape of the last placed point.
+    auto refreshPreviews = [&] {
+        UpdatePenFillPreview(doc);
+        UpdatePenTailPreview(doc);
+    };
     const bool lpressed = hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
     const Ink::DVec2 mDoc = cam.ScreenToDoc(io.MousePos.x, io.MousePos.y);
 
@@ -344,9 +354,15 @@ bool Application::UpdatePenFollowCurve(const ViewCam& cam, bool hovered,
         double lastArc = 0.0;
 
         for (Ink::NodeId id : nodes) {
-            if (id == penNode_) continue;   // never follow the path being drawn
+            // Never follow the construction's OWN preview geometry: the path
+            // being drawn, its translucent FILL preview (an area symbol's fill
+            // shows as a real node while drawing) or a shape drag-box preview.
+            if (id == penNode_ || id == penFillNode_ ||
+                id == penTailNode_ || id == shapePreviewNode_) continue;
             const Ink::Node* nn = doc.Find(id);
             if (!nn) continue;
+            if (nn->previewOnly) continue;   // module symbol library
+
             const Ink::DMat23 w = doc.WorldTransform(id);
             for (int sub = 0; sub < (int)nn->path.subpaths.size(); ++sub) {
                 FollowCurve fc = FollowCurve::Build(*nn, sub, w);
@@ -375,6 +391,9 @@ bool Application::UpdatePenFollowCurve(const ViewCam& cam, bool hovered,
             // fall through to the LOCKED branch below (this same frame)
         } else if (found) {
             blueDiamond(bestPt);
+            // Hovering an entry point: nothing traced yet, but the fill/stroke
+            // preview must keep following the cursor instead of freezing.
+            ClearPenTailPreview(doc);
             if (lpressed) {
                 // Place the entry point ON the curve and lock.
                 const Ink::Node* pn = doc.Find(penNode_);
@@ -404,8 +423,10 @@ bool Application::UpdatePenFollowCurve(const ViewCam& cam, bool hovered,
                 followCursorArc_ = followAnchorArc_;
                 committed = true;
             }
+            refreshPreviews();
             return true;
         } else {
+            ClearPenTailPreview(doc);
             return false;   // nothing to follow → normal pen drawing
         }
     }
@@ -413,10 +434,10 @@ bool Application::UpdatePenFollowCurve(const ViewCam& cam, bool hovered,
     // ── LOCKED: trace the locked curve, no distance limit ──────────────────────
     const Ink::Node* tn = doc.Find(followNode_);
     if (!tn || followSub_ < 0 || followSub_ >= (int)tn->path.subpaths.size()) {
-        followLocked_ = false; return false;
+        followLocked_ = false; ClearPenTailPreview(doc); return false;
     }
     FollowCurve fc = FollowCurve::Build(*tn, followSub_, doc.WorldTransform(followNode_));
-    if (!fc.valid()) { followLocked_ = false; return false; }
+    if (!fc.valid()) { followLocked_ = false; ClearPenTailPreview(doc); return false; }
     const double total = fc.TotalArc();
     Ink::DVec2 c; double rawArc = fc.ProjectArc(mDoc, c);
     // Unwrap against the previous arc so a continuous drag tracks across a cyclic
@@ -450,7 +471,39 @@ bool Application::UpdatePenFollowCurve(const ViewCam& cam, bool hovered,
         AppendFollowPiece(doc, penNode_, piece);
         followAnchorArc_ = cursorArc;
         committed = true;
+        ClearPenTailPreview(doc);   // the piece is real pen geometry now
+    } else {
+        // LIVE TAIL: mirror exactly what a click would append, so the fill
+        // closes over the traced piece and the stroke draws it with the pen's
+        // own style — both update at every cursor move along the curve.
+        penFollowTail_.clear();
+        penTailJoinHasOut_ = false;
+        if (piece.size() >= 2) {
+            Ink::DVec2 lastPos{ 0, 0 };
+            if (const Ink::Node* pn = doc.Find(penNode_))
+                if (!pn->path.subpaths.empty() &&
+                    !pn->path.subpaths.front().anchors.empty())
+                    lastPos = pn->path.subpaths.front().anchors.back().pos;
+            if (piece.front().hasOut) {
+                penTailJoinOut_ = { piece.front().hOut.x - lastPos.x,
+                                    piece.front().hOut.y - lastPos.y };
+                penTailJoinHasOut_ = true;
+            }
+            for (std::size_t i = 1; i < piece.size(); ++i) {
+                const WNode& w = piece[i];
+                Ink::Anchor a; a.pos = w.pos;
+                a.hasIn = w.hasIn; a.hasOut = w.hasOut;
+                a.in  = w.hasIn  ? Ink::DVec2{ w.hIn.x  - w.pos.x,
+                                               w.hIn.y  - w.pos.y } : Ink::DVec2{ 0, 0 };
+                a.out = w.hasOut ? Ink::DVec2{ w.hOut.x - w.pos.x,
+                                               w.hOut.y - w.pos.y } : Ink::DVec2{ 0, 0 };
+                a.kind = (a.hasIn || a.hasOut) ? Ink::AnchorKind::Smooth
+                                               : Ink::AnchorKind::Corner;
+                penFollowTail_.push_back(a);
+            }
+        }
     }
+    refreshPreviews();
     return true;
 }
 

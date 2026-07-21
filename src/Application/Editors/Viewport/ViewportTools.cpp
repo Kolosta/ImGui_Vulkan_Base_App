@@ -16,6 +16,9 @@
 namespace App {
 
 Ink::Style Application::DefaultStyle() const {
+    // A module symbol-draw overrides the pen's style wholesale (the ISOM
+    // symbol's exact stroke/fill definition) — previews included.
+    if (moduleDraw_.active) return moduleDraw_.style;
     // The default style IS the fill/stroke stacks shown by the Stroke/Fill
     // editors (and their top-bar swatches). Either list may be EMPTY — an
     // explicit "no fill" / "no stroke" the user chose there.
@@ -167,13 +170,16 @@ void Application::CommitPenDraw(bool keep) {
     penActive_ = false;
     penDragging_ = false;
     if (!project_.document) {
-        penNode_ = penFillNode_ = Ink::kNullNode;
+        penNode_ = penFillNode_ = penTailNode_ = Ink::kNullNode;
+        penFollowTail_.clear(); penTailJoinHasOut_ = false;
         penHasPending_ = false;
         return;
     }
     Ink::Document& doc = *project_.document;
-    // The transient fill-preview node never survives the pen (the fills land
-    // on the FINISHED node's own style below).
+    // Neither transient preview node survives the pen (the follow tail was
+    // already frozen into the pen by its click; the fills land on the FINISHED
+    // node's own style below).
+    ClearPenTailPreview(doc);
     if (penFillNode_ != Ink::kNullNode) {
         if (doc.Find(penFillNode_)) doc.Remove(penFillNode_);
         penFillNode_ = Ink::kNullNode;
@@ -197,6 +203,8 @@ void Application::CommitPenDraw(bool keep) {
         }
     }
     penHasPending_ = false;
+    // A cancel (Esc) exits the module symbol-draw mode entirely.
+    if (!keep) moduleDraw_ = {};
     if (penNode_ == Ink::kNullNode) return;
     const Ink::Node* n = doc.Find(penNode_);
     const bool tooShort = !n || n->path.Empty();
@@ -219,12 +227,19 @@ void Application::CommitPenDraw(bool keep) {
         MoveOriginTo(penNode_, bb.Center());
     edit_.SelectOnly(penNode_);
     const Ink::NodeId id = penNode_;
+    // A module symbol-draw routes the finished node (print-layer group,
+    // collections, property locks) BEFORE the undo snapshot so remove/restore
+    // round-trips the FINAL placement.
+    if (moduleDraw_.active && moduleDraw_.onCommit) moduleDraw_.onCommit(id);
     auto snap = doc.CopySubtree(id);
     PushDocCommand("Draw Path",
         [id](Ink::Document& d) { d.Remove(id); },
         [snap](Ink::Document& d) { d.RestoreSubtree(snap); });
     LogInfoAction("Draw Path");
     penNode_ = Ink::kNullNode;
+    // Symbol mode stays armed across commits (draw the next curve of the same
+    // symbol immediately); a CANCEL exits it instead (see the !keep path).
+    if (moduleDraw_.active) BeginPenDraw(moduleDraw_.penKind.c_str());
 }
 
 void Application::UpdatePenFillPreview(Ink::Document& doc) {
@@ -236,6 +251,18 @@ void Application::UpdatePenFillPreview(Ink::Document& doc) {
     // last.out / first.in, exactly what the finished close will look like.
     Ink::PathData fp = pn->path;
     Ink::Subpath& sp = fp.subpaths.front();
+    // FOLLOW-CURVE live tail: the traced piece is not frozen into the pen yet,
+    // but the fill must already close over it — otherwise the preview stays
+    // stuck on the shape of the previous point for the whole trace.
+    if (!penFollowTail_.empty()) {
+        if (!sp.anchors.empty() && penTailJoinHasOut_) {
+            Ink::Anchor& last = sp.anchors.back();
+            last.out = penTailJoinOut_; last.hasOut = true;
+            last.kind = Ink::AnchorKind::Smooth;
+        }
+        sp.anchors.insert(sp.anchors.end(),
+                          penFollowTail_.begin(), penFollowTail_.end());
+    }
     if (penHasPending_) sp.anchors.push_back(penPending_);
     sp.closed = true;
     if (sp.anchors.size() < 2) {
@@ -280,13 +307,80 @@ void Application::UpdatePenFillPreview(Ink::Document& doc) {
     }
 }
 
+// The follow-curve STROKE preview: while a piece is being traced it is not in
+// `penNode_` yet, so the pen's own stroke would stay frozen at the last placed
+// point. This companion node carries the pen's exact style over the live tail
+// (last frozen anchor → traced piece), so the stroke reads real-time.
+void Application::UpdatePenTailPreview(Ink::Document& doc) {
+    if (penFollowTail_.empty() || penNode_ == Ink::kNullNode) {
+        ClearPenTailPreview(doc); return;
+    }
+    const Ink::Node* pn = doc.Find(penNode_);
+    if (!pn || pn->path.subpaths.empty() ||
+        pn->path.subpaths.front().anchors.empty()) {
+        ClearPenTailPreview(doc); return;
+    }
+    Ink::PathData tp;
+    Ink::Subpath sp;
+    sp.spline = pn->path.subpaths.front().spline;
+    sp.closed = false;
+    Ink::Anchor first = pn->path.subpaths.front().anchors.back();
+    first.hasIn = false; first.in = { 0, 0 };
+    if (penTailJoinHasOut_) {
+        first.out = penTailJoinOut_; first.hasOut = true;
+        first.kind = Ink::AnchorKind::Smooth;
+    }
+    sp.anchors.push_back(first);
+    sp.anchors.insert(sp.anchors.end(),
+                      penFollowTail_.begin(), penFollowTail_.end());
+    tp.subpaths.push_back(std::move(sp));
+    // The pen's strokes only — fills are previewed by the companion fill node.
+    Ink::Style ts = pn->style;
+    ts.fills.clear();
+    if (penTailNode_ == Ink::kNullNode) {
+        if (doc.Pages().empty()) return;
+        penTailNode_ = doc.AddPath(doc.Pages().front().id, std::move(tp),
+                                   std::move(ts), "Follow Preview");
+    } else if (doc.Find(penTailNode_)) {
+        doc.SetPath(penTailNode_, tp);
+        doc.SetStyle(penTailNode_, ts);   // a live style edit must show
+    } else {
+        penTailNode_ = Ink::kNullNode;    // vanished (undo) — recreate later
+    }
+}
+
+void Application::ClearPenTailPreview(Ink::Document& doc) {
+    penFollowTail_.clear();
+    penTailJoinHasOut_ = false;
+    if (penTailNode_ != Ink::kNullNode) {
+        if (doc.Find(penTailNode_)) doc.Remove(penTailNode_);
+        penTailNode_ = Ink::kNullNode;
+    }
+}
+
 bool Application::HandlePenInput(EditorState& st, const ViewCam& cam,
                                  bool hovered) {
-    (void)st;
     if (!penActive_) return false;
     if (!project_.document) { penActive_ = false; return false; }
     Ink::Document& doc = *project_.document;
     ImGuiIO& io = ImGui::GetIO();
+
+    // ANY open popup (tool-variant menu, context menu, dropdown…) owns the
+    // pointer: a click on it must NEVER also place a pen point. The pen runs
+    // before the general canvas popup guard, so it must check here too.
+    if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId |
+                                    ImGuiPopupFlags_AnyPopupLevel))
+        return false;
+
+    // The floating overlays (tool palette, N side panel) own the pointer over
+    // their rects: a click there must hit the UI (e.g. picking ANOTHER symbol
+    // vignette), never place a pen point through it. Keys still work.
+    for (const ImVec4& r : st.overlayRects)
+        if (io.MousePos.x >= r.x && io.MousePos.x <= r.z &&
+            io.MousePos.y >= r.y && io.MousePos.y <= r.w) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) CommitPenDraw(false);
+            return false;   // let the UI take the click
+        }
 
     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         CommitPenDraw(false);
@@ -708,7 +802,31 @@ void Application::Action_DuplicateLinked() {
 
 void Application::Action_EnterEditMode() {
     if (edit_.active == Ink::kNullNode || !project_.document) return;
-    const Ink::Node* n = project_.document->Find(edit_.active);
+    Ink::Document& doc = *project_.document;
+    const Ink::Node* n = doc.Find(edit_.active);
+    if (!n) return;
+    // DEV (temporary): an INSTANCE — every module point symbol is one — has no
+    // geometry of its own, so Tab used to do nothing on it. Follow the target
+    // to the specimen's first path so its vertices can be inspected while the
+    // symbol definitions are being tuned. NB the specimen is SHARED by every
+    // placement and is rebuilt from code on each module open, so an edit there
+    // shows on all of them and does not survive a reopen.
+    if (n->kind == Ink::NodeKind::Instance) {
+        std::vector<Ink::NodeId> stack{ n->targetRef };
+        Ink::NodeId found = Ink::kNullNode;
+        while (!stack.empty() && found == Ink::kNullNode) {
+            const Ink::NodeId c = stack.back();
+            stack.pop_back();
+            const Ink::Node* t = c != Ink::kNullNode ? doc.Find(c) : nullptr;
+            if (!t) continue;
+            if (t->kind == Ink::NodeKind::Path) { found = c; break; }
+            for (Ink::NodeId k : t->children) stack.push_back(k);
+        }
+        if (found == Ink::kNullNode) return;
+        edit_.active = found;
+        edit_.selection = { found };
+        n = doc.Find(found);
+    }
     if (!n || n->kind != Ink::NodeKind::Path) return;   // only paths editable
     // Through SetEditorMode ALWAYS: it owns the per-mode tool switch (a
     // creation tool must never stay active in a mode that doesn't have it).
@@ -735,12 +853,16 @@ void Application::Action_ToggleLineMarkMode() {
 // The tools each editor mode offers. Select and the 2D Cursor are universal;
 // the CREATION multi-tools (Shape / Curve) are Object-mode only for now —
 // every mode gets its own additions as its workflow lands.
-const std::vector<const char*>& Application::ToolsForMode(EditorMode mode) {
-    static const std::vector<const char*> kObject = {
-        "tool.select", "tool.cursor", "tool.shape", "tool.curve" };
-    static const std::vector<const char*> kOther = {
-        "tool.select", "tool.cursor" };
-    return mode == EditorMode::Object ? kObject : kOther;
+const std::vector<std::string>& Application::ToolsForMode(EditorMode mode) {
+    toolsForModeCache_.assign({ "tool.select", "tool.cursor" });
+    if (mode == EditorMode::Object) {
+        toolsForModeCache_.push_back("tool.shape");
+        toolsForModeCache_.push_back("tool.curve");
+        // The active module's Object tools (IOF: the six theme tools) — only in
+        // Object mode, appended after the core creation tools.
+        if (activeModule_) activeModule_->ObjectTools(toolsForModeCache_);
+    }
+    return toolsForModeCache_;
 }
 
 void Application::SetEditorMode(EditorMode mode) {
@@ -768,7 +890,7 @@ void Application::SetEditorMode(EditorMode mode) {
         std::string next = edit_.toolByMode[(int)mode];
         const auto& allowed = ToolsForMode(mode);
         bool ok = false;
-        for (const char* id : allowed) ok = ok || next == id;
+        for (const std::string& id : allowed) ok = ok || next == id;
         if (!ok || !tm.GetTool(next)) next = "tool.select";
         tm.SetActiveTool(next);
     }

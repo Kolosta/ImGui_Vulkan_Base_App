@@ -71,37 +71,62 @@ void Application::DrawSidePanelItemTab(ImVec2 cMin, ImVec2 cMax) {
     // the document one.
     const bool vDoc = false;
     const auto vSys = sidePanelUnitSys_;
+    // Per-property padlocks (Node::propLocks) — same semantics as the
+    // Properties Transform panel; module-managed locks are inert.
+    const std::uint32_t locks = n->propLocks;
+    const bool managed = (locks & Ink::PropLockManaged) != 0;
+    auto lockRow = [&](const char* lid, std::uint32_t bit) {
+        if (pr::LockToggle(lid, (locks & bit) != 0, managed))
+            TogglePropLock(id, bit);
+        return (locks & bit) != 0;
+    };
     bool dx = false, dy = false;
     // First group in the panel → no leading gap (the panel's own top margin
     // provides the inset), so the top padding matches the other tabs exactly.
+    bool lk = lockRow("##lkPos", Ink::PropLockPosition);
+    ImGui::BeginDisabled(lk);
     unsigned ch = pr::Vec2Group("Location", loc, 0.5f, 0.0f, 0.0f, 3, "", &dx, &dy,
                                 /*leadingGap=*/false, pr::Quantity::Length,
                                 pr::LengthScale::Normal, vDoc, vSys);
+    ImGui::EndDisabled();
     if (ch & 1u) applyLive([&](Ink::Transform2D& x) { x.tx = loc[0]; });
     if (ch & 2u) applyLive([&](Ink::Transform2D& x) { x.ty = loc[1]; });
     commitOnRelease(dx || dy);
 
     pr::GroupGap();
-    if (pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600, 1, "",
-                      pr::Quantity::Angle, pr::LengthScale::Normal, vDoc, vSys))
+    lk = lockRow("##lkRot", Ink::PropLockRotation);
+    ImGui::BeginDisabled(lk);
+    const bool rotCh = pr::DragFloat("Rotation", &rotDeg, 0.5f, -3600, 3600, 1,
+                                     "", pr::Quantity::Angle,
+                                     pr::LengthScale::Normal, vDoc, vSys);
+    const bool rotRel = ImGui::IsItemDeactivatedAfterEdit();
+    ImGui::EndDisabled();
+    if (rotCh)
         applyLive([&](Ink::Transform2D& x) {
             x.rotation = rotDeg * 3.14159265358979 / 180.0;
         });
-    commitOnRelease(ImGui::IsItemDeactivatedAfterEdit());
+    commitOnRelease(rotRel);
 
-    ch = pr::Vec2Group("Scale", scl, 0.01f, 0.0f, 0.0f, 3, "", &dx, &dy);
+    pr::GroupGap();
+    lk = lockRow("##lkScl", Ink::PropLockScale);
+    ImGui::BeginDisabled(lk);
+    ch = pr::Vec2Group("Scale", scl, 0.01f, 0.0f, 0.0f, 3, "", &dx, &dy, false);
+    ImGui::EndDisabled();
     if (ch & 1u) applyLive([&](Ink::Transform2D& x) { x.sx = scl[0]; });
     if (ch & 2u) applyLive([&](Ink::Transform2D& x) { x.sy = scl[1]; });
     commitOnRelease(dx || dy);
 
-    // Dimensions — the active object's world bounding-box size (read-only).
+    // Dimensions — the active object's world bounding-box size (read-only; the
+    // padlock reflects the DIMENSIONS lock a module may pin).
     Ink::DRect b;
     if (ink_ && ink_->NodeBounds(id, b) && b.valid) {
         float dim[2] = { (float)(b.max.x - b.min.x), (float)(b.max.y - b.min.y) };
+        pr::GroupGap();
+        lockRow("##lkDim", Ink::PropLockDimensions);
         ImGui::BeginDisabled(true);
         bool ddx = false, ddy = false;
         pr::Vec2Group("Dimensions", dim, 0.0f, 0.0f, 0.0f, 2, "", &ddx, &ddy,
-                      true, pr::Quantity::Length, pr::LengthScale::Normal,
+                      false, pr::Quantity::Length, pr::LengthScale::Normal,
                       vDoc, vSys);
         ImGui::EndDisabled();
     }
@@ -190,8 +215,19 @@ void Application::RenderViewportSidePanel(EditorState& st, ImVec2 cMin, ImVec2 c
         };
         tabs.push_back(std::move(marks));
     }
+    // The active module's extra tabs (IOF: the Symbols browser).
+    if (activeModule_) activeModule_->ViewportSidePanelTabs(tabs);
     // No tab has data → hide the whole panel (no empty bar/handle).
     if (tabs.empty()) return;
+    // Tab identity BY NAME: when tabs appear/disappear with the mode (Item
+    // shows up after a commit, Marks with the mark mode…), the selected tab
+    // must stay THE SAME tab, never silently jump to a new index.
+    if (!st.sidePanel.tabName.empty())
+        for (int i = 0; i < (int)tabs.size(); ++i)
+            if (tabs[(std::size_t)i].name == st.sidePanel.tabName) {
+                st.sidePanel.tab = i;
+                break;
+            }
     // Keep the active tab in range as tabs appear/disappear with the mode.
     if (st.sidePanel.tab >= (int)tabs.size())
         st.sidePanel.tab = 0;
@@ -202,6 +238,10 @@ void Application::RenderViewportSidePanel(EditorState& st, ImVec2 cMin, ImVec2 c
         !ImGui::GetIO().WantTextInput)
         st.sidePanel.stage = (st.sidePanel.stage == 2) ? 0 : 2;
     UI::EditorSidePanel("##viewportSide", cMin, cMax, st.sidePanel, tabs);
+    // Record the (possibly user-changed) active tab's IDENTITY for the next
+    // frame's reconciliation.
+    if (st.sidePanel.tab >= 0 && st.sidePanel.tab < (int)tabs.size())
+        st.sidePanel.tabName = tabs[(std::size_t)st.sidePanel.tab].name;
     // Exclude the panel's interactive rects from the canvas hit-testing (input +
     // the mark tool + the custom cursor read st.overlayRects). The widget
     // publishes what it ACTUALLY occupies — the full-height tab-bar column (or

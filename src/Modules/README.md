@@ -35,10 +35,15 @@ against. Key pieces:
   - `DrawViewportOverlay(min, max)` — paint on the canvas.
   - `OnActivate()` / `OnDeactivate()`.
 - `ModuleHost` — the slice of app services a module may drive. Bound by the app
-  before `OnActivate()`; reach it from a module via `Host()`. During the Ink
-  engine rework only `MarkDirty()` remains; the document services (object
-  creation, baked-shape placement, cached glyph rendering) return re-designed
-  on the Ink document in `docs/Ink/ROADMAP.md` Lot 11.
+  before `OnActivate()`; reach it from a module via `Host()`:
+  - `Document()` / `PushDocCommand()` / `MarkDirty()` / `LogInfoAction()` — the
+    Ink document + the shared undo stack (module edits undo like core ones);
+  - `NodePreviewTexture()` / `CanvasPreviewTexture()` / `NodeDocBounds()` —
+    REAL-pipeline vignettes and zoom/pan preview canvases of any node subtree
+    (module symbol thumbnails render exactly like the canvas);
+  - `ArmPlacement()` / `BeginSymbolDraw()` — the two symbol tool modes: click-
+    to-place with a cursor vignette, and the core pen driven with a module
+    style (the drawn node is handed back for routing).
 
 ## Editors — `EditorRegistry`
 
@@ -59,9 +64,13 @@ their enum index to the matching `core.*` id.
 3. Add the `.cpp` to `src/Application/CMakeLists.txt` (the Application target).
 4. Construct it in `ModuleRegistry::RegisterInternal()`.
 
-`Typography/` (a minimal template) is the reference module. `IofMapping/` (a
-fuller first pass, built on the old document model) is quarantined under
-`src/_legacy/Modules/` until it is rebuilt on Ink (`docs/Ink/ROADMAP.md` Lot 11).
+`Typography/` (a minimal template) is the reference skeleton. `IofMapping/` is
+the full-featured reference module, rebuilt on Ink: a previewOnly symbol
+library seeded by `OnDocumentCreated`, symbols styled with core tools only
+(stroke dash + repeats, multi-fill, instanced fills), print-layer groups as the
+z-order, locked outliner structure via `AllowReparent`, and the place / draw
+symbol tools. (The pre-Ink version remains in `src/_legacy/Modules/` as
+behavioural reference only.)
 
 ## Adding an EXTERNAL module (plugin) — planned
 

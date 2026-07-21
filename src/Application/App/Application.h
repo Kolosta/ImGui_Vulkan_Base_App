@@ -214,6 +214,19 @@ private:
     // move onto the finished node).
     void UpdatePenFillPreview(Ink::Document& doc);
     Ink::NodeId    penFillNode_ = Ink::kNullNode;
+    // While FOLLOW-CURVE traces a target contour, the traced piece is not yet
+    // frozen into `penNode_` — it lives here as a LIVE TAIL so both previews
+    // stay truthful in real time: the fill preview closes over frozen + tail,
+    // and `penTailNode_` strokes the tail with the pen's own style. Both are
+    // dropped the moment the follow stops (release / commit / cancel).
+    void UpdatePenTailPreview(Ink::Document& doc);
+    void ClearPenTailPreview(Ink::Document& doc);
+    std::vector<Ink::Anchor> penFollowTail_;
+    // The tail's join handle: the OUT the last frozen anchor adopts so the
+    // traced piece leaves along the target curve (mirrors AppendFollowPiece).
+    Ink::DVec2     penTailJoinOut_{ 0, 0 };
+    bool           penTailJoinHasOut_ = false;
+    Ink::NodeId    penTailNode_ = Ink::kNullNode;
     // The DRAG-shape (rect/ellipse/triangle/curve-box) preview: a REAL node
     // identical to what a release would spawn (same geometry, centred origin,
     // default fills+strokes) but at a reduced node OPACITY — so the pipeline
@@ -426,10 +439,12 @@ private:
     // palette buttons currently create (picked from their right-click menu).
     std::string toolShapeKind_ = "rect";
     std::string toolCurveKind_ = "curve";
-    // The tool ids available in an editor MODE (Object gets the creation
-    // tools; Edit / Line-Mark keep Select + 2D Cursor for now). The palette,
-    // the activation action and the mode switch all share this table.
-    static const std::vector<const char*>& ToolsForMode(EditorMode mode);
+    // The tool ids available in an editor MODE (Object gets the creation tools
+    // + any ACTIVE MODULE's Object tools; Edit / Line-Mark keep Select + 2D
+    // Cursor). The palette, the activation action and the mode switch share it.
+    // Returns a reference into a per-call rebuilt member cache.
+    const std::vector<std::string>& ToolsForMode(EditorMode mode);
+    std::vector<std::string> toolsForModeCache_;
     // The EDST .acu section: per-mode tools + multi-tool variants (opaque,
     // self-versioned — Application-owned editing-session state).
     std::vector<std::uint8_t> BuildEditorStateBlob() const;
@@ -553,6 +568,12 @@ private:
     void OutlinerDropParentTo(const std::vector<Ink::NodeId>& ids, Ink::NodeId parent);
     void OutlinerDropToCollection(const std::vector<Ink::NodeId>& ids, Ink::NodeId coll);
     void OutlinerDropToRoot(const std::vector<Ink::NodeId>& ids);
+    // Module policy gate for structural outliner drags (AllowReparent /
+    // lockOutlinerTree) — false vetoes the whole drop.
+    bool OutlinerStructureAllowed(const std::vector<Ink::NodeId>& ids,
+                                  Ink::NodeId target) const;
+    // Flip one per-property lock bit (Ink::PropLock) as an undoable command.
+    void TogglePropLock(Ink::NodeId id, std::uint32_t bit);
     void OutlinerDropReorder(const std::vector<Ink::NodeId>& ids, Ink::NodeId target,
                              bool above);
     // Affinity clip/mask drop (undoable): nest ids under target as clip
@@ -796,10 +817,45 @@ private:
     // above are also host services).
     void MarkDirty() override;
     Ink::Document* Document() override { return project_.document.get(); }
+    // Real-pipeline vignette of a node subtree (ModuleManager.cpp): a cached
+    // off-screen Ink view fitted on the node — module symbol thumbnails.
+    std::uint64_t NodePreviewTexture(std::uint64_t node, int px,
+                                     float padFrac = 0.12f) override;
+    std::uint64_t CanvasPreviewTexture(std::uint64_t node, std::uint32_t viewKey,
+                                       int w, int h, double panX, double panY,
+                                       double zoom) override;
+    bool NodeDocBounds(std::uint64_t node, double out[4]) override;
+    // "Place symbol" arming + "draw symbol" pen override (ModuleManager.cpp).
+    void ArmPlacement(const Modules::PlacementRequest& req) override;
+    void CancelPlacement() override;
+    void BeginSymbolDraw(const Modules::SymbolDrawRequest& req) override;
+    void EndSymbolDraw() override;
+    bool IsPlacementArmed() const override { return modulePlace_.armed; }
+    bool IsSymbolDrawing()  const override { return moduleDraw_.active; }
+    void ActivateTool(const std::string& toolId) override {
+        Action_ActivateNamedTool(toolId);
+    }
+    std::string ActiveTool() const override;
+    void RegisterTool(const std::string& id, const std::string& name,
+                      const std::string& icon) override;
     // Commit the pending new-file/open-module intent (preset vs module).
     void CommitPendingNew();
     Modules::IModule*     activeModule_ = nullptr;     // nullptr = Classic
     Modules::Capabilities activeCapabilities_{};       // gates core features
+    std::string           moduleNumpadSeq_;            // Shift+numpad digit run
+    // Active module tool state: an armed point-symbol placement and/or the
+    // symbol-draw pen override (style + cursor vignette + commit router).
+    struct ModulePlaceState {
+        bool armed = false;
+        Modules::PlacementRequest req;
+    } modulePlace_;
+    struct ModuleSymbolDraw {
+        bool active = false;
+        Ink::Style style;                  // pen default style while drawing
+        std::uint64_t iconNode = 0;        // cursor vignette source
+        std::string penKind = "curve";     // re-armed after each commit
+        std::function<void(std::uint64_t)> onCommit;
+    } moduleDraw_;
 
     // ── Project persistence — .acu v2 (ProjectIO.cpp, docs/Ink/ROADMAP Lot 10) ─
     // Apply a pending open/save resolved from the (async) file dialog. Called

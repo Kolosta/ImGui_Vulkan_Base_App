@@ -89,6 +89,9 @@ bool Application::OutlinerPassesFilter(Ink::NodeId id) const {
     if (!project_.document || !outlinerCur_) return true;
     const Ink::Node* n = project_.document->Find(id);
     if (!n) return false;
+    // Library data-blocks (module symbol specimens) never list — they are
+    // vignette-only content, not part of the user's document tree.
+    if (n->previewOnly) return false;
     OutlinerState& o = *outlinerCur_;
     bool ok = true;
     if (n->kind == Ink::NodeKind::Group) { if (!o.showGroups) ok = false; }
@@ -199,6 +202,9 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(id);
     if (!n) return;
+    // Library data-blocks (previewOnly): the WHOLE subtree stays out of the
+    // outliner (unlike an ordinary filtered parent, whose children still list).
+    if (n->previewOnly) return;
     OutlinerState& o = *outlinerCur_;
     const bool collections = (o.display == OutlinerDisplayMode::Collections);
     const bool searching = o.search[0] != '\0';
@@ -327,6 +333,7 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
                 const Ink::NodeId id = stack.back(); stack.pop_back();
                 const Ink::Node* n = doc.Find(id);
                 if (!n) continue;
+                if (n->previewOnly) continue;   // library subtree never lists
                 for (Ink::NodeId c : n->children) stack.push_back(c);
                 if (n->kind == Ink::NodeKind::Group) continue;
                 if (!OutlinerInAnyCollection(id) && !isParented(id))

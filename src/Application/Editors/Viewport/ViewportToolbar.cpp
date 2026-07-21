@@ -74,18 +74,20 @@ void Application::RenderToolPalette(ImVec2 origin, EditorState& st) {
     // (ToolsForMode — Select + 2D Cursor everywhere, the creation multi-tools
     // in Object mode). Grouping: [Select · Cursor] then [Shape · Curve].
     std::vector<Entry> entries;
-    for (const char* id : ToolsForMode(edit_.mode)) {
-        if (!std::strcmp(id, "tool.select"))
+    for (const std::string& id : ToolsForMode(edit_.mode)) {
+        if (id == "tool.select")
             entries.push_back({ "tool.select", 0, false, "select", "Select" });
-        else if (!std::strcmp(id, "tool.cursor"))
+        else if (id == "tool.cursor")
             entries.push_back({ "tool.cursor", 0, false, "crop-free",
                                 "2D Cursor" });
-        else if (!std::strcmp(id, "tool.shape"))
+        else if (id == "tool.shape")
             entries.push_back({ "tool.shape", 1, true, sv.icon,
                                 std::string("Shape \xC2\xB7 ") + sv.name });
-        else if (!std::strcmp(id, "tool.curve"))
+        else if (id == "tool.curve")
             entries.push_back({ "tool.curve", 1, true, cv.icon,
                                 std::string("Curve \xC2\xB7 ") + cv.name });
+        // Module Object tools (id prefix "iof."/other) are rendered by the
+        // module via DrawToolButtons, not this core icon strip.
     }
     if (entries.empty()) return;
 
@@ -111,6 +113,16 @@ void Application::RenderToolPalette(ImVec2 origin, EditorState& st) {
     const UI::ToolPaletteResult r = UI::ToolPalette("##InkTools", origin, items);
     // Publish the rect so canvas hit-testing excludes the palette.
     st.overlayRects.push_back(ImVec4(r.rectMin.x, r.rectMin.y, r.rectMax.x, r.rectMax.y));
+    // Module tool buttons (IOF theme vignettes) below the core strip — ONLY in
+    // Object mode (they are Object-mode tools, gone in Edit / Line-Mark). They
+    // share the button side + a larger separating gap; the module publishes
+    // their rects into st.overlayRects.
+    if (activeModule_ && edit_.mode == EditorMode::Object) {
+        const float gs = DS::DesignSystem::Instance().GetGlobalScale();
+        const float side = r.rectMax.x - r.rectMin.x;   // match the core button
+        const ImVec2 mOrigin(r.rectMin.x, r.rectMax.y + 10.0f * gs);
+        activeModule_->DrawToolButtons(mOrigin, side, st.overlayRects);
+    }
     if (r.clicked >= 0)
         Action_ActivateNamedTool(entries[(size_t)r.clicked].toolId);
     if (r.rightClicked >= 0 && entries[(size_t)r.rightClicked].multi) {
@@ -648,6 +660,17 @@ void Application::RenderAddMenu() {
     // behaviour, no menu toggle). Free is the exception: a custom shape only
     // exists drawn, so it starts the pen.
     std::vector<UI::MenuEntry> entries;
+    // The active module may REPLACE the menu wholesale (IOF: the ISOM symbol
+    // catalogue instead of core primitives) or leave it to the core (subject
+    // to the corePrimitivesAddMenu capability).
+    const bool moduleMenu =
+        activeModule_ && activeModule_->BuildAddMenu(entries);
+    if (moduleMenu) {
+        const bool open = UI::ContextMenu("##addMenu", addMenuPos_, entries, "Add");
+        if (!open) addMenuOpen_ = false;
+        return;
+    }
+    if (!activeCapabilities_.corePrimitivesAddMenu) { addMenuOpen_ = false; return; }
     auto leaf = [&](std::vector<UI::MenuEntry>& dst, const char* label,
                     const char* kind, const char* tip) {
         UI::MenuEntry e; e.label = label; e.tooltip = tip;
