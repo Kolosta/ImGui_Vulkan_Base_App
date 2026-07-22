@@ -54,4 +54,24 @@ SymbolDef BuildSymbol(const IofElement& e, float scale);
 Ink::Color InkColor(SpotColor c, float screenPct = 1.0f);
 Ink::Color LayerInkColor(PrintLayer layer);
 
+// ── Explicit plate hint ──────────────────────────────────────────────────────
+// Some plates cannot be told apart by colour: the four whites are all white,
+// the road-outline black and the cultivated-land black are both K100, upper and
+// lower purple are the same purple. A symbol that needs a SPECIFIC one of them
+// tags the paint's swatch with a hint, and BindSwatches resolves it to that
+// exact plate instead of colour-matching. The sentinel sits far above any real
+// swatch id (allocated from 1), so it can never collide, and BindSwatches always
+// overwrites it — it never reaches the document.
+inline constexpr Ink::SwatchId kIofPlateHintBase = 0xF0F0F0F000000000ull;
+inline Ink::SwatchId IofPlateHint(PrintLayer l) {
+    return kIofPlateHintBase | (Ink::SwatchId)(unsigned)(int)l;
+}
+inline bool IofDecodePlateHint(Ink::SwatchId id, PrintLayer& out) {
+    if ((id & ~(Ink::SwatchId)0xFF) != kIofPlateHintBase) return false;
+    const int i = (int)(id & 0xFF);
+    if (i < 0 || i >= kPrintLayerCount) return false;
+    out = (PrintLayer)i;
+    return true;
+}
+
 }  // namespace App::Modules::IofMapping

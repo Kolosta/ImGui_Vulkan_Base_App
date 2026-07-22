@@ -280,6 +280,13 @@ void IofMappingModule::BindSwatches(Ink::Style& style, IofType type) const {
     const PlateKind lineKind = type == IofType::Point ? PlateKind::Point
                                                       : PlateKind::Line;
     auto bind = [&](const Ink::Color& c, std::uint64_t& out, PlateKind want) {
+        // An explicit plate hint wins: the symbol asked for THIS plate because
+        // its colour cannot name it (white, K100, purple all repeat). Resolve
+        // straight to that plate — or clear the hint if it was never seeded, so
+        // the sentinel never leaks (the paint then falls back to its literal
+        // colour, which is the right one anyway).
+        PrintLayer hinted;
+        if (IofDecodePlateHint(out, hinted)) { out = LayerSwatch(hinted); return; }
         auto it = byColor.find(key(c));
         if (it == byColor.end()) return;
         const Cand& cd = it->second;

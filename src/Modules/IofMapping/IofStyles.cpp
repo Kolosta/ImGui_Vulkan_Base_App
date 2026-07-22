@@ -343,6 +343,19 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
         return sty;
     };
     auto fillStyle = [&](Ink::Color c) { return Ink::Style::Filled(c); };
+    // Pin a paint to a SPECIFIC plate when its colour cannot name it — the four
+    // whites are all white, the road-outline and cultivated-land blacks are both
+    // K100. The hint rides the swatch id and BindSwatches resolves it.
+    auto plateFill = [](Ink::Fill f, PrintLayer l) {
+        f.paint.swatch = IofPlateHint(l);
+        for (Ink::InstElement& e : f.instanced.elements) e.swatch = IofPlateHint(l);
+        for (Ink::InstLineSet& ln : f.instanced.lines)   ln.swatch = IofPlateHint(l);
+        return f;
+    };
+    auto plateStroke = [](Ink::Stroke st, PrintLayer l) {
+        st.paint.swatch = IofPlateHint(l);
+        return st;
+    };
 
     // ── LINE symbols: build lineStyle, specimen = a short sample segment ─────
     auto line = [&](Ink::Stroke st) {
@@ -476,12 +489,17 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
                                         Ink::RepeatSide::Right, 50.0));
             line(st); break;
         }
-        case 2150: {   // Trench: black 0.30 (back) + white 0.10 (front), miter
+        case 2150: {   // Trench: black 0.30 back + a 0.10 ERASE line down the
+                       // middle. The centre is a real gap that shows the ground
+                       // under the trench — transparent, not a white line laid
+                       // over it. The node isolates (a blend piece), so the
+                       // erase cuts only the trench's own black.
             def.isLine = true;
             Ink::Stroke back = MakeStroke(black, 0.30 * s);
             back.join = Ink::JoinStyle::Miter;
             Ink::Stroke front = MakeStroke(white, 0.10 * s);
             front.join = Ink::JoinStyle::Miter;
+            front.blend = Ink::BlendMode::Erase;
             def.lineStyle.strokes.push_back(back);
             def.lineStyle.strokes.push_back(front);
             break;
@@ -602,21 +620,27 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
         case 4010: area({ Solid(yellow) }); break;
         // 402 / 404 — scattered trees: the dots are PAINTED over the yellow,
         // not cut out of it, so the green-dot variant is possible at all.
-        case 4020: area({ Solid(yellow75), treeDots(white)   }); break;
+        case 4020: area({ Solid(yellow75),
+                          plateFill(treeDots(white), PrintLayer::WhiteOverYellow) }); break;
         case 4021: area({ Solid(yellow75), treeDots(green60) }); break;
-        case 4040: area({ Solid(yellow50), treeDots(white)   }); break;
+        case 4040: area({ Solid(yellow50),
+                          plateFill(treeDots(white), PrintLayer::WhiteOverYellow) }); break;
         case 4041: area({ Solid(yellow50), treeDots(green60) }); break;
         case 4030: area({ Solid(yellow50) }); break;
-        case 4050: area({ Solid(white) }); break;
+        case 4050: area({ plateFill(Solid(white),
+                                    PrintLayer::WhiteOverGreenBrown) }); break;
         // 406 / 408 / 410 — vegetation tints, each with optional runnability
         // stripes marking the direction that stays runnable.
         case 4060: area({ Solid(green30) }); break;
-        case 4061: area({ Solid(green30), runStripes(white)   }); break;
+        case 4061: area({ Solid(green30),
+                          plateFill(runStripes(white), PrintLayer::WhiteOverGreenBrown) }); break;
         case 4080: area({ Solid(green60) }); break;
-        case 4081: area({ Solid(green60), runStripes(white)   }); break;
+        case 4081: area({ Solid(green60),
+                          plateFill(runStripes(white), PrintLayer::WhiteOverGreenBrown) }); break;
         case 4082: area({ Solid(green60), runStripes(green30) }); break;
         case 4100: area({ Solid(green) }); break;
-        case 4101: area({ Solid(green), runStripes(white)   }); break;
+        case 4101: area({ Solid(green),
+                          plateFill(runStripes(white), PrintLayer::WhiteOverGreenBrown) }); break;
         case 4102: area({ Solid(green), runStripes(green30) }); break;
         case 4103: area({ Solid(green), runStripes(green60) }); break;
         case 4070:
@@ -625,8 +649,10 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
             break;
         case 4120:
             area({ Solid(yellow),
-                   GridFill(Ink::InstShape::Circle, 0.10 * s, 0.10 * s, black,
-                            0.8 * s, 0.8 * s, Ink::PatternAnchor::Document) });
+                   plateFill(GridFill(Ink::InstShape::Circle, 0.10 * s, 0.10 * s,
+                                      black, 0.8 * s, 0.8 * s,
+                                      Ink::PatternAnchor::Document),
+                             PrintLayer::BlackCultivated) });
             break;
         // 413 orchard — the same green dot grid over full or half yellow.
         case 4130:
@@ -654,13 +680,17 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
         // 417 large tree — 0.9 green ring, stroke INSIDE so 0.9 is the outer
         // size; the .1 variant sits on a 1.1 white disc that clears whatever
         // vegetation tint is underneath.
-        case 4170:
-        case 4171: {
+        case 4170: {   // 417 — always a white disc behind the
+                       // green ring so the tree reads on any vegetation. The
+                       // disc knocks out green and brown; the two former
+                       // variants (with / without backing) are merged.
             Ink::Stroke ring = MakeStroke(green, 0.18 * s);
             ring.align = Ink::StrokeAlign::Inside;
-            if (e.code == 4171)
-                part(Ink::PathData::Ellipse(0, 0, 0.55 * s, 0.55 * s),
-                     fillStyle(white), "Large tree backing");
+            Ink::Style backing = fillStyle(white);
+            backing.fills[0].paint.swatch =
+                IofPlateHint(PrintLayer::WhiteOverGreenBrown);
+            part(Ink::PathData::Ellipse(0, 0, 0.55 * s, 0.55 * s),
+                 backing, "Large tree backing");
             part(Ink::PathData::Ellipse(0, 0, 0.45 * s, 0.45 * s),
                  strokeStyle(ring), "Large tree");
             break;
@@ -669,8 +699,11 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
                        // over a 0.4 white disc, not a solid green dot.
             Ink::Stroke ring = MakeStroke(green, 0.2 * s);
             ring.align = Ink::StrokeAlign::Inside;
+            Ink::Style bushBk = fillStyle(white);
+            bushBk.fills[0].paint.swatch =
+                IofPlateHint(PrintLayer::WhiteOverGreenBrown);
             part(Ink::PathData::Ellipse(0, 0, 0.2 * s, 0.2 * s),
-                 fillStyle(white), "Bush backing");
+                 bushBk, "Bush backing");
             part(Ink::PathData::Ellipse(0, 0, 0.3 * s, 0.3 * s),
                  strokeStyle(ring), "Bush");
             break;
@@ -681,7 +714,9 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
             // shows all round and the symbol stays legible on green. The halo
             // is added first — it renders underneath.
             const double halo = 0.9 * kSqrt2;
-            part(XCross(halo * s), strokeStyle(MakeStroke(white, 0.36 * s)),
+            part(XCross(halo * s),
+                 strokeStyle(plateStroke(MakeStroke(white, 0.36 * s),
+                                         PrintLayer::WhiteOverGreenBrown)),
                  "Vegetation X halo");
             part(XCross((halo - 0.18) * s),
                  strokeStyle(MakeStroke(green, 0.18 * s)), "Vegetation X");
@@ -689,14 +724,18 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
         }
 
         // ── Man-made ────────────────────────────────────────────────────────
-        case 5010: { Ink::Stroke edge = MakeStroke(black, 0.12 * s);
+        case 5010: { Ink::Stroke edge =
+                         plateStroke(MakeStroke(black, 0.12 * s),
+                                     PrintLayer::Black100RoadOutline);
                      area({ Solid(ToInk(ScreenRgb(SpotColor::Brown, 0.5f))) },
                           &edge); break; }
         case 5020: {
             // Two black edges + brown 50 % infill: a wide black stroke UNDER a
             // narrower brown one (multi-stroke) — reads as 0.12 mm edges.
             def.isLine = true;
-            def.lineStyle.strokes.push_back(MakeStroke(black, 0.74 * s));
+            def.lineStyle.strokes.push_back(
+                plateStroke(MakeStroke(black, 0.74 * s),
+                            PrintLayer::Black100RoadOutline));
             def.lineStyle.strokes.push_back(
                 MakeStroke(ToInk(ScreenRgb(SpotColor::Brown, 0.5f)), 0.50 * s));
             break;
@@ -739,7 +778,8 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
         case 5090: {   // Railway: black 0.45 (back) + white dashed 1.0/1.5 (front)
             def.isLine = true;
             def.lineStyle.strokes.push_back(MakeStroke(black, 0.45 * s));
-            Ink::Stroke dash = MakeStroke(white, 0.25 * s);
+            Ink::Stroke dash = plateStroke(MakeStroke(white, 0.25 * s),
+                                           PrintLayer::WhiteRailway);
             Dash(dash, { 1.0 * s, 1.5 * s });
             def.lineStyle.strokes.push_back(dash);
             break;
@@ -812,6 +852,11 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
             line(st); break;
         }
         case 5210: area({ Solid(black) }); break;
+        case 5211: {   // Large building / tramway: black 50% area, 0.1 black edge.
+            Ink::Stroke edge = MakeStroke(black, 0.1 * s);
+            area({ Solid(LayerInkColor(PrintLayer::Black50)) }, &edge);
+            break;
+        }
         case 5220: { Ink::Stroke edge = MakeStroke(black, 0.1 * s);
                      area({ Solid(ToInk(ScreenRgb(SpotColor::Black, 0.20f))) },
                           &edge); break; }
@@ -1021,6 +1066,43 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
         Ink::PathData sq =
             Ink::PathData::Rect(-3.5 * s, -3.5 * s, 7.0 * s, 7.0 * s);
         def.parts.push_back({ std::move(sq), def.areaStyle, "Swatch" });
+    }
+
+    // Course-planning symbols are entirely purple, but WHICH purple depends on
+    // the symbol. Upper purple always stays at the very top of the print stack,
+    // so the markings that must never be covered by other purple — map issue
+    // (702), marked route (707), out-of-bounds (709), forbidden route (711) —
+    // sit there; the rest (start, control, finish, crossing point, first aid…)
+    // sit on lower purple. The two plates render the same purple, so the paint
+    // has to name the plate; 715 (continuing point) is control-like → lower.
+    {
+        const int sym = e.code / 10;
+        if (sym >= 701 && sym <= 715) {
+            const bool upper = sym == 702 || sym == 707 ||
+                               sym == 709 || sym == 711;
+            const PrintLayer pl = upper ? PrintLayer::UpperPurple
+                                        : PrintLayer::LowerPurple;
+            auto stamp = [&](Ink::Style& st) {
+                for (Ink::Fill& f : st.fills) {
+                    f.paint.swatch = IofPlateHint(pl);
+                    for (Ink::InstElement& ie : f.instanced.elements)
+                        ie.swatch = IofPlateHint(pl);
+                    for (Ink::InstLineSet& il : f.instanced.lines)
+                        il.swatch = IofPlateHint(pl);
+                }
+                for (Ink::Stroke& s2 : st.strokes) {
+                    s2.paint.swatch = IofPlateHint(pl);
+                    for (Ink::StrokeRepeat& rp : s2.repeats)
+                        rp.swatch = IofPlateHint(pl);
+                    for (Ink::StrokeMark& m : s2.marks)
+                        for (Ink::MarkObject& o : m.objects)
+                            o.swatch = IofPlateHint(pl);
+                }
+            };
+            for (SymbolPart& pt : def.parts) stamp(pt.style);
+            stamp(def.lineStyle);
+            stamp(def.areaStyle);
+        }
     }
     return def;
 }

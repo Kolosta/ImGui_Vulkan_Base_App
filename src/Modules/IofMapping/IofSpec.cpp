@@ -243,9 +243,8 @@ const std::vector<IofGroup>& IofCatalogue() {
             { 4161, "Distinct vegetation boundary (green)", T::Line, S::Green, L::DarkGreenLine, false,
               "Distinct forest edge; dark green dashed line, 0.14 mm." },
             { 4170, "Prominent large tree",  T::Point, S::Green, L::Green100Point, false,
-              "Particularly prominent tree; 0.9 mm green ring." },
-            { 4171, "Prominent large tree (on white)", T::Point, S::Green, L::Green100Point, false,
-              "Prominent tree over a 1.1 mm white disc clearing the vegetation." },
+              "Particularly prominent tree; 0.9 mm green ring on a white disc "
+              "clearing the vegetation." },
             { 4180, "Prominent bush or small tree", T::Point, S::Green, L::Green100Point, false,
               "Prominent bush / small tree; 0.6 mm green ring on a white disc." },
             { 4190, "Prominent vegetation feature", T::Point, S::Green, L::Green100Point, true,
@@ -299,7 +298,10 @@ const std::vector<IofGroup>& IofCatalogue() {
             { 5200, "Area that shall not be entered", T::Area, S::Green, L::Yellow100Green50, false,
               "Out-of-bounds area; olive (yellow 100% + green 50%), black edge." },
             { 5210, "Building",              T::Area, S::Black, L::Black100, false,
-              "Building; solid black (large buildings black 50% + outline)." },
+              "Building; solid black." },
+            { 5211, "Large building",        T::Area, S::Black, L::Black50, false,
+              "Large building / tramway; black 50% area with a 0.1 mm black "
+              "100% outline." },
             { 5220, "Canopy",                T::Area, S::Black, L::Black20Canopy, false,
               "Covered passable area; black 20% with outline." },
             { 5230, "Ruin",                  T::Area,  S::Black, L::Black100, false,
