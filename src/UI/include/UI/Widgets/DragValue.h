@@ -43,6 +43,16 @@ struct DragValueConfig {
     float max = 0.0f;
     int   displayDecimals = 3;        // decimals shown at rest (display only)
     const char* unit = "";            // Scalar-only fixed suffix ("×", "px",…)
+    // Draw the unit BEFORE the value instead of after it. What reads naturally
+    // depends on the quantity: "12 mm" but "C 56" — a channel name prefixes the
+    // amount it labels.
+    bool  unitBeforeValue = false;
+    // Below this width the +/- step buttons are dropped and the field is drag /
+    // double-click only: at narrow sizes they eat the room the NUMBER needs,
+    // and a value you cannot read is worse than one you cannot nudge. Measured
+    // in ui-units; re-evaluated every frame, so they come back on their own
+    // when the panel is widened.
+    float minButtonsUiUnits = 4.0f;
     float width = 0.0f;               // 0 = use the available content width
 
     // Unit awareness. Length/Angle/Percent → `*v` is the BASE value, converted

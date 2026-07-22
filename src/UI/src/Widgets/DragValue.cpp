@@ -192,12 +192,18 @@ bool DragValue(const DragValueConfig& cfg, float* v) {
     const bool hovered = ImGui::IsItemHovered();
     const bool held    = ImGui::IsItemActive();
 
-    // Step buttons inset at each end, only meaningful on hover (not while dragging).
-    const float btnW = h;                                  // square slots
+    // Step buttons inset at each end, only meaningful on hover (not while
+    // dragging) — and only when the field is wide enough to spare the room.
+    // Below the threshold they would take two ui-units out of a field barely
+    // wider than that, leaving no space for the number itself; the drag and the
+    // double-click edit still work, and the buttons return by themselves as
+    // soon as the panel is widened.
+    const bool hasSteps = width >= cfg.minButtonsUiUnits * h;
+    const float btnW = hasSteps ? h : 0.0f;                // square slots
     const ImVec2 lMin = p0, lMax(p0.x + btnW, p1.y);
     const ImVec2 rMin(p1.x - btnW, p0.y), rMax = p1;
-    const bool overLeft  = hovered && io.MousePos.x < lMax.x;
-    const bool overRight = hovered && io.MousePos.x > rMin.x;
+    const bool overLeft  = hasSteps && hovered && io.MousePos.x < lMax.x;
+    const bool overRight = hasSteps && hovered && io.MousePos.x > rMin.x;
     const bool overButton = overLeft || overRight;
 
     // Cursor: hidden from the moment of a press on the drag area until release (we
@@ -343,7 +349,7 @@ bool DragValue(const DragValueConfig& cfg, float* v) {
                     radius, 0, borderW);
 
     // Hover step buttons (drawn inside the field, not while dragging).
-    const bool showSteps = hovered && !(active && st.dragging);
+    const bool showSteps = hasSteps && hovered && !(active && st.dragging);
     if (showSteps) {
         const ImU32 hov = ImGui::ColorConvertFloat4ToU32(Col(Tok::C_DragValue_StepButtonHover));
         if (overLeft)  dl->AddRectFilled(lMin, lMax, hov, radius, ImDrawFlags_RoundCornersLeft);
@@ -374,11 +380,16 @@ bool DragValue(const DragValueConfig& cfg, float* v) {
     float total = numSz.x + gap + unitSz.x;
     float tx = p0.x + (width - total) * 0.5f;
     float ty = p0.y + (h - numSz.y) * 0.5f;
-    dl->AddText(ImVec2(tx, ty), ImGui::ColorConvertFloat4ToU32(Col(Tok::C_DragValue_Text)), num);
-    if (hasUnit)
-        dl->AddText(ImVec2(tx + numSz.x + gap, ty),
-                    ImGui::ColorConvertFloat4ToU32(Col(Tok::C_DragValue_Unit)),
-                    label.c_str());
+    const ImU32 numCol  = ImGui::ColorConvertFloat4ToU32(Col(Tok::C_DragValue_Text));
+    const ImU32 unitCol = ImGui::ColorConvertFloat4ToU32(Col(Tok::C_DragValue_Unit));
+    if (hasUnit && cfg.unitBeforeValue) {
+        dl->AddText(ImVec2(tx, ty), unitCol, label.c_str());
+        dl->AddText(ImVec2(tx + unitSz.x + gap, ty), numCol, num);
+    } else {
+        dl->AddText(ImVec2(tx, ty), numCol, num);
+        if (hasUnit)
+            dl->AddText(ImVec2(tx + numSz.x + gap, ty), unitCol, label.c_str());
+    }
 
     (void)padX;
     ImGui::PopID();
