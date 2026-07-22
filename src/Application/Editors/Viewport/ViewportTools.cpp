@@ -41,6 +41,18 @@ void Application::PushDocCommand(const std::string& label,
     c.redo  = std::move(redo);
     docUndo_.Push(std::move(c));
     project_.dirty = true;
+    MarkFrameUndoable();
+}
+
+// A step landed on the stack this frame. Whichever order the log line and the
+// command came in, they describe the same act, so the mark works both ways:
+// entries already written this frame are updated, later ones are born marked.
+void Application::MarkFrameUndoable() {
+    undoableFrame_ = (uint64_t)ImGui::GetFrameCount();
+    for (auto it = infoLog_.rbegin(); it != infoLog_.rend(); ++it) {
+        if (it->frame != undoableFrame_) break;
+        it->undoable = true;
+    }
 }
 
 Ink::NodeId Application::SpawnShape(const char* kind) {

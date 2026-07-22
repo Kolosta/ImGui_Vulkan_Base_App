@@ -316,6 +316,10 @@ void Application::Update() {
     // written to disk right after (ProjectIO.cpp).
     PrepareSavePass();
 
+    // Selection / mode changes become history HERE: after every editor has had
+    // its say, so one gesture is one step no matter how many places touched it.
+    TrackEditHistory();
+
     // Close the Ink frame: record every dirty view through the render graph
     // and submit. Same queue as the main pass — the graph's final barriers
     // order the canvas writes before ImGui's sampling, no semaphore needed.

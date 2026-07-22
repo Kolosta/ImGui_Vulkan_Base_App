@@ -31,10 +31,13 @@ void Application::Action_Undo() {
     // Main window: command-based document undo (Ink engine, Lot 8).
     if (!project_.document || !docUndo_.CanUndo()) return;
     if (transformOp_.Active()) CancelTransform();
-    const std::string lbl = docUndo_.Undo(*project_.document);
+    bool touched = true;
+    const std::string lbl = docUndo_.Undo(*project_.document, &touched);
     edit_.Prune(*project_.document);
-    project_.dirty = true;
-    LogInfoAction("Undo (" + lbl + ")");
+    if (touched) project_.dirty = true;
+    editHistoryDirty_ = false;   // the restored state IS the new baseline
+    CaptureEditSnapshot(editHistoryLast_);
+    LogInfoAction("Undo (" + lbl + ")", "ed.undo", { { "step", lbl } });
 }
 
 void Application::Action_Redo() {
@@ -47,10 +50,13 @@ void Application::Action_Redo() {
     }
     // Main window: command-based document redo (Ink engine, Lot 8).
     if (!project_.document || !docUndo_.CanRedo()) return;
-    const std::string lbl = docUndo_.Redo(*project_.document);
+    bool touched = true;
+    const std::string lbl = docUndo_.Redo(*project_.document, &touched);
     edit_.Prune(*project_.document);
-    project_.dirty = true;
-    LogInfoAction("Redo (" + lbl + ")");
+    if (touched) project_.dirty = true;
+    editHistoryDirty_ = false;
+    CaptureEditSnapshot(editHistoryLast_);
+    LogInfoAction("Redo (" + lbl + ")", "ed.redo", { { "step", lbl } });
 }
 
 std::string Application::CapturePrefsOverrides() const {

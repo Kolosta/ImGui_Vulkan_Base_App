@@ -827,7 +827,12 @@ private:
         uint64_t    frame = 0;
         std::string text, detail, api;
         InfoFields  fields;
+        bool        undoable = false;   // Ctrl+Z can take this one back
     };
+    // The frame a document/edit command was last pushed on. Every feed entry
+    // written on that same frame belongs to it, whichever order the two calls
+    // happened in — which is how a line knows to show the undo mark.
+    uint64_t undoableFrame_ = ~0ull;
     std::vector<InfoEntry> infoLog_;
     void LogInfoAction(const std::string& text) override;   // ModuleHost service
     void LogInfoAction(const std::string& text, const std::string& detail);
@@ -838,7 +843,33 @@ private:
     std::string DescribeNodes(const std::vector<Ink::NodeId>& ids) const;
     std::string DescribeCollections(const std::vector<Ink::NodeId>& ids) const;
     std::set<std::uint64_t> infoOpen_;   // expanded feed rows
+    void MarkFrameUndoable();   // this frame's feed lines are on the undo stack
     void LogTransform(const char* label);   // the modal transform's full record
+    // ── Selection / mode history ─────────────────────────────────────────────
+    // A selection IS a state the user can be returned to, so it belongs on the
+    // same stack as the edits — Blender's rule. Rather than instrument every
+    // place a selection can change (and miss the next one added), the state is
+    // compared once per frame and any difference becomes one step.
+    struct EditSnapshot {
+        EditorMode mode = EditorMode::Object;
+        std::vector<Ink::NodeId>        selection;
+        Ink::NodeId                     active = Ink::kNullNode;
+        std::vector<EditContext::ElemRef> elemSel;
+        std::vector<EditContext::MarkRef> markSel;
+        bool operator==(const EditSnapshot& o) const {
+            return mode == o.mode && active == o.active &&
+                   selection == o.selection && elemSel == o.elemSel &&
+                   markSel == o.markSel;
+        }
+        bool operator!=(const EditSnapshot& o) const { return !(*this == o); }
+    };
+    void CaptureEditSnapshot(EditSnapshot& out) const;
+    void ApplyEditSnapshot(const EditSnapshot& s);
+    void TrackEditHistory();          // once per frame, after the UI is built
+    EditSnapshot editHistoryLast_;
+    bool         editHistoryDirty_ = false;
+    void PushEditCommand(const std::string& label, const EditSnapshot& before,
+                         const EditSnapshot& after);
     void RenderInfoEditor();     // "Info" editor — live action feed
     // "Palette" editor — the document COLOUR TABLE (Editors/Palette/).
     // Swatches are colours used as variables by any paint, optionally
@@ -856,6 +887,14 @@ private:
     // anchor a Shift range measures from - and is always inside this set.
     std::vector<std::uint64_t> paletteSelMulti_;
     void PaletteDragTooltip(int count);
+    // The colour table is document state: every change to it belongs on the
+    // undo stack. A slider being dragged would push a step per frame, so an
+    // edit is FOLDED — opened when it starts, closed when the widget is let go.
+    std::uint64_t              paletteEditId_ = 0;
+    std::vector<Ink::Swatch>   paletteEditBefore_;
+    void PaletteBeginEdit();
+    void PaletteEndEdit(const char* label, const char* api,
+                        const InfoFields& fields);
     bool PaletteSelected(std::uint64_t id) const {
         for (std::uint64_t s : paletteSelMulti_) if (s == id) return true;
         return false;

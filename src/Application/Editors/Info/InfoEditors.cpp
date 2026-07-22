@@ -3,6 +3,7 @@
 #include <Shortcuts/ToolManager.h>
 #include <UI/Widgets/ScrollArea.h>
 #include <UI/Widgets/ListRow.h>
+#include <VectorGraphics/IconManager.h>
 #include <UI/Widgets/TreeRow.h>
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -28,6 +29,7 @@ void Application::LogInfoAction(const std::string& text, const std::string& deta
     e.frame = (uint64_t)ImGui::GetFrameCount();
     e.text = text;
     e.detail = detail;
+    e.undoable = (e.frame == undoableFrame_);
     infoLog_.push_back(std::move(e));
     if (infoLog_.size() > kMax)
         infoLog_.erase(infoLog_.begin(),
@@ -74,6 +76,85 @@ std::string Application::DescribeCollections(const std::vector<Ink::NodeId>& ids
         return "collection #" + std::to_string((unsigned long long)ids[0]);
     }
     return std::to_string(ids.size()) + " collections";
+}
+
+// ── Selection / mode history ──────────────────────────────────────────────────
+//  Every distinct selection is a state the user can be sent back to, so it
+//  shares the stack with the edits. Instrumenting each place a selection can
+//  change would mean instrumenting the next one someone adds, too — so the
+//  state is simply compared once per frame and any difference becomes one step.
+//  A frame that already pushed a document command is left alone: that command
+//  owns what happened, and a selection entry beside it would make one gesture
+//  take two Ctrl+Z.
+
+void Application::CaptureEditSnapshot(EditSnapshot& out) const {
+    out.mode      = edit_.mode;
+    out.selection = edit_.selection;
+    out.active    = edit_.active;
+    out.elemSel   = edit_.elemSel;
+    out.markSel   = edit_.markSel;
+}
+
+void Application::ApplyEditSnapshot(const EditSnapshot& s) {
+    edit_.mode      = s.mode;
+    edit_.selection = s.selection;
+    edit_.active    = s.active;
+    edit_.elemSel   = s.elemSel;
+    edit_.markSel   = s.markSel;
+    if (project_.document) edit_.Prune(*project_.document);
+}
+
+void Application::PushEditCommand(const std::string& label,
+                                  const EditSnapshot& before,
+                                  const EditSnapshot& after) {
+    DocCommand c;
+    c.label = label;
+    c.touchesDoc = false;         // nothing here is ever written to the file
+    c.undo = [this, before](Ink::Document&) { ApplyEditSnapshot(before); };
+    c.redo = [this, after](Ink::Document&)  { ApplyEditSnapshot(after); };
+    docUndo_.Push(std::move(c));
+    MarkFrameUndoable();
+}
+
+void Application::TrackEditHistory() {
+    if (!project_.document) return;
+    EditSnapshot now;
+    CaptureEditSnapshot(now);
+    if (now == editHistoryLast_) return;
+
+    // A document command this frame already speaks for the gesture.
+    if (undoableFrame_ == (uint64_t)ImGui::GetFrameCount()) {
+        editHistoryLast_ = now;
+        return;
+    }
+    auto modeName = [](EditorMode m) {
+        return m == EditorMode::Edit ? "Edit" :
+               m == EditorMode::LineMark ? "Line Mark" : "Object";
+    };
+    const bool modeChanged = now.mode != editHistoryLast_.mode;
+    const std::string label = modeChanged
+        ? std::string(modeName(now.mode)) + " Mode" : "Selection";
+    PushEditCommand(label, editHistoryLast_, now);
+
+    InfoFields f;
+    if (modeChanged) {
+        f.push_back({ "from", modeName(editHistoryLast_.mode) });
+        f.push_back({ "to",   modeName(now.mode) });
+    }
+    f.push_back({ "objects", DescribeNodes(now.selection) });
+    if (now.active != Ink::kNullNode)
+        f.push_back({ "active", DescribeNodes({ now.active }) });
+    if (!now.elemSel.empty())
+        f.push_back({ "anchors", std::to_string(now.elemSel.size()) + " selected" });
+    if (!now.markSel.empty())
+        f.push_back({ "line marks", std::to_string(now.markSel.size()) + " selected" });
+    const int delta = (int)now.selection.size() - (int)editHistoryLast_.selection.size();
+    if (!modeChanged && delta != 0) {
+        char b[32]; std::snprintf(b, sizeof b, "%+d", delta);
+        f.push_back({ "change", b });
+    }
+    LogInfoAction(label, modeChanged ? "ed.set_mode" : "ed.select", f);
+    editHistoryLast_ = now;
 }
 
 // ── "Info" editor: a live feed of the last actions (Blender info-log style) ───
@@ -139,6 +220,20 @@ void Application::RenderInfoEditor() {
                 const float ty = row.RowTop() +
                                  (tr::RowH() - ImGui::GetTextLineHeight()) * 0.5f;
                 float x = ImGui::GetCursorScreenPos().x + 4.0f * gs;
+                // Not every action is reversible; the ones that are say so, so
+                // the feed doubles as a reading of the undo stack.
+                if (e.undoable) {
+                    auto& im = VectorGraphics::IconManager::Instance();
+                    const float isz = tr::IconSize();
+                    auto md = im.GetDefaultMetadata("restore");
+                    for (auto& z : md.colorZones)
+                        z.customColor = tr::SafeColor(Tok::S_Color_Text_Subtle,
+                                                      ImVec4(.6f, .6f, .6f, 1));
+                    im.RenderIcon(fdl, "restore",
+                                  ImVec2(x, row.RowTop() + (tr::RowH() - isz) * 0.5f),
+                                  isz, md);
+                }
+                x += tr::IconSize() + 4.0f * gs;
                 char fr[24];
                 std::snprintf(fr, sizeof fr, "[%llu]", (unsigned long long)e.frame);
                 fdl->AddText(ImVec2(x, ty), subtle, fr);

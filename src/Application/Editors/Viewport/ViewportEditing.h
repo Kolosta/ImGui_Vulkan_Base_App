@@ -68,6 +68,9 @@ struct DocCommand {
     std::string label;
     std::function<void(Ink::Document&)> undo;
     std::function<void(Ink::Document&)> redo;
+    // A selection or a mode change is undoable but changes NOTHING that would
+    // be written to the file, so it must not mark the project dirty.
+    bool touchesDoc = true;
 };
 
 class DocUndoStack {
@@ -88,16 +91,18 @@ public:
     bool CanRedo() const { return index_ < (int)cmds_.size(); }
 
     // Returns the label of the step undone/redone ("" if none).
-    std::string Undo(Ink::Document& doc) {
+    std::string Undo(Ink::Document& doc, bool* touchedDoc = nullptr) {
         if (!CanUndo()) return "";
         DocCommand& c = cmds_[(std::size_t)--index_];
         if (c.undo) c.undo(doc);
+        if (touchedDoc) *touchedDoc = c.touchesDoc;
         return c.label;
     }
-    std::string Redo(Ink::Document& doc) {
+    std::string Redo(Ink::Document& doc, bool* touchedDoc = nullptr) {
         if (!CanRedo()) return "";
         DocCommand& c = cmds_[(std::size_t)index_++];
         if (c.redo) c.redo(doc);
+        if (touchedDoc) *touchedDoc = c.touchesDoc;
         return c.label;
     }
 

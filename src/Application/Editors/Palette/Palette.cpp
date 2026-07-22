@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -103,6 +104,39 @@ void Application::PaletteDragTooltip(int count) {
                     tr::SafeColor(Tok::S_Color_Text_Default, ImVec4(0.9f,0.9f,0.9f,1))),
                 txt);
     ImGui::Dummy(ImVec2(w, h));
+}
+
+// The whole table is captured, not the one swatch: a reorder rewrites every
+// print order, and a table is small enough that being exact costs nothing.
+void Application::PaletteBeginEdit() {
+    if (!project_.document || !paletteEditBefore_.empty()) return;
+    paletteEditBefore_ = project_.document->Swatches();
+}
+
+void Application::PaletteEndEdit(const char* label, const char* api,
+                                 const InfoFields& fields) {
+    if (!project_.document || paletteEditBefore_.empty()) return;
+    std::vector<Ink::Swatch> before = std::move(paletteEditBefore_);
+    paletteEditBefore_.clear();
+    std::vector<Ink::Swatch> after = project_.document->Swatches();
+    if (before.size() == after.size()) {
+        bool same = true;
+        for (std::size_t i = 0; i < before.size() && same; ++i)
+            same = before[i].id == after[i].id &&
+                   before[i].printOrder == after[i].printOrder &&
+                   before[i].name == after[i].name &&
+                   before[i].overprint == after[i].overprint &&
+                   before[i].hasPrintOrder == after[i].hasPrintOrder &&
+                   std::memcmp(&before[i].display, &after[i].display,
+                               sizeof before[i].display) == 0 &&
+                   std::memcmp(&before[i].ink, &after[i].ink,
+                               sizeof before[i].ink) == 0;
+        if (same) return;   // nothing actually moved
+    }
+    PushDocCommand(label,
+        [before](Ink::Document& d) { d.RestoreSwatches(before); },
+        [after](Ink::Document& d)  { d.RestoreSwatches(after); });
+    LogInfoAction(label, api, fields);
 }
 
 void Application::RenderPalette(EditorState& st) {
@@ -532,12 +566,41 @@ void Application::RenderPalette(EditorState& st) {
         ImGui::PopID();
 
         paintBand();
-        if (changed) { doc.SetSwatch(id, sw); MarkDirty(); }
+        if (changed) {
+            // First touch of a continuous edit opens the fold; it closes below
+            // when nothing is being held any more.
+            if (paletteEditId_ != id) {
+                if (paletteEditId_) PaletteEndEdit("Edit Colour", "palette.edit", {});
+                PaletteBeginEdit();
+                paletteEditId_ = id;
+            }
+            doc.SetSwatch(id, sw);
+            MarkDirty();
+        }
         rowH[(std::size_t)rowIndex] = ImGui::GetCursorScreenPos().y - rowY0;
     }
     // Past either end of the list the colour lands at that end, still inside
     // its own group: dragging beyond the last row is an instruction to go as
     // far as possible, not a miss that should leave the gap where it was.
+    // Close a folded colour edit once the widget that drove it is let go.
+    if (paletteEditId_ && !ImGui::IsAnyItemActive()) {
+        const Ink::Swatch* w = doc.FindSwatch(paletteEditId_);
+        InfoFields f;
+        f.push_back({ "colour", w ? w->name : std::string("(deleted)") });
+        if (w) {
+            char b[96];
+            std::snprintf(b, sizeof b, "%.0f / %.0f / %.0f / %.0f %%",
+                          w->ink.c * 100.0f, w->ink.m * 100.0f,
+                          w->ink.y * 100.0f, w->ink.k * 100.0f);
+            f.push_back({ "CMYK", b });
+            f.push_back({ "overprint", w->overprint ? "on" : "off" });
+            if (w->hasSpot) f.push_back({ "spot ink", w->spotName });
+            f.push_back({ "print order", w->hasPrintOrder
+                ? std::to_string(w->printOrder) : std::string("—") });
+        }
+        PaletteEndEdit("Edit Colour", "palette.edit", f);
+        paletteEditId_ = 0;
+    }
     if (drag.Active() && nRows > 0) {
         const float top = rowTop[0], bot = rowTop[(std::size_t)nRows];
         const float big = 1.0e4f;
@@ -590,6 +653,7 @@ void Application::RenderPalette(EditorState& st) {
         // asserts the moment a row is dragged past the end of the list.
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
     }
+    if (dropSrc && dropBoundary >= 0) PaletteBeginEdit();
     if (dropSrc && dropBoundary >= 0) {
         // Rebuild the dragged colour's GROUP in its new visual order, then
         // write that order back the way that group is actually ranked. The
@@ -647,14 +711,34 @@ void Application::RenderPalette(EditorState& st) {
             doc.ReorderSwatches(order);
         }
         MarkDirty();
+        InfoFields f;
+        f.push_back({ "colours", (int)moving.size() == 1
+            ? [&] { const Ink::Swatch* w = doc.FindSwatch(moving[0]);
+                    return w ? w->name : std::string("(unnamed)"); }()
+            : std::to_string(moving.size()) + " colours" });
+        f.push_back({ "group", stacked ? "print stack" : "free colours" });
+        f.push_back({ "position", std::to_string(at + 1) + " / " +
+                                  std::to_string(group.size()) });
+        f.push_back({ "ranked by", stacked ? "print order (top plate first)"
+                                           : "table order" });
+        PaletteEndEdit("Reorder Colours", "palette.reorder", f);
     }
-    if (remove != Ink::kNullSwatch) { doc.RemoveSwatch(remove); MarkDirty(); }
+    if (remove != Ink::kNullSwatch) {
+        const Ink::Swatch* w = doc.FindSwatch(remove);
+        const std::string nm = w ? w->name : std::string("(unnamed)");
+        PaletteBeginEdit();
+        doc.RemoveSwatch(remove);
+        MarkDirty();
+        PaletteEndEdit("Delete Colour", "palette.remove", { { "colour", nm } });
+    }
     if (addColour) {
         Ink::Swatch ns;
         ns.name = "Colour " + std::to_string(doc.Swatches().size() + 1);
         ns.display = { 0.5f, 0.5f, 0.5f, 1.0f };
+        PaletteBeginEdit();
         doc.AddSwatch(ns);
         MarkDirty();
+        PaletteEndEdit("New Colour", "palette.add", { { "colour", ns.name } });
     }
 
     UI::EndScroll();
