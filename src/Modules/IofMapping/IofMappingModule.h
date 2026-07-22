@@ -80,6 +80,20 @@ private:
     // its parts rebuilt at the current map scale (children replaced in place —
     // instance targets reference the group, so placements re-skin live).
     void SeedLibrary(bool rebuildExisting);
+    // Seed the document's COLOUR TABLE from the official ISOM print-layer list:
+    // one locked swatch per separation, carrying its exact CMYK and its place
+    // in the plate stack (the table is already in printing order). Matched by
+    // name so re-opening a file adopts the swatches it already has instead of
+    // duplicating them.
+    void SeedPalette();
+    // The document swatch of a print layer (0 before SeedPalette has run).
+    std::uint64_t LayerSwatch(PrintLayer layer) const;
+    // Bind every paint of a built symbol to the document swatch whose colour it
+    // uses. A symbol legitimately spans SEVERAL plates — 402 lays yellow 75 %
+    // and white dots, 509 black and white — so the binding is per PAINT, not
+    // per element. Matching is by colour because the symbol tables and the
+    // plate table are built from the same ink constants.
+    void BindSwatches(Ink::Style& style, IofType type) const;
     // The library specimen group of an element (0 if absent).
     std::uint64_t LibNode(int code) const;
 
@@ -118,6 +132,8 @@ private:
     std::unordered_map<std::string, std::uint64_t> collTheme_;
     std::uint64_t collLayout_ = 0, collExtras_ = 0;
     std::unordered_map<int, std::uint64_t> libByCode_;
+    // Print layer → its document swatch, resolved by SeedPalette.
+    std::uint64_t swatchByLayer_[kPrintLayerCount] = {};
     std::uint64_t structureVersion_ = ~0ull;          // doc version at last sync
 
     // ── Theme tool buttons (viewport palette) ──

@@ -33,6 +33,7 @@ enum class SpotColor { Purple, Black, Blue, Brown, Green, Yellow };
 enum class PrintLayer {
     UpperPurple,          // Upper purple for course overprint  (C35 M85)
     WhiteOverprint,       // White for course overprint         (0)
+    WhiteRailway,         // White for railway                  (0)
     Black100,             // Black 100%                         (K100)
     Blue100Point,         // Blue 100% point symbols            (C100)
     Brown100Point,        // Brown 100% point symbols           (M56 Y100 K18)

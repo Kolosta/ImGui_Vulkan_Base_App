@@ -35,6 +35,7 @@ constexpr IofRgb Screen(IofRgb ink, float pct) {
 const PrintLayerDef kLayers[kPrintLayerCount] = {
     { PrintLayer::UpperPurple,         "Upper purple for course overprint", 35, 85, 0, 0,  kInkPurple },
     { PrintLayer::WhiteOverprint,      "White for course overprint",         0,  0, 0, 0,  { 1, 1, 1 } },
+    { PrintLayer::WhiteRailway,        "White for railway",                  0,  0, 0, 0,  { 1, 1, 1 } },
     { PrintLayer::Black100,            "Black 100%",                         0,  0, 0, 100, kInkBlack },
     { PrintLayer::Blue100Point,        "Blue 100% point symbols",          100,  0, 0, 0,  kInkBlue },
     { PrintLayer::Brown100Point,       "Brown 100% point symbols",           0, 56, 100, 18, kInkBrown },

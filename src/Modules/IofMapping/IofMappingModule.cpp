@@ -4,6 +4,8 @@
 #include <Ink/Document/Document.h>
 #include <algorithm>
 #include <cstring>
+#include <string>
+#include <unordered_map>
 
 namespace App::Modules::IofMapping {
 
@@ -46,7 +48,7 @@ std::vector<std::string> IofMappingModule::AllowedEditors() const {
     // sponsors, frame…) is authored with ordinary styling. IOF symbols keep
     // their spec style locked, but a free object is fully editable.
     return { "core.viewport", "core.outliner", "core.properties", "core.info",
-             "core.fills", "core.strokes",
+             "core.fills", "core.strokes", "core.palette", "core.colorusage",
              "iof.symbolviewer", "iof.mapsettings" };
 }
 
@@ -153,6 +155,163 @@ void IofMappingModule::EnsureStructure() {
     structureVersion_ = doc->Version();
 }
 
+void IofMappingModule::SeedPalette() {
+    Ink::Document* doc = Host() ? Host()->Document() : nullptr;
+    if (!doc) return;
+    // Adopt by NAME first: a reopened file already carries the table, and the
+    // ids in its paints must keep resolving.
+    for (int i = 0; i < kPrintLayerCount; ++i) swatchByLayer_[i] = 0;
+    for (const Ink::Swatch& sw : doc->Swatches())
+        for (int i = 0; i < kPrintLayerCount; ++i)
+            if (sw.name == LayerName((PrintLayer)i)) swatchByLayer_[i] = sw.id;
+
+    const Ink::PrintTechnique tech = doc->PrintTech();
+    for (int i = 0; i < kPrintLayerCount; ++i) {
+        const PrintLayer pl = (PrintLayer)i;
+        const PrintLayerDef& d = LayerDef(pl);
+        Ink::Swatch sw;
+        sw.name    = d.name;
+        sw.display = LayerInkColor(pl);
+        sw.ink     = { (double)d.c, (double)d.m, (double)d.y, (double)d.k };
+        // The table runs TOP FIRST (index 0 = upper purple, the topmost plate),
+        // whereas printOrder counts from the BOTTOM — lowest is laid down first
+        // and ends up underneath. So the index has to be flipped.
+        sw.hasPrintOrder = true;
+        sw.printOrder    = kPrintLayerCount - 1 - i;
+        // Course overprint (specification §5). UPPER purple is the course
+        // itself and always stays at the very top of the stack. LOWER purple is
+        // the one that moves: on an offset press it is a genuine extra pass
+        // over the finished map, so it sits just under the upper purple; in
+        // plain CMYK that pass does not exist, and the specification says to
+        // SIMULATE the effect by dropping it BELOW the black, brown and blue
+        // 100 % colours, so those stay legible through the course.
+        if (pl == PrintLayer::LowerPurple)
+            sw.printOrder = tech == Ink::PrintTechnique::Cmyk
+                ? kPrintLayerCount - 1 - (int)PrintLayer::Brown100Line - 1
+                : kPrintLayerCount - 1 - (int)PrintLayer::UpperPurple - 1;
+        sw.locked        = true;   // it comes from the specification
+        // The two inks the IOF specification names as spot: brown as PMS 471
+        // (this is what CMYK+B exists for — it takes the 100 % brown line work
+        // out of the process build so contours stay sharp) and purple as PMS
+        // Purple. Under plain CMYK they are ignored and the process mix is used.
+        if (pl == PrintLayer::Brown100Line || pl == PrintLayer::Brown100Point) {
+            sw.hasSpot = true;
+            sw.spotName = "PMS 471";
+            sw.spotDisplay = LayerInkColor(pl);
+        } else if (pl == PrintLayer::UpperPurple ||
+                   pl == PrintLayer::LowerPurple) {
+            sw.hasSpot = true;
+            sw.spotName = "PMS Purple";
+            sw.spotDisplay = LayerInkColor(pl);
+        }
+        // The course overprint is exactly that: the three plates printed over
+        // the finished map let it show through instead of knocking it out.
+        sw.overprint = pl == PrintLayer::UpperPurple ||
+                       pl == PrintLayer::LowerPurple ||
+                       pl == PrintLayer::WhiteOverprint;
+        if (swatchByLayer_[i]) {
+            sw.id = swatchByLayer_[i];
+            // Keep whatever overprint the map author set; everything else is
+            // re-asserted from the spec.
+            if (const Ink::Swatch* old = doc->FindSwatch(sw.id))
+                sw.overprint = old->overprint;
+            doc->SetSwatch(sw.id, sw);
+        } else {
+            swatchByLayer_[i] = doc->AddSwatch(sw);
+        }
+    }
+}
+
+namespace {
+// ISOM splits several inks across three plates of the SAME colour — blue point,
+// blue line and blue area are all Process Blue. Colour alone therefore cannot
+// say which plate a paint belongs on: what decides is what the paint IS. A fill
+// goes on an area plate, a stroke or a line-set on a line plate, a point symbol
+// on a point plate.
+enum class PlateKind { Point, Line, Area, Generic };
+
+PlateKind KindOfPlate(PrintLayer l) {
+    switch (l) {
+        case PrintLayer::Blue100Point:
+        case PrintLayer::Brown100Point:
+        case PrintLayer::Green100Point:   return PlateKind::Point;
+        case PrintLayer::Blue100Line:
+        case PrintLayer::Brown100Line:
+        case PrintLayer::DarkGreenLine:   return PlateKind::Line;
+        case PrintLayer::Blue100Area:
+        case PrintLayer::Blue70Area:
+        case PrintLayer::Blue50Area:
+        case PrintLayer::Green100Area:
+        case PrintLayer::Green60Area:
+        case PrintLayer::Green30Area:
+        case PrintLayer::Black30Area:
+        case PrintLayer::Yellow100Area:
+        case PrintLayer::Yellow75Area:
+        case PrintLayer::Yellow50Area:    return PlateKind::Area;
+        default:                          return PlateKind::Generic;
+    }
+}
+}  // namespace
+
+void IofMappingModule::BindSwatches(Ink::Style& style, IofType type) const {
+    const Ink::Document* doc = Host() ? Host()->Document() : nullptr;
+    if (!doc) return;
+    // Quantise before comparing: the two tables compute the same tint through
+    // the same constants, but nothing guarantees bit-identical floats.
+    auto key = [](const Ink::Color& c) {
+        auto q = [](float v) { return (long long)std::lround(v * 4096.0f); };
+        return std::to_string(q(c.r)) + ',' + std::to_string(q(c.g)) + ',' +
+               std::to_string(q(c.b));
+    };
+    // Per colour, the candidate plate of each kind.
+    struct Cand { std::uint64_t byKind[4] = { 0, 0, 0, 0 }; };
+    std::unordered_map<std::string, Cand> byColor;
+    for (int i = 0; i < kPrintLayerCount; ++i) {
+        if (!swatchByLayer_[i]) continue;
+        const PrintLayer pl = (PrintLayer)i;
+        Cand& cd = byColor[key(LayerInkColor(pl))];
+        std::uint64_t& slot = cd.byKind[(int)KindOfPlate(pl)];
+        if (!slot) slot = swatchByLayer_[i];   // topmost of that kind wins
+    }
+    // A POINT symbol puts everything on the point plates; an area or line
+    // symbol splits fills onto area plates and strokes onto line plates.
+    const PlateKind fillKind = type == IofType::Point ? PlateKind::Point
+                                                      : PlateKind::Area;
+    const PlateKind lineKind = type == IofType::Point ? PlateKind::Point
+                                                      : PlateKind::Line;
+    auto bind = [&](const Ink::Color& c, std::uint64_t& out, PlateKind want) {
+        auto it = byColor.find(key(c));
+        if (it == byColor.end()) return;
+        const Cand& cd = it->second;
+        std::uint64_t id = cd.byKind[(int)want];
+        if (!id) id = cd.byKind[(int)PlateKind::Generic];
+        // Last resort: any plate carrying this ink (white, black, purple…).
+        if (!id) for (std::uint64_t v : cd.byKind) if (v) { id = v; break; }
+        if (id) out = id;
+    };
+    for (Ink::Fill& f : style.fills) {
+        bind(f.paint.color, f.paint.swatch, fillKind);
+        // A pattern's shapes and line-sets are drawn INSIDE an area, but they
+        // are point-like and line-like marks: they take those plates.
+        for (Ink::InstElement& e : f.instanced.elements)
+            bind(e.color, e.swatch, PlateKind::Point);
+        for (Ink::InstLineSet& l : f.instanced.lines)
+            bind(l.color, l.swatch, lineKind);
+    }
+    for (Ink::Stroke& s : style.strokes) {
+        bind(s.paint.color, s.paint.swatch, lineKind);
+        for (Ink::StrokeRepeat& rp : s.repeats) bind(rp.color, rp.swatch, lineKind);
+        for (Ink::StrokeMark& m : s.marks)
+            for (Ink::MarkObject& o : m.objects) bind(o.color, o.swatch, lineKind);
+    }
+}
+
+std::uint64_t IofMappingModule::LayerSwatch(PrintLayer layer) const {
+    const int i = (int)layer;
+    if (i < 0 || i >= kPrintLayerCount) return 0;
+    return swatchByLayer_[i];
+}
+
 void IofMappingModule::SeedLibrary(bool rebuildExisting) {
     Ink::Document* doc = Host() ? Host()->Document() : nullptr;
     if (!doc || !libRoot_ || !doc->Find(libRoot_)) return;
@@ -175,9 +334,13 @@ void IofMappingModule::SeedLibrary(bool rebuildExisting) {
                 std::vector<Ink::NodeId> old = sn->children;
                 for (Ink::NodeId c : old) doc->Remove(c);
             }
-            for (SymbolPart& p : def.parts)
+            for (SymbolPart& p : def.parts) {
+                // Each part follows the PLATE its ink belongs to, so a symbol
+                // that spans several separations stays separable.
+                BindSwatches(p.style, e.type);
                 doc->AddPath(sym, std::move(p.path), std::move(p.style),
                              p.name);
+            }
         }
     }
     structureVersion_ = doc->Version();
@@ -186,6 +349,7 @@ void IofMappingModule::SeedLibrary(bool rebuildExisting) {
 void IofMappingModule::OnDocumentCreated(Ink::Document& doc) {
     (void)doc;
     EnsureStructure();
+    SeedPalette();
     // Always REBUILD: a library specimen is derived purely from the compiled
     // catalogue + the map scale, never edited by the user. Keeping an existing
     // one would pin the vignettes (and every placed instance, which targets the
@@ -205,6 +369,7 @@ void IofMappingModule::OnActivate() {
     // the current catalogue, so vignettes and placements always show the real,
     // up-to-date symbol definition rather than the one baked into the file.
     EnsureStructure();
+    SeedPalette();
     SeedLibrary(/*rebuildExisting=*/true);
     armedTheme_ = -1; armedSymbol_ = -1;
 }
@@ -343,8 +508,9 @@ void IofMappingModule::SelectSymbol(const IofElement& e) {
         const SymbolDef def = BuildSymbol(e, MapScaleFactor());
         SymbolDrawRequest req;
         req.penKind  = e.type == IofType::Area ? "free" : "curve";
-        const Ink::Style style = e.type == IofType::Area ? def.areaStyle
-                                                         : def.lineStyle;
+        Ink::Style style = e.type == IofType::Area ? def.areaStyle
+                                                   : def.lineStyle;
+        BindSwatches(style, e.type);
         req.style    = &style;
         req.iconNode = lib;
         req.onCommit = [this, &e](std::uint64_t node) {
