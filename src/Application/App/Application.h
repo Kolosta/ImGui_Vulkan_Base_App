@@ -19,6 +19,7 @@
 #include <VectorGraphics/editors/IconEditorWindow.h>
 #include <Ink/Render/Renderer.h>   // the 2D vector engine (docs/Ink/)
 #include <UI/Widgets/ListRow.h>   // UI::ListRow (Outliner row geometry for DnD)
+#include <UI/Widgets/RowDrag.h>   // UI::RowDrag (live reorder presentation)
 #include "ZoneLayout.h"
 #include "Project.h"
 #include "SecondaryWindow.h"
@@ -514,6 +515,48 @@ private:
     const std::vector<OutlinerRow>* outlinerRows_ = nullptr;
     float outlinerRowsStartY_ = 0.0f;   // window-local Y of flat row 0
     float outlinerStripeH_    = 0.0f;   // row pitch during the draw loop
+    // The live-reorder presentation for the row list (UI/Widgets/RowDrag.h):
+    // owned by RenderOutliner for the duration of the loop, published here so
+    // the drag & drop can name the grabbed row and the slot it would land in.
+    UI::RowDrag* outlinerDrag_ = nullptr;
+    // Splits the row list into "all zebra stripes" / "everything else" for the
+    // duration of the draw loop, so a displaced row never slides behind a
+    // stripe laid down after it.
+    ImDrawListSplitter* outlinerZebraSplit_ = nullptr;
+    // The tree DEPTH the dragged row will have once dropped. A row moving
+    // between collections changes level, and the guide lines have to follow it
+    // there or they keep spanning the branch it is leaving.
+    int outlinerDropDepth_ = -1;
+    // The collection currently being dragged. Its subtree folds away for the
+    // duration — a branch cannot sensibly be carried around with its contents
+    // strung out behind it — and the header shows the same icon summary it
+    // shows when collapsed. The STORED expansion is never touched, so the whole
+    // branch springs back exactly as it was the moment the drag ends.
+    Ink::NodeId outlinerDragColl_ = Ink::kNullNode;
+    // The same for a single dragged OBJECT: a parent layer travels folded, its
+    // children hidden for the duration and restored untouched on the drop.
+    // Only for a one-row drag — a multi-row drag keeps the older language.
+    Ink::NodeId outlinerDragObj_ = Ink::kNullNode;
+    // The row whose PREVIEW SQUARE should wear the drop frame (a mask drop).
+    // The frame is drawn at the square's real position, which only the row
+    // itself knows - the drag & drop runs before the square is laid out, so it
+    // names the row and the row draws the frame.
+    Ink::NodeId outlinerMaskFrameRow_ = Ink::kNullNode;
+    void OutlinerDrawDropFrame(ImVec2 a, ImVec2 b) const;
+    // True while `id` should read as folded: really collapsed, or the branch
+    // being dragged.
+    bool OutlinerFolded(const OutlinerState& o, Ink::NodeId id) const;
+    // Where a COLLECTION dropped into `coll` lands: after its last sub-
+    // collection, above every object it holds.
+    int  OutlinerCollectionNestRow(Ink::NodeId coll, int headerRow) const;
+    // The last flat row of the subtree rooted at `headerRow`. "Just below" an
+    // UNFOLDED container means below everything it shows, not between it and
+    // its first child.
+    int  OutlinerSubtreeEnd(int headerRow) const;
+    // Palette rows are of UNEQUAL height (an entry expands in place), so the
+    // reorder needs their real heights. Measured while drawing, reused on the
+    // next frame - during a drag nothing can expand, so they stay exact.
+    std::vector<float> paletteRowH_;
     // The Layers-view preview-square rect of the row CURRENTLY being drawn —
     // read by the drag & drop to detect a mask drop onto the square.
     ImVec2 outlinerLayerPreviewMin_{};
@@ -557,6 +600,13 @@ private:
     // view: object→object reorders in the stack, object→group moves into it.
     // The background (below the rows) un-parents / un-collections.
     void OutlinerRowDragDrop(const OutlinerRow& row, const UI::ListRow& lr);
+    // The flat row a node dropped into `coll` will actually occupy. Members are
+    // listed alphabetically, so this is a name lookup, not an append.
+    int  OutlinerCollectionDropRow(Ink::NodeId coll, int headerRow,
+                                   Ink::NodeId dragged) const;
+    // The drag preview for a MULTI-node drag: one line of type icons + counts.
+    void OutlinerDragTooltip(const std::vector<Ink::NodeId>& objs,
+                             const std::vector<Ink::NodeId>& colls);
     void OutlinerBackgroundDropTarget(ImVec2 rectMin, ImVec2 rectMax);
     // True while the sync-picking gesture owns the mouse: every Outliner row is
     // input-inert (no select, no eye toggle, no context menu, no drag) so the
@@ -565,6 +615,17 @@ private:
     // The dragged object set: the whole selection when the payload id is part
     // of it, else just that id (legacy multi-drag rule).
     std::vector<Ink::NodeId> OutlinerDraggedIds(Ink::NodeId trigger) const;
+    // Everything a drag started on `trigger` carries. A row inside the current
+    // selection drags the WHOLE selection - objects and collections together;
+    // a row outside it drags only itself.
+    void OutlinerDragSet(Ink::NodeId trigger, std::vector<Ink::NodeId>& objs,
+                         std::vector<Ink::NodeId>& colls) const;
+    // One drop, one undo step, whatever the mixture: objects join `targetColl`
+    // (or leave every collection at the root) and collections nest under it
+    // (or return to the top level).
+    void OutlinerDropMixed(const std::vector<Ink::NodeId>& objs,
+                           const std::vector<Ink::NodeId>& colls,
+                           Ink::NodeId targetColl);
     // Undoable drop / organisation operations (OutlinerDragDrop.cpp).
     void OutlinerDropParentTo(const std::vector<Ink::NodeId>& ids, Ink::NodeId parent);
     void OutlinerDropToCollection(const std::vector<Ink::NodeId>& ids, Ink::NodeId coll);
@@ -755,12 +816,29 @@ private:
                             const Ink::Fill& f);
 
     // ── Info log (Blender-style action feed) + Dev data editor ───────────────
-    struct InfoEntry { uint64_t frame; std::string text; std::string detail; };
+    // One line of the action feed. `text` is what the user did, `api` the name
+    // that same action answers to programmatically, `detail` the one-line
+    // summary shown on the collapsed row, and `fields` the full record - who
+    // was acted on, from where to where, under which pivot and frame. The
+    // fields are DISPLAY ONLY: the undo stack stores none of this.
+    using InfoField  = std::pair<std::string, std::string>;
+    using InfoFields = std::vector<InfoField>;
+    struct InfoEntry {
+        uint64_t    frame = 0;
+        std::string text, detail, api;
+        InfoFields  fields;
+    };
     std::vector<InfoEntry> infoLog_;
     void LogInfoAction(const std::string& text) override;   // ModuleHost service
     void LogInfoAction(const std::string& text, const std::string& detail);
-    static std::string FormatActionDetail(
-        const std::vector<std::pair<std::string, std::string>>& kv);
+    void LogInfoAction(const std::string& text, const std::string& api,
+                       const InfoFields& fields);
+    static std::string FormatActionDetail(const InfoFields& kv);
+    // "3 objects", or the single item's own name — what an action acted on.
+    std::string DescribeNodes(const std::vector<Ink::NodeId>& ids) const;
+    std::string DescribeCollections(const std::vector<Ink::NodeId>& ids) const;
+    std::set<std::uint64_t> infoOpen_;   // expanded feed rows
+    void LogTransform(const char* label);   // the modal transform's full record
     void RenderInfoEditor();     // "Info" editor — live action feed
     // "Palette" editor — the document COLOUR TABLE (Editors/Palette/).
     // Swatches are colours used as variables by any paint, optionally
@@ -773,7 +851,15 @@ private:
     std::set<std::uint64_t> colorUsageOpen_;   // expanded usage-tree rows
     std::uint64_t           colorUsageSel_ = 0;   // last row picked there
     std::set<std::uint64_t> paletteOpen_;         // expanded palette rows
-    std::uint64_t           paletteSel_ = 0;      // last palette row picked
+    std::uint64_t           paletteSel_ = 0;      // last palette row picked (anchor)
+    // The full palette selection. `paletteSel_` stays the ACTIVE one - the
+    // anchor a Shift range measures from - and is always inside this set.
+    std::vector<std::uint64_t> paletteSelMulti_;
+    void PaletteDragTooltip(int count);
+    bool PaletteSelected(std::uint64_t id) const {
+        for (std::uint64_t s : paletteSelMulti_) if (s == id) return true;
+        return false;
+    }
     // Set by any viewport showing the Flattener this frame; the Scene only
     // runs that analysis while something is actually displaying it.
     bool                    flattenWanted_ = false;

@@ -1594,6 +1594,10 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Ref(Tok::C_Outliner_Row_SelectedHover, TokenLevel::Component, Tok::S_Accent_HoverSelected_Default,  "outliner row selected+hover"));
     put(Ref(Tok::C_Outliner_Row_Active,        TokenLevel::Component, Tok::S_Accent_Active_Default,         "outliner row active"));
     put(Ref(Tok::C_Outliner_Row_ActiveHover,   TokenLevel::Component, Tok::S_Accent_Active_Default,         "outliner row active+hover"));
+    put(Ref(Tok::C_ListRow_ReorderDuration,    TokenLevel::Component, Tok::S_AnimDuration_Enter,            "list row reorder slide duration"));
+    put(Ref(Tok::C_ListRow_DragFill,           TokenLevel::Component, Tok::S_Accent_Hover_Default,          "carried row bg when unselected"));
+    put(Float(Tok::C_ListRow_DragAlpha,        TokenLevel::Component, 0.55f, "carried row opacity", CS::Range(0.0,1.0,"")));
+    put(Ref(Tok::C_ListRow_DropSlot,           TokenLevel::Component, Tok::S_Color_Notice_Default,          "opened landing slot fill"));
     put(Ref(Tok::C_Outliner_Text,              TokenLevel::Component, Tok::S_Color_Text_Default,            "outliner row text"));
     put(Float(Tok::C_Outliner_TreeLineInset,   TokenLevel::Component, 4.f, "outliner tree-line top/bottom inset", CS::Range(0.0,16.0,"px")));
     put(Ref(Tok::C_Outliner_Search_Visual,       TokenLevel::Component, Tok::S_Accent_Visual_Positive,        "outliner search matched-idle bg"));

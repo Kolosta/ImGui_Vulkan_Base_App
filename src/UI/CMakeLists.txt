@@ -9,6 +9,7 @@ add_library(UI STATIC
     src/Widgets/Checkbox.cpp
     src/Widgets/DragValue.cpp
     src/Widgets/ListRow.cpp
+    src/Widgets/RowDrag.cpp
     src/Widgets/PopupMenu.cpp
     src/Widgets/Panel.cpp
     src/Widgets/ScrollArea.cpp

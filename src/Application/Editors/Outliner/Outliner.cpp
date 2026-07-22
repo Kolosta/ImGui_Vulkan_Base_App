@@ -121,10 +121,26 @@ bool Application::OutlinerInAnyCollection(Ink::NodeId id) const {
 
 // ── Selection click (plain / Shift-range / Ctrl / Alt) ────────────────────────
 
+// A row is a row: an object, a collection, whatever the list holds next. The
+// modifiers mean the same thing on all of them and a range may span the lot,
+// so the click routes each id to the set that can hold it — objects to the
+// shared document selection, everything else to this Outliner's own.
 void Application::OutlinerSelectClick(Ink::NodeId id, bool isObject) {
     (void)isObject;
     ImGuiIO& io = ImGui::GetIO();
     OutlinerState& o = *outlinerCur_;
+    o.objSelfEdit = true;   // whatever happens below, WE did it
+
+    auto isObj = [&](Ink::NodeId x) {
+        return project_.document && project_.document->Find(x) != nullptr;
+    };
+    auto add = [&](Ink::NodeId x) {
+        if (isObj(x)) edit_.SelectAdd(x); else o.SelAdd(x);
+    };
+    auto selected = [&](Ink::NodeId x) {
+        return isObj(x) ? edit_.IsSelected(x) : o.RowSelected(x);
+    };
+    auto clearAll = [&] { edit_.Clear(); o.sel.clear(); };
 
     if (io.KeyShift && o.active != 0) {
         const auto& order = o.rowOrder;
@@ -135,20 +151,25 @@ void Application::OutlinerSelectClick(Ink::NodeId id, bool isObject) {
         }
         if (ia >= 0 && ib >= 0) {
             if (ia > ib) std::swap(ia, ib);
-            edit_.Clear();
-            for (int i = ia; i <= ib; ++i)
-                if (project_.document->Find(order[i])) edit_.SelectAdd(order[i]);
+            clearAll();
+            for (int i = ia; i <= ib; ++i) add(order[i]);
             edit_.active = o.active;
             return;
         }
     }
     if (io.KeyCtrl) {
-        if (edit_.IsSelected(id)) edit_.Deselect(id); else edit_.SelectAdd(id);
+        if (selected(id)) {
+            if (isObj(id)) edit_.Deselect(id); else o.SelRemove(id);
+        } else {
+            add(id);
+        }
         o.active = id;
         return;
     }
-    if (io.KeyAlt) { edit_.SelectAdd(id); o.active = id; return; }
-    edit_.SelectOnly(id);
+    if (io.KeyAlt) { add(id); o.active = id; return; }
+    clearAll();
+    add(id);
+    if (isObj(id)) edit_.active = id;
     o.active = id;
 }
 
@@ -231,7 +252,11 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
     }
     // Collections view expands the Blender way: collapsed by default,
     // unfolded only while the object is in `expandedObjects`.
-    const bool expanded = collections ? o.ObjExpanded(id) : !o.IsCollapsed(id);
+    // A branch being carried shows folded: its children belong to it, not to
+    // the list it is passing over. The stored expansion is untouched, so the
+    // whole subtree springs back exactly as it was when the drop lands.
+    const bool expanded = (collections ? o.ObjExpanded(id) : !o.IsCollapsed(id)) &&
+                          id != outlinerDragObj_;
     if (!anyChild || !expanded) return;
     const int childDepth = drawSelf ? depth + 1 : depth;
 
@@ -294,7 +319,8 @@ void Application::OutlinerBuildRows(EditorState& st, std::vector<OutlinerRow>& o
                 r.hasChildren = !c.members.empty() || !c.childCollections.empty();
                 r.ownerColl = ownerColl; r.ownerRow = ownerRow;
                 out.push_back(r);
-                if (o.IsCollapsed(c.id)) return;
+                o.rowOrder.push_back(c.id);   // a Shift range may span it
+                if (OutlinerFolded(o, c.id)) return;
                 for (Ink::NodeId cc : c.childCollections)
                     if (const Ink::Collection* child = doc.FindCollection(cc))
                         flattenColl(*child, depth + 1, c.id, myRow);
@@ -530,6 +556,172 @@ void Application::OutlinerCollapsedSummary(const OutlinerRow& rrow, float x,
     drawCat(linked, false);
 }
 
+// The flat row an object dropped into `coll` will END UP on. A collection does
+// not let you pick a rank — its members are re-sorted ALPHABETICALLY on every
+// rebuild (SortIdsByName above) — so the honest preview is the alphabetical
+// slot, not the end of the list. An object dropped back into the collection it
+// already belongs to therefore lands exactly where it already sits, and nothing
+// appears to move, which is the correct answer.
+//
+// `coll` may be kNullNode for the project root, whose loose objects are sorted
+// the same way. Returns a flat INSERTION BOUNDARY.
+bool Application::OutlinerFolded(const OutlinerState& o, Ink::NodeId id) const {
+    return o.IsCollapsed(id) || (id != Ink::kNullNode && id == outlinerDragColl_);
+}
+
+// Sub-collections are listed BEFORE members (flattenColl above), so a
+// collection dropped into another always comes to rest above its objects. The
+// boundary is therefore the first non-collection child, not the end.
+int Application::OutlinerCollectionNestRow(Ink::NodeId coll, int headerRow) const {
+    (void)coll;
+    if (!outlinerRows_) return -1;
+    const std::vector<OutlinerRow>& rows = *outlinerRows_;
+    const int n = (int)rows.size();
+    if (headerRow < 0 || headerRow >= n) return -1;
+    const int hd = rows[(std::size_t)headerRow].depth;
+    int last = headerRow;
+    for (int k = headerRow + 1; k < n; ++k) {
+        if (rows[(std::size_t)k].depth <= hd) break;
+        last = k;
+        if (rows[(std::size_t)k].depth == hd + 1 &&
+            rows[(std::size_t)k].kind != OutlinerRow::Kind::CollectionHeader)
+            return k;              // the first object: sit just above it
+    }
+    return last + 1;               // only sub-collections (or empty)
+}
+
+int Application::OutlinerSubtreeEnd(int headerRow) const {
+    if (!outlinerRows_) return headerRow;
+    const std::vector<OutlinerRow>& rows = *outlinerRows_;
+    const int n = (int)rows.size();
+    if (headerRow < 0 || headerRow >= n) return headerRow;
+    const int hd = rows[(std::size_t)headerRow].depth;
+    int last = headerRow;
+    for (int k = headerRow + 1; k < n; ++k) {
+        if (rows[(std::size_t)k].depth <= hd) break;
+        last = k;
+    }
+    return last;
+}
+
+int Application::OutlinerCollectionDropRow(Ink::NodeId coll, int headerRow,
+                                           Ink::NodeId dragged) const {
+    if (!outlinerRows_ || !project_.document) return -1;
+    const std::vector<OutlinerRow>& rows = *outlinerRows_;
+    const int n = (int)rows.size();
+    if (headerRow < 0 || headerRow >= n) return -1;
+    const Ink::Document& doc = *project_.document;
+    auto lower = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(),
+                       [](unsigned char c) { return (char)std::tolower(c); });
+        return s;
+    };
+    const Ink::Node* dn = doc.Find(dragged);
+    const std::string key = lower(dn ? dn->name : "");
+    const int hd = rows[(std::size_t)headerRow].depth;
+    int last = headerRow;
+    for (int k = headerRow + 1; k < n; ++k) {
+        if (rows[(std::size_t)k].depth <= hd) break;   // left the subtree
+        last = k;
+        const OutlinerRow& r = rows[(std::size_t)k];
+        // Only DIRECT members rank against the dragged name; a member's own
+        // children and a child collection's contents are not in this order.
+        if (r.kind != OutlinerRow::Kind::Object || r.depth != hd + 1 ||
+            r.ownerColl != coll || r.id == dragged) continue;
+        const Ink::Node* rn = doc.Find(r.id);
+        if (lower(rn ? rn->name : "") > key) return k;
+    }
+    return last + 1;
+}
+
+// A multi-node drag cannot BE the rows it carries, so it says what it carries:
+// one icon per type with its count, on a single line. Same glyph source as the
+// rows and the collapsed summary, so the three can never disagree.
+void Application::OutlinerDragTooltip(const std::vector<Ink::NodeId>& objs,
+                                      const std::vector<Ink::NodeId>& colls) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    struct Cat { const char* icon; int count = 0; };
+    Cat groups{ NodeKindIcon(Ink::NodeKind::Group) },
+        shapes{ NodeKindIcon(Ink::NodeKind::Path) },
+        instances{ NodeKindIcon(Ink::NodeKind::Instance) };
+    for (Ink::NodeId id : objs) {
+        const Ink::Node* n = doc.Find(id);
+        if (!n) continue;
+        Cat& c = n->kind == Ink::NodeKind::Group    ? groups
+               : n->kind == Ink::NodeKind::Instance ? instances : shapes;
+        ++c.count;
+    }
+    int nColl = 0;
+    for (Ink::NodeId id : colls) if (doc.FindCollection(id)) ++nColl;
+    // Shaped like the rows it stands for — same height, same corner radius, the
+    // selected colour at the same see-through opacity — but only as wide as it
+    // needs to be, so it reads as a handful of rows in hand rather than as a
+    // row that has escaped the list.
+    const float gs = ol::Gs(), icon = ol::IconSize(), h = ol::RowH();
+    const float pad = 8.0f * gs, gap = 6.0f * gs;
+    const ImVec4 tint = ol::SafeColor(Tok::S_Color_Text_Default,
+                                      ImVec4(0.9f, 0.9f, 0.9f, 1));
+    // In the Layers view the rows ARE the layer stack, so that is what they are
+    // called; a collection carried along is never a layer, so a mixed drag falls
+    // back to the neutral word.
+    const bool layersView = outlinerCur_ &&
+        outlinerCur_->display == OutlinerDisplayMode::Layers;
+    const char* kWord = (layersView && nColl == 0) ? "layers" : "objects";
+    const ImVec2 wordSz = ImGui::CalcTextSize(kWord);
+
+    struct Item { const char* icon; int count; bool swatch; };
+    std::vector<Item> items;
+    if (nColl)           items.push_back({ nullptr,        nColl,           true });
+    if (shapes.count)    items.push_back({ shapes.icon,    shapes.count,    false });
+    if (groups.count)    items.push_back({ groups.icon,    groups.count,    false });
+    if (instances.count) items.push_back({ instances.icon, instances.count, false });
+
+    float w = pad;
+    for (const Item& it : items) {
+        char b[8]; std::snprintf(b, sizeof b, "%d", it.count);
+        w += icon + 3.0f * gs + ImGui::CalcTextSize(b).x + gap;
+    }
+    w += wordSz.x + pad;
+
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImVec4 fill = ol::SafeColor(Tok::C_Outliner_Row_Selected,
+                                ImVec4(0.2f, 0.4f, 0.7f, 1));
+    float ghost = 0.55f;
+    try { ghost = DS::DesignSystem::Instance().GetFloat(Tok::C_ListRow_DragAlpha); }
+    catch (...) {}
+    fill.w *= ghost;
+    const float r = ol::SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * gs;
+    dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h),
+                      ImGui::ColorConvertFloat4ToU32(fill), r);
+
+    auto& im = VectorGraphics::IconManager::Instance();
+    float x = p0.x + pad;
+    const ImU32 txt = ImGui::ColorConvertFloat4ToU32(tint);
+    for (const Item& it : items) {
+        const float iy = p0.y + (h - icon) * 0.5f;
+        if (it.swatch) {
+            // A collection has no glyph of its own — the rows show a colour
+            // chip, and so does this.
+            dl->AddRectFilled(ImVec2(x, iy), ImVec2(x + icon, iy + icon),
+                              ImGui::ColorConvertFloat4ToU32(tint), 2.0f * gs);
+        } else {
+            auto md = im.GetDefaultMetadata(it.icon);
+            for (auto& z : md.colorZones) z.customColor = tint;
+            im.RenderIcon(dl, it.icon, ImVec2(x, iy), icon, md);
+        }
+        x += icon + 3.0f * gs;
+        char b[8]; std::snprintf(b, sizeof b, "%d", it.count);
+        dl->AddText(ImVec2(x, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f),
+                    txt, b);
+        x += ImGui::CalcTextSize(b).x + gap;
+    }
+    dl->AddText(ImVec2(x, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f),
+                txt, kWord);
+    ImGui::Dummy(ImVec2(w, h));
+}
+
 // ── Pass 2: draw one flattened row ────────────────────────────────────────────
 
 void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, float) {
@@ -545,11 +737,16 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     cfg.id = ImGui::GetID((void*)(uintptr_t)
         (rrow.id ^ ((uint64_t)rrow.kind << 48) ^
          ((uint64_t)(rrow.modIndex + 1) << 56)));
-    cfg.zebraOdd = (UI::ListRowZebraIndex() & 1);
+    // Parity by flat INDEX, not by a draw-order counter: the grabbed row is
+    // drawn out of order during a reorder, and the stripes must not care.
+    cfg.zebraOdd = (rrow.flatIndex & 1);
+    if (outlinerDrag_) cfg.bandOffsetY = outlinerDrag_->Offset(rrow.flatIndex);
     cfg.zebraColor = ImGui::ColorConvertFloat4ToU32(
         ol::SafeColor(Tok::S_Color_Background_Layer2, ImVec4(0.15f,0.15f,0.15f,1)));
     cfg.bandMarginLeft = ol::BandMargin();
     cfg.cornerRadius = ol::SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * ol::Gs();
+    cfg.bgSplitter = outlinerZebraSplit_;
+    cfg.dragging = outlinerDrag_ && outlinerDrag_->Source() == rrow.flatIndex;
 
     // ── Project root (Collections view; legacy design) ──
     if (rrow.kind == OutlinerRow::Kind::ProjectRoot) {
@@ -596,9 +793,13 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ImGui::PushID((int)rrow.id);
         ol::DotGutter();
         for (int d = 0; d < rrow.depth; ++d) ol::ChevronSpacer();
-        bool open = !o.IsCollapsed(rrow.id);
+        const bool folded = OutlinerFolded(o, rrow.id);
+        bool open = !folded;
         ol::Chevron("##cch", open);
-        if (open == o.IsCollapsed(rrow.id)) o.ToggleCollapsed(rrow.id);
+        // A branch folded only because it is being dragged must not have that
+        // fold written back: the drop has to find the expansion untouched.
+        if (open == folded && rrow.id != outlinerDragColl_)
+            o.ToggleCollapsed(rrow.id);
         ol::SlotSwatch(ImVec4(c->colorTag.r, c->colorTag.g, c->colorTag.b, c->colorTag.a));
         const float nameX = ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs();
         const float eyeSlot = ol::RowH();
@@ -617,7 +818,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
             ImGui::GetWindowDrawList()->AddText(
                 ImVec2(nameX, row.RowTop() + (ol::RowH()-ImGui::GetTextLineHeight())*0.5f),
                 ol::LabelColor(false, !c->visible), label);
-            if (rrow.hasChildren && o.IsCollapsed(rrow.id))
+            if (rrow.hasChildren && folded)
                 OutlinerCollapsedSummary(rrow, nameX + ImGui::CalcTextSize(label).x,
                                          row.RowTop(), eyeX - 4.0f * ol::Gs());
         }
@@ -645,12 +846,9 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
                 o.renaming = rrow.id; o.renameTakeFocus = true;
                 std::snprintf(o.renameBuf, sizeof o.renameBuf, "%s", c->name.c_str());
             } else if (in.clicked) {
-                // A collection is SELECTABLE (legacy): picking it clears the
-                // viewport object selection (synced) and selects the set here.
-                edit_.Clear();
-                o.sel.clear();
-                o.sel.push_back(rrow.id);
-                o.active = rrow.id;
+                // A collection selects like any other row, modifiers included,
+                // and may sit in the same selection as objects.
+                OutlinerSelectClick(rrow.id, /*isObject=*/false);
             }
             // Right-click ONLY opens the menu — never selects (Blender rule).
             if (in.rightClicked) {
@@ -930,6 +1128,15 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         const float sz = row.RowH() * 0.86f;
         const ImVec2 pmin(ImGui::GetCursorScreenPos().x, row.RowTop() + (row.RowH()-sz)*0.5f);
         OutlinerDrawPreview(rrow.id, pmin, ImVec2(pmin.x + sz, pmin.y + sz));
+        // A mask drop frames the THUMBNAIL, and this is the only place its rect
+        // is known for certain (the badge slot and the depth indents make it
+        // impossible to predict from outside).
+        if (outlinerMaskFrameRow_ == rrow.id) {
+            const float m = 2.0f * ol::Gs();
+            OutlinerDrawDropFrame(ImVec2(pmin.x - m, pmin.y - m),
+                                  ImVec2(pmin.x + sz + m, pmin.y + sz + m));
+            outlinerMaskFrameRow_ = Ink::kNullNode;
+        }
         ImGui::Dummy(ImVec2(sz + 6.0f * ol::Gs(), row.RowH()));
         ImGui::SameLine(0.0f, 0.0f);
     } else {
@@ -953,7 +1160,8 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(nameX, row.RowTop() + (row.RowH()-ImGui::GetTextLineHeight())*0.5f),
             ol::LabelColor(selfHit && searching, !n->visible), label);
-        const bool folded = layers ? o.IsCollapsed(rrow.id)
+        const bool folded = rrow.id == outlinerDragObj_ ? true
+                          : layers ? o.IsCollapsed(rrow.id)
                                    : !o.ObjExpanded(rrow.id);
         if (rrow.hasChildren && folded)
             OutlinerCollapsedSummary(rrow, nameX + ImGui::CalcTextSize(label).x,
@@ -1000,8 +1208,9 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         // selecting it.
         if (ObjectPickActive()) { DeliverObjectPick(rrow.id); }
         else {
-            // An object click drops any collection-row / child-row selection.
-            o.sel.clear();
+            // Only the CHILD-row selection is exclusive with an object click;
+            // collection rows are dropped by OutlinerSelectClick itself, and
+            // only when the click actually asks for a fresh selection.
             o.ClearChildSel(); o.activeModifier = -1;
             OutlinerSelectClick(rrow.id, n->kind != Ink::NodeKind::Group);
         }
@@ -1041,6 +1250,35 @@ void Application::OutlinerDrawGuideLines(EditorState& st,
     };
     const float x0 = ol::RowLeft() + ol::BandMargin() + ol::DotGutterW();
 
+    // ── The arrangement the guides describe ─────────────────────────────────
+    // While a row is being dragged the tree it belongs to has ALREADY changed
+    // on screen: one branch is a row shorter, another a row longer. Drawing the
+    // guides from the stored list would leave them spanning the branch the row
+    // is leaving — a line running past its last child, or straight through the
+    // chevron of a parent that just lost one. So they are built on the
+    // PREVIEWED order instead, with the dragged row carried to its destination
+    // depth, and positioned at each row's real animated Y.
+    const std::size_t n = rows.size();
+    std::vector<std::size_t> at(n);      // preview position → stored index
+    std::vector<int> depthAt(n);
+    for (std::size_t i = 0; i < n; ++i) { at[i] = i; depthAt[i] = rows[i].depth; }
+    const bool previewing = outlinerDrag_ && outlinerDrag_->Active();
+    if (previewing) {
+        for (std::size_t i = 0; i < n; ++i) {
+            const int slot = outlinerDrag_->Slot((int)i);
+            if (slot >= 0 && slot < (int)n) at[(std::size_t)slot] = i;
+        }
+        const int srcSlot = outlinerDrag_->Slot(outlinerDrag_->Source());
+        for (std::size_t i = 0; i < n; ++i) depthAt[i] = rows[at[i]].depth;
+        if (outlinerDropDepth_ >= 0 && srcSlot >= 0 && srcSlot < (int)n)
+            depthAt[(std::size_t)srcSlot] = outlinerDropDepth_;
+    }
+    // Where preview position `i` is actually drawn.
+    auto topAt = [&](std::size_t i) {
+        const std::size_t r = at[i];
+        return rowTopY(r) + (previewing ? outlinerDrag_->GapOffset((int)r) : 0.0f);
+    };
+
     const ImU32 solid = ImGui::ColorConvertFloat4ToU32(
         ol::SafeColor(Tok::S_Color_Border_Default, ImVec4(0.4f, 0.4f, 0.4f, 1)));
     const ImU32 dotted = ImGui::ColorConvertFloat4ToU32(
@@ -1050,19 +1288,20 @@ void Application::OutlinerDrawGuideLines(EditorState& st,
         if (last <= parent) return;
         // From under the parent's stripe to the BOTTOM of its last descendant
         // (ol::TreeLine applies the same small inset at both ends).
-        const float ys = rowTopY(parent + 1);
-        const float ye = rowTopY(last) + stripeH;
+        const float ys = topAt(parent + 1);
+        const float ye = topAt(last) + stripeH;
         if (ye < viewTop || ys > viewBot) return;   // fully off-screen
-        const float x = x0 + ((float)rows[parent].depth + 0.5f) * ol::ChevronSlotW();
+        const OutlinerRow& pr = rows[at[parent]];
+        const float x = x0 + ((float)depthAt[parent] + 0.5f) * ol::ChevronSlotW();
         ImU32 col = solid; bool dot = false;
-        switch (rows[parent].kind) {
+        switch (pr.kind) {
             case OutlinerRow::Kind::CollectionHeader:
-                if (const Ink::Collection* c = doc.FindCollection(rows[parent].id))
+                if (const Ink::Collection* c = doc.FindCollection(pr.id))
                     col = ImGui::ColorConvertFloat4ToU32(ImVec4(
                         c->colorTag.r, c->colorTag.g, c->colorTag.b, c->colorTag.a));
                 break;
             case OutlinerRow::Kind::Object: {
-                const Ink::Node* n = doc.Find(rows[parent].id);
+                const Ink::Node* n = doc.Find(pr.id);
                 const bool group = n && n->kind == Ink::NodeKind::Group;
                 if (!layers && !group) { col = dotted; dot = true; }   // parenting
                 break;
@@ -1074,14 +1313,14 @@ void Application::OutlinerDrawGuideLines(EditorState& st,
 
     // One pass: push every row; when depth falls back, close the spans above it.
     std::vector<std::size_t> stack;
-    for (std::size_t i = 1; i < rows.size(); ++i) {
-        while (!stack.empty() && rows[i].depth <= rows[stack.back()].depth) {
+    for (std::size_t i = 1; i < n; ++i) {
+        while (!stack.empty() && depthAt[i] <= depthAt[stack.back()]) {
             emit(stack.back(), i - 1);
             stack.pop_back();
         }
-        if (rows[i].depth > rows[i - 1].depth) stack.push_back(i - 1);
+        if (depthAt[i] > depthAt[i - 1]) stack.push_back(i - 1);
     }
-    while (!stack.empty()) { emit(stack.back(), rows.size() - 1); stack.pop_back(); }
+    while (!stack.empty()) { emit(stack.back(), n - 1); stack.pop_back(); }
 }
 
 // ── Render entry ──────────────────────────────────────────────────────────────
@@ -1162,11 +1401,18 @@ void Application::RenderOutliner(EditorState& st) {
             }
         }
     }
-    // Object and collection selection are EXCLUSIVE: selecting objects
-    // anywhere (viewport click, Shift+click extend, box select) drops any
-    // selected collection rows — the two never read as selected together.
-    if (!edit_.selection.empty() && !st.outliner.sel.empty())
-        st.outliner.sel.clear();
+    // A selection made HERE may hold objects and collections at once. One made
+    // anywhere else — a viewport click, a box select — cannot know about
+    // collection rows, so it drops them rather than leaving a stale half of a
+    // selection the user can no longer see the origin of.
+    {
+        OutlinerState& o = st.outliner;
+        uint64_t sig = (uint64_t)edit_.selection.size() * 1000003ull;
+        for (Ink::NodeId id : edit_.selection) sig ^= id * 0x9E3779B97F4A7C15ull;
+        if (sig != o.objSig && !o.objSelfEdit) o.sel.clear();
+        o.objSig = sig;
+        o.objSelfEdit = false;
+    }
 
     // While the sync-picking gesture is (or was, this frame) active, every row
     // is input-inert: the cancelling right-click / Esc must ONLY cancel the
@@ -1192,6 +1438,18 @@ void Application::RenderOutliner(EditorState& st) {
     // ── Pass 1: flatten ──
     std::vector<OutlinerRow> rows;
     rows.reserve(256);
+    // Which collection is in flight, read straight off the live payload: the
+    // row list has to be built already folded, before anything is drawn.
+    outlinerDragColl_ = Ink::kNullNode;
+    outlinerDragObj_  = Ink::kNullNode;
+    if (const ImGuiPayload* dp = ImGui::GetDragDropPayload()) {
+        if (dp->Data && dp->DataSize == (int)sizeof(Ink::NodeId)) {
+            const Ink::NodeId id = *(const Ink::NodeId*)dp->Data;
+            if (dp->IsDataType("OUTLINER_COLL")) outlinerDragColl_ = id;
+            else if (dp->IsDataType("OUTLINER_OBJ") &&
+                     OutlinerDraggedIds(id).size() == 1) outlinerDragObj_ = id;
+        }
+    }
     OutlinerBuildRows(st, rows);
 
     // ── Pass 2: windowed draw ──
@@ -1226,25 +1484,62 @@ void Application::RenderOutliner(EditorState& st) {
                 }
         }
 
-        for (std::size_t i = 0; i < rows.size(); ++i) {
-            const float rowTop = startY + (float)i * stripeH;
-            const float rowBot = rowTop + stripeH;
-            // Cull rows fully outside the visible window: advance the cursor
-            // only (one Dummy), do NOT build the row.
-            if (rowBot < viewTop - stripeH || rowTop > viewBot + stripeH) {
+        // Live reorder: while a row is dragged its band follows the cursor and
+        // the others slide to open the slot it will land in. The gesture stays
+        // ImGui's — this only draws it.
+        UI::RowDrag drag("##outlinerRows", (int)rows.size(), stripeH);
+        outlinerDrag_ = &drag;
+        outlinerDropDepth_ = -1;   // republished by whichever target is hovered
+        outlinerMaskFrameRow_ = Ink::kNullNode;
+        // The grabbed row goes LAST so its floating band passes OVER its
+        // neighbours rather than under the rows drawn after it.
+        const int grabbed = drag.Source();
+        // Every zebra stripe goes down before any row band, so a row sliding
+        // into a neighbouring stripe passes OVER it rather than behind it.
+        ImDrawListSplitter zsplit;
+        zsplit.Split(ImGui::GetWindowDrawList(), 2);
+        zsplit.SetCurrentChannel(ImGui::GetWindowDrawList(), 1);
+        outlinerZebraSplit_ = &zsplit;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (std::size_t i = 0; i < rows.size(); ++i) {
+                if ((pass == 1) != ((int)i == grabbed)) continue;
+                const float rowTop = startY + (float)i * stripeH;
+                const float rowBot = rowTop + stripeH;
+                // Cull rows fully outside the visible window: advance the cursor
+                // only (one Dummy), do NOT build the row. The grabbed row is
+                // never culled — it is under the cursor by definition.
+                if ((int)i != grabbed &&
+                    (rowBot < viewTop - stripeH || rowTop > viewBot + stripeH)) {
+                    ImGui::SetCursorPosY(rowTop);
+                    ImGui::Dummy(ImVec2(1.0f, stripeH));
+                    continue;
+                }
                 ImGui::SetCursorPosY(rowTop);
-                ImGui::Dummy(ImVec2(1.0f, stripeH));
-                UI::ListRowAdvanceZebra();   // keep parity in step with row index
-                continue;
+                OutlinerDrawRow(st, rows[i], stripeH);
             }
-            ImGui::SetCursorPosY(rowTop);
-            OutlinerDrawRow(st, rows[i], stripeH);
         }
+        drag.End();
+        outlinerZebraSplit_ = nullptr;
+        zsplit.Merge(ImGui::GetWindowDrawList());
         // Reserve the full content height so the scrollbar range is correct.
         ImGui::SetCursorPosY(startY + (float)rows.size() * stripeH);
         ImGui::Dummy(ImVec2(1.0f, 1.0f));
         UI::ListRowSetBandScale(1.0f);
+        // The opened slot, in the exact shape of a row band.
+        if (drag.Active()) {
+            ImGuiWindow* w = ImGui::GetCurrentWindow();
+            const float bandH = UI::ListRowBandHeight();
+            const float y = ImGui::GetWindowPos().y - ImGui::GetScrollY() +
+                            startY + (float)drag.Source() * stripeH +
+                            drag.GapOffset(drag.Source()) + 1.0f;
+            UI::RowDrag::DrawSlot(
+                ImGui::GetWindowDrawList(),
+                ImVec2(w->WorkRect.Min.x + ol::BandMargin(), y),
+                ImVec2(w->WorkRect.Max.x, y + bandH),
+                ol::SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * ol::Gs());
+        }
         OutlinerDrawGuideLines(st, rows, startY, stripeH);
+        outlinerDrag_ = nullptr;
 
         // Empty-space clicks (only when the pointer isn't over a row). Never act
         // while ANY ImGui popup is open (a colour picker / dropdown from another

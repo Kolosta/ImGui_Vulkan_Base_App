@@ -54,6 +54,25 @@ struct ListRowConfig {
     bool    active    = false;
     float   bandMarginLeft = 0.0f;  // left inset of the coloured band + content
     float   cornerRadius   = 0.0f;
+    // Slides the coloured band AND the row's content, leaving the zebra stripe
+    // and the hit zone where they are. This is what a live reorder moves: the
+    // stripe is a ruling of the list, not part of the item, so the row a user
+    // has picked up leaves an empty stripe behind and the rows stepping aside
+    // slide within a pattern that stays still. See UI/Widgets/RowDrag.h.
+    float   bandOffsetY    = 0.0f;
+    // When set, the zebra STRIPE is drawn into channel 0 of this splitter and
+    // everything else into channel 1. A displaced row would otherwise slide
+    // UNDER the stripe of a row drawn after it and disappear: the stripes are
+    // one continuous ruling of the list, so they all have to be laid down
+    // before any row's band. The caller owns the splitter (one Split / Merge
+    // around the whole list) - see UI/Widgets/RowDrag.h.
+    ImDrawListSplitter* bgSplitter = nullptr;
+    // This row is the one being carried. It keeps its selected colour if it had
+    // one and takes a neutral fill if it had none - a row with no background at
+    // all reads as nothing being picked up - and both go SEE-THROUGH, so an
+    // insertion line or the rows underneath stay readable while it passes over
+    // them. Colours and opacity are token-driven (component.list-row.drag.*).
+    bool    dragging = false;
     ListRowColors colors;
     // Mouse buttons the hit zone reacts to.
     bool    wantRightClick = true;

@@ -216,7 +216,10 @@ void Application::RegisterCoreEditors() {
         d.id = CoreEditor::Info; d.name = "Info"; d.icon = "format-align-left";
         d.column = 2; d.themeScope = "editors/info";
         d.switchAction = "editor.info";
-        d.wrapInScroll = false;
+        // The feed draws the shared zebra rows, which run edge to edge: an
+        // editor inset would leave a strip of panel down the left of every
+        // stripe.
+        d.wrapInScroll = false; d.contentInset = false;
         d.draw = [this](ImVec2, EditorState&) { RenderInfoEditor(); };
         reg.Register(std::move(d));
     }

@@ -171,9 +171,9 @@ void Application::BeginTransform(TransformOp::Kind kind, EditorState& st) {
             if (const Ink::Node* n = doc.Find(id))
                 transformOp_.nodes.push_back({ id, n->transform });
     }
-    const char* name = kind == TransformOp::Kind::Move ? "Move"
-                     : kind == TransformOp::Kind::Rotate ? "Rotate" : "Scale";
-    LogInfoAction(name);
+    // Nothing is logged here: a transform is only worth a line once it has a
+    // RESULT, and that is ConfirmTransform's business.
+    (void)kind;
 }
 
 // Release the capture and land the OS cursor where the DISPLAYED cursor was
@@ -337,11 +337,92 @@ void Application::UpdateTransform(const ViewCam& cam) {
     }
 }
 
+// Everything a transform did, in the terms the user set it up in: which items,
+// from where to where, about which pivot, in which frame, along which axis.
+// Display only — the undo command carries the transforms themselves.
+void Application::LogTransform(const char* label) {
+    if (!project_.document) return;
+    Ink::Document& doc = *project_.document;
+    const TransformOp& op = transformOp_;
+    auto pt = [](Ink::DVec2 v) {
+        char b[80]; std::snprintf(b, sizeof b, "(%.3f, %.3f) mm", v.x, v.y);
+        return std::string(b);
+    };
+    auto num = [](double v, const char* unit) {
+        char b[48]; std::snprintf(b, sizeof b, "%.4g%s", v, unit);
+        return std::string(b);
+    };
+
+    InfoFields f;
+    if (op.editVerts) {
+        const Ink::Node* n = doc.Find(op.editNode);
+        f.push_back({ "mode", "Edit (path anchors)" });
+        f.push_back({ "object", n && !n->name.empty() ? n->name : "(unnamed)" });
+        f.push_back({ "anchors", std::to_string(edit_.elemSel.size()) + " selected" });
+    } else {
+        std::vector<Ink::NodeId> ids;
+        for (const auto& o : op.nodes) ids.push_back(o.id);
+        f.push_back({ "mode", "Object" });
+        f.push_back({ "items", DescribeNodes(ids) });
+        if (ids.size() > 1) {
+            std::string names;
+            for (std::size_t i = 0; i < ids.size() && i < 12; ++i) {
+                if (i) names += ", ";
+                const Ink::Node* n = doc.Find(ids[i]);
+                names += n && !n->name.empty() ? n->name : "(unnamed)";
+            }
+            if (ids.size() > 12) names += ", …";
+            f.push_back({ "names", names });
+        }
+        // The actual result, read off the document rather than off the gesture:
+        // property locks may have refused part of it, and the log must say what
+        // HAPPENED, not what was asked for.
+        if (!op.nodes.empty()) {
+            const Ink::Transform2D& b0 = op.nodes[0].t;
+            const Ink::Node* n0 = doc.Find(op.nodes[0].id);
+            if (n0) {
+                const Ink::Transform2D& a0 = n0->transform;
+                if (op.kind == TransformOp::Kind::Move) {
+                    f.push_back({ "from", pt({ b0.tx, b0.ty }) });
+                    f.push_back({ "to",   pt({ a0.tx, a0.ty }) });
+                    f.push_back({ "delta", pt({ a0.tx - b0.tx, a0.ty - b0.ty }) });
+                } else if (op.kind == TransformOp::Kind::Rotate) {
+                    const double deg = (a0.rotation - b0.rotation) * 180.0 / 3.14159265358979;
+                    f.push_back({ "angle", num(deg, "°") });
+                    f.push_back({ "from", num(b0.rotation * 180.0 / 3.14159265358979, "°") });
+                    f.push_back({ "to",   num(a0.rotation * 180.0 / 3.14159265358979, "°") });
+                } else {
+                    const double fx = b0.sx != 0.0 ? a0.sx / b0.sx : 1.0;
+                    const double fy = b0.sy != 0.0 ? a0.sy / b0.sy : 1.0;
+                    char b[80]; std::snprintf(b, sizeof b, "%.4g × %.4g", fx, fy);
+                    f.push_back({ "factor", b });
+                    std::snprintf(b, sizeof b, "%.4g × %.4g", a0.sx, a0.sy);
+                    f.push_back({ "to scale", b });
+                }
+            }
+        }
+    }
+    f.push_back({ "pivot", pt(op.pivot) });
+    const char* orient =
+        edit_.orientation == TransformOrientation::Local  ? "Local" :
+        edit_.orientation == TransformOrientation::Parent ? "Parent" :
+        edit_.orientation == TransformOrientation::View   ? "View" :
+        edit_.orientation == TransformOrientation::Cursor ? "Cursor" : "Global";
+    f.push_back({ "orientation", orient });
+    f.push_back({ "axis", op.axis < 0 ? "free" : (op.axis == 0 ? "X" : "Y") });
+
+    const std::string api = std::string("transform.") +
+        (transformOp_.kind == TransformOp::Kind::Move ? "translate"
+       : transformOp_.kind == TransformOp::Kind::Rotate ? "rotate" : "resize");
+    LogInfoAction(label, api, f);
+}
+
 void Application::ConfirmTransform() {
     if (!transformOp_.Active() || !project_.document) return;
     Ink::Document& doc = *project_.document;
     const char* label = transformOp_.kind == TransformOp::Kind::Move ? "Move"
                       : transformOp_.kind == TransformOp::Kind::Rotate ? "Rotate" : "Scale";
+    LogTransform(label);
 
     if (transformOp_.editVerts) {
         const Ink::Node* n = doc.Find(transformOp_.editNode);

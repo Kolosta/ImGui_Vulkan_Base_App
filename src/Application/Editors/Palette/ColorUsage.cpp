@@ -248,7 +248,11 @@ void Application::RenderColorUsage(EditorState& st) {
     }
 
     // ── Pass 2: windowed draw, exactly the Outliner's loop ───────────────────
-    if (!UI::BeginScroll("##colorUsageScroll", ImVec2(0, 0))) return;
+    // EndScroll must run even when the child is culled: BeginScroll always
+    // opened a BeginChild, and returning without closing it leaves the whole
+    // zone/layout child stack misaligned — the layout then ends the wrong
+    // window and ImGui asserts several frames later, in a different editor.
+    if (!UI::BeginScroll("##colorUsageScroll", ImVec2(0, 0))) { UI::EndScroll(); return; }
 
     UI::ListRowResetZebra();
     UI::ListRowSetBandScale(1.0f);   // the Outliner's Layers view raises it

@@ -38,6 +38,13 @@ struct OutlinerState {
     // shared EditContext; these rows have no document-selection home. ──
     std::vector<uint64_t> sel;         // selected collection / page ids
     uint64_t              active = 0;  // last-clicked row (any kind)
+    // Objects and collections MAY be selected together, but only when this
+    // Outliner built both. The document selection is shared and can change from
+    // anywhere - a viewport click, a box select - and such a change still drops
+    // the collection rows, which would otherwise linger as a phantom selection
+    // nobody asked for. The signature is how the two are told apart.
+    uint64_t objSig = 0;               // last seen document-selection signature
+    bool     objSelfEdit = false;      // this Outliner changed it this frame
     int  activeModifier = -1;          // modifier row picked (Properties focus)
 
     // ── Selected CHILD row (Collections view): a modifier or linked-data row
@@ -88,6 +95,11 @@ struct OutlinerState {
     bool RowSelected(uint64_t id) const {
         for (uint64_t s : sel) if (s == id) return true;
         return false;
+    }
+    void SelAdd(uint64_t id)    { if (!RowSelected(id)) sel.push_back(id); }
+    void SelRemove(uint64_t id) {
+        for (std::size_t i = 0; i < sel.size(); ++i)
+            if (sel[i] == id) { sel.erase(sel.begin() + (long)i); return; }
     }
     bool ObjExpanded(uint64_t id) const { return expandedObjects.count(id) != 0; }
     void ToggleObjExpanded(uint64_t id) {

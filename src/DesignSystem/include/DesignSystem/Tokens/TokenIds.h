@@ -1523,6 +1523,10 @@ enum class Tok : std::uint32_t {
     C_Outliner_Row_SelectedHover,   // selected + hovered row bg
     C_Outliner_Row_Active,          // selected + active row bg
     C_Outliner_Row_ActiveHover,     // selected + active + hovered row bg
+    C_ListRow_ReorderDuration,      // reorder slide anim, ms (shared list rows)
+    C_ListRow_DragFill,             // carried row bg when it is NOT selected
+    C_ListRow_DragAlpha,            // carried row opacity (see-through)
+    C_ListRow_DropSlot,             // the opened landing slot's fill
     C_Outliner_Text,                // default row label colour
     C_Outliner_TreeLineInset,       // top/bottom inset of the vertical tree guide line (px)
     C_Outliner_Search_Visual,       // search: a matched-but-idle row bg (faint)
@@ -3052,6 +3056,10 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Outliner_Row_SelectedHover:   return "component.outliner.row.background.selected-hover";
         case Tok::C_Outliner_Row_Active:          return "component.outliner.row.background.active";
         case Tok::C_Outliner_Row_ActiveHover:     return "component.outliner.row.background.active-hover";
+        case Tok::C_ListRow_ReorderDuration:      return "component.list-row.reorder.duration";
+        case Tok::C_ListRow_DragFill:             return "component.list-row.drag.background";
+        case Tok::C_ListRow_DragAlpha:            return "component.list-row.drag.opacity";
+        case Tok::C_ListRow_DropSlot:             return "component.list-row.drop-slot.background";
         case Tok::C_Outliner_Text:                return "component.outliner.row.text.default";
         case Tok::C_Outliner_TreeLineInset:       return "component.outliner.tree-line.inset.default";
         case Tok::C_Outliner_Search_Visual:       return "component.outliner.row.search.background.visual";

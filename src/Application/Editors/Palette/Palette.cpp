@@ -75,6 +75,36 @@ std::string OrderLabel(const Ink::Swatch& sw, int rank, int total) {
 }
 }  // namespace
 
+// The preview for a multi-colour drag: shaped like the rows it stands for —
+// same height, same radius, the selected colour at the carried-row opacity —
+// but only as wide as the count it has to say.
+void Application::PaletteDragTooltip(int count) {
+    const float gs = tr::Gs(), h = tr::RowH();
+    const float pad = 8.0f * gs;
+    char txt[48];
+    std::snprintf(txt, sizeof txt, "%d colours", count);
+    const ImVec2 ts = ImGui::CalcTextSize(txt);
+    const float w = ts.x + pad * 2.0f;
+
+    ImVec4 fill = tr::SafeColor(Tok::C_Outliner_Row_Selected,
+                                ImVec4(0.2f, 0.4f, 0.7f, 1));
+    float ghost = 0.55f;
+    try { ghost = DS::DesignSystem::Instance().GetFloat(Tok::C_ListRow_DragAlpha); }
+    catch (...) {}
+    fill.w *= ghost;
+
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, ImVec2(p0.x + w, p0.y + h),
+                      ImGui::ColorConvertFloat4ToU32(fill),
+                      tr::SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * gs);
+    dl->AddText(ImVec2(p0.x + pad, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f),
+                ImGui::ColorConvertFloat4ToU32(
+                    tr::SafeColor(Tok::S_Color_Text_Default, ImVec4(0.9f,0.9f,0.9f,1))),
+                txt);
+    ImGui::Dummy(ImVec2(w, h));
+}
+
 void Application::RenderPalette(EditorState& st) {
     (void)st;
     if (!project_.document) {
@@ -116,8 +146,8 @@ void Application::RenderPalette(EditorState& st) {
     // ── Add a free colour (applied AFTER the loop — see above) ───────────────
     // Filled by a drop; applied after the loop so the table is stable while
     // it is being walked.
-    Ink::SwatchId dropSrc = Ink::kNullSwatch, dropDst = Ink::kNullSwatch;
-    bool dropAbove = false;
+    Ink::SwatchId dropSrc = Ink::kNullSwatch;
+    int  dropBoundary = -1;
     bool addColour = false;
     {
         // The rows run flush to the editor edges (no content inset), so this
@@ -134,9 +164,51 @@ void Application::RenderPalette(EditorState& st) {
     }
     ImGui::Dummy(ImVec2(1.0f, 4.0f * gs));
 
-    int rank = 0, rowIndex = 0;
+    // -- Live reorder --------------------------------------------------------
+    const int nRows = (int)ordered.size();
+    UI::RowDrag drag("##paletteRows", nRows, UI::ListRowStripeHeight());
+    if ((int)paletteRowH_.size() == nRows)
+        drag.SetRowHeights(paletteRowH_.data(), nRows);
+    const int grabbed = drag.Source();
+    // Rows only need placing by hand while one is grabbed: the held row is
+    // drawn LAST so it passes over its neighbours, which breaks the natural
+    // top-to-bottom flow. Idle, the list flows as it always did.
+    const float listTopY = ImGui::GetCursorScreenPos().y;
+    const bool placeByHand = grabbed >= 0 && (int)paletteRowH_.size() == nRows;
+    std::vector<float> rowTop((std::size_t)nRows + 1, listTopY);
+    if (placeByHand)
+        for (int k = 0; k < nRows; ++k)
+            rowTop[(std::size_t)k + 1] = rowTop[(std::size_t)k] +
+                                         paletteRowH_[(std::size_t)k];
+
+    std::vector<int> order;
+    order.reserve((std::size_t)nRows);
+    for (int k = 0; k < nRows; ++k) if (k != grabbed) order.push_back(k);
+    if (grabbed >= 0) order.push_back(grabbed);
+
+    // One splitter for the WHOLE list: channel 0 takes every zebra stripe (and
+    // the band an expanded entry continues below its header), channel 1 takes
+    // the rows. A row displaced by a drag would otherwise slide under the
+    // stripe of a row drawn after it and vanish. ImGui cannot nest splitters,
+    // so this one also does the job the old per-row split did.
+    ImDrawList* pdl = ImGui::GetWindowDrawList();
+    ImDrawListSplitter zsplit;
+    zsplit.Split(pdl, 2);
+    zsplit.SetCurrentChannel(pdl, 1);
+
+    std::vector<float> rowH((std::size_t)nRows, UI::ListRowStripeHeight());
     Ink::SwatchId remove = Ink::kNullSwatch;
-    for (const Ink::Swatch& cur : ordered) {
+    for (int rowIndex : order) {
+        // Rank counts the plate stack from the top, by INDEX - the loop no
+        // longer runs in index order.
+        int rank = 0;
+        for (int k = 0; k < rowIndex; ++k)
+            if (ordered[(std::size_t)k].hasPrintOrder) ++rank;
+        if (placeByHand)
+            ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCurrentWindow()->WorkRect.Min.x,
+                                             rowTop[(std::size_t)rowIndex]));
+        const float rowY0 = ImGui::GetCursorScreenPos().y;
+        const Ink::Swatch& cur = ordered[(std::size_t)rowIndex];
         Ink::Swatch sw = cur;                  // edit a copy, commit on change
         const Ink::SwatchId id = sw.id;
         bool changed = false;
@@ -150,11 +222,14 @@ void Application::RenderPalette(EditorState& st) {
         // extension painted below, in the same shade.
         cfg.zebraOdd = (rowIndex & 1) != 0;
         cfg.zebraColor = zebra;
+        cfg.bandOffsetY = drag.Offset(rowIndex);
+        cfg.bgSplitter = &zsplit;
+        cfg.dragging = (rowIndex == grabbed);
         cfg.bandMarginLeft = tr::BandMargin();
         cfg.cornerRadius = tr::SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * gs;
         // The last colour picked stays lit, so a row that moves when its print
         // order changes is still findable.
-        cfg.selected = paletteSel_ == id;
+        cfg.selected = PaletteSelected(id);
         cfg.active   = paletteSel_ == id;
         {
             ImVec4 hov = tr::SafeColor(Tok::C_Outliner_Row_Hover,
@@ -175,10 +250,6 @@ void Application::RenderPalette(EditorState& st) {
                               ImVec4(0.35f, 0.55f, 0.85f, 1)));
         }
         const bool striped = (rowIndex & 1) != 0;
-        ++rowIndex;
-        ImDrawList* edl = ImGui::GetWindowDrawList();
-        edl->ChannelsSplit(2);
-        edl->ChannelsSetCurrent(1);
 
         // The row is SCOPED: its destructor rewinds the cursor to just past the
         // band, which would swallow the expanded body's height and let the next
@@ -196,9 +267,17 @@ void Application::RenderPalette(EditorState& st) {
         // the drop preview never appears there.
         {
             constexpr const char* kPal = "PALETTE_SWATCH";
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceAllowNullID)) {
+            // A row inside the selection drags the WHOLE selection. Several
+            // rows cannot be one moving row, so - exactly as in the Outliner -
+            // a multi drag keeps the older language: a preview of what is being
+            // carried, and an insertion line for where it will go.
+            const bool multi = PaletteSelected(id) && paletteSelMulti_.size() > 1;
+            if (ImGui::BeginDragDropSource(
+                    ImGuiDragDropFlags_SourceAllowNullID |
+                    (multi ? 0 : ImGuiDragDropFlags_SourceNoPreviewTooltip))) {
                 ImGui::SetDragDropPayload(kPal, &id, sizeof id);
-                ImGui::TextUnformatted(sw.name.c_str());
+                if (!multi) drag.SetSource(rowIndex);
+                else PaletteDragTooltip((int)paletteSelMulti_.size());
                 ImGui::EndDragDropSource();
             }
             const ImRect stripe(ImVec2(tr::RowLeft(), row.StripeTop()),
@@ -212,22 +291,34 @@ void Application::RenderPalette(EditorState& st) {
                         ImGui::AcceptDragDropPayload(kPal, kPeek)) {
                     const Ink::SwatchId src = *(const Ink::SwatchId*)pl->Data;
                     const Ink::Swatch* ss = doc.FindSwatch(src);
-                    const bool sameGroup =
-                        ss && ss->hasPrintOrder == sw.hasPrintOrder;
-                    if (sameGroup && src != id) {
-                        // Insertion line on the half the cursor is nearer.
+                    if (ss && src != id) {
                         const float mid = (row.StripeTop() + row.StripeBottom()) * 0.5f;
                         const bool above = ImGui::GetIO().MousePos.y < mid;
-                        const float y = above ? row.StripeTop() : row.StripeBottom();
-                        ImGui::GetWindowDrawList()->AddLine(
-                            ImVec2(stripe.Min.x, y), ImVec2(stripe.Max.x, y),
-                            ImGui::ColorConvertFloat4ToU32(tr::SafeColor(
-                                Tok::S_Color_Accent_Default,
-                                ImVec4(1, 0.6f, 0.2f, 1))),
-                            std::max(2.0f, 2.0f * gs));
-                        if (pl->IsDelivery()) {
-                            dropSrc = src; dropDst = id; dropAbove = above;
+                        int b = rowIndex + (above ? 0 : 1);
+                        // The stack and the free colours are two separate
+                        // ORDERS and never mix: one is ranked by print order,
+                        // the other only by its place in the table, and a drop
+                        // must not silently grant or revoke a print order. A
+                        // boundary in the wrong half is therefore pulled to the
+                        // nearest legal one - the bottom of the stack, or the
+                        // top of the free colours - and the row slides there
+                        // rather than refusing to move at all.
+                        b = std::clamp(b, ss->hasPrintOrder ? 0 : stackTotal,
+                                          ss->hasPrintOrder ? stackTotal : nRows);
+                        drag.SetLandingAtBoundary(b);
+                        // Nothing moved aside means nothing is showing where
+                        // the drop lands, so the line has to say it.
+                        if (!drag.Active()) {
+                            const float y = (b <= rowIndex) ? row.StripeTop()
+                                                            : row.StripeBottom();
+                            ImGui::GetWindowDrawList()->AddLine(
+                                ImVec2(stripe.Min.x, y), ImVec2(stripe.Max.x, y),
+                                ImGui::ColorConvertFloat4ToU32(tr::SafeColor(
+                                    Tok::S_Color_Notice_Default,
+                                    ImVec4(0.95f, 0.55f, 0.15f, 1))),
+                                std::max(2.0f, 2.0f * gs));
                         }
+                        if (pl->IsDelivery()) { dropSrc = src; dropBoundary = b; }
                     }
                 }
                 ImGui::EndDragDropTarget();
@@ -269,7 +360,40 @@ void Application::RenderPalette(EditorState& st) {
         // left, THIS is where the next row (or this one's body) begins.
         ImGui::SetCursorScreenPos(
             ImVec2(ImGui::GetCurrentWindow()->WorkRect.Min.x, stripeBot));
-        if (clicked) paletteSel_ = id;
+        if (clicked) {
+            // Same modifiers as the Outliner, over the list AS DISPLAYED - a
+            // Shift range means the rows between the two, whatever group they
+            // belong to; the drag is what enforces the group rule, not this.
+            ImGuiIO& io = ImGui::GetIO();
+            int ia = -1, ib = -1;
+            for (int k = 0; k < nRows; ++k) {
+                if (ordered[(std::size_t)k].id == paletteSel_) ia = k;
+                if (ordered[(std::size_t)k].id == id)          ib = k;
+            }
+            if (io.KeyShift && ia >= 0 && ib >= 0) {
+                if (ia > ib) std::swap(ia, ib);
+                paletteSelMulti_.clear();
+                for (int k = ia; k <= ib; ++k)
+                    paletteSelMulti_.push_back(ordered[(std::size_t)k].id);
+            } else if (io.KeyCtrl) {
+                if (PaletteSelected(id)) {
+                    for (std::size_t k = 0; k < paletteSelMulti_.size(); ++k)
+                        if (paletteSelMulti_[k] == id) {
+                            paletteSelMulti_.erase(paletteSelMulti_.begin() + (long)k);
+                            break;
+                        }
+                } else {
+                    paletteSelMulti_.push_back(id);
+                }
+                paletteSel_ = id;
+            } else if (io.KeyAlt) {
+                if (!PaletteSelected(id)) paletteSelMulti_.push_back(id);
+                paletteSel_ = id;
+            } else {
+                paletteSelMulti_.assign(1, id);
+                paletteSel_ = id;
+            }
+        }
         if (sw.hasPrintOrder) ++rank;
 
         // One band for the WHOLE entry, edge to edge and square-cornered: the
@@ -278,19 +402,24 @@ void Application::RenderPalette(EditorState& st) {
         auto paintBand = [&]() {
             // ListRow already drew the header stripe; this only continues that
             // shade DOWN over an expanded body, edge to edge and square, so the
-            // detail reads as part of its row.
+            // detail reads as part of its row. Same background channel as the
+            // stripes, for the same reason.
             if (striped && paletteOpen_.count(id)) {
                 ImGuiWindow* w = ImGui::GetCurrentWindow();
-                edl->ChannelsSetCurrent(0);
-                edl->AddRectFilled(ImVec2(w->WorkRect.Min.x, stripeBot),
+                zsplit.SetCurrentChannel(pdl, 0);
+                pdl->AddRectFilled(ImVec2(w->WorkRect.Min.x, stripeBot),
                                    ImVec2(w->WorkRect.Max.x +
                                               ImGui::GetStyle().ScrollbarSize,
                                           ImGui::GetCursorScreenPos().y),
                                    zebra);
+                zsplit.SetCurrentChannel(pdl, 1);
             }
-            edl->ChannelsMerge();
         };
-        if (!paletteOpen_.count(id)) { paintBand(); continue; }
+        if (!paletteOpen_.count(id)) {
+            paintBand();
+            rowH[(std::size_t)rowIndex] = ImGui::GetCursorScreenPos().y - rowY0;
+            continue;
+        }
 
         // ── Expanded body, on the row's own zebra shade ──────────────────────
         ImGui::PushID((int)cfg.id + 1);
@@ -404,20 +533,100 @@ void Application::RenderPalette(EditorState& st) {
 
         paintBand();
         if (changed) { doc.SetSwatch(id, sw); MarkDirty(); }
+        rowH[(std::size_t)rowIndex] = ImGui::GetCursorScreenPos().y - rowY0;
     }
-    if (dropSrc && dropDst) {
+    // Past either end of the list the colour lands at that end, still inside
+    // its own group: dragging beyond the last row is an instruction to go as
+    // far as possible, not a miss that should leave the gap where it was.
+    if (drag.Active() && nRows > 0) {
+        const float top = rowTop[0], bot = rowTop[(std::size_t)nRows];
+        const float big = 1.0e4f;
+        struct End { ImRect r; int boundary; ImGuiID id; };
+        const End ends[2] = {
+            { ImRect(ImVec2(tr::RowLeft(), top - big), ImVec2(tr::RowRight(), top)),
+              0, ImGui::GetID("##palEndTop") },
+            { ImRect(ImVec2(tr::RowLeft(), bot), ImVec2(tr::RowRight(), bot + big)),
+              nRows, ImGui::GetID("##palEndBot") },
+        };
+        for (const End& e : ends) {
+            if (!ImGui::BeginDragDropTargetCustom(e.r, e.id)) continue;
+            constexpr ImGuiDragDropFlags kPeek =
+                ImGuiDragDropFlags_AcceptBeforeDelivery |
+                ImGuiDragDropFlags_AcceptNoDrawDefaultRect;
+            if (const ImGuiPayload* pl =
+                    ImGui::AcceptDragDropPayload("PALETTE_SWATCH", kPeek)) {
+                const Ink::SwatchId src = *(const Ink::SwatchId*)pl->Data;
+                if (const Ink::Swatch* ss = doc.FindSwatch(src)) {
+                    const int b2 = std::clamp(e.boundary,
+                                              ss->hasPrintOrder ? 0 : stackTotal,
+                                              ss->hasPrintOrder ? stackTotal : nRows);
+                    drag.SetLandingAtBoundary(b2);
+                    if (pl->IsDelivery()) { dropSrc = src; dropBoundary = b2; }
+                }
+            }
+            ImGui::EndDragDropTarget();
+        }
+    }
+    if (drag.Active()) {
+        ImGuiWindow* w = ImGui::GetCurrentWindow();
+        const float y = rowTop[(std::size_t)drag.Source()] +
+                        drag.GapOffset(drag.Source()) + 1.0f;
+        UI::RowDrag::DrawSlot(
+            pdl, ImVec2(w->WorkRect.Min.x + tr::BandMargin(), y),
+            ImVec2(w->WorkRect.Max.x, y + UI::ListRowBandHeight()),
+            tr::SafeFloat(Tok::S_CornerRadius_Control, 4.0f) * gs);
+    }
+    drag.End();
+    zsplit.Merge(pdl);
+    paletteRowH_ = rowH;
+    // Placing rows by hand leaves the cursor wherever the LAST-drawn row ended
+    // - the grabbed one, which is anywhere. Put it back at the true bottom so
+    // the scroll range still covers the list.
+    if (placeByHand) {
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCurrentWindow()->WorkRect.Min.x,
+                                         rowTop[(std::size_t)nRows]));
+        // ImGui refuses to let a bare SetCursorScreenPos grow the parent: an
+        // item has to validate the new extent. Without this the scroll area
+        // asserts the moment a row is dragged past the end of the list.
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    }
+    if (dropSrc && dropBoundary >= 0) {
         // Rebuild the dragged colour's GROUP in its new visual order, then
-        // write that order back the way that group is actually ranked.
+        // write that order back the way that group is actually ranked. The
+        // boundary is an index into the WHOLE list, so it converts to a
+        // position in the group by counting the group members ahead of it.
         const bool stacked = [&] {
             const Ink::Swatch* s2 = doc.FindSwatch(dropSrc);
             return s2 && s2->hasPrintOrder;
         }();
+        // Everything carried that belongs to the dragged colour's group moves
+        // with it, keeping the order it already had. A selection spanning both
+        // groups only moves the half that legally can — the other half has a
+        // different ranking and no place in this one.
+        std::vector<Ink::SwatchId> moving;
+        if (PaletteSelected(dropSrc)) {
+            for (int k = 0; k < nRows; ++k) {
+                const Ink::Swatch& sw2 = ordered[(std::size_t)k];
+                if (sw2.hasPrintOrder == stacked && PaletteSelected(sw2.id))
+                    moving.push_back(sw2.id);
+            }
+        }
+        if (moving.empty()) moving.push_back(dropSrc);
+        auto carried = [&](Ink::SwatchId x) {
+            for (Ink::SwatchId m : moving) if (m == x) return true;
+            return false;
+        };
         std::vector<Ink::SwatchId> group;
-        for (const Ink::Swatch& sw2 : ordered)
-            if (sw2.hasPrintOrder == stacked && sw2.id != dropSrc)
+        int at = (int)ordered.size();
+        for (int k = 0; k < nRows; ++k) {
+            if (k == dropBoundary) at = (int)group.size();
+            const Ink::Swatch& sw2 = ordered[(std::size_t)k];
+            if (sw2.hasPrintOrder == stacked && !carried(sw2.id))
                 group.push_back(sw2.id);
-        const auto at = std::find(group.begin(), group.end(), dropDst);
-        group.insert(dropAbove ? at : (at == group.end() ? at : at + 1), dropSrc);
+        }
+        if (dropBoundary >= nRows) at = (int)group.size();
+        at = std::min(at, (int)group.size());
+        group.insert(group.begin() + at, moving.begin(), moving.end());
         if (stacked) {
             // The list runs top plate first, so the first entry gets the
             // HIGHEST order — it is the one laid down last.
