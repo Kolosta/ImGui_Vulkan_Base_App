@@ -239,21 +239,27 @@ void Application::DrawFillsStackBody(
             const int nF = (int)style.fills.size();
             pr::VReorder rr("##fillRail", nF, cellH);
             const int grabbed = rr.Grabbed();
+            // The rail reads like the stack it describes: TOP of the list =
+            // top of the paint. The vector runs the other way (index 0 is laid
+            // down first, which is what the renderer and the file both expect),
+            // so only the DISPLAY is flipped — row r shows fill nF-1-r.
+            auto dataOf = [nF](int row) { return nF - 1 - row; };
             for (int i = 0; i < nF; ++i) {
-                ImGui::PushID(i);
-                const Ink::Fill& f = style.fills[(std::size_t)i];
+                const int di = dataOf(i);
+                ImGui::PushID(di);
+                const Ink::Fill& f = style.fills[(std::size_t)di];
                 const bool isGrab = (i == grabbed);
                 float posY = railOrigin.y + (float)i * cellH + rr.CellOffset(i);
                 if (isGrab) posY = rr.GrabbedScreenY(railOrigin.y);
                 const ImVec2 pos(railOrigin.x, posY);
                 ImVec2 cmn, cmx;
                 char tid[16];
-                std::snprintf(tid, sizeof tid, "f%d", i);
+                std::snprintf(tid, sizeof tid, "f%d", di);
                 const bool clicked =
-                    pr::ThumbTile(tid, thumb, i == sel, &cmn, &cmx, &pos);
+                    pr::ThumbTile(tid, thumb, di == sel, &cmn, &cmx, &pos);
                 rr.HandleCell(i, ImGui::IsItemActivated(), ImGui::IsItemActive(),
                               railOrigin.y + (float)i * cellH, railOrigin.y);
-                if (clicked && rr.Grabbed() < 0) sel = i;
+                if (clicked && rr.Grabbed() < 0) sel = di;
                 if (!isGrab) {
                     // Pattern vignettes RE-CREATE the fill in the tile (motif
                     // lattice at a legible zoom, selection-independent).
@@ -295,7 +301,7 @@ void Application::DrawFillsStackBody(
             }
             // The grabbed tile's sample on top (foreground draw list).
             if (grabbed >= 0 && grabbed < nF) {
-                const Ink::Fill& gf = style.fills[(std::size_t)grabbed];
+                const Ink::Fill& gf = style.fills[(std::size_t)dataOf(grabbed)];
                 const float posY = rr.GrabbedScreenY(railOrigin.y);
                 const float ins = 3.0f * gs;
                 const ImVec2 gmn(railOrigin.x + ins, posY + ins);
@@ -316,6 +322,9 @@ void Application::DrawFillsStackBody(
                 structural = true; structLabel = "Add Fill";
             }
             pr::VReorder::Move mv = rr.Commit();
+            // Rail ROWS come back; the vector wants data indices.
+            if (mv.from >= 0) mv.from = nF - 1 - mv.from;
+            if (mv.to   >= 0) mv.to   = nF - 1 - mv.to;
             if (mv.from >= 0 && mv.to >= 0 && mv.from != mv.to &&
                 mv.from < (int)style.fills.size() &&
                 mv.to < (int)style.fills.size()) {
@@ -783,6 +792,22 @@ void Application::DrawFillsStackBody(
             if (ImGui::IsItemDeactivatedAfterEdit())
                 liveApply("Fill Opacity", true);
 
+            // How this fill meets the ones BENEATH it in the same shape. A
+            // pattern's internal Cut only reaches its own cells; Erase here
+            // punches through the sibling fills — an unprinted gap rather than
+            // a white band painted over one.
+            {
+                static const char* kFillBlend[] = {
+                    "Normal", "Multiply", "Screen", "Overlay", "Darken",
+                    "Lighten", "Color Dodge", "Color Burn", "Hard Light",
+                    "Soft Light", "Difference", "Exclusion", "Erase" };
+                int bl = (int)f.blend;
+                if (pr::DropdownRow("Blend", kFillBlend, 13, &bl)) {
+                    f.blend = (Ink::BlendMode)bl;
+                    liveApply("Fill Blend", true);
+                }
+            }
+
             pr::GroupGap();
             pr::ControlColumn();
             if (ImGui::SmallButton("Remove")) {
@@ -1011,26 +1036,30 @@ void Application::DrawStrokesStackBody(
             const int nS = (int)style.strokes.size();
             pr::VReorder rr("##strokeRail", nS, cellH);
             const int grabbed = rr.Grabbed();
+            // Rail reads top-first (top row = the paint on top), the vector runs
+            // the other way: row r shows stroke nS-1-r. Display only.
+            auto dataOf = [nS](int row) { return nS - 1 - row; };
             for (int i = 0; i < nS; ++i) {
-                ImGui::PushID(100 + i);
+                const int di = dataOf(i);
+                ImGui::PushID(100 + di);
                 const bool isGrab = (i == grabbed);
                 float posY = railOrigin.y + (float)i * cellH + rr.CellOffset(i);
                 if (isGrab) posY = rr.GrabbedScreenY(railOrigin.y);
                 const ImVec2 pos(railOrigin.x, posY);
                 ImVec2 cmn, cmx;
                 char tid[16];
-                std::snprintf(tid, sizeof tid, "s%d", i);
+                std::snprintf(tid, sizeof tid, "s%d", di);
                 const bool clicked =
-                    pr::ThumbTile(tid, thumb, i == sel, &cmn, &cmx, &pos);
+                    pr::ThumbTile(tid, thumb, di == sel, &cmn, &cmx, &pos);
                 rr.HandleCell(i, ImGui::IsItemActivated(), ImGui::IsItemActive(),
                               railOrigin.y + (float)i * cellH, railOrigin.y);
                 // A plain click (no drag this hold) selects.
-                if (clicked && rr.Grabbed() < 0) sel = i;
+                if (clicked && rr.Grabbed() < 0) sel = di;
                 // The grabbed tile's sample is drawn LAST (foreground) so it sits
                 // over its neighbours; the rest draw inline.
                 if (!isGrab)
                     pr::DrawStrokeSample(ImGui::GetWindowDrawList(), cmn, cmx,
-                                         style.strokes[(std::size_t)i]);
+                                         style.strokes[(std::size_t)di]);
                 // Hover-dwell preview (only when nothing is being dragged).
                 if (grabbed < 0 &&
                     ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) {
@@ -1046,12 +1075,12 @@ void Application::DrawStrokesStackBody(
                                        IM_COL32(255, 255, 255, 255));
                     pr::DrawStrokeSample(tdl, mn,
                                          ImVec2(mn.x + sz.x, mn.y + sz.y),
-                                         style.strokes[(std::size_t)i]);
-                    ImGui::Text("%.2f %s%s", style.strokes[(std::size_t)i].width,
-                                style.strokes[(std::size_t)i].widthSpace ==
+                                         style.strokes[(std::size_t)di]);
+                    ImGui::Text("%.2f %s%s", style.strokes[(std::size_t)di].width,
+                                style.strokes[(std::size_t)di].widthSpace ==
                                         Ink::WidthSpace::Viewport
                                     ? "px" : "doc",
-                                style.strokes[(std::size_t)i].dashPattern.empty()
+                                style.strokes[(std::size_t)di].dashPattern.empty()
                                     ? "" : " \xC2\xB7 dashed");
                     ImGui::EndTooltip();
                     ImGui::PopStyleColor();
@@ -1065,7 +1094,7 @@ void Application::DrawStrokesStackBody(
                 const ImVec2 gmn(railOrigin.x + ins, posY + ins);
                 const ImVec2 gmx(railOrigin.x + thumb - ins, posY + thumb - ins);
                 pr::DrawStrokeSample(ImGui::GetForegroundDrawList(), gmn, gmx,
-                                     style.strokes[(std::size_t)grabbed]);
+                                     style.strokes[(std::size_t)dataOf(grabbed)]);
             }
             // Reserve the rail's flow footprint (nS cells), then the "+" tile.
             ImGui::SetCursorScreenPos(
@@ -1081,6 +1110,8 @@ void Application::DrawStrokesStackBody(
             }
             // Apply a committed drag move (reorder the stack + follow selection).
             pr::VReorder::Move mv = rr.Commit();
+            if (mv.from >= 0) mv.from = nS - 1 - mv.from;
+            if (mv.to   >= 0) mv.to   = nS - 1 - mv.to;
             if (mv.from >= 0 && mv.to >= 0 && mv.from != mv.to &&
                 mv.from < (int)style.strokes.size() &&
                 mv.to < (int)style.strokes.size()) {
@@ -1124,6 +1155,21 @@ void Application::DrawStrokesStackBody(
             if (pr::SwatchRow("Color", &s.paint.color, &s.paint.swatch, doc, true, &released))
                 liveApply("Stroke Colour", false);
             if (released) liveApply("Stroke Colour", true);
+
+            // How this stroke meets the paint BENEATH it in the same shape.
+            // Erase cuts a hole through it — a trench's centre line, an
+            // unprinted gap — rather than laying a coloured line over it.
+            {
+                static const char* kStrokeBlend[] = {
+                    "Normal", "Multiply", "Screen", "Overlay", "Darken",
+                    "Lighten", "Color Dodge", "Color Burn", "Hard Light",
+                    "Soft Light", "Difference", "Exclusion", "Erase" };
+                int bl = (int)s.blend;
+                if (pr::DropdownRow("Blend", kStrokeBlend, 13, &bl)) {
+                    s.blend = (Ink::BlendMode)bl;
+                    liveApply("Stroke Blend", true);
+                }
+            }
 
             // Width + its space. "Viewport px" = the non-scaling HAIRLINE
             // (constant on-screen width at any zoom).
