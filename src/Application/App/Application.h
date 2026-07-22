@@ -25,6 +25,7 @@
 #include "UndoStack.h"
 #include "ViewportEditing.h"   // EditContext / DocUndoStack / TransformOp (Lot 8)
 #include "ModuleAPI.h"      // module contract (Modules::IModule / Capabilities)
+#include <set>
 
 namespace App {
 
@@ -761,6 +762,21 @@ private:
     static std::string FormatActionDetail(
         const std::vector<std::pair<std::string, std::string>>& kv);
     void RenderInfoEditor();     // "Info" editor — live action feed
+    // "Palette" editor — the document COLOUR TABLE (Editors/Palette/).
+    // Swatches are colours used as variables by any paint, optionally
+    // carrying their CMYK, their place in the plate stack and overprint.
+    void RenderPalette(EditorState& st);
+    // "Colour Usage" editor — every colour the document paints with, in
+    // print order, expandable to the objects and the exact pieces that use
+    // it (Editors/Palette/ColorUsage.cpp).
+    void RenderColorUsage(EditorState& st);
+    std::set<std::uint64_t> colorUsageOpen_;   // expanded usage-tree rows
+    std::uint64_t           colorUsageSel_ = 0;   // last row picked there
+    std::set<std::uint64_t> paletteOpen_;         // expanded palette rows
+    std::uint64_t           paletteSel_ = 0;      // last palette row picked
+    // Set by any viewport showing the Flattener this frame; the Scene only
+    // runs that analysis while something is actually displaying it.
+    bool                    flattenWanted_ = false;
     void RenderDevDataEditor();  // "Dev Panel" editor — live debug data
 
     // Content sections of the Dev Test window (DevPanels.cpp)

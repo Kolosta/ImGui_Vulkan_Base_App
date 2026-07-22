@@ -31,6 +31,13 @@ struct AcuData {
     std::vector<Ink::Page>       pages;
     std::vector<Ink::Node>       nodes;
     std::vector<Ink::Collection> collections;
+    // The document colour table (v21). Paints reference these by id; empty for
+    // older files, whose paints all carry literal colours.
+    std::vector<Ink::Swatch>     swatches;
+    // Render in plate order rather than layer order (v22; off pre-v22).
+    bool                         printOrderRender = false;
+    // Printing technique (0 CMYK · 1 CMYK+B · 2 PMS), v23.
+    std::uint8_t                 printTech = 0;
     Ink::NodeId                  nextId = 1;  // id-allocator high-water mark
     // The document display-unit system index (0 Metric · 1 Imperial ·
     // 2 Typographic · 3 Pixel). Defaults to Pixel for pre-v12 documents.

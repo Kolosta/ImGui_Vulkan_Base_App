@@ -220,6 +220,38 @@ void Application::RegisterCoreEditors() {
         d.draw = [this](ImVec2, EditorState&) { RenderInfoEditor(); };
         reg.Register(std::move(d));
     }
+
+    // Palette — the document colour table: named colours any paint may
+    // follow, each optionally carrying its CMYK, its place in the plate
+    // stack and whether it overprints (Editors/Palette/Palette.cpp).
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::Palette; d.name = "Palette"; d.icon = "format-color-text";
+        d.column = 2; d.themeScope = "editors/outliner";
+        // Flush bands and its OWN overlay scrollbar, like the Outliner: the
+        // zone must add neither an inset nor a second scroll area, or the rows
+        // end up with a margin on every side.
+        d.contentInset = false;
+        d.wrapInScroll = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderPalette(st); };
+        reg.Register(std::move(d));
+    }
+
+    // Colour Usage — every colour the document paints with, in print
+    // order, expandable to the objects and the exact pieces using it.
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::ColorUsage; d.name = "Colour Usage";
+        d.icon = "checklist";
+        d.column = 2; d.themeScope = "editors/outliner";
+        // Same deal as the Outliner: flush bands and its OWN overlay scrollbar,
+        // so the zone must not wrap it in a second one (that reserved gutter is
+        // the stray right margin).
+        d.contentInset = false;
+        d.wrapInScroll = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderColorUsage(st); };
+        reg.Register(std::move(d));
+    }
 }
 
 // (The .acu thumbnail generation — offscreen render + PNG encode into the

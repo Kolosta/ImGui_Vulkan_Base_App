@@ -41,7 +41,7 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 20;  // v3: subpath spline params +
+constexpr std::uint32_t kDocVersion = 23;  // v3: subpath spline params +
                                            //     anchor weight (+ dead marks)
                                            // v4-v8: generic marks (dead)
                                            // v9: marks — per-object side/offset +
@@ -72,6 +72,12 @@ constexpr std::uint32_t kDocVersion = 20;  // v3: subpath spline params +
                                            //      smoothed)
                                            // v20: repeat trim measure (to the
                                            //      group centre or its edge)
+                                           // v21: document colour table +
+                                           //      a swatch reference on every
+                                           //      paint site
+                                           // v22: render in plate order flag
+                                           // v23: printing technique + the
+                                           //      per-swatch spot ink
 
 // ── Writer: append-only little-endian byte vector ────────────────────────────
 struct Writer {
@@ -251,6 +257,7 @@ void WriteMarkObject(Writer& w, const Ink::MarkObject& o, int depth = 0) {
     w.u8((std::uint8_t)o.gapEnd);
     w.u8(o.gapCutsObjects ? 1 : 0);
     WriteColor(w, o.color);
+    w.u64(o.swatch);                      // v21
     w.u8(o.useStrokeColor ? 1 : 0);
     w.f32(o.opacity);   // v10
     const bool nest = depth < 2;
@@ -281,6 +288,7 @@ Ink::MarkObject ReadMarkObject(Reader& r, std::uint32_t ver, int depth = 0) {
     o.gapEnd   = (Ink::GapCap)std::min<std::uint8_t>(r.u8(), 2);
     o.gapCutsObjects = r.u8() != 0;
     o.color = ReadColor(r);
+    if (ver >= 21) o.swatch = r.u64();
     o.useStrokeColor = r.u8() != 0;
     if (ver >= 10) o.opacity = r.f32();
     const std::uint32_t ns = r.u32();
@@ -319,6 +327,7 @@ void WriteStrokeRepeat(Writer& w, const Ink::StrokeRepeat& rp) {
     w.u8(rp.lineJoin ? 1 : 0);
     w.u8(rp.lineClip ? 1 : 0);
     WriteColor(w, rp.color);
+    w.u64(rp.swatch);                     // v21
     w.u8(rp.useStrokeColor ? 1 : 0);
     w.f32(rp.opacity);
     w.u8((std::uint8_t)rp.orient);        // v19
@@ -352,6 +361,7 @@ Ink::StrokeRepeat ReadStrokeRepeat(Reader& r, std::uint32_t ver) {
     rp.lineJoin = r.u8() != 0;
     rp.lineClip = r.u8() != 0;
     rp.color = ReadColor(r);
+    if (ver >= 21) rp.swatch = r.u64();
     rp.useStrokeColor = r.u8() != 0;
     rp.opacity = r.f32();
     // v19 introduced the tangent model. A file written before it was drawn with
@@ -373,10 +383,11 @@ void WriteInstElement(Writer& w, const Ink::InstElement& e) {
     w.u8((std::uint8_t)e.mode);
     w.u8(e.useFillColor ? 1 : 0);
     WriteColor(w, e.color);
+    w.u64(e.swatch);                      // v21
     w.f32(e.opacity);
     w.u8(e.enabled ? 1 : 0);
 }
-Ink::InstElement ReadInstElement(Reader& r) {
+Ink::InstElement ReadInstElement(Reader& r, std::uint32_t ver) {
     Ink::InstElement e;
     e.shape = (Ink::InstShape)std::min<std::uint8_t>(r.u8(), Ink::kInstShapeMax);
     e.sizeA = r.f64(); e.sizeB = r.f64(); e.sizeC = r.f64();
@@ -384,6 +395,7 @@ Ink::InstElement ReadInstElement(Reader& r) {
     e.mode = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
     e.useFillColor = r.u8() != 0;
     e.color = ReadColor(r);
+    if (ver >= 21) e.swatch = r.u64();
     e.opacity = r.f32();
     e.enabled = r.u8() != 0;
     return e;
@@ -398,6 +410,7 @@ void WriteInstLineSet(Writer& w, const Ink::InstLineSet& l) {
     w.u8((std::uint8_t)l.mode);
     w.u8(l.useFillColor ? 1 : 0);
     WriteColor(w, l.color);
+    w.u64(l.swatch);                      // v21
     // The line style: only the fields a straight line uses.
     w.f64(l.line.width);
     w.u8((std::uint8_t)l.line.cap);
@@ -420,6 +433,7 @@ Ink::InstLineSet ReadInstLineSet(Reader& r, std::uint32_t ver) {
     l.mode = (Ink::MarkObjectMode)std::min<std::uint8_t>(r.u8(), 2);
     l.useFillColor = r.u8() != 0;
     l.color = ReadColor(r);
+    if (ver >= 21) l.swatch = r.u64();
     l.line.width = r.f64();
     l.line.cap = (Ink::CapStyle)std::min<std::uint8_t>(r.u8(), 3);
     const std::uint32_t nD = r.u32();
@@ -473,7 +487,7 @@ Ink::InstancedFill ReadInstancedFill(Reader& r, std::uint32_t ver) {
     in.anchor = (Ink::PatternAnchor)std::min<std::uint8_t>(r.u8(), 1);
     const std::uint32_t nE = r.u32();
     for (std::uint32_t i = 0; i < nE && r.ok; ++i)
-        in.elements.push_back(ReadInstElement(r));
+        in.elements.push_back(ReadInstElement(r, ver));
     const std::uint32_t nL = r.u32();
     for (std::uint32_t i = 0; i < nL && r.ok; ++i)
         in.lines.push_back(ReadInstLineSet(r, ver));
@@ -488,6 +502,7 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
         w.u8((std::uint8_t)f.rule);
         w.f32(f.opacity);
         WriteColor(w, f.paint.color);
+        w.u64(f.paint.swatch);            // v21
         w.u64(f.pattern.motifRef);
         w.f64(f.pattern.spacingX); w.f64(f.pattern.spacingY);
         w.f64(f.pattern.phaseX);   w.f64(f.pattern.phaseY);
@@ -501,6 +516,7 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
     for (const Ink::Stroke& st : s.strokes) {
         w.u8(st.enabled ? 1 : 0);
         WriteColor(w, st.paint.color);
+        w.u64(st.paint.swatch);           // v21
         w.f64(st.width);
         w.u8((std::uint8_t)st.align);
         w.u8((std::uint8_t)st.cap);
@@ -548,6 +564,7 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         f.rule    = (Ink::FillRule)std::min<std::uint8_t>(r.u8(), 1);
         f.opacity = r.f32();
         f.paint.color = ReadColor(r);
+        if (ver >= 21) f.paint.swatch = r.u64();
         f.pattern.motifRef = r.u64();
         f.pattern.spacingX = r.f64(); f.pattern.spacingY = r.f64();
         f.pattern.phaseX   = r.f64(); f.pattern.phaseY   = r.f64();
@@ -563,6 +580,7 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         Ink::Stroke st;
         st.enabled     = r.u8() != 0;
         st.paint.color = ReadColor(r);
+        if (ver >= 21) st.paint.swatch = r.u64();
         st.width       = r.f64();
         st.align = (Ink::StrokeAlign)std::min<std::uint8_t>(
             r.u8(), Ink::kStrokeAlignMax);
@@ -895,6 +913,28 @@ std::vector<std::uint8_t> EncodeDoc(const Ink::Document& doc,
     w.u8(docUnitSystem);
     // v16: the document colour mode (0 RGB · 1 CMYK).
     w.u8(colorMode);
+    // v21: the document COLOUR TABLE. Written last so it stays append-only;
+    // paints above reference these by id.
+    const auto& sws = doc.Swatches();
+    w.u32((std::uint32_t)sws.size());
+    for (const Ink::Swatch& sw : sws) {
+        w.u64(sw.id);
+        w.str(sw.name);
+        WriteColor(w, sw.display);
+        w.f64(sw.ink.c); w.f64(sw.ink.m); w.f64(sw.ink.y); w.f64(sw.ink.k);
+        w.u8(sw.hasPrintOrder ? 1 : 0);
+        w.u32((std::uint32_t)sw.printOrder);
+        w.u8(sw.overprint ? 1 : 0);
+        w.u8(sw.locked ? 1 : 0);
+        w.u8(sw.hasSpot ? 1 : 0);          // v23
+        w.str(sw.spotName);
+        WriteColor(w, sw.spotDisplay);
+    }
+    // v22: does this document render by plate stack rather than layer order?
+    // v22 wrote a document-level "render in plate order" flag. Proofing is
+    // per VIEWPORT now, so the byte stays only to keep the layout stable.
+    w.u8(0);
+    w.u8((std::uint8_t)doc.PrintTech());   // v23
     return std::move(w.bytes);
 }
 
@@ -941,6 +981,31 @@ bool DecodeDoc(const std::uint8_t* p, std::size_t n, AcuData& out) {
     out.docUnitSystem = ver >= 12 ? r.u8() : 3;
     // v16: the document colour mode (defaults to RGB for older files).
     out.colorMode = ver >= 16 ? r.u8() : 0;
+    // v21: the document colour table. Older files have none — their paints all
+    // carry literal colours, and every swatch reference read back as null.
+    if (ver >= 21) {
+        const std::uint32_t nSw = r.u32();
+        for (std::uint32_t i = 0; i < nSw && r.ok; ++i) {
+            Ink::Swatch sw;
+            sw.id      = r.u64();
+            sw.name    = r.str();
+            sw.display = ReadColor(r);
+            sw.ink.c = r.f64(); sw.ink.m = r.f64();
+            sw.ink.y = r.f64(); sw.ink.k = r.f64();
+            sw.hasPrintOrder = r.u8() != 0;
+            sw.printOrder    = (int)r.u32();
+            sw.overprint     = r.u8() != 0;
+            sw.locked        = r.u8() != 0;
+            if (ver >= 23) {
+                sw.hasSpot     = r.u8() != 0;
+                sw.spotName    = r.str();
+                sw.spotDisplay = ReadColor(r);
+            }
+            out.swatches.push_back(std::move(sw));
+        }
+    }
+    if (ver >= 22) out.printOrderRender = r.u8() != 0;
+    if (ver >= 23) out.printTech = std::min<std::uint8_t>(r.u8(), 2);
     return r.ok;
 }
 

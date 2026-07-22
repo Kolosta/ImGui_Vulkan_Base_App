@@ -72,10 +72,12 @@ inline constexpr const char* FillEd     = "core.fills";
 inline constexpr const char* Timeline   = "core.timeline";
 inline constexpr const char* DevPanels  = "core.devpanels";
 inline constexpr const char* Info       = "core.info";
+inline constexpr const char* Palette    = "core.palette";
+inline constexpr const char* ColorUsage = "core.colorusage";
 // Every core editor id — the editor set offered in Classic mode (no module).
 inline std::vector<std::string> Ids() {
     return { Viewport, Outliner, Properties, StrokeEd, FillEd,
-             Timeline, DevPanels, Info };
+             Timeline, DevPanels, Info, Palette, ColorUsage };
 }
 }  // namespace CoreEditor
 

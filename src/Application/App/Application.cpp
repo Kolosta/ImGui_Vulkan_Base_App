@@ -251,6 +251,8 @@ void Application::Update() {
     // Open the Ink frame BEFORE the UI is built: each Viewport zone acquires
     // and configures its Ink::View during the build; EndFrame below records
     // and submits the canvas work (docs/Ink/RENDER_GRAPH.md).
+    // Re-gathered every frame from whichever viewports show the Flattener.
+    flattenWanted_ = false;
     if (ink_) ink_->BeginFrame();
 
     // Reset the per-frame hovered-viewport pointer; a Viewport leaf sets it
@@ -317,6 +319,7 @@ void Application::Update() {
     // Close the Ink frame: record every dirty view through the render graph
     // and submit. Same queue as the main pass — the graph's final barriers
     // order the canvas writes before ImGui's sampling, no semaphore needed.
+    if (ink_) ink_->SetWantFlattenRegions(flattenWanted_);
     if (ink_) ink_->EndFrame();
 
     // A live mark preview (temporary style applied while building overlays so

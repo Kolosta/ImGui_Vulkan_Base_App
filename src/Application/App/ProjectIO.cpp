@@ -222,6 +222,9 @@ void Application::LoadProjectFromFile(const std::string& path) {
         LogInfoAction("Open File", "Corrupt document structure");
         return;
     }
+    // The colour table the paints above reference (v21; empty for older files).
+    doc->RestoreSwatches(std::move(data.swatches));
+    doc->SetPrintTech((Ink::PrintTechnique)data.printTech);
 
     // Commit: document + bookkeeping (decode succeeded — nothing can fail now).
     project_.document = std::move(doc);

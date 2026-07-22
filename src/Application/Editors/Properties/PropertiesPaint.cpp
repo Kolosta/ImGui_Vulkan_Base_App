@@ -167,7 +167,6 @@ void Application::PropFillsSection(Ink::NodeId id) {
     Ink::Document& doc = *project_.document;
     const Ink::Node* n = doc.Find(id);
     if (!n || n->kind != Ink::NodeKind::Path) return;
-    const float gs = pr::Gs();
 
     // Vignette selection is per-node (both rails reset on a node switch).
     if (propPaintNode_ != id) {
@@ -371,7 +370,7 @@ void Application::DrawFillsStackBody(
 
             if (f.kind == Ink::FillKind::Solid) {
                 bool released = false;
-                if (pr::ColorRow("Color", &f.paint.color, true, &released))
+                if (pr::SwatchRow("Color", &f.paint.color, &f.paint.swatch, doc, true, &released))
                     liveApply("Fill Colour", false);
                 if (released) liveApply("Fill Colour", true);
 
@@ -513,7 +512,7 @@ void Application::DrawFillsStackBody(
                 // inherit it (a single knob to recolour the whole field).
                 {
                     bool crel = false;
-                    if (pr::ColorRow("Fill colour", &f.paint.color, true, &crel))
+                    if (pr::SwatchRow("Fill colour", &f.paint.color, &f.paint.swatch, doc, true, &crel))
                         liveApply("Fill Colour", false);
                     if (crel) liveApply("Fill Colour", true);
                 }
@@ -642,7 +641,7 @@ void Application::DrawFillsStackBody(
                         }
                         if (!e.useFillColor) {
                             bool crel = false;
-                            if (pr::ColorRow("Colour", &e.color, true, &crel))
+                            if (pr::SwatchRow("Colour", &e.color, &e.swatch, doc, true, &crel))
                                 liveApply("Shape Colour", false);
                             if (crel) liveApply("Shape Colour", true);
                         }
@@ -739,7 +738,7 @@ void Application::DrawFillsStackBody(
                         }
                         if (!l.useFillColor) {
                             bool crel = false;
-                            if (pr::ColorRow("Colour", &l.color, true, &crel))
+                            if (pr::SwatchRow("Colour", &l.color, &l.swatch, doc, true, &crel))
                                 liveApply("Line Colour", false);
                             if (crel) liveApply("Line Colour", true);
                         }
@@ -921,7 +920,7 @@ bool Application::PropMarkObjectCompact(Ink::MarkObject& o, double strokeWidth,
             bool rel = false;
             // Edit the style COPY and mark it structural; the caller commits it.
             // (A doc.SetStyle here re-applied the OLD style, resetting to black.)
-            if (pr::ColorRow("Colour", &o.color, true, &rel)) S("Marker Colour");
+            if (pr::SwatchRow("Colour", &o.color, &o.swatch, doc, true, &rel)) S("Marker Colour");
             if (rel) S("Marker Colour");
         }
     } else if (o.mode == Ink::MarkObjectMode::Fusion && !o.useStrokeColor) {
@@ -986,6 +985,11 @@ void Application::DrawStrokesStackBody(
     const std::function<void(const char*, bool)>& liveApply,
     bool& structural, const char*& structLabel) {
     const float gs = pr::Gs();
+    // The document backs the swatch rows below (a paint may follow a named
+    // document colour). An empty stand-in keeps the rows working — they simply
+    // offer no palette — if this ever draws without a document.
+    static const Ink::Document kNoDoc;
+    const Ink::Document& doc = project_.document ? *project_.document : kNoDoc;
     // Same vocabulary as a repeat's Side (Ink::StrokeAlign), in the enum's
     // frozen order: Center, Inside, Outside, Left, Right.
     static const char* kAlign[] = { "Center", "Inner", "Outer", "Left", "Right" };
@@ -1117,7 +1121,7 @@ void Application::DrawStrokesStackBody(
                 s.enabled = enabled; structural = true;
             }
             bool released = false;
-            if (pr::ColorRow("Color", &s.paint.color, true, &released))
+            if (pr::SwatchRow("Color", &s.paint.color, &s.paint.swatch, doc, true, &released))
                 liveApply("Stroke Colour", false);
             if (released) liveApply("Stroke Colour", true);
 
@@ -1548,7 +1552,7 @@ void Application::DrawStrokesStackBody(
                         }
                         if (!rp.useStrokeColor) {
                             bool crel = false;
-                            if (pr::ColorRow("Colour", &rp.color, true, &crel))
+                            if (pr::SwatchRow("Colour", &rp.color, &rp.swatch, doc, true, &crel))
                                 liveApply("Repeat Colour", false);
                             if (crel) liveApply("Repeat Colour", true);
                         }
@@ -1966,7 +1970,7 @@ void Application::DrawStrokesStackBody(
                             }
                             if (!o.useStrokeColor) {
                                 bool rel = false;
-                                if (pr::ColorRow("Colour", &o.color, true, &rel))
+                                if (pr::SwatchRow("Colour", &o.color, &o.swatch, doc, true, &rel))
                                     liveApply("Mark Colour", false);
                                 if (rel) liveApply("Mark Colour", true);
                             }
@@ -2345,7 +2349,7 @@ void Application::DrawMarkEditor(Ink::NodeId node, int strokeIdx, int markIdx) {
             }
             if (!o.useStrokeColor) {
                 bool rel = false;
-                if (pr::ColorRow("Colour", &o.color, true, &rel))
+                if (pr::SwatchRow("Colour", &o.color, &o.swatch, doc, true, &rel))
                     liveApply("Mark Colour", false);
                 if (rel) liveApply("Mark Colour", true);
             }

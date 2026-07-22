@@ -54,6 +54,8 @@ add_library(Application STATIC
     Layout/ZoneLayoutDraw.cpp
 
     # Dev: debug/test panels and the design-system window
+    Editors/Palette/Palette.cpp
+    Editors/Palette/ColorUsage.cpp
     Dev/DevPanels.cpp
     Dev/Windows.cpp
 
@@ -80,6 +82,7 @@ target_include_directories(Application
         ${CMAKE_CURRENT_SOURCE_DIR}/Editors/Outliner
         ${CMAKE_CURRENT_SOURCE_DIR}/Editors/Properties
         ${CMAKE_CURRENT_SOURCE_DIR}/Editors/Info
+        ${CMAKE_CURRENT_SOURCE_DIR}/Editors/Palette
         ${CMAKE_CURRENT_SOURCE_DIR}/Project
         ${CMAKE_CURRENT_SOURCE_DIR}/Util
         ${CMAKE_CURRENT_SOURCE_DIR}/Dev

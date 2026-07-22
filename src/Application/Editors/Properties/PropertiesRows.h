@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -41,6 +42,9 @@ inline float SafeFloat(Tok t, float fallback) {
 }
 inline ImVec4 SafeColor(Tok t, ImVec4 fallback) {
     try { return DST::DesignSystem::Instance().GetColor(t); } catch (...) { return fallback; }
+}
+inline ImVec2 SafeVec2(Tok t, ImVec2 fallback) {
+    try { return DST::DesignSystem::Instance().GetVec2(t); } catch (...) { return fallback; }
 }
 
 constexpr float kLabelFrac = 0.40f;   // left 2/5 of the row for the label
@@ -268,6 +272,75 @@ inline bool ButtonGroupRow(const char* label, const char* const* items,
     return false;
 }
 
+// ImGui outlines a colour swatch EVEN WHEN frame borders are switched off:
+// ColorButton falls back to a hairline in ImGuiCol_FrameBg because "color
+// buttons are often in need of some sort of border". That fallback is why the
+// "Current" sample wears a faint outline while the hand-drawn ones next to it
+// looked naked — so the decision is replicated here rather than guessed at.
+// `fallback` off means "draw only what the style asks for", for surfaces ImGui
+// itself leaves unoutlined.
+inline void SampleFrame(ImDrawList* dl, const ImVec2& a, const ImVec2& b,
+                        float r, bool fallback = true) {
+    const float bs = ImGui::GetStyle().FrameBorderSize;
+    if (bs > 0.0f) {
+        dl->AddRect(ImVec2(a.x + 1.0f, a.y + 1.0f), ImVec2(b.x + 1.0f, b.y + 1.0f),
+                    ImGui::GetColorU32(ImGuiCol_BorderShadow), r, 0, bs);
+        dl->AddRect(a, b, ImGui::GetColorU32(ImGuiCol_Border), r, 0, bs);
+    } else if (fallback) {
+        dl->AddRect(a, b, ImGui::GetColorU32(ImGuiCol_FrameBg), r, 0,
+                    std::max(1.0f, std::trunc(Gs())));
+    }
+}
+
+// The picker's SV square and its hue / alpha bars are drawn by ImGui with the
+// corner radius hard-coded to zero, and no flag or style var can change that:
+// they are painted with AddRectFilledMultiColor, a raw four-vertex quad that
+// takes no rounding at all. So the radius is carved out afterwards — each
+// square corner is repainted with the surface behind it, up to the arc, and the
+// square outline ImGui left is replaced by a rounded one.
+//
+// `surface` must be the opaque colour BEHIND the picker: the carved corner is
+// background, not picker, and has to read as background even when the picker is
+// disabled and everything else is dimmed.
+inline void RoundPickerFrames(const ImVec2& pickerPos, float width,
+                              bool alphaBar, ImU32 surface) {
+    const float r = SafeFloat(Tok::S_CornerRadius_Control, 3.0f) * Gs();
+    if (r < 0.5f) return;
+    const ImGuiStyle& st = ImGui::GetStyle();
+    // Same arithmetic as ColorPicker4's own layout block.
+    const float barsW = ImGui::GetFrameHeight();
+    const float svSz = std::max(
+        barsW, width - (alphaBar ? 2.0f : 1.0f) * (barsW + st.ItemInnerSpacing.x));
+    const float bar0X = pickerPos.x + svSz + st.ItemInnerSpacing.x;
+    const float bar1X = bar0X + barsW + st.ItemInnerSpacing.x;
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    auto carve = [&](const ImVec2& a, const ImVec2& b) {
+        constexpr float kPi = 3.14159265358979323846f;
+        const struct { ImVec2 c, corner; float a0; } k[4] = {
+            { { a.x + r, a.y + r }, { a.x, a.y }, kPi },
+            { { b.x - r, a.y + r }, { b.x, a.y }, kPi * 1.5f },
+            { { b.x - r, b.y - r }, { b.x, b.y }, 0.0f },
+            { { a.x + r, b.y - r }, { a.x, b.y }, kPi * 0.5f },
+        };
+        for (const auto& q : k) {
+            // Arc FIRST, corner last. AddConvexPolyFilled derives its
+            // anti-aliasing fringe from the edge normals, so a wedge wound the
+            // other way would push the fringe inwards and leave a hairline of
+            // the square corner showing through.
+            dl->PathClear();
+            dl->PathArcTo(q.c, r, q.a0 + kPi * 0.5f, q.a0);
+            dl->PathLineTo(q.corner);
+            dl->PathFillConvex(surface);
+        }
+        SampleFrame(dl, a, b, r, /*fallback=*/false);
+    };
+    carve(pickerPos, ImVec2(pickerPos.x + svSz, pickerPos.y + svSz));
+    carve(ImVec2(bar0X, pickerPos.y), ImVec2(bar0X + barsW, pickerPos.y + svSz));
+    if (alphaBar)
+        carve(ImVec2(bar1X, pickerPos.y), ImVec2(bar1X + barsW, pickerPos.y + svSz));
+}
+
 // A colour row: right-justified label + a FULL-WIDTH swatch button (one
 // ui-unit tall, checkerboard alpha) opening a picker popup. Document colour
 // (linear) in/out; the picker edits in sRGB. True while the picker changes;
@@ -286,8 +359,397 @@ inline bool ColorRow(const char* label, Ink::Color* col, bool withAlpha = true,
     if (ImGui::BeginPopup("##pick")) {
         ImGuiColorEditFlags f = withAlpha ? ImGuiColorEditFlags_AlphaBar
                                           : ImGuiColorEditFlags_NoAlpha;
+        const ImVec2 pp = ImGui::GetCursorScreenPos();
+        const float pw = ImGui::CalcItemWidth();
         if (ImGui::ColorPicker4("##p", &c.x, f)) { *col = ToLinear(c); ch = true; }
         if (released) *released = ImGui::IsItemDeactivatedAfterEdit();
+        RoundPickerFrames(pp, pw, withAlpha, ImGui::ColorConvertFloat4ToU32(
+                              ImGui::GetStyleColorVec4(ImGuiCol_PopupBg)));
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+    return ch;
+}
+
+// A 0-255 colour channel on the shared drag widget, letter first ("R 128") —
+// the same control the rest of the app uses, so a colour is edited like every
+// other number. `v` is the 0-1 component.
+inline bool ChannelField(const char* letter, float* v01, float w,
+                         float scale = 255.0f) {
+    float d = *v01 * scale;
+    UI::DragValueConfig dc;
+    dc.id = "##ch";
+    dc.speed = scale / 255.0f;
+    dc.min = 0.0f; dc.max = scale;
+    dc.displayDecimals = 0;
+    dc.unit = letter;
+    dc.unitBeforeValue = true;
+    dc.width = w;
+    dc.quantity = Quantity::Scalar;
+    ImGui::PushID(letter);
+    const bool ch = UI::DragValue(dc, &d);
+    ImGui::PopID();
+    if (ch) *v01 = std::clamp(d / scale, 0.0f, 1.0f);
+    return ch;
+}
+
+// A row of channels sharing `width`.
+inline bool ChannelRow(const char* id, const char* const* letters, float** vals,
+                       int n, float width, float scale = 255.0f) {
+    const float sp = 3.0f * Gs();
+    const float fw = (width - sp * (float)(n - 1)) / (float)n;
+    bool changed = false;
+    ImGui::PushID(id);
+    for (int i = 0; i < n; ++i) {
+        if (i) ImGui::SameLine(0.0f, sp);
+        if (ChannelField(letters[i], vals[i], fw, scale)) changed = true;
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+// One CMYK channel field: the shared drag widget with the channel letter drawn
+// BEFORE the number ("C 56"), which is how an ink coverage reads.
+inline bool CmykField(const char* id, const char* letter, float* v, float w) {
+    UI::DragValueConfig dc;
+    dc.id = id;
+    dc.speed = 0.5f;
+    dc.min = 0.0f; dc.max = 100.0f;
+    dc.displayDecimals = 0;
+    dc.unit = letter;
+    dc.unitBeforeValue = true;
+    dc.width = w;
+    dc.quantity = Quantity::Scalar;
+    return UI::DragValue(dc, v);
+}
+
+// A whole CMYK row: four fields side by side at one ui-unit tall, sharing the
+// given width. Reads and writes Ink::Cmyk (0-100 per channel).
+inline bool CmykRow(const char* id, Ink::Cmyk* ink, float width) {
+    static const char* kL[4] = { "C", "M", "Y", "K" };
+    const float sp = 3.0f * Gs();
+    const float fw = (width - sp * 3.0f) * 0.25f;
+    double* ch[4] = { &ink->c, &ink->m, &ink->y, &ink->k };
+    bool changed = false;
+    ImGui::PushID(id);
+    for (int i = 0; i < 4; ++i) {
+        if (i) ImGui::SameLine(0.0f, sp);
+        float f = (float)*ch[i];
+        if (CmykField(kL[i], kL[i], &f, fw)) { *ch[i] = f; changed = true; }
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+// The picker's RIGHT COLUMN, built here rather than by ImGui so the three
+// swatches stack in the order that actually helps: what the colour WAS on top
+// (click to restore), what it is NOW in the middle, and what it will look like
+// over white and over black at the bottom — the last being the only one that
+// says anything about a partly transparent paint. ImGui's own side preview puts
+// "Original" below "Current" and offers no transparency read at all, so the
+// picker is asked for NoSidePreview and this takes its place.
+//
+// Returns true when the "before" swatch was clicked (the caller reverts).
+inline bool DrawPickerSideColumn(const ImVec4& now, const ImVec4& before,
+                                 float& colW) {
+    const float gs = Gs();
+    const float h = RowH() * 2.0f;                    // two ui-units tall
+    // A golden rectangle reads as a colour sample rather than as a control.
+    colW = h * 1.6180339887f;
+    const bool bordersOn = DST::DesignSystem::Instance().BordersEnabled();
+    const float borderW = bordersOn
+        ? SafeFloat(Tok::S_BorderWidth_Thin, 1.0f) * gs : 0.0f;
+    const ImU32 border = ImGui::ColorConvertFloat4ToU32(
+        SafeColor(Tok::S_Color_Border_Default, ImVec4(0.4f, 0.4f, 0.4f, 1)));
+    // The three samples must be indistinguishable but for their contents, so
+    // the two hand-drawn ones adopt ColorButton's geometry rather than an
+    // approximation of it: the same clamped radius, and the same 0.75 px inset
+    // between the fill and the outline (ImGui's own comment: the border "tends
+    // to look off when color is near-opaque and rounding is enabled").
+    const float rTok = SafeFloat(Tok::S_CornerRadius_Control, 3.0f) * gs;
+    const float r = std::min(rTok, (std::min(colW, h) / 2.99f) * 0.5f);
+    constexpr float kInset = 0.75f;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    bool revert = false;
+
+    const ImU32 lblCol = ImGui::ColorConvertFloat4ToU32(
+        SafeColor(Tok::S_Color_Text_Subtle, ImVec4(0.65f, 0.65f, 0.65f, 1)));
+    auto caption = [&](const char* t) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(lblCol));
+        ImGui::TextUnformatted(t);
+        ImGui::PopStyleColor();
+    };
+    // Every outline below — the hand-drawn ones AND ColorButton's — resolves
+    // through these two, so one style decision covers all three.
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, borderW);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, rTok);
+    ImGui::PushStyleColor(ImGuiCol_Border, border);
+    ImGui::BeginGroup();
+    caption("Original");
+    // BEFORE — opaque, clickable to restore.
+    {
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const ImVec2 p1(p0.x + colW, p0.y + h);
+        ImVec4 b = before; b.w = 1.0f;
+        if (ImGui::InvisibleButton("##before", ImVec2(colW, h))) revert = true;
+        dl->AddRectFilled(ImVec2(p0.x + kInset, p0.y + kInset),
+                          ImVec2(p1.x - kInset, p1.y - kInset),
+                          ImGui::ColorConvertFloat4ToU32(b), r);
+        SampleFrame(dl, p0, p1, r);
+        if (ImGui::IsItemHovered())
+            UI::DrawTooltip("Original — click to restore",
+                            ImGui::GetIO().MousePos);
+    }
+    ImGui::Dummy(ImVec2(colW, 2.0f * gs));
+    caption("Current");
+    // NOW — opaque on the left, checkerboard-backed on the right.
+    ImGui::ColorButton("##now", now,
+                       ImGuiColorEditFlags_AlphaPreviewHalf |
+                       ImGuiColorEditFlags_NoTooltip,
+                       ImVec2(colW, h));
+    ImGui::Dummy(ImVec2(colW, 2.0f * gs));
+    // No caption: this is still the CURRENT colour — just shown against the two
+    // extremes. Labelling it again would read as a third, different colour.
+    // OVER WHITE | OVER BLACK.
+    {
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        auto over = [&](float bg) {
+            return ImGui::ColorConvertFloat4ToU32(
+                ImVec4(now.x * now.w + bg * (1.0f - now.w),
+                       now.y * now.w + bg * (1.0f - now.w),
+                       now.z * now.w + bg * (1.0f - now.w), 1.0f));
+        };
+        // The two halves are the SAME rectangle drawn twice — identical corners,
+        // identical edges — the second one merely clipped to the right half.
+        // Because the black pass shares the white pass's geometry it cannot
+        // round differently at the corners nor stop short of the right edge,
+        // which is what let the black square poke out of the rounded corners
+        // and leave a white pixel down the right side. The clip cuts only at
+        // the middle; it is left generous on the other three sides so the black
+        // rect's own anti-aliased edges land on top of the white one's instead
+        // of being shaved off. The middle is snapped to a whole pixel, exactly
+        // as ImGui does for its own half-and-half swatch.
+        const ImVec2 p1(p0.x + colW, p0.y + h);
+        const ImVec2 i0(p0.x + kInset, p0.y + kInset);
+        const ImVec2 i1(p1.x - kInset, p1.y - kInset);
+        const float mid = std::floor((i0.x + i1.x) * 0.5f + 0.5f);
+        dl->AddRectFilled(i0, i1, over(1.0f), r);
+        dl->PushClipRect(ImVec2(mid, p0.y - 2.0f), ImVec2(p1.x + 2.0f, p1.y + 2.0f),
+                         true);
+        dl->AddRectFilled(i0, i1, over(0.0f), r);
+        dl->PopClipRect();
+        SampleFrame(dl, p0, p1, r);
+        ImGui::Dummy(ImVec2(colW, h));
+        if (ImGui::IsItemHovered())
+            UI::DrawTooltip("Over white | over black",
+                            ImGui::GetIO().MousePos);
+    }
+    ImGui::EndGroup();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
+    return revert;
+}
+
+// The same row, but the colour may instead FOLLOW a document swatch (a named
+// colour in the document's table — Ink/Document/Swatch.h). The button shows the
+// colour that will actually be drawn; the popup carries the picker, CMYK fields
+// and the document palette. While bound, the picker is disabled: the swatch
+// owns the colour, and the literal underneath is only the fallback if the
+// swatch is ever deleted.
+//
+// `*swatch` is kNullSwatch for a free colour. Returns true on any change;
+// *released fires when a picker drag ends OR a binding changes (commit point).
+inline bool SwatchRow(const char* label, Ink::Color* col, Ink::SwatchId* swatch,
+                      const Ink::Document& doc, bool withAlpha = true,
+                      bool* released = nullptr) {
+    const float ctrlW = Label(label);
+    ImGui::PushID(label);
+    const float gs = Gs();
+    const Ink::Swatch* bound = doc.FindSwatch(*swatch);
+    ImVec4 c = ToSrgb(bound ? bound->display : *col);
+    bool ch = false;
+    if (released) *released = false;
+    // The colour the popup OPENED with — what cancelling would restore, and
+    // what the "before" bar inside compares against.
+    static std::unordered_map<ImGuiID, ImVec4> s_opened;
+    const ImGuiID pickKey = ImGui::GetID("##pick");
+    if (ImGui::ColorButton("##sw", c,
+            ImGuiColorEditFlags_AlphaPreviewHalf | ImGuiColorEditFlags_NoTooltip,
+            ImVec2(ctrlW, RowH()))) {
+        s_opened[pickKey] = c;
+        ImGui::OpenPopup("##pick");
+    }
+    if (bound && ImGui::IsItemHovered())
+        UI::DrawTooltip(bound->name.c_str(), ImGui::GetIO().MousePos);
+
+    // The popup wears the menu surface and the window padding, like every other
+    // dropdown in the app, instead of ImGui's bare frame.
+    ImGui::PushStyleColor(ImGuiCol_PopupBg,
+        SafeColor(Tok::C_Menu_Background, ImVec4(0.13f, 0.13f, 0.15f, 1)));
+    {   // Same air on every side: the padding token is not square, and the
+        // picker is wide enough that the difference reads.
+        const ImVec2 pad = SafeVec2(Tok::C_Window_Padding, ImVec2(8, 8));
+        const float m = std::max(pad.x, pad.y);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(m, m));
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding,
+                        SafeFloat(Tok::C_Window_CornerRadius, 6.0f) * gs);
+    const bool pickOpen = ImGui::BeginPopup("##pick");
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor();
+    if (pickOpen) {
+        // Which document colour this paint follows, spelled out — the outlined
+        // tile in the palette below says which one, this says its name.
+        if (bound) {
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                SafeColor(Tok::S_Color_Text_Subtle, ImVec4(0.65f, 0.65f, 0.65f, 1)));
+            ImGui::TextUnformatted(bound->name.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::BeginDisabled(bound != nullptr);
+        // ImGui's own side column puts "Original" BELOW "Current" and says
+        // nothing about transparency, so it is turned off and rebuilt here in
+        // the order that helps. Its inputs go too — the fields below are the
+        // app's own drag widgets, CMYK included.
+        const ImGuiColorEditFlags f =
+            (withAlpha ? ImGuiColorEditFlags_AlphaBar
+                       : ImGuiColorEditFlags_NoAlpha) |
+            ImGuiColorEditFlags_NoSidePreview |
+            ImGuiColorEditFlags_NoInputs |
+            ImGuiColorEditFlags_NoOptions;
+        const ImVec2 pp = ImGui::GetCursorScreenPos();
+        const float pw = ImGui::CalcItemWidth();
+        if (ImGui::ColorPicker4("##p", &c.x, f)) { *col = ToLinear(c); ch = true; }
+        if (released && ImGui::IsItemDeactivatedAfterEdit()) *released = true;
+        const float pickW = ImGui::GetItemRectSize().x;
+        // The popup's own surface — ImGuiCol_PopupBg was pushed for BeginPopup
+        // and popped again, so the token is the only thing that still knows it.
+        RoundPickerFrames(pp, pw, withAlpha, ImGui::ColorConvertFloat4ToU32(
+            SafeColor(Tok::C_Menu_Background, ImVec4(0.13f, 0.13f, 0.15f, 1))));
+
+        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+        // The column sizes itself (golden rectangles) and reports back, so the
+        // rows below end exactly where it does — no dead strip on the right.
+        float colW = 0.0f;
+        if (DrawPickerSideColumn(c, s_opened[pickKey], colW)) {
+            c = s_opened[pickKey];
+            *col = ToLinear(c);
+            ch = true;
+            if (released) *released = true;
+        }
+        const float fullW = pickW + ImGui::GetStyle().ItemInnerSpacing.x + colW;
+
+        // RGBA, HSVA, CMYK, hex — all on the app's own drag field, so a colour
+        // channel behaves like every other number in the app.
+        {
+            static const char* kRGBA[4] = { "R", "G", "B", "A" };
+            float* rgba[4] = { &c.x, &c.y, &c.z, &c.w };
+            if (ChannelRow("##rgba", kRGBA, rgba, withAlpha ? 4 : 3, fullW)) {
+                *col = ToLinear(c); ch = true;
+                if (released) *released = true;
+            }
+        }
+        {
+            float hsv[3];
+            ImGui::ColorConvertRGBtoHSV(c.x, c.y, c.z, hsv[0], hsv[1], hsv[2]);
+            float a4 = c.w;
+            static const char* kHSVA[4] = { "H", "S", "V", "A" };
+            float* vals[4] = { &hsv[0], &hsv[1], &hsv[2], &a4 };
+            if (ChannelRow("##hsva", kHSVA, vals, withAlpha ? 4 : 3, fullW,
+                           100.0f)) {
+                ImGui::ColorConvertHSVtoRGB(hsv[0], hsv[1], hsv[2],
+                                            c.x, c.y, c.z);
+                c.w = a4;
+                *col = ToLinear(c); ch = true;
+                if (released) *released = true;
+            }
+        }
+        {   // CMYK, round-tripped through the same ink model the print previews
+            // use — so what the field says is what a separation would carry.
+            Ink::Cmyk ink = Ink::NaiveCmyk(ToLinear(c));
+            if (CmykRow("##cmyk", &ink, fullW)) {
+                const float keepA = c.w;
+                c = ToSrgb(Ink::InkOverPaper(ink, Ink::PrintChannelAll));
+                c.w = keepA;
+                *col = ToLinear(c);
+                ch = true;
+                if (released) *released = true;
+            }
+        }
+        {
+            ImGui::SetNextItemWidth(fullW);
+            const ImGuiColorEditFlags hf =
+                ImGuiColorEditFlags_DisplayHex |
+                ImGuiColorEditFlags_NoSmallPreview |
+                ImGuiColorEditFlags_NoPicker |
+                ImGuiColorEditFlags_NoOptions |
+                (withAlpha ? 0 : ImGuiColorEditFlags_NoAlpha);
+            if (ImGui::ColorEdit4("##hex", &c.x, hf)) { *col = ToLinear(c); ch = true; }
+            if (released && ImGui::IsItemDeactivatedAfterEdit()) *released = true;
+        }
+        ImGui::EndDisabled();
+
+        // The document palette sits BELOW the picker and fills its width.
+        const auto& table = doc.Swatches();
+        if (!table.empty()) {
+            ImGui::Separator();
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                SafeColor(Tok::S_Color_Text_Subtle, ImVec4(0.65f, 0.65f, 0.65f, 1)));
+            ImGui::TextUnformatted("Document colours");
+            ImGui::PopStyleColor();
+            const float sp = 3.0f * gs;
+            const int perRow = std::max(1, (int)std::floor((fullW + sp) / (RowH() + sp)));
+            const float tile = (fullW - sp * (float)(perRow - 1)) / (float)perRow;
+            int n = 0;
+            for (const Ink::Swatch& sw : table) {
+                if (n++ % perRow) ImGui::SameLine(0.0f, sp);
+                ImGui::PushID((int)sw.id);
+                if (ImGui::ColorButton("##s", ToSrgb(sw.display),
+                        ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_NoTooltip,
+                        ImVec2(tile, tile))) {
+                    *swatch = sw.id;
+                    // Binding means "use THIS colour": the literal underneath
+                    // becomes fully opaque so the swatch alone decides, alpha
+                    // included. Keeping the paint's old alpha would multiply it
+                    // in and quietly give a colour the palette never contained.
+                    col->a = 1.0f;
+                    ch = true;
+                    if (released) *released = true;
+                    ImGui::CloseCurrentPopup();
+                }
+                if (bound && bound->id == sw.id) {
+                    // Ring the tile this paint follows, so the palette shows
+                    // WHICH one is picked and not only that one is.
+                    const ImVec2 a0 = ImGui::GetItemRectMin();
+                    const ImVec2 a1 = ImGui::GetItemRectMax();
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    dl->AddRect(ImVec2(a0.x - 2.0f * gs, a0.y - 2.0f * gs),
+                                ImVec2(a1.x + 2.0f * gs, a1.y + 2.0f * gs),
+                                ImGui::ColorConvertFloat4ToU32(SafeColor(
+                                    Tok::S_Color_Accent_Default,
+                                    ImVec4(1, 0.6f, 0.2f, 1))),
+                                2.0f * gs, 0, 2.0f * gs);
+                }
+                if (ImGui::IsItemHovered())
+                    UI::DrawTooltip(sw.name.c_str(), ImGui::GetIO().MousePos);
+                ImGui::PopID();
+            }
+            if (bound) {
+                UI::ButtonGroup bg("##free");
+                bg.SetGrid({ fullW }, { RowH() });
+                UI::ButtonGroup::Cell fc{};
+                fc.label = "Free colour"; fc.col = 0; fc.row = 0;
+                bg.AddCell(fc);
+                if (bg.Render().clickedIndex == 0) {
+                    // Keep the resolved colour as the new literal, so unbinding
+                    // changes nothing visible.
+                    *col = bound->display;
+                    *swatch = Ink::kNullSwatch;
+                    ch = true;
+                    if (released) *released = true;
+                }
+            }
+        }
         ImGui::EndPopup();
     }
     ImGui::PopID();

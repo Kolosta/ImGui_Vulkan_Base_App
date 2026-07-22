@@ -166,6 +166,16 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     view->SetViewport((std::uint32_t)size.x, (std::uint32_t)size.y);
     view->SetCamera(st.panX, st.panY, st.zoom);
     view->SetBackground(TokenColor(ds, Tok::S_Color_Background_Layer2, 1.0f));
+    // This viewport's own proofing. Every other view — the other viewports, the
+    // Outliner thumbnails, the module vignettes — never calls these and so
+    // stays on the plain screen render.
+    view->SetPrintPreview((Ink::PrintPreview)st.printPreview,
+                          (std::uint8_t)st.printChannels);
+    view->SetPrintOrder(st.printOrder);
+    // The flattener analysis runs in the Scene, so it has to be asked for while
+    // ANY viewport is showing it.
+    if (st.printPreview == (int)Ink::PrintPreview::Flattener)
+        flattenWanted_ = true;
 
     // Editor overlays — Vulkan, through the engine's OverlayPass. Colors come
     // from design tokens (resolved app-side; the engine is token-free).
@@ -190,6 +200,60 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     }
     // Selection / handles / modal feedback / gesture preview (Lot 8).
     DrawEditOverlays(st, cam, ov, hovered);
+
+    // FLATTENER PREVIEW: mark the artwork that cannot go to a print separation
+    // as it stands — translucent, blended or cutting. The canvas already shows
+    // the flattened RESULT; what is missing is knowing WHERE transparency is in
+    // play, so each region gets a faint red wash under bolder red hatching.
+    if (st.printPreview == (int)Ink::PrintPreview::Flattener) {
+        const Ink::Color line{ 0.9f, 0.1f, 0.12f, 0.55f };
+        const Ink::Color edge{ 0.9f, 0.1f, 0.12f, 0.30f };
+        const float step = 7.0f * ds.GetGlobalScale();
+        std::vector<float> xs;
+        for (const Ink::Scene::FlattenRegion& fr : ink_->FlattenRegions()) {
+            // A STROKE arrives as the stroker's own triangles — its real
+            // painted band, alignment and dashes included — so it is simply
+            // washed over rather than reconstructed here.
+            if (fr.isStroke) {
+                for (std::size_t t = 0; t + 2 < fr.tris.size(); t += 3)
+                    ov.AddTriangle(cam.DocToView(fr.tris[t].x,     fr.tris[t].y),
+                                   cam.DocToView(fr.tris[t + 1].x, fr.tris[t + 1].y),
+                                   cam.DocToView(fr.tris[t + 2].x, fr.tris[t + 2].y),
+                                   line);
+                continue;
+            }
+            if (fr.ring.size() < 2) continue;
+            std::vector<Ink::Vec2> v;
+            v.reserve(fr.ring.size());
+            float y0 = 1e30f, y1 = -1e30f;
+            for (const Ink::DVec2& p : fr.ring) {
+                const Ink::Vec2 s = cam.DocToView(p.x, p.y);
+                v.push_back(s);
+                y0 = std::min(y0, s.y); y1 = std::max(y1, s.y);
+            }
+            // A FILL is hatched by SCANLINE, so the stripes follow its real
+            // outline rather than its bounding box.
+            for (std::size_t i = 0; i + 1 < v.size(); ++i)
+                ov.AddLine(v[i], v[i + 1], edge, 1.0f);
+            if (y1 - y0 < 1.0f) continue;
+            for (float y = std::ceil(y0 / step) * step; y <= y1; y += step) {
+                xs.clear();
+                for (std::size_t i = 0, n = v.size(); i < n; ++i) {
+                    const Ink::Vec2& a = v[i];
+                    const Ink::Vec2& b = v[(i + 1) % n];
+                    if ((a.y <= y) == (b.y <= y)) continue;   // no crossing
+                    const float t = (y - a.y) / (b.y - a.y);
+                    xs.push_back(a.x + (b.x - a.x) * t);
+                }
+                if (xs.size() < 2) continue;
+                std::sort(xs.begin(), xs.end());
+                // Even-odd spans: every other pair is inside the ring.
+                for (std::size_t i = 0; i + 1 < xs.size(); i += 2)
+                    if (xs[i + 1] - xs[i] > 0.5f)
+                        ov.AddLine({ xs[i], y }, { xs[i + 1], y }, line, 1.0f);
+            }
+        }
+    }
 
     // Cursor crosshair while this canvas is hovered (only with a tool that has
     // no drag gesture in flight, to keep the modal feedback readable). NOT over
