@@ -355,6 +355,95 @@ const Page* Document::FindPage(NodeId id) const {
     return nullptr;
 }
 
+// ── Swatches ─────────────────────────────────────────────────────────────────
+// A swatch edit is a PAINT change for every node: nothing is re-tessellated,
+// only the colour tables resync. Logging it against kNullNode marks the whole
+// document restyled, which is what a palette edit actually is.
+
+SwatchId Document::AddSwatch(Swatch s) {
+    s.id = nextSwatch_++;
+    swatches_.push_back(std::move(s));
+    Log(kNullNode, ChangeKind::StyleChanged);
+    return swatches_.back().id;
+}
+
+void Document::SetSwatch(SwatchId id, Swatch s) {
+    for (Swatch& sw : swatches_)
+        if (sw.id == id) {
+            s.id = id;                 // the id is never editable
+            sw = std::move(s);
+            Log(kNullNode, ChangeKind::StyleChanged);
+            return;
+        }
+}
+
+void Document::RemoveSwatch(SwatchId id) {
+    for (std::size_t i = 0; i < swatches_.size(); ++i)
+        if (swatches_[i].id == id) {
+            swatches_.erase(swatches_.begin() + (std::ptrdiff_t)i);
+            // Paints keep their reference but it no longer resolves, so they
+            // fall back to the literal colour they were carrying all along.
+            Log(kNullNode, ChangeKind::StyleChanged);
+            return;
+        }
+}
+
+const Swatch* Document::FindSwatch(SwatchId id) const {
+    if (id == kNullSwatch) return nullptr;
+    for (const Swatch& sw : swatches_)
+        if (sw.id == id) return &sw;
+    return nullptr;
+}
+
+Color Document::ResolveColor(const Color& literal, SwatchId swatch) const {
+    if (const Swatch* sw = FindSwatch(swatch)) return sw->display;
+    return literal;
+}
+
+std::vector<const Swatch*> Document::PrintStack() const {
+    std::vector<const Swatch*> out;
+    for (const Swatch& sw : swatches_)
+        if (sw.hasPrintOrder) out.push_back(&sw);
+    std::sort(out.begin(), out.end(),
+              [](const Swatch* a, const Swatch* b) {
+                  if (a->printOrder != b->printOrder)
+                      return a->printOrder < b->printOrder;
+                  return a->id < b->id;      // stable for equal orders
+              });
+    return out;
+}
+
+void Document::SetPrintTech(PrintTechnique t) {
+    if (printTech_ == t) return;
+    printTech_ = t;
+    // Colours only — but a module may reseed its palette in response.
+    Log(kNullNode, ChangeKind::StyleChanged);
+}
+
+void Document::ReorderSwatches(const std::vector<SwatchId>& order) {
+    std::vector<Swatch> out;
+    out.reserve(swatches_.size());
+    for (SwatchId id : order)
+        for (const Swatch& sw : swatches_)
+            if (sw.id == id) { out.push_back(sw); break; }
+    for (const Swatch& sw : swatches_) {
+        bool listed = false;
+        for (SwatchId id : order) if (id == sw.id) { listed = true; break; }
+        if (!listed) out.push_back(sw);
+    }
+    if (out.size() != swatches_.size()) return;      // refuse a lossy permute
+    swatches_ = std::move(out);
+    Log(kNullNode, ChangeKind::StyleChanged);
+}
+
+void Document::RestoreSwatches(std::vector<Swatch> table) {
+    swatches_ = std::move(table);
+    SwatchId high = 0;
+    for (const Swatch& sw : swatches_) high = std::max(high, sw.id);
+    nextSwatch_ = high + 1;
+    Log(kNullNode, ChangeKind::StyleChanged);
+}
+
 DMat23 Document::WorldTransform(NodeId id) const {
     return WorldTransformDepth(id, 0);
 }

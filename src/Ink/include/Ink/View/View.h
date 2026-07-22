@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Ink/Core/Math.h"
+#include "Ink/Document/Swatch.h"   // PrintPreview / PrintChannel
 #include "Ink/View/OverlayList.h"
 #include <cstdint>
 #include <vector>
@@ -51,6 +52,16 @@ public:
     // style.strokes (true).
     void SetPreviewFilter(const std::vector<std::uint64_t>& owners,
                           int piece = -1, bool pieceIsStroke = false);
+
+    // PRINT PROOFING for THIS view (Ink/Document/Swatch.h): how it simulates
+    // print, and whether it stacks the artwork by plate order rather than by
+    // the layer tree. Per view on purpose — a proofing viewport and a symbol
+    // vignette must be able to disagree, and a vignette that never sets these
+    // stays on the plain screen render.
+    void SetPrintPreview(PrintPreview mode,
+                         std::uint8_t channels = PrintChannelAll);
+    void SetPrintOrder(bool plateOrder);
+
 
     // The sampled canvas texture handle as registered through the app's
     // TextureHooks (an ImTextureID app-side). 0 until SetViewport ran, or

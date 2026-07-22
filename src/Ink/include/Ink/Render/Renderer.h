@@ -3,6 +3,7 @@
 #include "Ink/Core/Math.h"
 #include "Ink/Render/Stats.h"
 #include "Ink/Scene/Picking.h"   // PickOptions (editing queries)
+#include "Ink/Scene/Scene.h"     // Scene::FlattenRegion (print previews)
 #include "Ink/View/View.h"
 #include <vulkan/vulkan.h>
 #include <cstdint>
@@ -89,6 +90,19 @@ public:
     // A single object's rendered document-space bounds (selection outline /
     // fit-selection). False when it produced nothing in the last compile.
     bool NodeBounds(NodeId id, DRect& out) const;
+    // Document-space OUTLINES of the artwork that could not go to a print
+    // separation as it stands (translucent, blended or cutting) — one ring per
+    // piece, so a partly-flattened object is marked only where it matters.
+    // Non-empty only while the document is in the Flattener preview.
+    const std::vector<Scene::FlattenRegion>& FlattenRegions() const;
+    // Ask the Scene to analyse them at all. Off by default: it re-runs the
+    // stroker over every translucent stroke, which is only worth doing while
+    // a viewport is actually showing the Flattener.
+    void SetWantFlattenRegions(bool on);
+    // The compiled drawable list — every paint source already resolved to
+    // one colour + swatch + piece indices. What the colour-usage editor
+    // reads, so patterns, instances and modifier copies are all counted.
+    const std::vector<Drawable>& SceneDrawables() const;
 
     // ── Vector thumbnail (Outliner Layers preview) ────────────────────────
     // A flattened, resolved snapshot of a node's rendered content, straight

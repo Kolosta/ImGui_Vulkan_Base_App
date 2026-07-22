@@ -279,6 +279,45 @@ public:
     const Page* FindPage(NodeId id) const;
     std::size_t NodeCount() const { return nodes_.size(); }
 
+    // ── Swatches — the document colour table (Swatch.h) ──────────────────────
+    // Named colours used as VARIABLES: a paint that references one follows it,
+    // so editing the swatch restyles every user. A swatch may also carry its
+    // place in the PLATE STACK (print order) and whether it overprints.
+    const std::vector<Swatch>& Swatches() const { return swatches_; }
+    // `s.id` is ignored — a fresh id is allocated and returned.
+    SwatchId AddSwatch(Swatch s);
+    // Replace everything but the id. Every paint following it repaints.
+    void     SetSwatch(SwatchId id, Swatch s);
+    // Paints that referenced it fall back to their own literal colour.
+    void     RemoveSwatch(SwatchId id);
+    const Swatch* FindSwatch(SwatchId id) const;
+    // Resolve a paint site to the colour that must actually be drawn: the
+    // swatch when it resolves, else the literal. The single funnel every
+    // renderer, picker and exporter goes through.
+    Color    ResolveColor(const Color& literal, SwatchId swatch) const;
+    Color    ResolveColor(const Paint& p) const {
+        return ResolveColor(p.color, p.swatch);
+    }
+    // Swatches in PLATE ORDER (lowest printOrder first = printed underneath).
+    // Only those that declare an order take part; the rest are left out.
+    std::vector<const Swatch*> PrintStack() const;
+    // Restore the whole table verbatim (loading a file). Ids are preserved.
+    void     RestoreSwatches(std::vector<Swatch> table);
+    // Permute the table so it starts with `order` (ids not listed keep their
+    // relative position after them). The table's own order is what colours
+    // WITHOUT a print order are listed by, so this is how they are ranked.
+    void     ReorderSwatches(const std::vector<SwatchId>& order);
+
+    // How the document is printed (PrintTechnique in Swatch.h). It decides
+    // whether a colour carrying a spot definition is built from process inks or
+    // laid as its own ink — which changes both the proof and the plate list.
+    // This one IS a document property: a fact about the print run, not a way of
+    // looking at it. HOW a canvas proofs it (Ink::View::SetPrintPreview /
+    // SetPrintOrder) is per VIEW, so one viewport can proof while another — and
+    // every symbol vignette — stays on the plain screen render.
+    PrintTechnique PrintTech() const { return printTech_; }
+    void SetPrintTech(PrintTechnique t);
+
     // Resolved node → document transform. Object parenting (parentId) takes
     // precedence over the layer-tree position (docs/Ink/DOCUMENT_MODEL.md §2).
     DMat23 WorldTransform(NodeId id) const;
@@ -307,6 +346,9 @@ private:
     std::unordered_map<NodeId, Node> nodes_;
     std::vector<Page>                pages_;
     std::vector<Collection>          collections_;
+    std::vector<Swatch>              swatches_;
+    SwatchId                         nextSwatch_ = 1;
+    PrintTechnique                   printTech_ = PrintTechnique::Cmyk;
     NodeId                           nextId_  = 1;
     std::uint64_t                    version_ = 0;
     std::vector<Change>              changes_;

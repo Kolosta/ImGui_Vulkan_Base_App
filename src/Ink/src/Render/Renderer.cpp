@@ -3,6 +3,7 @@
 #include "Ink/RHI/Pipeline.h"
 #include "Render/RendererInternal.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <unordered_set>
@@ -638,8 +639,35 @@ void Renderer::EndFrame() {
     r.stats.instances = (std::uint32_t)drawables.size();
 
     // ── Phase 2: global style tables (painter-order items/paints) ───────────
+    // Collect the DISTINCT print configurations the live views ask for, and
+    // give each one its own item block. Views proofing differently then share
+    // every byte of geometry, instances and commands and differ only in which
+    // block their item indices resolve through. In practice there is one
+    // configuration; a viewport left proofing while another is normal makes two.
+    std::vector<GpuScene::PrintConfig> printConfigs;
+    printConfigs.push_back({});                     // block 0 = plain screen
+    for (auto& [key, view] : r.views) {
+        ViewImpl& v = *view->impl_;
+        if (!v.usedThisFrame || !v.HasTargets()) continue;
+        GpuScene::PrintConfig cfg{ v.printPreview, v.printChannels };
+        // The Flattener changes nothing about the colours — it is an app-side
+        // overlay — so it shares the plain block.
+        if (cfg.mode == PrintPreview::Flattener) cfg = GpuScene::PrintConfig{};
+        std::uint32_t block = 0;
+        for (std::uint32_t i = 0; i < (std::uint32_t)printConfigs.size(); ++i)
+            if (printConfigs[i] == cfg) { block = i; break; }
+        if (block == 0 && !(printConfigs[0] == cfg)) {
+            block = (std::uint32_t)printConfigs.size();
+            printConfigs.push_back(cfg);
+        }
+        if (v.printBlock != block) { v.printBlock = block; v.instancesDirty = true; }
+    }
+    if (printConfigs != r.lastPrintConfigs) {
+        r.lastPrintConfigs = printConfigs;
+        sceneChanged = true;                        // the tables must rebuild
+    }
     if (sceneChanged) {
-        if (r.gpu.SyncStyleTables(r.device, drawables, defer))
+        if (r.gpu.SyncStyleTables(r.device, drawables, printConfigs, defer))
             ++r.styleGen;
         ++r.sceneGen;
     }
@@ -695,8 +723,8 @@ void Renderer::EndFrame() {
         // Rebase this view's instance table when needed (anchor/scene).
         if (v.instancesDirty) {
             const bool recreated = r.gpu.SyncViewInstances(
-                r.device, drawables, { v.anchorX, v.anchorY }, v.instanceBuf,
-                defer);
+                r.device, drawables, { v.anchorX, v.anchorY }, v.printBlock,
+                v.instanceBuf, defer);
             v.instancesDirty = false;
             if (recreated || v.sceneSet == VK_NULL_HANDLE ||
                 v.styleGen != r.styleGen)
@@ -795,7 +823,39 @@ void Renderer::EndFrame() {
             auto inPreview = [&](NodeId id) {
                 return v.previewOwners.find(id) != v.previewOwners.end();
             };
-            for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
+            // PLATE ORDER, per view. Printing is sequential, so when this view
+            // proofs the press the plate stack is the order that matters and
+            // the layer tree only breaks ties inside one plate. Reordering the
+            // COMMANDS (not the instances, which must stay index-aligned with
+            // the geometry) is what makes it a per-view choice.
+            //
+            // Only PLATED content moves, and only among the positions it
+            // already holds: artwork with no print colour has no place in the
+            // stack — sweeping it along would sort it to the very top — and
+            // clip relationships (a mask before what it cuts, an erase after)
+            // are not plate relationships and stay pinned.
+            const std::uint32_t nDraw = (std::uint32_t)drawables.size();
+            std::vector<std::uint32_t> order;
+            if (v.printOrder) {
+                order.resize(nDraw);
+                for (std::uint32_t i = 0; i < nDraw; ++i) order[i] = i;
+                std::vector<std::uint32_t> slots;
+                for (std::uint32_t i = 0; i < nDraw; ++i) {
+                    const Drawable& d = drawables[i];
+                    if (d.plate != kNoPlate && d.clip == ClipRole::None &&
+                        !d.isClipSource)
+                        slots.push_back(i);
+                }
+                std::vector<std::uint32_t> picked = slots;
+                std::stable_sort(picked.begin(), picked.end(),
+                                 [&](std::uint32_t a, std::uint32_t b) {
+                                     return drawables[a].plate < drawables[b].plate;
+                                 });
+                for (std::size_t k = 0; k < slots.size(); ++k)
+                    order[slots[k]] = picked[k];
+            }
+            for (std::uint32_t oi = 0; oi < nDraw; ++oi) {
+                const std::uint32_t i = order.empty() ? oi : order[oi];
                 const Drawable& d = drawables[i];
                 if (d.scope != run.scope) continue;
                 // Library content (Node::previewOnly): drawn ONLY when a
@@ -1012,6 +1072,18 @@ std::vector<NodeId> Renderer::PickInBox(DVec2 boxMin, DVec2 boxMax) const {
 }
 bool Renderer::NodeBounds(NodeId id, DRect& out) const {
     return impl_->scene.NodeBounds(id, out);
+}
+
+const std::vector<Scene::FlattenRegion>& Renderer::FlattenRegions() const {
+    return impl_->scene.FlattenRegions();
+}
+
+void Renderer::SetWantFlattenRegions(bool on) {
+    impl_->scene.SetWantFlattenRegions(on);
+}
+
+const std::vector<Drawable>& Renderer::SceneDrawables() const {
+    return impl_->scene.Drawables();
 }
 
 DRect Renderer::PreviewPieces(NodeId id, double tolerance,

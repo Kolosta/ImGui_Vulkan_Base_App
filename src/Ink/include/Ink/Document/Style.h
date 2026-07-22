@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Ink/Document/Swatch.h"
 #include "Ink/Document/Types.h"
 #include <vector>
 
@@ -19,9 +20,11 @@ namespace Ink {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Solid color paint (LINEAR-light, straight alpha — premultiplication happens
-// when the scene builds the GPU paint table).
+// when the scene builds the GPU paint table). `swatch` (when set) names the
+// document colour this paint follows and OVERRIDES `color`; see Swatch.h.
 struct Paint {
-    Color color{ 0, 0, 0, 1 };
+    Color    color{ 0, 0, 0, 1 };
+    SwatchId swatch = kNullSwatch;
 };
 
 enum class FillRule : std::uint8_t { NonZero = 0, EvenOdd = 1 };
@@ -222,6 +225,7 @@ struct MarkObject {
     // Fill colour of a primitive object (linear straight). Instance objects use
     // the referenced node's own style, so this is ignored for them.
     Color           color{ 0, 0, 0, 1 };
+    SwatchId        swatch = kNullSwatch;   // document colour (wins over above)
     bool            useStrokeColor = true;    // primitive: inherit stroke paint
     // Object opacity. For a Blend/recoloured primitive it multiplies the paint
     // alpha; for a SUBTRACT object it is the ERASE STRENGTH (dst·(1−a)): 1 cuts
@@ -401,6 +405,7 @@ struct StrokeRepeat {
     bool    lineJoin = false;
     bool    lineClip = false;
     Color   color{ 0, 0, 0, 1 };   // recolour (linear straight)
+    SwatchId swatch = kNullSwatch;   // document colour (wins over above)
     bool    useStrokeColor = true;
     float   opacity = 1.0f;        // paint alpha / Subtract erase strength
 
@@ -566,6 +571,7 @@ struct InstElement {
     MarkObjectMode mode = MarkObjectMode::Fusion;
     bool  useFillColor = false;         // inherit the fill's solid paint colour
     Color color{ 0, 0, 0, 1 };
+    SwatchId swatch = kNullSwatch;      // document colour (wins over above)
     float opacity = 1.0f;
     bool  enabled = true;
 };
@@ -598,6 +604,7 @@ struct InstLineSet {
     MarkObjectMode mode = MarkObjectMode::Fusion;
     bool   useFillColor = false;       // inherit the fill's solid paint colour
     Color  color{ 0, 0, 0, 1 };
+    SwatchId swatch = kNullSwatch;     // document colour (wins over above)
 };
 
 enum class InstLayout : std::uint8_t { Grid = 0, Scatter = 1 };

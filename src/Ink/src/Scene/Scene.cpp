@@ -833,7 +833,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
         d.isStroke = false;  d.pieceIndex = (std::uint8_t)i;
         d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = false;
-        d.rule = f.rule;  d.color = f.paint.color;
+        d.rule = f.rule;  d.color = f.paint.color;  d.swatch = f.paint.swatch;
         d.color.a *= f.opacity;             // layer opacity
         d.scope = scope;
         if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
@@ -870,7 +870,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
         d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
         d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = true;
-        d.stroke = s;  d.color = s.paint.color;
+        d.stroke = s;  d.color = s.paint.color;  d.swatch = s.paint.swatch;
         d.scope = scope;
         if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
         drawables_.push_back(std::move(d));
@@ -1102,9 +1102,10 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                     // FUSION: the instance's SHAPE in the STROKE colour (its own
                     // colours are ignored) — a silhouette fused onto the line.
                     Color sc = s.paint.color;  sc.a *= op;
+                    const SwatchId scSw = s.paint.swatch;
                     Drawable d = baseDrawable();
                     d.isStroke = false;  d.rule = FillRule::NonZero;
-                    d.color = sc;
+                    d.color = sc;  d.swatch = scSw;
                     drawables_.push_back(std::move(d));
                     for (const Stroke& ts : target->style.strokes) {
                         if (!ts.enabled || ts.width <= 0.0) continue;
@@ -1114,7 +1115,7 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                         ds.stroke.width = ts.width * k;
                         ds.stroke.marks.clear();
                         ds.stroke.repeats.clear();
-                        ds.color = sc;                   // stroke colour too
+                        ds.color = sc;  ds.swatch = scSw;   // stroke colour too
                         drawables_.push_back(std::move(ds));
                     }
                 } else {   // Blend + Bent: the instance's OWN render, bent.
@@ -1122,7 +1123,7 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                         if (!f.enabled || f.kind != FillKind::Solid) continue;
                         Drawable d = baseDrawable();
                         d.isStroke = false;  d.rule = f.rule;
-                        d.color = f.paint.color;
+                        d.color = f.paint.color;  d.swatch = f.paint.swatch;
                         d.color.a *= f.opacity * op;
                         drawables_.push_back(std::move(d));
                     }
@@ -1134,7 +1135,7 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                         d.stroke.width = ts.width * k;
                         d.stroke.marks.clear();
                         d.stroke.repeats.clear();
-                        d.color = ts.paint.color;
+                        d.color = ts.paint.color;  d.swatch = ts.paint.swatch;
                         d.color.a *= op;
                         drawables_.push_back(std::move(d));
                     }
@@ -1181,7 +1182,8 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
             d.clip = ClipRole::EraseWrite;
             d.clipPinned = true;
         } else {
-            d.color = obj.useStrokeColor ? s.paint.color : obj.color;
+            d.color  = obj.useStrokeColor ? s.paint.color  : obj.color;
+            d.swatch = obj.useStrokeColor ? s.paint.swatch : obj.swatch;
             d.color.a *= std::clamp(obj.opacity, 0.0f, 1.0f);
         }
         drawables_.push_back(std::move(d));
@@ -1202,7 +1204,7 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         d.pathHash = geo->Hash();  d.path = geo;
         d.isStroke = true;  d.pieceIndex = (std::uint8_t)strokeIndex;
         d.ownerPiece = (std::uint8_t)strokeIndex;  d.ownerPieceStroke = true;
-        d.stroke = s;  d.color = s.paint.color;
+        d.stroke = s;  d.color = s.paint.color;  d.swatch = s.paint.swatch;
         d.scope = strokeScope;
         drawables_.push_back(std::move(d));
     }
@@ -1234,6 +1236,7 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
         obj.sizePercent = rep.sizePercent;
         obj.rotation = rep.rotation;
         obj.color = rep.color;
+        obj.swatch = rep.swatch;
         obj.useStrokeColor = rep.useStrokeColor;
         obj.opacity = rep.opacity;
         obj.sideInherit = true;   // the synthetic mark carries the offset
@@ -1309,7 +1312,8 @@ void Scene::EmitStrokeMarks(const Document& doc, const Node& n, const Stroke& s,
                         d.clip = ClipRole::EraseWrite;
                         d.clipPinned = true;
                     } else {
-                        d.color = rep.useStrokeColor ? s.paint.color : rep.color;
+                        d.color  = rep.useStrokeColor ? s.paint.color  : rep.color;
+                        d.swatch = rep.useStrokeColor ? s.paint.swatch : rep.swatch;
                         d.color.a *= std::clamp(rep.opacity, 0.0f, 1.0f);
                     }
                     drawables_.push_back(std::move(d));
@@ -1361,6 +1365,9 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
     Color motifColor = motif->style.fills.empty()
                            ? Color{ 0, 0, 0, 1 }
                            : motif->style.fills.front().paint.color;
+    const SwatchId motifSwatch = motif->style.fills.empty()
+                           ? kNullSwatch
+                           : motif->style.fills.front().paint.swatch;
     motifColor.a *= fill.opacity;
     // `rotation` rotates the whole LATTICE (motifs ride it — Affinity
     // semantics); `motifRotation` spins each motif in place on top of that;
@@ -1517,7 +1524,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
             d.isStroke = false;
             d.ownerPiece = (std::uint8_t)fillIndex;  d.ownerPieceStroke = false;
             d.rule = FillRule::NonZero;
-            d.color = motifColor;
+            d.color = motifColor;  d.swatch = motifSwatch;
             d.scope = scope;
             d.clip = role;
             drawables_.push_back(std::move(d));
@@ -1530,7 +1537,7 @@ void Scene::EmitPattern(const Document& doc, const Fill& fill, const Node& host,
                 sd.isStroke = true;  sd.pieceIndex = (std::uint8_t)si;
                 sd.ownerPiece = (std::uint8_t)fillIndex;
                 sd.ownerPieceStroke = false;   // the HOST fill owns the cells
-                sd.stroke = st;  sd.color = st.paint.color;
+                sd.stroke = st;  sd.color = st.paint.color;  sd.swatch = st.paint.swatch;
                 sd.color.a *= fill.opacity;
                 sd.scope = scope;
                 sd.clip = role;
@@ -2039,7 +2046,8 @@ void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
             d.color = Color{ 0, 0, 0, op };
             d.clip = ClipRole::EraseWrite;  d.clipPinned = true;
         } else {
-            d.color = e.useFillColor ? fill.paint.color : e.color;
+            d.color  = e.useFillColor ? fill.paint.color  : e.color;
+            d.swatch = e.useFillColor ? fill.paint.swatch : e.swatch;
             if (e.mode == MarkObjectMode::Fusion) d.color.a = 1.0f;  // paint once
             else d.color.a *= op;                                    // Blend stacks
             d.clip = role;
@@ -2120,7 +2128,8 @@ void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
             d.color = Color{ 0, 0, 0, 1.0f };
             d.clip = ClipRole::EraseWrite;  d.clipPinned = true;
         } else {
-            d.color = l.useFillColor ? fill.paint.color : l.color;
+            d.color  = l.useFillColor ? fill.paint.color  : l.color;
+            d.swatch = l.useFillColor ? fill.paint.swatch : l.swatch;
             if (l.mode == MarkObjectMode::Fusion) d.color.a = 1.0f;  // paint once
             d.clip = role;                        // Blend keeps its own alpha
         }
@@ -2147,7 +2156,7 @@ void Scene::EmitInstancedFill(const Document& /*doc*/, const Fill& fill,
 
 bool Scene::Compile(Document& doc, bool force) {
     if (!force && compiled_ && !doc.HasPendingChanges() &&
-        version_ == doc.Version())
+        version_ == doc.Version() && !flattenDirty_)
         return false;
     doc.DrainChanges();   // Lot 2: exact per-change diffing arrives with the
                           // perf lots; the walk is O(nodes) and change-gated.
@@ -2230,6 +2239,78 @@ bool Scene::Compile(Document& doc, bool force) {
         if (d.clipPinned) continue;              // Affinity layer host — decided
         if (d.clip != ClipRole::None) continue;  // pattern cells, mask writers
         d.clip = d.isClipSource ? ClipRole::MaskWrite : ClipRole::Clipped;
+    }
+
+    // Resolve document SWATCHES. Every paint source in the model funnels into
+    // Drawable::color, so one pass here restyles the whole document from the
+    // palette. Only the HUE is taken from the swatch; the alpha accumulated
+    // above (the paint's own alpha times every opacity on the way down) is
+    // multiplied by the swatch's, so a translucent swatch works for screen work
+    // while an object keeps its own fading.
+    //
+    // The PRINT transform is deliberately NOT applied here. It is a per-VIEW
+    // display choice — a proofing viewport and a symbol vignette must be able to
+    // disagree — so each drawable only carries what the transform needs and the
+    // GPU style tables build one variant per configuration in use.
+    if (!doc.Swatches().empty()) {
+        const PrintTechnique tech = doc.PrintTech();
+        for (Drawable& d : drawables_) {
+            const Swatch* sw = doc.FindSwatch(d.swatch);
+            if (!sw) continue;
+            d.color.r = sw->display.r;
+            d.color.g = sw->display.g;
+            d.color.b = sw->display.b;
+            d.color.a *= sw->display.a;
+            if (sw->hasPrintOrder) {
+                d.plate    = sw->printOrder;
+                d.plateInk = sw->ink;
+                d.hasSpot  = SwatchPrintsSpot(*sw, tech);
+                d.spotColor = sw->spotDisplay;
+            }
+        }
+    }
+
+    // FLATTENER — the artwork that could not go to a separation as it stands:
+    // anything translucent, blended or cutting. Nothing is flattened (the canvas
+    // already shows the flattened result); the regions are reported so the app
+    // can mark them up. Only computed while a view actually asks, since it
+    // re-runs the stroker over every translucent stroke.
+    flattenRings_.clear();
+    flattenDirty_ = false;
+    if (wantFlatten_) {
+        for (const Drawable& d : drawables_) {
+            if (d.isClipSource || d.previewOnly || !d.path) continue;
+            const bool soft = d.color.a < 0.999f ||
+                              d.clip == ClipRole::EraseWrite ||
+                              scopes_[d.scope].blend != BlendMode::Normal ||
+                              scopes_[d.scope].opacity < 0.999f;
+            if (!soft) continue;
+            const std::vector<geom::Polyline> flat = geom::Flatten(*d.path, 0.4);
+            if (d.isStroke) {
+                // Run the real stroker: the painted band is what matters, and
+                // it depends on the alignment, the dash pattern and the caps —
+                // none of which can be recovered from the spine.
+                const geom::Mesh m =
+                    geom::TessellateStroke(flat, d.stroke, 0.4, d.path);
+                if (m.Empty()) continue;
+                FlattenRegion fr;
+                fr.isStroke = true;
+                fr.tris.reserve(m.indices.size());
+                for (std::uint32_t idx : m.indices)
+                    fr.tris.push_back(d.world.Apply(
+                        { m.positions[idx * 2], m.positions[idx * 2 + 1] }));
+                flattenRings_.push_back(std::move(fr));
+            } else {
+                for (const geom::Polyline& pl : flat) {
+                    if (pl.points.size() < 2) continue;
+                    FlattenRegion fr;
+                    fr.ring.reserve(pl.points.size());
+                    for (const DVec2& p : pl.points)
+                        fr.ring.push_back(d.world.Apply(p));
+                    flattenRings_.push_back(std::move(fr));
+                }
+            }
+        }
     }
 
     version_  = doc.Version();

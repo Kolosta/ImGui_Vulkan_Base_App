@@ -120,6 +120,11 @@ struct ViewImpl {
     int                        previewPiece = -1;
     bool                       previewPieceStroke = false;
     std::uint64_t              previewFilterGen = 0;   // bumped on filter change
+    // Per-view PRINT proofing (View::SetPrintPreview / SetPrintOrder).
+    PrintPreview               printPreview = PrintPreview::Off;
+    std::uint8_t               printChannels = PrintChannelAll;
+    bool                       printOrder = false;
+    std::uint32_t              printBlock = 0;   // its style-table block
 
     // Target chain. iso[0] is the main content; iso[1..isoLevels] are the
     // reserved composite-isolation levels (sized to the scene's max depth).
@@ -223,6 +228,9 @@ struct RendererImpl {
     // style table buffer is recreated — views resync lazily against them.
     std::uint64_t sceneGen = 1;
     std::uint64_t styleGen = 1;
+    // The print configurations the style tables were last built for; a change
+    // in the set (a viewport starts or stops proofing) rebuilds them.
+    std::vector<GpuScene::PrintConfig> lastPrintConfigs;
 
     // Frame ring.
     FrameSlot     slots[kFramesInFlight];

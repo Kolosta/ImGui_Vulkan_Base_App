@@ -63,6 +63,11 @@ struct CompositeScope {
 enum class ClipRole : std::uint8_t {
     None = 0, MaskWrite, MaskClear, Clipped, EraseWrite };
 
+// "This drawable is not on any plate" — it keeps its layer-tree position even
+// when the document renders in print order, and the separation previews leave
+// it out of every channel.
+inline constexpr int kNoPlate = 0x7FFFFFFF;
+
 struct Drawable {
     NodeId          node = kNullNode;
     // The node SELECTION maps to (picking, outlines): an instance's subtree
@@ -84,6 +89,24 @@ struct Drawable {
     FillRule        rule = FillRule::NonZero;   // fill pieces
     Stroke          stroke;                     // stroke pieces (geometry params)
     Color           color;              // linear straight (premultiplied later)
+    // The document colour this drawable follows, when it follows one. Recorded
+    // at emit time and resolved into `color` by a Compile post-pass, so every
+    // paint source (fill, stroke, pattern element, line-set, repeat, mark)
+    // funnels through ONE place — which is also what lets the print previews
+    // and the colour-usage editor work off the drawable list alone.
+    SwatchId        swatch = kNullSwatch;
+    // The plate this drawable prints on, resolved from its swatch: lower is
+    // laid down first (underneath). kNoPlate = takes no part in the stack and
+    // keeps its position in the layer tree. Also what the separation and
+    // overprint previews read.
+    int             plate = kNoPlate;
+    // Everything the PRINT previews need about this drawable's colour, carried
+    // here so the transform can run per VIEW (in the GPU style tables) instead
+    // of being baked into `color` once for the whole app. A vignette and a
+    // proofing viewport must be able to disagree.
+    Cmyk            plateInk;                  // the separation definition
+    Color           spotColor{ 0, 0, 0, 1 };   // when the plate prints as spot
+    bool            hasSpot = false;
     ScopeId         scope = kRootScope; // the composite scope this belongs to
     ClipRole        clip = ClipRole::None;  // stencil interaction (see above)
     bool            clipPinned = false;     // clip role already decided; the
@@ -106,6 +129,33 @@ public:
     bool Compile(Document& doc, bool force = false);
 
     const std::vector<Drawable>&      Drawables() const { return drawables_; }
+    // The artwork that could NOT go to a print separation as it stands —
+    // translucent, blended or cutting — one entry per PIECE in document space.
+    // Pieces rather than objects because a single object routinely mixes
+    // flattened and clean parts: a pattern cell, or one repeat of a stroke, may
+    // need flattening while the rest of the object does not. A stroke reports
+    // its SPINE plus its width, so it is marked as the band it actually paints
+    // instead of as the area its path would enclose. Filled only while the
+    // document is in the Flattener preview.
+    struct FlattenRegion {
+        // A FILL reports its outline ring (hatched by scanline). A STROKE
+        // reports the TRIANGLES the stroker actually produces — dashes, caps,
+        // repeats and the Inside/Outside/Left/Right offset included — because
+        // its painted band is not derivable from the spine, and following the
+        // spine by hand is what tears at curves.
+        std::vector<DVec2>        ring;      // fill only
+        std::vector<DVec2>        tris;      // stroke only, 3 points per tri
+        bool                      isStroke = false;
+    };
+    const std::vector<FlattenRegion>& FlattenRegions() const {
+        return flattenRings_;
+    }
+    // Flattener analysis is not free (it re-runs the stroker over every
+    // translucent stroke), so it only happens while a view actually shows it.
+    void SetWantFlattenRegions(bool on) {
+        if (wantFlatten_ != on) { wantFlatten_ = on; flattenDirty_ = true; }
+    }
+    bool WantFlattenRegions() const { return wantFlatten_; }
     const std::vector<CompositeScope>& Scopes()   const { return scopes_; }
     // Deepest composite-scope nesting in the scene (drives the isolation
     // target reservation — RENDER_GRAPH.md §2).
@@ -206,6 +256,9 @@ private:
     std::vector<std::pair<NodeId, DMat23>> pvPending_;
 
     std::vector<Drawable>       drawables_;
+    std::vector<FlattenRegion>  flattenRings_;
+    bool                        wantFlatten_ = false;
+    bool                        flattenDirty_ = false;
     std::vector<CompositeScope> scopes_;
     std::vector<PathData>       pageRects_;   // stable storage for page substrates
     // Boolean-modifier results (stable addresses; drawables borrow them):

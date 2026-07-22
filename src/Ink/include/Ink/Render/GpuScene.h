@@ -80,16 +80,33 @@ public:
     // and queue their upload. Also refreshes the drawable → item index map
     // used by the per-view instance builds. Returns true when a table BUFFER
     // was recreated (view descriptor sets must be re-pointed).
+    // One PRINT configuration a view may ask for. The style tables hold one
+    // BLOCK of items per distinct configuration in use this frame, so views
+    // proofing differently share the geometry and the instances and differ only
+    // by which block their item indices point into.
+    struct PrintConfig {
+        PrintPreview mode = PrintPreview::Off;
+        std::uint8_t channels = PrintChannelAll;
+        bool operator==(const PrintConfig& o) const {
+            return mode == o.mode &&
+                   (mode != PrintPreview::Separations || channels == o.channels);
+        }
+    };
+
     bool SyncStyleTables(rhi::Device& dev, const std::vector<Drawable>& drawables,
+                         const std::vector<PrintConfig>& configs,
                          const DeferFn& defer);
 
     // Build ONE VIEW's instance table: world transforms rebased against the
     // view anchor (double subtract, then narrow) in drawable order. `buf` is
     // the view-owned device buffer (grown here; old one deferred). Returns
     // true when the buffer was recreated.
+    // `printBlock` selects which style block this view's items resolve through
+    // (index into the configs passed to SyncStyleTables).
     bool SyncViewInstances(rhi::Device& dev,
                            const std::vector<Drawable>& drawables,
-                           DVec2 anchor, rhi::Buffer& buf, const DeferFn& defer);
+                           DVec2 anchor, std::uint32_t printBlock,
+                           rhi::Buffer& buf, const DeferFn& defer);
 
     // Record every queued upload into `cmd` — call ONCE per frame, BEFORE any
     // render pass. `slot` picks the staging ring entry (fenced by the frame
@@ -127,7 +144,8 @@ private:
 
     // Global style tables (device-local) + drawable → item index map.
     rhi::Buffer itemTable_, paintTable_;
-    std::vector<std::uint32_t> itemOfDrawable_;
+    std::vector<std::uint32_t> itemOfDrawable_;   // base (block 0) indices
+    std::uint32_t              itemsPerBlock_ = 0;
 
     // Per-frame staged uploads.
     std::vector<std::uint8_t> pendingData_;

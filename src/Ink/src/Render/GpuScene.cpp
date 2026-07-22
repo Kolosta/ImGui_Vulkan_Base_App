@@ -1,5 +1,6 @@
 #include "Ink/Render/GpuScene.h"
 
+#include <cmath>
 #include <cstring>
 
 namespace Ink {
@@ -134,35 +135,114 @@ bool GpuScene::EnsureTable(rhi::Device& dev, rhi::Buffer& buf,
     return (bool)buf;
 }
 
+// The colour a drawable shows under one print configuration. Off leaves it
+// exactly as compiled; the proofing modes rebuild it from the ink its plate
+// actually lays, keeping the object's own alpha. A SPOT ink is not built from
+// the process set — it is laid as its own measured colour, and so belongs to no
+// CMYK channel at all, which is why it drops out of a separations view.
+static Color PrintedColor(const Drawable& d,
+                          const GpuScene::PrintConfig& cfg) {
+    if (cfg.mode != PrintPreview::Overprint &&
+        cfg.mode != PrintPreview::Separations)
+        return d.color;
+    const bool sep = cfg.mode == PrintPreview::Separations;
+    const std::uint8_t ch = sep ? cfg.channels : PrintChannelAll;
+    Color out = d.color;
+    if (d.plate != kNoPlate && d.hasSpot) {
+        if (sep) { out.a = 0.0f; return out; }
+        const float a = out.a;
+        out = d.spotColor;
+        out.a = a;
+    } else if (d.plate != kNoPlate) {
+        const float a = out.a;
+        out = InkOverPaper(d.plateInk, ch);
+        out.a = a;
+    } else if (sep) {
+        const float a = out.a;
+        out = InkOverPaper(NaiveCmyk(out), ch);
+        out.a = a;
+    }
+    return out;
+}
+
 bool GpuScene::SyncStyleTables(rhi::Device& dev,
                                const std::vector<Drawable>& drawables,
+                               const std::vector<PrintConfig>& configs,
                                const DeferFn& defer) {
     // Painter order; paints and items dedup. The drawable → item map feeds
     // the per-view instance builds (instance index == drawable index).
+    //
+    // ONE BLOCK OF ITEMS PER CONFIGURATION: the geometry, the instances and the
+    // draw commands are shared by every view, and the only thing a proofing
+    // view needs to differ in is the colour it resolves to. Giving each
+    // configuration its own item block and letting a view offset its item
+    // indices into it is what makes the print previews per-viewport without
+    // duplicating anything else.
     std::vector<ItemRecord>  items;
     std::vector<PaintRecord> paints;
     std::unordered_map<std::uint64_t, std::uint32_t> paintIndex;
-    std::unordered_map<std::uint32_t, std::uint32_t> itemIndex;
     itemOfDrawable_.clear();
     itemOfDrawable_.reserve(drawables.size());
+    itemsPerBlock_ = 0;
 
-    for (const Drawable& d : drawables) {
-        PaintRecord p;
-        const Color c = d.color.Premultiplied();
-        p.rgba[0] = c.r; p.rgba[1] = c.g; p.rgba[2] = c.b; p.rgba[3] = c.a;
-        const std::uint64_t ck = ColorKey(p);
-        auto pit = paintIndex.find(ck);
-        if (pit == paintIndex.end()) {
-            pit = paintIndex.emplace(ck, (std::uint32_t)paints.size()).first;
-            paints.push_back(p);
+    // Items are deduped on the drawable's whole PRINT IDENTITY, not just its
+    // colour: two drawables that look alike today may sit on different plates
+    // and diverge the moment a view proofs them. Keying on the identity keeps
+    // every block the same length and in the same order, which is the whole
+    // reason a view can reach its block by adding one stride.
+    auto identity = [](const Drawable& d) {
+        auto mix = [](std::uint64_t h, std::uint64_t v) {
+            h ^= v + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+            return h;
+        };
+        auto f = [](float v) {
+            std::uint32_t b; std::memcpy(&b, &v, 4); return (std::uint64_t)b;
+        };
+        auto q = [](double v) { return (std::uint64_t)(std::int64_t)std::llround(v * 100.0); };
+        std::uint64_t h = 0x9E3779B9ull;
+        h = mix(h, f(d.color.r)); h = mix(h, f(d.color.g));
+        h = mix(h, f(d.color.b)); h = mix(h, f(d.color.a));
+        h = mix(h, (std::uint64_t)(std::int64_t)d.plate);
+        if (d.plate != kNoPlate) {
+            h = mix(h, q(d.plateInk.c)); h = mix(h, q(d.plateInk.m));
+            h = mix(h, q(d.plateInk.y)); h = mix(h, q(d.plateInk.k));
+            h = mix(h, d.hasSpot ? 1ull : 0ull);
+            if (d.hasSpot) {
+                h = mix(h, f(d.spotColor.r)); h = mix(h, f(d.spotColor.g));
+                h = mix(h, f(d.spotColor.b));
+            }
         }
-        auto iit = itemIndex.find(pit->second);
-        if (iit == itemIndex.end()) {
-            iit = itemIndex.emplace(pit->second,
-                                    (std::uint32_t)items.size()).first;
+        return h;
+    };
+    std::unordered_map<std::uint64_t, std::uint32_t> slotOf;   // identity → slot
+    std::vector<std::uint32_t> slotRep;                        // slot → drawable
+    for (std::uint32_t i = 0; i < (std::uint32_t)drawables.size(); ++i) {
+        const std::uint64_t key = identity(drawables[i]);
+        auto it = slotOf.find(key);
+        if (it == slotOf.end()) {
+            it = slotOf.emplace(key, (std::uint32_t)slotRep.size()).first;
+            slotRep.push_back(i);
+        }
+        itemOfDrawable_.push_back(it->second);
+    }
+    itemsPerBlock_ = (std::uint32_t)slotRep.size();
+
+    const std::size_t nCfg = configs.empty() ? 1 : configs.size();
+    items.reserve(slotRep.size() * nCfg);
+    for (std::size_t b = 0; b < nCfg; ++b) {
+        const PrintConfig cfg = configs.empty() ? PrintConfig{} : configs[b];
+        for (std::uint32_t rep : slotRep) {
+            PaintRecord p;
+            const Color c = PrintedColor(drawables[rep], cfg).Premultiplied();
+            p.rgba[0] = c.r; p.rgba[1] = c.g; p.rgba[2] = c.b; p.rgba[3] = c.a;
+            const std::uint64_t ck = ColorKey(p);
+            auto pit = paintIndex.find(ck);
+            if (pit == paintIndex.end()) {
+                pit = paintIndex.emplace(ck, (std::uint32_t)paints.size()).first;
+                paints.push_back(p);
+            }
             items.push_back({ pit->second, 0, { 0, 0 } });
         }
-        itemOfDrawable_.push_back(iit->second);
     }
     if (items.empty()) return false;
 
@@ -181,8 +261,8 @@ bool GpuScene::SyncStyleTables(rhi::Device& dev,
 
 bool GpuScene::SyncViewInstances(rhi::Device& dev,
                                  const std::vector<Drawable>& drawables,
-                                 DVec2 anchor, rhi::Buffer& buf,
-                                 const DeferFn& defer) {
+                                 DVec2 anchor, std::uint32_t printBlock,
+                                 rhi::Buffer& buf, const DeferFn& defer) {
     if (drawables.empty() || itemOfDrawable_.size() != drawables.size())
         return false;
     std::vector<InstanceRecord> instances;
@@ -199,7 +279,7 @@ bool GpuScene::SyncViewInstances(rhi::Device& dev,
         rec.m[3] = (float)d.world.m[3];
         rec.m[4] = (float)d.world.m[4];
         rec.m[5] = (float)(d.world.m[5] - anchor.y);
-        rec.itemIndex = itemOfDrawable_[i];
+        rec.itemIndex = itemOfDrawable_[i] + printBlock * itemsPerBlock_;
         instances.push_back(rec);
     }
     bool recreated = false;
