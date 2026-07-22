@@ -47,10 +47,21 @@ ScopeId Scene::OpenScopeIfNeeded(const Document& doc, const Node& group,
         if (mm.enabled && mm.kind == ModifierKind::AlongPath &&
             mm.alongMode == MarkObjectMode::Subtract)
             cutModifier = true;
+    // A style piece that composites on its own (Fill/Stroke::blend != Normal)
+    // must resolve against THIS node's other pieces, not the whole map — the
+    // user asked for "blend against the other fills of the SAME shape". So the
+    // node isolates, exactly as a Subtract modifier makes it: the blend/erase
+    // stays inside, then the finished node draws over the map normally.
+    bool blendPiece = false;
+    for (const Fill& f : group.style.fills)
+        if (f.enabled && f.blend != BlendMode::Normal) { blendPiece = true; break; }
+    if (!blendPiece)
+        for (const Stroke& st : group.style.strokes)
+            if (st.enabled && st.blend != BlendMode::Normal) { blendPiece = true; break; }
     const bool composites = group.opacity < 0.999f ||
                             group.blend != BlendMode::Normal ||
                             group.isolate || clip != kNullNode || pathParent ||
-                            cutModifier;
+                            cutModifier || blendPiece;
     if (!composites) return parent;
 
     CompositeScope s;
@@ -66,6 +77,23 @@ ScopeId Scene::OpenScopeIfNeeded(const Document& doc, const Node& group,
     s.depth   = depth;
     scopes_.push_back(s);
     if (depth > maxDepth_) maxDepth_ = depth;
+    return (ScopeId)(scopes_.size() - 1);
+}
+
+// A single style piece that composites on its own. It isolates, so whatever it
+// paints (or erases) resolves as ONE layer before meeting the fills below —
+// which is what lets a pattern's white bands cut through a sibling fill instead
+// of merely covering it.
+ScopeId Scene::OpenPieceScope(NodeId node, ScopeId parent, BlendMode blend) {
+    CompositeScope s;
+    s.node    = node;
+    s.parent  = parent;
+    s.opacity = 1.0f;
+    s.blend   = blend;
+    s.isolate = true;
+    s.depth   = (parent < scopes_.size() ? scopes_[parent].depth : 0) + 1;
+    scopes_.push_back(s);
+    if (s.depth > maxDepth_) maxDepth_ = s.depth;
     return (ScopeId)(scopes_.size() - 1);
 }
 
@@ -819,12 +847,16 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
     for (std::size_t i = 0; i < n.style.fills.size(); ++i) {
         const Fill& f = n.style.fills[i];
         if (!f.enabled) continue;
+        // A fill that does not stack normally gets its own layer, so it meets
+        // the fills below it as a finished thing rather than piece by piece.
+        const ScopeId fscope = f.blend == BlendMode::Normal
+                             ? scope : OpenPieceScope(n.id, scope, f.blend);
         if (f.kind == FillKind::Pattern) {
-            EmitPattern(doc, f, n, geo, pathHash, prog, world, scope, owner, i);
+            EmitPattern(doc, f, n, geo, pathHash, prog, world, fscope, owner, i);
             continue;
         }
         if (f.kind == FillKind::Instanced) {
-            EmitInstancedFill(doc, f, n, geo, pathHash, prog, world, scope,
+            EmitInstancedFill(doc, f, n, geo, pathHash, prog, world, fscope,
                               owner, i);
             continue;
         }
@@ -835,7 +867,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = false;
         d.rule = f.rule;  d.color = f.paint.color;  d.swatch = f.paint.swatch;
         d.color.a *= f.opacity;             // layer opacity
-        d.scope = scope;
+        d.scope = fscope;
         if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
         drawables_.push_back(std::move(d));
     }
@@ -861,8 +893,13 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         for (const StrokeRepeat& rr : s.repeats)
             if (rr.enabled && rr.mode != MarkObjectMode::Fusion)
                 needsMarkEmit = true;
+        // A stroke that does not stack normally gets its own layer, so it
+        // meets the paint below as a finished thing — which is what lets a
+        // centred Erase stroke cut a hole rather than paint over it.
+        const ScopeId sscope = s.blend == BlendMode::Normal
+                             ? scope : OpenPieceScope(n.id, scope, s.blend);
         if (needsMarkEmit && !pinClip) {
-            EmitStrokeMarks(doc, n, s, i, geo, world, scope, owner, 0);
+            EmitStrokeMarks(doc, n, s, i, geo, world, sscope, owner, 0);
             continue;
         }
         Drawable d;
@@ -871,7 +908,7 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
         d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = true;
         d.stroke = s;  d.color = s.paint.color;  d.swatch = s.paint.swatch;
-        d.scope = scope;
+        d.scope = sscope;
         if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
         drawables_.push_back(std::move(d));
     }

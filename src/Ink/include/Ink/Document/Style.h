@@ -492,6 +492,12 @@ struct Stroke {
     std::vector<StrokeMark> marks;
     // Repeated object runs along the stroke (see StrokeRepeat).
     std::vector<StrokeRepeat> repeats;
+    // How this stroke composites against the strokes (and fills) BENEATH it in
+    // the same shape. Normal stacks; the blend modes mix; Erase cuts what is
+    // below away — a centred Erase stroke opens a real hole down the middle of
+    // the paint instead of laying a coloured line over it. Anything but Normal
+    // makes the stroke its own composite scope. Mirrors Fill::blend.
+    BlendMode   blend      = BlendMode::Normal;
 
     // The align offset in node-local units (a % resolves against the width).
     double AlignOffsetUnits() const {
@@ -654,6 +660,16 @@ struct Fill {
     float         opacity = 1.0f;      // layer opacity (multiplies the paint /
                                        // every motif colour of a pattern)
     bool          enabled = true;
+    // How this fill composites against the fills BENEATH it in the same shape.
+    // Normal stacks; the blend modes mix; Erase cuts the fills below it away.
+    //
+    // A pattern's or an instanced fill's own Cut mode only reaches inside that
+    // fill — its cells and line-sets share one internal layer, so cutting there
+    // cannot touch a sibling fill. THIS is the knob that reaches across them:
+    // a white-band line-set set to Erase punches real holes through the fill
+    // underneath instead of painting over it, which is what an unprinted gap
+    // actually is. Anything but Normal makes the fill its own composite scope.
+    BlendMode     blend   = BlendMode::Normal;
 };
 
 struct Style {

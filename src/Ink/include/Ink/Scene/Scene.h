@@ -226,6 +226,8 @@ private:
     // parent scope when the group is a plain pass-through layer).
     ScopeId OpenScopeIfNeeded(const Document& doc, const Node& group,
                               ScopeId parent, int depth);
+    // A style piece that composites on its own (Fill::blend != Normal).
+    ScopeId OpenPieceScope(NodeId node, ScopeId parent, BlendMode blend);
     // A stroke carrying mark OBJECTS renders in its OWN isolation scope so the
     // subtractive objects (dst-out) cut it cleanly before it composites into
     // the parent. Emits the base stroke + every mark object (SVG-marker shapes
