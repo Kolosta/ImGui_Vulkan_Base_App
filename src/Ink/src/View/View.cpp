@@ -53,13 +53,6 @@ void View::SetPrintPreview(PrintPreview mode, std::uint8_t channels) {
     v.forceDirty    = true;      // its commands resolve through another block
 }
 
-void View::SetPrintOrder(bool plateOrder) {
-    detail::ViewImpl& v = *impl_;
-    if (v.printOrder == plateOrder) return;
-    v.printOrder = plateOrder;
-    v.forceDirty = true;         // the command order itself changes
-}
-
 std::uint64_t View::Texture() const { return impl_->texture; }
 
 } // namespace Ink

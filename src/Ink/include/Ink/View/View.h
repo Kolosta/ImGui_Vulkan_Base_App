@@ -60,7 +60,6 @@ public:
     // stays on the plain screen render.
     void SetPrintPreview(PrintPreview mode,
                          std::uint8_t channels = PrintChannelAll);
-    void SetPrintOrder(bool plateOrder);
 
 
     // The sampled canvas texture handle as registered through the app's

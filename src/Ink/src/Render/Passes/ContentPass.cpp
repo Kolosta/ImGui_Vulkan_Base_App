@@ -40,6 +40,7 @@ void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
             case ClipRole::MaskClear:  pipe = r.clipClearPipeline; break;
             case ClipRole::Clipped:    pipe = r.contentClipPipeline; break;
             case ClipRole::EraseWrite: pipe = r.contentErasePipeline; break;
+            case ClipRole::EraseClipped: pipe = r.contentEraseClipPipeline; break;
             case ClipRole::None: default: break;
         }
         // Translucent-stroke self-overlap dedup: the segment is one stroke,
@@ -51,9 +52,16 @@ void RecordContentPass(RendererImpl& r, VkCommandBuffer cmd,
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
             bound = pipe;
         }
-        if (seg.stencilTag != 0)
-            vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_AND_BACK,
-                                     seg.stencilTag);
+        // The stencil reference is DYNAMIC state on every pipeline, so a
+        // pipeline's own `stencilRef` is never used — it has to be set here, for
+        // EVERY segment. Setting it only for the dedup segments left the mask
+        // roles running on whatever value happened to be current: a mask could
+        // be written under one reference and tested under another, which is how
+        // an erase ended up cutting the whole shape instead of its pattern.
+        //   write / test the mask → 1,   clear it → 0,   a dedup run → its tag.
+        std::uint32_t ref = seg.role == ClipRole::MaskClear ? 0u : 1u;
+        if (seg.stencilTag != 0) ref = seg.stencilTag;
+        vkCmdSetStencilReference(cmd, VK_STENCIL_FACE_FRONT_AND_BACK, ref);
         vkCmdDrawIndexedIndirect(
             cmd, indirect,
             seg.cmdOffset * (std::uint32_t)sizeof(VkDrawIndexedIndirectCommand),

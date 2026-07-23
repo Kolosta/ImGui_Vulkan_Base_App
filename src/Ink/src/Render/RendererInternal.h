@@ -123,7 +123,6 @@ struct ViewImpl {
     // Per-view PRINT proofing (View::SetPrintPreview / SetPrintOrder).
     PrintPreview               printPreview = PrintPreview::Off;
     std::uint8_t               printChannels = PrintChannelAll;
-    bool                       printOrder = false;
     std::uint32_t              printBlock = 0;   // its style-table block
 
     // Target chain. iso[0] is the main content; iso[1..isoLevels] are the
@@ -219,6 +218,7 @@ struct RendererImpl {
     VkPipeline clipClearPipeline   = VK_NULL_HANDLE;  // stencil WriteMask ← 0
     VkPipeline strokeDedupPipeline = VK_NULL_HANDLE;  // TestNotEqualWrite (dyn ref)
     VkPipeline contentErasePipeline= VK_NULL_HANDLE;  // dst-out (subtractive marks)
+    VkPipeline contentEraseClipPipeline = VK_NULL_HANDLE;  // dst-out + stencil==1
     VkPipeline overlayPipeline     = VK_NULL_HANDLE;
     VkPipeline overlayDedupPipeline= VK_NULL_HANDLE;  // overlay TestNotEqualWrite
     VkPipeline presentPipeline     = VK_NULL_HANDLE;

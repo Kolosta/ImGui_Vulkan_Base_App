@@ -60,8 +60,11 @@ struct CompositeScope {
 // its coverage out of the isolation layer (a subtractive mark object — the
 // stroke layer shows a hole where the shape was; docs/Ink/RENDER_GRAPH.md
 // §Erase). It never reads/writes the stencil.
+// EraseClipped: the same cut, but stencil-tested like Clipped — an ERASING
+// pattern / instanced fill still has to stop at its fill-clip edge. Stencil
+// test and colour blend are independent, so this is simply both at once.
 enum class ClipRole : std::uint8_t {
-    None = 0, MaskWrite, MaskClear, Clipped, EraseWrite };
+    None = 0, MaskWrite, MaskClear, Clipped, EraseWrite, EraseClipped };
 
 // "This drawable is not on any plate" — it keeps its layer-tree position even
 // when the document renders in print order, and the separation previews leave
@@ -228,6 +231,8 @@ private:
                               ScopeId parent, int depth);
     // A style piece that composites on its own (Fill::blend != Normal).
     ScopeId OpenPieceScope(NodeId node, ScopeId parent, BlendMode blend);
+    // Turn every drawable a style piece just produced into a CUT (see .cpp).
+    void MakePieceErase(std::size_t begin);
     // A stroke carrying mark OBJECTS renders in its OWN isolation scope so the
     // subtractive objects (dst-out) cut it cleanly before it composites into
     // the parent. Emits the base stroke + every mark object (SVG-marker shapes

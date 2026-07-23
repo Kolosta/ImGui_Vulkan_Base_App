@@ -191,6 +191,13 @@ bool CreatePipelines(RendererImpl& r) {
         // (docs/Ink/RENDER_GRAPH.md §Erase). Same content vertex program.
         d.blend = rhi::BlendKind::Erase;
         r.contentErasePipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        // The same cut, stencil-tested: an ERASING pattern fill must still stop
+        // at its clip edge. The stencil test and the colour blend are
+        // independent pieces of state, so a clipped erase is just both.
+        d.stencil    = rhi::StencilMode::TestEqual;
+        d.stencilRef = 1;
+        r.contentEraseClipPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+        d.stencil    = rhi::StencilMode::None;
         d.blend = rhi::BlendKind::PremultipliedOver;
 
         d.vert         = primV;
@@ -229,7 +236,7 @@ bool CreatePipelines(RendererImpl& r) {
 
         ok = r.contentPipeline && r.contentClipPipeline && r.clipMaskPipeline &&
              r.clipClearPipeline && r.strokeDedupPipeline &&
-             r.contentErasePipeline &&
+             r.contentErasePipeline && r.contentEraseClipPipeline &&
              r.overlayPipeline && r.overlayDedupPipeline &&
              r.compositePipeline && r.presentPipeline;
     }
@@ -539,6 +546,7 @@ void Renderer::Shutdown() {
         destroyPipeline(r.clipClearPipeline);
         destroyPipeline(r.strokeDedupPipeline);
         destroyPipeline(r.contentErasePipeline);
+        destroyPipeline(r.contentEraseClipPipeline);
         destroyPipeline(r.overlayPipeline);
         destroyPipeline(r.overlayDedupPipeline);
         destroyPipeline(r.compositePipeline);
@@ -823,39 +831,9 @@ void Renderer::EndFrame() {
             auto inPreview = [&](NodeId id) {
                 return v.previewOwners.find(id) != v.previewOwners.end();
             };
-            // PLATE ORDER, per view. Printing is sequential, so when this view
-            // proofs the press the plate stack is the order that matters and
-            // the layer tree only breaks ties inside one plate. Reordering the
-            // COMMANDS (not the instances, which must stay index-aligned with
-            // the geometry) is what makes it a per-view choice.
-            //
-            // Only PLATED content moves, and only among the positions it
-            // already holds: artwork with no print colour has no place in the
-            // stack — sweeping it along would sort it to the very top — and
-            // clip relationships (a mask before what it cuts, an erase after)
-            // are not plate relationships and stay pinned.
             const std::uint32_t nDraw = (std::uint32_t)drawables.size();
-            std::vector<std::uint32_t> order;
-            if (v.printOrder) {
-                order.resize(nDraw);
-                for (std::uint32_t i = 0; i < nDraw; ++i) order[i] = i;
-                std::vector<std::uint32_t> slots;
-                for (std::uint32_t i = 0; i < nDraw; ++i) {
-                    const Drawable& d = drawables[i];
-                    if (d.plate != kNoPlate && d.clip == ClipRole::None &&
-                        !d.isClipSource)
-                        slots.push_back(i);
-                }
-                std::vector<std::uint32_t> picked = slots;
-                std::stable_sort(picked.begin(), picked.end(),
-                                 [&](std::uint32_t a, std::uint32_t b) {
-                                     return drawables[a].plate < drawables[b].plate;
-                                 });
-                for (std::size_t k = 0; k < slots.size(); ++k)
-                    order[slots[k]] = picked[k];
-            }
             for (std::uint32_t oi = 0; oi < nDraw; ++oi) {
-                const std::uint32_t i = order.empty() ? oi : order[oi];
+                const std::uint32_t i = oi;
                 const Drawable& d = drawables[i];
                 if (d.scope != run.scope) continue;
                 // Library content (Node::previewOnly): drawn ONLY when a

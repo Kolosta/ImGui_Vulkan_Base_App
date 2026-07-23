@@ -2,6 +2,7 @@
 
 #include "Ink/Document/Swatch.h"
 #include "Ink/Document/Types.h"
+#include <algorithm>
 #include <vector>
 
 namespace Ink {
@@ -498,6 +499,8 @@ struct Stroke {
     // the paint instead of laying a coloured line over it. Anything but Normal
     // makes the stroke its own composite scope. Mirrors Fill::blend.
     BlendMode   blend      = BlendMode::Normal;
+    // Rank in the shape's single paint stack — see Fill::order.
+    int         order      = 0;
 
     // The align offset in node-local units (a % resolves against the width).
     double AlignOffsetUnits() const {
@@ -660,6 +663,11 @@ struct Fill {
     float         opacity = 1.0f;      // layer opacity (multiplies the paint /
                                        // every motif colour of a pattern)
     bool          enabled = true;
+    // Rank in the shape's SINGLE paint stack — fills and strokes share it, so a
+    // stroke can sit under a fill. Lower paints first (underneath). Every piece
+    // at 0 means "never reordered": the stable sort then keeps the historical
+    // order, all fills and then all strokes. See Style::PaintOrder().
+    int           order   = 0;
     // How this fill composites against the fills BENEATH it in the same shape.
     // Normal stacks; the blend modes mix; Erase cuts the fills below it away.
     //
@@ -675,6 +683,50 @@ struct Fill {
 struct Style {
     std::vector<Fill>   fills;
     std::vector<Stroke> strokes;
+
+    // One piece of the paint stack: which list it lives in, and where.
+    struct PaintRef {
+        bool          isStroke = false;
+        std::uint8_t  index    = 0;
+    };
+    // The whole stack in PAINT ORDER, bottom first. Fills and strokes are one
+    // sequence: `order` ranks them together, and pieces left at 0 keep the
+    // historical arrangement (every fill, then every stroke) because the sort
+    // is stable and that is the order they are listed in here.
+    std::vector<PaintRef> PaintOrder() const {
+        std::vector<PaintRef> out;
+        out.reserve(fills.size() + strokes.size());
+        for (std::size_t i = 0; i < fills.size(); ++i)
+            out.push_back({ false, (std::uint8_t)i });
+        for (std::size_t i = 0; i < strokes.size(); ++i)
+            out.push_back({ true, (std::uint8_t)i });
+        std::stable_sort(out.begin(), out.end(),
+            [this](const PaintRef& a, const PaintRef& b) {
+                const int oa = a.isStroke ? strokes[a.index].order
+                                          : fills[a.index].order;
+                const int ob = b.isStroke ? strokes[b.index].order
+                                          : fills[b.index].order;
+                return oa < ob;
+            });
+        return out;
+    }
+    // Stamp the current arrangement as explicit ranks — what an editor calls
+    // after a drag, so the order survives any later insertion.
+    void NormalizePaintOrder() {
+        int rank = 0;
+        for (const PaintRef& r : PaintOrder()) {
+            if (r.isStroke) strokes[r.index].order = rank++;
+            else            fills[r.index].order   = rank++;
+        }
+    }
+    // One past the highest rank in use — where a NEW piece goes, so anything
+    // freshly added lands on TOP of the stack rather than under it.
+    int TopPaintRank() const {
+        int top = -1;
+        for (const Fill& f : fills)     top = std::max(top, f.order);
+        for (const Stroke& s : strokes) top = std::max(top, s.order);
+        return top + 1;
+    }
 
     static Style Filled(const Color& linearStraight) {
         Style s;

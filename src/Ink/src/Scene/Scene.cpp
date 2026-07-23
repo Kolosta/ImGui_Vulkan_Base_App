@@ -47,17 +47,19 @@ ScopeId Scene::OpenScopeIfNeeded(const Document& doc, const Node& group,
         if (mm.enabled && mm.kind == ModifierKind::AlongPath &&
             mm.alongMode == MarkObjectMode::Subtract)
             cutModifier = true;
-    // A style piece that composites on its own (Fill/Stroke::blend != Normal)
-    // must resolve against THIS node's other pieces, not the whole map — the
-    // user asked for "blend against the other fills of the SAME shape". So the
-    // node isolates, exactly as a Subtract modifier makes it: the blend/erase
-    // stays inside, then the finished node draws over the map normally.
+    // An ERASE piece makes the node isolate, and only Erase: the cut has to stop
+    // at this object's own paint stack, because erasing straight into the parent
+    // punches through the map AND through the page background, which reads as
+    // black holes. The price is the composite limit noted in ScopePlayback.cpp —
+    // an isolated node draws above its siblings — which is why the OTHER blend
+    // modes do not take it: they still read correctly against the backdrop, and
+    // paying that price for them would move far more artwork than it fixes.
     bool blendPiece = false;
     for (const Fill& f : group.style.fills)
-        if (f.enabled && f.blend != BlendMode::Normal) { blendPiece = true; break; }
+        if (f.enabled && f.blend == BlendMode::Erase) { blendPiece = true; break; }
     if (!blendPiece)
         for (const Stroke& st : group.style.strokes)
-            if (st.enabled && st.blend != BlendMode::Normal) { blendPiece = true; break; }
+            if (st.enabled && st.blend == BlendMode::Erase) { blendPiece = true; break; }
     const bool composites = group.opacity < 0.999f ||
                             group.blend != BlendMode::Normal ||
                             group.isolate || clip != kNullNode || pathParent ||
@@ -95,6 +97,36 @@ ScopeId Scene::OpenPieceScope(NodeId node, ScopeId parent, BlendMode blend) {
     scopes_.push_back(s);
     if (s.depth > maxDepth_) maxDepth_ = s.depth;
     return (ScopeId)(scopes_.size() - 1);
+}
+
+// Turn every drawable a style piece just produced into a CUT: it removes what
+// is already beneath it in the node's isolation layer instead of painting.
+//
+// This is why an erasing piece is NOT given a composite scope of its own: a
+// child scope resolves at the END of the node, so it would cut the pieces drawn
+// ABOVE it as well. ClipRole::EraseWrite is drawn at the piece's own rank with
+// the dst-out pipeline, which is exactly "erase what is under me".
+//
+// The piece's stencil masks are dropped: inside an isolated node an unclipped
+// cut reaches nothing outside the shape, because there is no paint there. And
+// the paint becomes plain coverage with no colour and no swatch — a mask is not
+// an ink and must never turn up on a separation.
+void Scene::MakePieceErase(std::size_t begin) {
+    for (std::size_t k = begin; k < drawables_.size(); ++k) {
+        Drawable& d = drawables_[k];
+        // The stencil masks STAY: a pattern or instanced fill that erases still
+        // has to stop at its fill-clip edge, so its cells cut through the same
+        // mask they would have painted through (ClipRole::EraseClipped).
+        if (d.isClipSource) continue;
+        // The cut is as strong as the paint was opaque: a half-transparent
+        // erase takes half the backdrop away, like every other editor. The
+        // alpha already carries the paint colour AND the piece opacity.
+        d.clip = (d.clip == ClipRole::Clipped) ? ClipRole::EraseClipped
+                                               : ClipRole::EraseWrite;
+        d.clipPinned = true;
+        d.color      = Color{ 0, 0, 0, std::clamp(d.color.a, 0.0f, 1.0f) };
+        d.swatch     = kNullSwatch;
+    }
 }
 
 namespace {
@@ -842,36 +874,44 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         }
     }
 
-    // Fills bottom-up (a pattern fill expands into motif instances), then
-    // strokes bottom-up — the unified paint order (docs/Ink/DOCUMENT_MODEL §4).
-    for (std::size_t i = 0; i < n.style.fills.size(); ++i) {
+    // ONE paint stack: fills and strokes share a rank, so a stroke can sit under
+    // a fill (Style::PaintOrder). Left untouched every piece ranks 0 and the
+    // stable order is the historical one — every fill, then every stroke.
+    for (const Style::PaintRef& ref : n.style.PaintOrder()) {
+      if (!ref.isStroke) {
+        const std::size_t i = ref.index;
         const Fill& f = n.style.fills[i];
         if (!f.enabled) continue;
-        // A fill that does not stack normally gets its own layer, so it meets
-        // the fills below it as a finished thing rather than piece by piece.
-        const ScopeId fscope = f.blend == BlendMode::Normal
-                             ? scope : OpenPieceScope(n.id, scope, f.blend);
+        // An ERASE piece cuts in place (MakePieceErase); any OTHER non-Normal
+        // blend needs a layer of its own so it meets the paint below it as a
+        // finished thing rather than piece by piece.
+        const bool erasePiece = f.blend == BlendMode::Erase;
+        const ScopeId fscope =
+            (f.blend == BlendMode::Normal || erasePiece)
+                ? scope : OpenPieceScope(n.id, scope, f.blend);
+        const std::size_t pieceBegin = drawables_.size();
         if (f.kind == FillKind::Pattern) {
             EmitPattern(doc, f, n, geo, pathHash, prog, world, fscope, owner, i);
-            continue;
-        }
-        if (f.kind == FillKind::Instanced) {
+        } else if (f.kind == FillKind::Instanced) {
             EmitInstancedFill(doc, f, n, geo, pathHash, prog, world, fscope,
                               owner, i);
-            continue;
+        } else {
+            Drawable d;
+            d.node = n.id;  d.owner = owner;  d.world = world;
+            d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
+            d.isStroke = false;  d.pieceIndex = (std::uint8_t)i;
+            d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = false;
+            d.rule = f.rule;  d.color = f.paint.color;  d.swatch = f.paint.swatch;
+            d.color.a *= f.opacity;             // layer opacity
+            d.scope = fscope;
+            if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
+            drawables_.push_back(std::move(d));
         }
-        Drawable d;
-        d.node = n.id;  d.owner = owner;  d.world = world;
-        d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
-        d.isStroke = false;  d.pieceIndex = (std::uint8_t)i;
-        d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = false;
-        d.rule = f.rule;  d.color = f.paint.color;  d.swatch = f.paint.swatch;
-        d.color.a *= f.opacity;             // layer opacity
-        d.scope = fscope;
-        if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
-        drawables_.push_back(std::move(d));
-    }
-    for (std::size_t i = 0; i < n.style.strokes.size(); ++i) {
+        if (erasePiece) MakePieceErase(pieceBegin);
+        continue;
+      }
+      {
+        const std::size_t i = ref.index;
         const Stroke& s = n.style.strokes[i];
         if (!s.enabled || s.width <= 0.0) continue;
         // A stroke whose marks carry SEPARATE objects (Blend / Cut / Instance,
@@ -893,24 +933,29 @@ void Scene::EmitPath(const Document& doc, const Node& n, const DMat23& world,
         for (const StrokeRepeat& rr : s.repeats)
             if (rr.enabled && rr.mode != MarkObjectMode::Fusion)
                 needsMarkEmit = true;
-        // A stroke that does not stack normally gets its own layer, so it
-        // meets the paint below as a finished thing — which is what lets a
-        // centred Erase stroke cut a hole rather than paint over it.
-        const ScopeId sscope = s.blend == BlendMode::Normal
-                             ? scope : OpenPieceScope(n.id, scope, s.blend);
+        // Same rule as the fills: an Erase stroke cuts in place, so a centred
+        // one opens a real hole down the middle of the paint beneath it and
+        // leaves the pieces above it alone.
+        const bool eraseStroke = s.blend == BlendMode::Erase;
+        const ScopeId sscope =
+            (s.blend == BlendMode::Normal || eraseStroke)
+                ? scope : OpenPieceScope(n.id, scope, s.blend);
+        const std::size_t pieceBegin = drawables_.size();
         if (needsMarkEmit && !pinClip) {
             EmitStrokeMarks(doc, n, s, i, geo, world, sscope, owner, 0);
-            continue;
+        } else {
+            Drawable d;
+            d.node = n.id;  d.owner = owner;  d.world = world;
+            d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
+            d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
+            d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = true;
+            d.stroke = s;  d.color = s.paint.color;  d.swatch = s.paint.swatch;
+            d.scope = sscope;
+            if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
+            drawables_.push_back(std::move(d));
         }
-        Drawable d;
-        d.node = n.id;  d.owner = owner;  d.world = world;
-        d.pathHash = pathHash;  d.path = geo;  d.boolProg = prog;
-        d.isStroke = true;  d.pieceIndex = (std::uint8_t)i;
-        d.ownerPiece = (std::uint8_t)i;  d.ownerPieceStroke = true;
-        d.stroke = s;  d.color = s.paint.color;  d.swatch = s.paint.swatch;
-        d.scope = sscope;
-        if (pinClip) { d.clip = pinnedRole; d.clipPinned = true; }
-        drawables_.push_back(std::move(d));
+        if (eraseStroke) MakePieceErase(pieceBegin);
+      }
     }
 }
 
@@ -2319,6 +2364,7 @@ bool Scene::Compile(Document& doc, bool force) {
             if (d.isClipSource || d.previewOnly || !d.path) continue;
             const bool soft = d.color.a < 0.999f ||
                               d.clip == ClipRole::EraseWrite ||
+                              d.clip == ClipRole::EraseClipped ||
                               scopes_[d.scope].blend != BlendMode::Normal ||
                               scopes_[d.scope].opacity < 0.999f;
             if (!soft) continue;

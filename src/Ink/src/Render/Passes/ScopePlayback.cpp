@@ -11,9 +11,18 @@
 //  a clip) renders its content into its own isolation target, then composites
 //  that target onto its parent as a unit. BuildScopePlan assigns each scope an
 //  iso LEVEL by nesting depth (capped) and interleaves two phases: CONTENT in
-//  PRE-ORDER (a scope's own pass clears + resolves its target, so it must run
-//  before any child composites into it) and COMPOSITE in POST-ORDER (a child
-//  blends onto its parent right after its subtree completed). PlayScopes
+//  PRE-ORDER and COMPOSITE in POST-ORDER (a child blends onto its parent right
+//  after its subtree completed).
+//
+//  KNOWN LIMIT — a child composites after ALL of its parent's content, so an
+//  isolated scope (opacity, blend, clip) lands on top of its parent's layer
+//  whatever the tree says. Slicing the parent's content around its children does
+//  NOT work here: each slice resolves MSAA into the scope's resolved image, and
+//  that resolve overwrites the composite a child just wrote there — the child's
+//  content disappears entirely. Interleaving needs the parent's MSAA to be
+//  re-seeded from the resolved image after every composite (a fullscreen restore
+//  blit), which is its own piece of work.
+//  PlayScopes
 //  records them: content into iso[level] (MSAA→resolved), then a fullscreen
 //  composite of iso[level].linear onto the parent with the scope's opacity +
 //  blend — reading the parent's current linear as the backdrop and writing the
