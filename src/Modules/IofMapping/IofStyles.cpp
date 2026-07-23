@@ -385,6 +385,12 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
     auto runStripes = [&](Ink::Color col) {
         return LinesFill(1.5707963267948966, 1.5 * s, 0.4 * s, col);
     };
+    // A LIGHTER green striped over a darker one prints UNDERNEATH it — its
+    // plate is laid down first — so in plate order the darker fill simply
+    // covers it. A press solves this by cutting holes in the darker plate
+    // where the lighter tint shows; this is that hole: the same stripe
+    // geometry in Erase, sitting between the two fills.
+
 
     switch (e.code) {
         // ── Landforms ────────────────────────────────────────────────────────
@@ -489,19 +495,21 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
                                         Ink::RepeatSide::Right, 50.0));
             line(st); break;
         }
-        case 2150: {   // Trench: black 0.30 back + a 0.10 ERASE line down the
-                       // middle. The centre is a real gap that shows the ground
-                       // under the trench — transparent, not a white line laid
-                       // over it. The node isolates (a blend piece), so the
-                       // erase cuts only the trench's own black.
+        case 2150: {   // Trench: TWO 0.10 black bands astride the spine, their
+                       // centres 0.10 out, leaving a 0.10 gap down the middle —
+                       // 0.30 across in all. The gap is simply unpainted, so the
+                       // ground under the trench shows through: no erase, no
+                       // white ink, and nothing that could reorder oddly.
             def.isLine = true;
-            Ink::Stroke back = MakeStroke(black, 0.30 * s);
-            back.join = Ink::JoinStyle::Miter;
-            Ink::Stroke front = MakeStroke(white, 0.10 * s);
-            front.join = Ink::JoinStyle::Miter;
-            front.blend = Ink::BlendMode::Erase;
-            def.lineStyle.strokes.push_back(back);
-            def.lineStyle.strokes.push_back(front);
+            for (Ink::StrokeAlign side : { Ink::StrokeAlign::Left,
+                                           Ink::StrokeAlign::Right }) {
+                Ink::Stroke band = MakeStroke(black, 0.10 * s);
+                band.join = Ink::JoinStyle::Miter;
+                band.align = side;
+                band.alignOffset = 0.10 * s;
+                band.alignOffsetPercent = false;
+                def.lineStyle.strokes.push_back(band);
+            }
             break;
         }
         case 2031:   // Rocky pit or cave — the pit V in black, 0.16 mm
@@ -554,7 +562,8 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
                                       black, 0.45 * s, 0.45 * s);
             dots.instanced.axisAngle[0] = -0.7853981633974483;   // −45°
             dots.instanced.axisAngle[1] =  0.7853981633974483;   // +45°
-            area({ Solid(InkColor(SpotColor::Yellow, 0.5f)), dots });
+            area({ Solid(InkColor(SpotColor::Yellow, 0.5f)),
+                   plateFill(dots, PrintLayer::BlackCultivated) });
             break;
         }
         case 2140: area({ Solid(ToInk(ScreenRgb(SpotColor::Black, 0.30f))) }); break;
@@ -643,10 +652,20 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
                           plateFill(runStripes(white), PrintLayer::WhiteOverGreenBrown) }); break;
         case 4102: area({ Solid(green), runStripes(green30) }); break;
         case 4103: area({ Solid(green), runStripes(green60) }); break;
-        case 4070:
-            // Vertical green stripes on white (good visibility).
-            area({ LinesFill(1.5707963267948966, 1.0 * s, 0.4 * s, green) });
+        case 4070: {   // 407 — 0.12 green stripes 0.84 apart, on white.
+                       // DOCUMENT-anchored so neighbouring areas line up
+                       // instead of each restarting its own lattice.
+            Ink::Fill f = LinesFill(1.5707963267948966, 0.84 * s, 0.12 * s, green);
+            f.instanced.anchor = Ink::PatternAnchor::Document;
+            area({ f });
             break;
+        }
+        case 4090: {   // 409 — as 407 but denser: 0.14 stripes 0.42 apart.
+            Ink::Fill f = LinesFill(1.5707963267948966, 0.42 * s, 0.14 * s, green);
+            f.instanced.anchor = Ink::PatternAnchor::Document;
+            area({ f });
+            break;
+        }
         case 4120:
             area({ Solid(yellow),
                    plateFill(GridFill(Ink::InstShape::Circle, 0.10 * s, 0.10 * s,
@@ -759,10 +778,14 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
         case 5084: {
             def.isLine = true;
             if (e.code != 5080) {
-                const Ink::Color bg = e.code == 5081 ? yellow
-                                    : e.code == 5082 ? green30
-                                    : e.code == 5083 ? green60 : white;
-                def.lineStyle.strokes.push_back(MakeStroke(bg, 0.45 * s));
+                Ink::Stroke band = MakeStroke(
+                    e.code == 5081 ? yellow
+                  : e.code == 5082 ? green30
+                  : e.code == 5083 ? green60 : white, 0.45 * s);
+                if (e.code == 5084)   // the white one clears green and brown
+                    band.paint.swatch =
+                        IofPlateHint(PrintLayer::WhiteOverGreenBrown);
+                def.lineStyle.strokes.push_back(band);
             }
             Ink::Stroke st = MakeStroke(black, 0.14 * s);
             Dash(st, { 2.0 * s, 0.25 * s });
@@ -1027,8 +1050,14 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
                  strokeStyle(st), "Continue ring");
             Ink::Stroke tri = st;
             tri.join = Ink::JoinStyle::Miter;
+            // The tips must land on the ring's OUTER edge, not its construction
+            // line: the ring is 5.0 across drawn 0.35 wide and centred, so that
+            // edge is at 2.5 + 0.35/2. INSIDE keeps the triangle's own stroke
+            // within the path, so the path vertex IS the tip.
+            tri.align = Ink::StrokeAlign::Inside;
+            const double tipR = 2.5 * s + 0.35 * s * 0.5;
             // An equilateral of side √3·R has circumradius R.
-            part(TriangleN(2.5 * kSqrt3 * s), strokeStyle(tri),
+            part(TriangleN(tipR * kSqrt3), strokeStyle(tri),
                  "Continue triangle");
             break;
         }
@@ -1069,19 +1098,14 @@ SymbolDef BuildSymbol(const IofElement& e, float scaleF) {
     }
 
     // Course-planning symbols are entirely purple, but WHICH purple depends on
-    // the symbol. Upper purple always stays at the very top of the print stack,
-    // so the markings that must never be covered by other purple — map issue
-    // (702), marked route (707), out-of-bounds (709), forbidden route (711) —
-    // sit there; the rest (start, control, finish, crossing point, first aid…)
-    // sit on lower purple. The two plates render the same purple, so the paint
-    // has to name the plate; 715 (continuing point) is control-like → lower.
+    // the symbol — the two plates render the same colour, so the paint has to
+    // name its plate. It takes the one the CATALOGUE already declares, so the
+    // Outliner layer group and the ink can never drift apart: fixing the entry
+    // fixes both.
     {
         const int sym = e.code / 10;
         if (sym >= 701 && sym <= 715) {
-            const bool upper = sym == 702 || sym == 707 ||
-                               sym == 709 || sym == 711;
-            const PrintLayer pl = upper ? PrintLayer::UpperPurple
-                                        : PrintLayer::LowerPurple;
+            const PrintLayer pl = e.layer;
             auto stamp = [&](Ink::Style& st) {
                 for (Ink::Fill& f : st.fills) {
                     f.paint.swatch = IofPlateHint(pl);

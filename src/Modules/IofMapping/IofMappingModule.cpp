@@ -185,15 +185,6 @@ void IofMappingModule::SeedPalette() {
         // plain CMYK that pass does not exist, and the specification says to
         // SIMULATE the effect by dropping it BELOW the black, brown and blue
         // 100 % colours, so those stay legible through the course.
-        if (pl == PrintLayer::LowerPurple)
-            sw.printOrder = tech == Ink::PrintTechnique::Cmyk
-                ? kPrintLayerCount - 1 - (int)PrintLayer::Brown100Line - 1
-                : kPrintLayerCount - 1 - (int)PrintLayer::UpperPurple - 1;
-        sw.locked        = true;   // it comes from the specification
-        // The two inks the IOF specification names as spot: brown as PMS 471
-        // (this is what CMYK+B exists for — it takes the 100 % brown line work
-        // out of the process build so contours stay sharp) and purple as PMS
-        // Purple. Under plain CMYK they are ignored and the process mix is used.
         if (pl == PrintLayer::Brown100Line || pl == PrintLayer::Brown100Point) {
             sw.hasSpot = true;
             sw.spotName = "PMS 471";
@@ -297,6 +288,14 @@ void IofMappingModule::BindSwatches(Ink::Style& style, IofType type) const {
         if (id) out = id;
     };
     for (Ink::Fill& f : style.fills) {
+        // A piece that ERASES is a mask, not paint: it lays no ink, so it has
+        // no plate and must never turn up as a colour user or on a separation.
+        if (f.blend == Ink::BlendMode::Erase) {
+            f.paint.swatch = Ink::kNullSwatch;
+            for (Ink::InstElement& e : f.instanced.elements) e.swatch = Ink::kNullSwatch;
+            for (Ink::InstLineSet& l : f.instanced.lines)    l.swatch = Ink::kNullSwatch;
+            continue;
+        }
         bind(f.paint.color, f.paint.swatch, fillKind);
         // A pattern's shapes and line-sets are drawn INSIDE an area, but they
         // are point-like and line-like marks: they take those plates.
@@ -306,6 +305,10 @@ void IofMappingModule::BindSwatches(Ink::Style& style, IofType type) const {
             bind(l.color, l.swatch, lineKind);
     }
     for (Ink::Stroke& s : style.strokes) {
+        if (s.blend == Ink::BlendMode::Erase) {   // a mask carries no ink
+            s.paint.swatch = Ink::kNullSwatch;
+            continue;
+        }
         bind(s.paint.color, s.paint.swatch, lineKind);
         for (Ink::StrokeRepeat& rp : s.repeats) bind(rp.color, rp.swatch, lineKind);
         for (Ink::StrokeMark& m : s.marks)
