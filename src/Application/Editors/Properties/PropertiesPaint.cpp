@@ -239,11 +239,21 @@ void Application::DrawFillsStackBody(
             const int nF = (int)style.fills.size();
             pr::VReorder rr("##fillRail", nF, cellH);
             const int grabbed = rr.Grabbed();
-            // The rail reads like the stack it describes: TOP of the list =
-            // top of the paint. The vector runs the other way (index 0 is laid
-            // down first, which is what the renderer and the file both expect),
-            // so only the DISPLAY is flipped — row r shows fill nF-1-r.
-            auto dataOf = [nF](int row) { return nF - 1 - row; };
+            // The rail shows the fills IN PAINT ORDER, not in vector order:
+            // Fill::order is the one source of truth for the stack, shared with
+            // the strokes and with the Paint-order panel. Reading the vector
+            // instead is what let the three panels disagree — a drag here moved
+            // the vector while the ranks stayed put, so nothing else noticed.
+            // `view` is the fills' own sequence within that shared stack.
+            std::vector<int> view;
+            view.reserve((std::size_t)nF);
+            for (const Ink::Style::PaintRef& pref : style.PaintOrder())
+                if (!pref.isStroke) view.push_back(pref.index);
+            // TOP of the list = top of the paint, so the last-painted comes first.
+            auto dataOf = [&view, nF](int row) {
+                const int k = nF - 1 - row;
+                return (k >= 0 && k < (int)view.size()) ? view[(std::size_t)k] : 0;
+            };
             for (int i = 0; i < nF; ++i) {
                 const int di = dataOf(i);
                 ImGui::PushID(di);
@@ -317,25 +327,31 @@ void Application::DrawFillsStackBody(
                 // Seed the new fill from the default stack's first entry.
                 Ink::Fill f = edit_.defaultFills.empty() ? Ink::Fill{}
                                                          : edit_.defaultFills.front();
+                f.order = style.TopPaintRank();   // new paint goes on top
                 style.fills.push_back(f);
                 sel = (int)style.fills.size() - 1;
                 structural = true; structLabel = "Add Fill";
             }
             pr::VReorder::Move mv = rr.Commit();
-            // Rail ROWS come back; the vector wants data indices.
+            // Rows come back; they index the fills' sequence in the stack.
             if (mv.from >= 0) mv.from = nF - 1 - mv.from;
             if (mv.to   >= 0) mv.to   = nF - 1 - mv.to;
             if (mv.from >= 0 && mv.to >= 0 && mv.from != mv.to &&
-                mv.from < (int)style.fills.size() &&
-                mv.to < (int)style.fills.size()) {
-                Ink::Fill moved = style.fills[(std::size_t)mv.from];
-                style.fills.erase(style.fills.begin() + mv.from);
-                style.fills.insert(style.fills.begin() + mv.to, moved);
-                if (sel == mv.from) sel = mv.to;
-                else if (mv.from < mv.to && sel > mv.from &&
-                         sel <= mv.to) --sel;
-                else if (mv.to < mv.from && sel >= mv.to &&
-                         sel < mv.from) ++sel;
+                mv.from < (int)view.size() && mv.to < (int)view.size()) {
+                // Move within the fills' own sequence, then re-deal the ranks
+                // the fills already hold in the shared stack. The strokes keep
+                // theirs, so a fill drag never disturbs them — and the Paint
+                // order panel sees the change at once, because it reads the
+                // same ranks.
+                const int moved = view[(std::size_t)mv.from];
+                view.erase(view.begin() + mv.from);
+                view.insert(view.begin() + mv.to, moved);
+                std::vector<int> ranks;
+                ranks.reserve(view.size());
+                for (int fi : view) ranks.push_back(style.fills[(std::size_t)fi].order);
+                std::sort(ranks.begin(), ranks.end());
+                for (std::size_t k = 0; k < view.size(); ++k)
+                    style.fills[(std::size_t)view[k]].order = ranks[k];
                 liveApply("Reorder Fills", true);
             }
         }
@@ -1036,9 +1052,16 @@ void Application::DrawStrokesStackBody(
             const int nS = (int)style.strokes.size();
             pr::VReorder rr("##strokeRail", nS, cellH);
             const int grabbed = rr.Grabbed();
-            // Rail reads top-first (top row = the paint on top), the vector runs
-            // the other way: row r shows stroke nS-1-r. Display only.
-            auto dataOf = [nS](int row) { return nS - 1 - row; };
+            // In PAINT ORDER, like the fill rail — Stroke::order is the shared
+            // truth, so this panel and the Paint-order panel can never drift.
+            std::vector<int> view;
+            view.reserve((std::size_t)nS);
+            for (const Ink::Style::PaintRef& pref : style.PaintOrder())
+                if (pref.isStroke) view.push_back(pref.index);
+            auto dataOf = [&view, nS](int row) {
+                const int k = nS - 1 - row;
+                return (k >= 0 && k < (int)view.size()) ? view[(std::size_t)k] : 0;
+            };
             for (int i = 0; i < nS; ++i) {
                 const int di = dataOf(i);
                 ImGui::PushID(100 + di);
@@ -1104,6 +1127,7 @@ void Application::DrawStrokesStackBody(
                 Ink::Stroke s;
                 if (!edit_.defaultStrokes.empty()) s = edit_.defaultStrokes.front();
                 else s.width = 2.0;
+                s.order = style.TopPaintRank();   // new paint goes on top
                 style.strokes.push_back(s);
                 sel = (int)style.strokes.size() - 1;
                 structural = true; structLabel = "Add Stroke";
@@ -1113,16 +1137,16 @@ void Application::DrawStrokesStackBody(
             if (mv.from >= 0) mv.from = nS - 1 - mv.from;
             if (mv.to   >= 0) mv.to   = nS - 1 - mv.to;
             if (mv.from >= 0 && mv.to >= 0 && mv.from != mv.to &&
-                mv.from < (int)style.strokes.size() &&
-                mv.to < (int)style.strokes.size()) {
-                Ink::Stroke moved = style.strokes[(std::size_t)mv.from];
-                style.strokes.erase(style.strokes.begin() + mv.from);
-                style.strokes.insert(style.strokes.begin() + mv.to, moved);
-                if (sel == mv.from) sel = mv.to;
-                else if (mv.from < mv.to && sel > mv.from &&
-                         sel <= mv.to) --sel;
-                else if (mv.to < mv.from && sel >= mv.to &&
-                         sel < mv.from) ++sel;
+                mv.from < (int)view.size() && mv.to < (int)view.size()) {
+                const int moved = view[(std::size_t)mv.from];
+                view.erase(view.begin() + mv.from);
+                view.insert(view.begin() + mv.to, moved);
+                std::vector<int> ranks;
+                ranks.reserve(view.size());
+                for (int si : view) ranks.push_back(style.strokes[(std::size_t)si].order);
+                std::sort(ranks.begin(), ranks.end());
+                for (std::size_t k = 0; k < view.size(); ++k)
+                    style.strokes[(std::size_t)view[k]].order = ranks[k];
                 liveApply("Reorder Strokes", true);
             }
         }

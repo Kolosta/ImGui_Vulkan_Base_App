@@ -41,7 +41,8 @@ constexpr std::uint32_t kTagThmb = 0x424D4854;   // 'THMB'
 // v2: Array modifier modes (arrayMode/lineMode/circle*) appended to the
 //     modifier record; instance transform-copy flags ride bits 5-7 of the
 //     node flags byte (v1 wrote them as 0 = the new default).
-constexpr std::uint32_t kDocVersion = 25;  // v24: Fill::blend
+constexpr std::uint32_t kDocVersion = 26;  // v26: unified fill/stroke order
+                                           // v24: Fill::blend
                                            // v25: Stroke::blend
                                            // v3: subpath spline params +
                                            //     anchor weight (+ dead marks)
@@ -503,6 +504,7 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
         w.u8(f.enabled ? 1 : 0);
         w.u8((std::uint8_t)f.rule);
         w.u8((std::uint8_t)f.blend);      // v24
+        w.u32((std::uint32_t)f.order);    // v26
         w.f32(f.opacity);
         WriteColor(w, f.paint.color);
         w.u64(f.paint.swatch);            // v21
@@ -521,6 +523,7 @@ void WriteStyle(Writer& w, const Ink::Style& s) {
         WriteColor(w, st.paint.color);
         w.u64(st.paint.swatch);           // v21
         w.u8((std::uint8_t)st.blend);     // v25
+        w.u32((std::uint32_t)st.order);   // v26
         w.f64(st.width);
         w.u8((std::uint8_t)st.align);
         w.u8((std::uint8_t)st.cap);
@@ -569,6 +572,7 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         if (ver >= 24)
             f.blend = (Ink::BlendMode)std::min<std::uint8_t>(
                 r.u8(), (std::uint8_t)Ink::BlendMode::Count - 1);
+        if (ver >= 26) f.order = (int)r.u32();
         f.opacity = r.f32();
         f.paint.color = ReadColor(r);
         if (ver >= 21) f.paint.swatch = r.u64();
@@ -591,6 +595,7 @@ Ink::Style ReadStyle(Reader& r, std::uint32_t ver) {
         if (ver >= 25)   // NOT v24: a v24 file carries fill blend but no stroke
             st.blend = (Ink::BlendMode)std::min<std::uint8_t>(
                 r.u8(), (std::uint8_t)Ink::BlendMode::Count - 1);
+        if (ver >= 26) st.order = (int)r.u32();
         st.width       = r.f64();
         st.align = (Ink::StrokeAlign)std::min<std::uint8_t>(
             r.u8(), Ink::kStrokeAlignMax);

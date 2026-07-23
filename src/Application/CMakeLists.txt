@@ -40,6 +40,7 @@ add_library(Application STATIC
     Editors/Properties/Properties.cpp
     Editors/Properties/PropertiesPaint.cpp
     Editors/Properties/PaintEditors.cpp
+    Editors/Properties/PaintStack.cpp
     Editors/Properties/PropertiesModifiers.cpp
     Editors/Info/InfoEditors.cpp
 

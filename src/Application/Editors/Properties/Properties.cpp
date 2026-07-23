@@ -451,6 +451,7 @@ void Application::RenderProperties(EditorState& st) {
             case EditorState::PropTab::Paint:
                 PropFillsSection(id);
                 PropStrokesSection(id);
+                PropPaintOrderSection(id);
                 break;
             case EditorState::PropTab::Modifiers:
                 PropModifiersSection(id);
@@ -509,6 +510,36 @@ void Application::DrawPropertiesDocument() {
         UI::DrawTooltipTranslucent(
             "Fixed by the active module (its colour definitions are CMYK)",
             ImGui::GetIO().MousePos, 1.0f);
+
+    // How the document will be PRINTED. This is an output choice, not a way of
+    // looking at the canvas, so it belongs here and not in a viewport's proofing
+    // menu: it decides which ink a colour is actually made of, for every view
+    // and for every export.
+    if (project_.document) {
+        Ink::Document& pdoc = *project_.document;
+        static const char* kTech[3] = { "CMYK", "CMYK+B", "PMS" };
+        int tech = (int)pdoc.PrintTech();
+        if (pr::ButtonGroupRow("Print technique", kTech, 3, &tech)) {
+            pdoc.SetPrintTech((Ink::PrintTechnique)tech);
+            // A module keys its palette off the technique (which colours are
+            // laid as their own ink) — let it reseed before the next frame.
+            if (activeModule_) activeModule_->OnActivate();
+            project_.dirty = true;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
+            UI::DrawTooltip(
+                "Which inks the press lays. It changes what a colour is MADE "
+                "of, never where it sits in the stack — the plate order is the "
+                "same for all three.\n"
+                "CMYK: every colour mixed from the four process inks — "
+                "cheapest, but thin brown lines soften.\n"
+                "CMYK+B: the colours that name a spot ink are pulled out of "
+                "that mix and laid as their own (PMS 471 brown, PMS purple), "
+                "which restores the line sharpness.\n"
+                "PMS: everything as spot inks — sharpest, costlier, and it "
+                "cannot carry process artwork.",
+                ImGui::GetIO().MousePos);
+    }
 }
 
 } // namespace App

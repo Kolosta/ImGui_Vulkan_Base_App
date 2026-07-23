@@ -724,6 +724,10 @@ private:
     void PropCurveSection(Ink::NodeId id);   // spline type / NURBS params
     void PropFillsSection(Ink::NodeId id);
     void PropStrokesSection(Ink::NodeId id);
+    // Fills and strokes as ONE ordered stack (Editors/Properties/PaintStack.cpp).
+    void DrawPaintStackRail(Ink::NodeId id);
+    void PropPaintOrderSection(Ink::NodeId id);
+    void RenderPaintStackEditor(EditorState& st);
     // The SHARED fills / strokes stack UI (vignette rail + selected item's
     // properties) working on a style COPY: Properties wraps it per-node, the
     // Stroke/Fill EDITORS wrap it selection-wide. `node` = the pattern-preview /

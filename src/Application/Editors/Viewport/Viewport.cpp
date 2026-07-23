@@ -171,7 +171,6 @@ void Application::RenderViewport(ImVec2 size, EditorState& st) {
     // stays on the plain screen render.
     view->SetPrintPreview((Ink::PrintPreview)st.printPreview,
                           (std::uint8_t)st.printChannels);
-    view->SetPrintOrder(st.printOrder);
     // The flattener analysis runs in the Scene, so it has to be asked for while
     // ANY viewport is showing it.
     if (st.printPreview == (int)Ink::PrintPreview::Flattener)

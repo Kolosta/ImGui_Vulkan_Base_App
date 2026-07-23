@@ -168,6 +168,18 @@ void Application::RegisterCoreEditors() {
         d.draw = [this](ImVec2, EditorState& st) { RenderFillEditor(st); };
         reg.Register(std::move(d));
     }
+    // Strokes & Fills — the active shape's paint pieces as the ONE stack they
+    // are painted in, so a stroke can be dragged under a fill.
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::PaintStack; d.name = "Strokes & Fills";
+        d.icon = "align-justify-center";
+        d.column = 2; d.themeScope = "editors/properties";
+        d.switchAction = "editor.paintstack";
+        d.wrapInScroll = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderPaintStackEditor(st); };
+        reg.Register(std::move(d));
+    }
 
     // Timeline — placeholder strip with the reusable side panel demo.
     {

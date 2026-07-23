@@ -629,56 +629,16 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
             // duplicating it. Proofing the whole app at once is what you want
             // anyway.
             if (project_.document) {
-                Ink::Document& pdoc = *project_.document;
+                (void)project_.document;
                 // Per VIEWPORT: proofing one canvas leaves the others — and
-                // the symbol vignettes — on the plain screen render. Only the
-                // TECHNIQUE below is a document property, since it decides
-                // which ink a colour is actually made of.
+                // the symbol vignettes — on the plain screen render. The
+                // printing TECHNIQUE is not here: it is an output choice, and
+                // it lives in Properties ▸ Document settings.
                 subtle("Print (this viewport)");
-                bool po = pst->printOrder;
-                if (UI::Checkbox("##printOrder", "Render in plate order", &po))
-                    pst->printOrder = po;
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                    UI::DrawTooltip(
-                        "Stack the artwork by its colours' plate order rather "
-                        "than by the layer tree — printing is sequential, so "
-                        "the plate stack is what the press produces.\n"
-                        "Artwork whose colour declares no plate keeps its tree "
-                        "position either way.",
-                        ImGui::GetIO().MousePos);
-                {   // How the map is actually printed — it decides whether a
-                    // colour with a spot definition is built from process inks
-                    // or laid as its own, so it changes the proof AND the plates.
-                    static const char* kTech[3] = { "CMYK", "CMYK+B", "PMS" };
-                    UI::ButtonGroup g("##printTech");
-                    const float cw = (bodyW - 3.0f * 2.0f * gs) / 3.0f;
-                    g.SetGrid(std::vector<float>(3, cw), { cellH });
-                    const int cur = (int)pdoc.PrintTech();
-                    for (int i = 0; i < 3; ++i)
-                        g.AddCell(kTech[i], i, 0, 1, 1, cur == i);
-                    const UI::ButtonGroup::Result r = g.Render();
-                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                        UI::DrawTooltip(
-                            "How the map is printed.\n"
-                            "CMYK: every colour mixed from the four process "
-                            "inks — cheapest, but thin brown lines soften.\n"
-                            "CMYK+B: the colours with a spot ink are pulled out "
-                            "of that mix and printed as their own (PMS 471 for "
-                            "brown), which restores the line sharpness.\n"
-                            "PMS: everything as spot inks — sharpest, but "
-                            "costlier and it cannot carry process artwork.",
-                            ImGui::GetIO().MousePos);
-                    if (r.clickedIndex >= 0) {
-                        pdoc.SetPrintTech((Ink::PrintTechnique)r.clickedIndex);
-                        // A module keys its palette off the technique (spot
-                        // inks, and where the course overprint sits) — let it
-                        // reseed before the next frame draws.
-                        if (activeModule_) activeModule_->OnActivate();
-                    }
-                }
                 {
                     static const char* kPv[4] = { "Normal", "Overprint",
-                                                  "Separations", "Flattener" };
+                                                  "Separations",
+                                                  "Flattener preview" };
                     UI::ButtonGroup g("##printPreview");
                     g.SetGrid({ bodyW }, std::vector<float>(4, cellH));
                     const int cur = pst->printPreview;
@@ -696,8 +656,9 @@ void Application::BuildViewportTopBar(EditorState& st, EditorBar& bar) {
                             "Separations: the same, filtered to the channels "
                             "you keep — spot inks drop out, having no CMYK "
                             "plate of their own.\n"
-                            "Flattener: marks the artwork that cannot go to a "
-                            "separation as it stands (translucent, blended or "
+                            "Flattener preview: MARKS the artwork that could "
+                            "not go to a separation as it stands (translucent, "
+                            "blended or "
                             "cutting).",
                             ImGui::GetIO().MousePos);
                     if (r.clickedIndex >= 0) pst->printPreview = r.clickedIndex;

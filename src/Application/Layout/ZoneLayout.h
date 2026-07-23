@@ -83,7 +83,6 @@ struct EditorState {
     // symbol vignettes, which are views too — on the plain screen render.
     int    printPreview  = 0;       // 0 Normal · 1 Overprint · 2 Separations · 3 Flattener
     int    printChannels = 0x0F;    // C M Y K bits (Separations only)
-    bool   printOrder    = false;   // stack by plate rather than by the tree
     // Pending view requests, consumed by this leaf's RenderViewport only.
     bool   reqFitDoc       = false;  // frame the project's artboards
     bool   reqFitSelection = false;  // frame the selected/active object(s) (Numpad .)
