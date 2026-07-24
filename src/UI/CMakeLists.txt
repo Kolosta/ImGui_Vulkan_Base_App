@@ -12,6 +12,7 @@ add_library(UI STATIC
     src/Widgets/RowDrag.cpp
     src/Widgets/PopupMenu.cpp
     src/Widgets/Panel.cpp
+    src/Widgets/NodeGraph.cpp
     src/Widgets/ScrollArea.cpp
     src/Widgets/SidePanel.cpp
     src/Widgets/ToolPalette.cpp

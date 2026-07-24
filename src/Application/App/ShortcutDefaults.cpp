@@ -415,6 +415,48 @@ void Application::RegisterDefaultShortcuts() {
         sm.RegisterAction(a, { sigKey(ImGuiKey_A) });
     }
 
+    // ── Node Graph Editor (docs/Ink/NODE_GRAPH.md §5, ROADMAP Lot 13) ────────
+    {
+        Action a; a.id = "nodegraph.delete"; a.name = "Delete";
+        a.description = "Exclude the selected Node Graph inputs from this layer";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "nodegraph";
+        a.callback = [this]{ Action_NodeGraphDeleteSelected(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_X), sigKey(ImGuiKey_Delete) });
+    }
+    {
+        Action a; a.id = "nodegraph.mute"; a.name = "Mute / Unmute";
+        a.description = "Toggle mute on the selected Node Graph nodes";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "nodegraph";
+        a.callback = [this]{ Action_NodeGraphMuteToggleSelected(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_M) });
+    }
+    {
+        Action a; a.id = "nodegraph.collapse"; a.name = "Collapse / Expand";
+        a.description = "Toggle collapse on the selected Node Graph nodes";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "nodegraph";
+        a.callback = [this]{ Action_NodeGraphCollapseToggleSelected(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_H) });
+    }
+    {
+        Action a; a.id = "nodegraph.addMenu"; a.name = "Add";
+        a.description = "Open the Node Graph Add menu";
+        a.category = ActionCategory::Edit;
+        a.requiredContext.editor = "nodegraph";
+        a.callback = [this]{ Action_NodeGraphOpenAddMenu(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_A, false, true) });
+    }
+    {
+        Action a; a.id = "nodegraph.togglePreview"; a.name = "Toggle Previews";
+        a.description = "Show or hide Node Graph live preview thumbnails";
+        a.category = ActionCategory::View;
+        a.requiredContext.editor = "nodegraph";
+        a.callback = [this]{ Action_NodeGraphTogglePreviews(); };
+        sm.RegisterAction(a, { sigKey(ImGuiKey_P) });
+    }
+
     // Re-save once after registering everything so freshly added defaults are
     // persisted (Load happened before Register, so defaults are missing from
     // disk on first run).

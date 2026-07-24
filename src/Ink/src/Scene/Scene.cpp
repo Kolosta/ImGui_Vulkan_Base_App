@@ -1,6 +1,7 @@
 #include "Ink/Scene/Scene.h"
 
 #include "Ink/Geometry/Geometry.h"
+#include "Ink/Scene/CompGraph.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,57 +26,40 @@ void Scene::GrowBounds(DVec2 p) {
 // opacity < 1, a non-Normal blend, isolate, or a clip. Otherwise it is a
 // plain pass-through layer (organisation + transform only) and its children
 // stay in the parent scope.
+//
+// This decision is now the Compositing Graph's auto-generator
+// (docs/Ink/NODE_GRAPH.md, Ink/Scene/CompGraph.h): ComputeAutoMergeParams
+// evaluates the SAME predicate that used to live inline here (clip source,
+// Affinity path-parent, Subtract AlongPath cut, Erase-blend pieces), so this
+// function's observable output is unchanged — only its mechanism moved,
+// which is exactly what makes it safe to swap: TestCompositeScopes and the
+// blend_groups bench exercise this same code path and are the regression
+// gate. Nothing pins a layer's graph yet (Lot 13+), so the result is always
+// what the auto-generator computes.
 ScopeId Scene::OpenScopeIfNeeded(const Document& doc, const Node& group,
                                  ScopeId parent, int depth) {
-    NodeId clip = kNullNode;
-    if (group.clip) {
-        // Clip source = the group's first PATH child (Lot 4 rule).
-        for (NodeId c : group.children) {
-            if (const Node* ch = doc.Find(c))
-                if (ch->kind == NodeKind::Path) { clip = c; break; }
-        }
-    }
-    // A PATH with children clips them to its OWN fill (Affinity layer rule) —
-    // it opens a scope even without opacity/blend so the child clip runs;
-    // masks among the children make it composite too.
-    const bool pathParent =
-        group.kind == NodeKind::Path && !group.children.empty();
-    // A SUBTRACT along-path modifier erases within the node's OWN layer — the
-    // node must isolate or the erase would punch through everything below it.
-    bool cutModifier = false;
-    for (const Modifier& mm : group.modifiers)
-        if (mm.enabled && mm.kind == ModifierKind::AlongPath &&
-            mm.alongMode == MarkObjectMode::Subtract)
-            cutModifier = true;
-    // An ERASE piece makes the node isolate, and only Erase: the cut has to stop
-    // at this object's own paint stack, because erasing straight into the parent
-    // punches through the map AND through the page background, which reads as
-    // black holes. The price is the composite limit noted in ScopePlayback.cpp —
-    // an isolated node draws above its siblings — which is why the OTHER blend
-    // modes do not take it: they still read correctly against the backdrop, and
-    // paying that price for them would move far more artwork than it fixes.
-    bool blendPiece = false;
-    for (const Fill& f : group.style.fills)
-        if (f.enabled && f.blend == BlendMode::Erase) { blendPiece = true; break; }
-    if (!blendPiece)
-        for (const Stroke& st : group.style.strokes)
-            if (st.enabled && st.blend == BlendMode::Erase) { blendPiece = true; break; }
-    const bool composites = group.opacity < 0.999f ||
-                            group.blend != BlendMode::Normal ||
-                            group.isolate || clip != kNullNode || pathParent ||
-                            cutModifier || blendPiece;
-    if (!composites) return parent;
+    const CompAutoMergeParams p = ComputeAutoMergeParams(doc, group);
+    // Node Graph "Mute" (M) on this layer's BLEND node only (Clip/Mask are
+    // separate nodes now, docs/Ink/NODE_GRAPH.md §7, and are never muted):
+    // bypasses opacity/blend/isolate specifically, while a clip/mask/cut-
+    // modifier/erase-piece trigger still opens the scope on its own — the
+    // fields Blend reads are untouched in the Document, so unmuting restores
+    // them exactly. Applied HERE (not inside ComputeAutoMergeParams) because
+    // BuildAutoGraph needs the UN-muted predicate to still show/edit the
+    // Blend node while it's muted.
+    const bool blendActive = p.blendTrigger && !group.compBlendMuted;
+    if (!blendActive && !p.otherTrigger) return parent;
 
     CompositeScope s;
     s.node    = group.id;
     s.parent  = parent;
-    s.opacity = group.opacity;
-    s.blend   = group.blend;
-    s.isolate = group.isolate;
-    s.clipNode = clip;
+    s.opacity = blendActive ? p.opacity : 1.0f;
+    s.blend   = blendActive ? p.blend   : BlendMode::Normal;
+    s.isolate = blendActive ? p.isolate : false;
     // A group clip OR a path-parent both mask their contents through the
     // stencil (the mask geometry is emitted as an isClipSource drawable).
-    s.hasClipMask = (clip != kNullNode) || pathParent;
+    s.clipNode    = p.clipNode;
+    s.hasClipMask = p.hasClipMask;
     s.depth   = depth;
     scopes_.push_back(s);
     if (depth > maxDepth_) maxDepth_ = depth;
@@ -656,10 +640,30 @@ void Scene::EmitContent(const Document& doc, const Node& n, const DMat23& world,
                 drawables_.push_back(std::move(d));
             }
         }
-        for (NodeId c : n.children) {
-            if (c == clipNode) continue;   // the mask never paints
-            if (const Node* child = doc.Find(c))
+        // Compositing Graph manual override (docs/Ink/NODE_GRAPH.md, ROADMAP
+        // Lot 13): a non-empty `compInputs` replaces the child walk below
+        // with a hand-authored reorder/filter of the SAME children —
+        // Document::SetCompInputs already dropped anything that wasn't a
+        // current child, and the `child->parent != n.id` guard here catches
+        // one that moved away SINCE (a structural edit elsewhere never
+        // touches compInputs — the stale entry just stops rendering, the
+        // same "missing reference" convention every other Document ref
+        // follows). Empty (the common case) is untouched Lot-12 behavior.
+        if (!n.compInputs.empty()) {
+            for (const CompInputOverride& ov : n.compInputs) {
+                // Muted (M): skip emission but keep the entry/order intact —
+                // "as if the node weren't there", not removed.
+                if (ov.muted || ov.node == clipNode) continue;
+                const Node* child = doc.Find(ov.node);
+                if (!child || child->parent != n.id) continue;
                 EmitNode(doc, *child, world, scope, instDepth, owner);
+            }
+        } else {
+            for (NodeId c : n.children) {
+                if (c == clipNode) continue;   // the mask never paints
+                if (const Node* child = doc.Find(c))
+                    EmitNode(doc, *child, world, scope, instDepth, owner);
+            }
         }
         return;
     }

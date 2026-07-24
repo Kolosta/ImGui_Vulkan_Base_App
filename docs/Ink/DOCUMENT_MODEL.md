@@ -10,11 +10,24 @@ without being re-justified.
 Document
 ├── meta                        (name-independent doc settings, units, grid)
 ├── pages: [Page]               (work surfaces, laid out in one doc space)
-├── layerRoot per Page: Node*   (THE z-order & compositing hierarchy)
+├── layerRoot per Page: Node*   (stacking order + nesting — see note below)
 ├── collections: [Collection]   (organisational sets — no z-order role)
 ├── resources                   (images, pattern motif definitions, later fonts)
 └── changeLog                   (typed change journal — feeds Scene + undo)
 ```
+
+> **Compositing Graph note (NODE_GRAPH.md, planned ROADMAP Lots 12–14):** the
+> Layers tree remains the source of **stacking order** (which layer draws
+> over which — unchanged) and of **nesting** (groups within groups). What it
+> no longer directly dictates is **a layer's rendered content**: each Layer
+> additionally owns a small `CompGraph` (Compositing Graph — do not confuse
+> with the frame `Ink::graph` render graph, RENDER_GRAPH.md), auto-generated
+> every compile from this tree's order + each node's opacity/blend/isolate/
+> clip fields, unless a piece of wiring has been pinned by a manual edit
+> (Layer Graph Editor, or an Outliner sub-component drag). A project that
+> never touches those surfaces renders exactly as this document already
+> describes — the graph is a compiled *expression of* the tree by default,
+> never a divergence from it. See NODE_GRAPH.md for the full model.
 
 Two **independent** organisation systems coexist by design:
 
@@ -132,13 +145,20 @@ any shape can have a stroke"*.
 
 ```
 Style
-├── fills:   [Fill  { paint: Paint, fillRule: NonZero|EvenOdd, enabled }]
-└── strokes: [Stroke { paint: Paint, width, align: Center|Inside|Outside,
+├── fills:   [Fill  { id: FillId, paint: Paint, fillRule: NonZero|EvenOdd, enabled }]
+└── strokes: [Stroke { id: StrokeId, paint: Paint, width, align: Center|Inside|Outside,
                        cap: Butt|Round|Square, join: Miter|Round|Bevel,
                        miterLimit, dash: {pattern[], offset}, enabled,
                        widthSpace: Document|Viewport,
                        marks: [StrokeMark …] }]
 ```
+
+- **`id`/`FillId`/`StrokeId`** (planned, NODE_GRAPH.md §3.1): a stable,
+  node-scoped id assigned once at creation, unchanged by list reorders
+  (Lot 9's vignette drag-reorder). This is what makes a single fill or
+  stroke individually addressable as a Compositing Graph `Input` target —
+  before Lot 12+, these ids exist but nothing outside the Style itself reads
+  them.
 
 - **`StrokeMark`** (IOF_CORE_PLAN Phase A — the GENERIC core model): a manual
   anchor at arc-length `t` on one subpath that does two independent things:

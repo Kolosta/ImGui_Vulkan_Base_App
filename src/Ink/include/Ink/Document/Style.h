@@ -457,6 +457,10 @@ struct StrokeRepeat {
 };
 
 struct Stroke {
+    // Document-unique, node-scoped-stable id (docs/Ink/NODE_GRAPH.md §3.1) —
+    // assigned by Document (StampStyleIds), never by hand. kNullStroke until
+    // the piece has been through a Document op at least once.
+    StrokeId    id         = kNullStroke;
     Paint       paint;
     double      width      = 1.0;
     StrokeAlign align      = StrokeAlign::Center;
@@ -655,6 +659,10 @@ struct InstancedFill {
 };
 
 struct Fill {
+    // Document-unique, node-scoped-stable id (docs/Ink/NODE_GRAPH.md §3.1) —
+    // assigned by Document (StampStyleIds), never by hand. kNullFill until
+    // the piece has been through a Document op at least once.
+    FillId        id      = kNullFill;
     FillKind      kind    = FillKind::Solid;
     Paint         paint;               // Solid
     PatternFill   pattern;             // Pattern

@@ -75,10 +75,16 @@ inline constexpr const char* DevPanels  = "core.devpanels";
 inline constexpr const char* Info       = "core.info";
 inline constexpr const char* Palette    = "core.palette";
 inline constexpr const char* ColorUsage = "core.colorusage";
+// docs/Ink/NODE_GRAPH.md, ROADMAP Lot 13: the generic Node Graph Editor —
+// always shows the ACTIVE object's Compositing Graph (Blender-style, no
+// manual "open" step). Named after the GRAPH, not "layer": Layers is just
+// one view onto it (the Outliner's), so the editor must not be named after
+// that one view.
+inline constexpr const char* NodeGraph  = "core.nodegraph";
 // Every core editor id — the editor set offered in Classic mode (no module).
 inline std::vector<std::string> Ids() {
     return { Viewport, Outliner, Properties, StrokeEd, FillEd, PaintStack,
-             Timeline, DevPanels, Info, Palette, ColorUsage };
+             Timeline, DevPanels, Info, Palette, ColorUsage, NodeGraph };
 }
 }  // namespace CoreEditor
 

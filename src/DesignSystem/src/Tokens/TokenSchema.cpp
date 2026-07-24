@@ -1668,6 +1668,40 @@ constexpr std::array<TokenDef, kTokenCount> BuildSchema() {
     put(Int(Tok::P_Config_ShowCornerZones, TokenLevel::Primitive, 1, "show corner zones on/off", Bool01()));
     put(Ref(Tok::S_Config_ShowCornerZones, TokenLevel::Semantic, Tok::P_Config_ShowCornerZones, "semantic.config.show-corner-zones"));
 
+    // Node Graph (docs/Ink/NODE_GRAPH.md §5): the generic node/port/cable
+    // canvas widget shared by every future node-graph editor, first used by
+    // the Layer Graph Editor (ROADMAP Lot 13).
+    put(Ref(Tok::C_NodeGraph_Background, TokenLevel::Component, Tok::S_Surface_Canvas, "node canvas background"));
+    put(Ref(Tok::C_NodeGraph_GridLine, TokenLevel::Component, Tok::S_Color_Border_TreeLine, "node canvas grid line"));
+    put(Ref(Tok::C_NodeBox_HeaderBackground, TokenLevel::Component, Tok::S_Surface_Raised, "node header band"));
+    put(Ref(Tok::C_NodeBox_BodyBackground, TokenLevel::Component, Tok::S_Color_Background_Default, "node body"));
+    put(Ref(Tok::C_NodeBox_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "node outline, unselected"));
+    put(Ref(Tok::C_NodeBox_BorderSelected, TokenLevel::Component, Tok::S_Color_Accent_Default, "node outline, selected"));
+    put(Ref(Tok::C_NodeBox_Text, TokenLevel::Component, Tok::S_Color_Text_Default, "node header label"));
+    put(Ref(Tok::C_NodeBox_CornerRadius, TokenLevel::Component, Tok::S_CornerRadius_Control, "node box rounding"));
+    put(Vec2(Tok::C_NodeBox_Padding, TokenLevel::Component, {8.f, 6.f}, "node body padding (x, y)", PadXY()));
+    put(Ref(Tok::C_NodeBox_HeaderHeight, TokenLevel::Component, Tok::S_Size_ControlHeight, "node header band height"));
+    put(Ref(Tok::C_NodePort_Background, TokenLevel::Component, Tok::S_Color_Border_Strong, "port dot, unconnected"));
+    put(Ref(Tok::C_NodePort_BackgroundHover, TokenLevel::Component, Tok::S_Color_Accent_Default, "port dot, hovered while dragging a cable"));
+    put(Ref(Tok::C_NodePort_BackgroundConnected, TokenLevel::Component, Tok::S_Color_Positive_Default, "port dot, has a cable"));
+    put(Ref(Tok::C_NodePort_BackgroundIncompatible, TokenLevel::Component, Tok::S_Color_Negative_Default, "port dot, hovered but type-incompatible"));
+    put(Ref(Tok::C_NodePort_Border, TokenLevel::Component, Tok::S_Color_Border_Default, "port dot outline"));
+    put(Float(Tok::C_NodePort_Size, TokenLevel::Component, 8.f, "port dot diameter", Px(32)));
+    put(Ref(Tok::C_NodeCable_Color, TokenLevel::Component, Tok::S_Color_Border_TreeLine, "idle cable colour"));
+    put(Ref(Tok::C_NodeCable_ColorActive, TokenLevel::Component, Tok::S_Color_Accent_Default, "cable colour while being dragged"));
+    put(Ref(Tok::C_NodeCable_ColorIncompatible, TokenLevel::Component, Tok::S_Color_Negative_Default, "dragged cable over an incompatible port"));
+    put(Float(Tok::C_NodeCable_Width, TokenLevel::Component, 2.f, "cable stroke width", Px(12)));
+    // Header colours by node kind (Blender-style category colouring) and
+    // cable/port colours by port type — both reuse the existing accent
+    // state-matrix hues (S_Accent_Visual_*) rather than new primitives.
+    put(Ref(Tok::C_NodeBox_HeaderInput, TokenLevel::Component, Tok::S_Accent_Visual_Info, "Input node header"));
+    put(Ref(Tok::C_NodeBox_HeaderMerge, TokenLevel::Component, Tok::S_Accent_Visual_Notice, "Merge node header"));
+    put(Ref(Tok::C_NodeBox_HeaderOutput, TokenLevel::Component, Tok::S_Accent_Visual_Neutral, "Output node header"));
+    put(Ref(Tok::C_NodeBox_HeaderBlend, TokenLevel::Component, Tok::S_Accent_Visual_Brand, "Blend node header"));
+    put(Ref(Tok::C_NodeBox_HeaderClipMask, TokenLevel::Component, Tok::S_Accent_Visual_Positive, "Clip/Mask node header"));
+    put(Ref(Tok::C_NodeCable_TypeRenderOutput, TokenLevel::Component, Tok::S_Accent_Visual_Info, "RenderOutput-typed cable/port"));
+    put(Ref(Tok::C_NodeCable_TypeLayerOutput, TokenLevel::Component, Tok::S_Accent_Visual_Brand, "LayerOutput-typed cable/port"));
+
     (void)i;
     return s;
 }

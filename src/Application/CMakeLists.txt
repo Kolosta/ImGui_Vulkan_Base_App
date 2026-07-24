@@ -43,6 +43,7 @@ add_library(Application STATIC
     Editors/Properties/PaintStack.cpp
     Editors/Properties/PropertiesModifiers.cpp
     Editors/Info/InfoEditors.cpp
+    Editors/NodeGraph/NodeGraphEditor.cpp
 
     # Project: the .acu v2 persistence codec (docs/acu-format.md, Lot 10)
     Project/AcuFile.cpp

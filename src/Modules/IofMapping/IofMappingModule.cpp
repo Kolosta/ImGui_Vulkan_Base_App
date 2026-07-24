@@ -49,7 +49,7 @@ std::vector<std::string> IofMappingModule::AllowedEditors() const {
     // their spec style locked, but a free object is fully editable.
     return { "core.viewport", "core.outliner", "core.properties", "core.info",
              "core.fills", "core.strokes", "core.palette", "core.colorusage",
-             "iof.symbolviewer", "iof.mapsettings" };
+             "core.nodegraph", "iof.symbolviewer", "iof.mapsettings" };
 }
 
 LayoutSpec IofMappingModule::BuildLayout() const {

@@ -84,7 +84,11 @@ src/Ink/
 ├── include/Ink/                   # public headers (what other code includes)
 │   ├── Core/                      #   Vec2, Mat23, Rect, Color, Id, hashing, units
 │   ├── Document/                  #   Document, Page, Node, Style, Paint,
-│   │                              #   Collection, Modifier, ChangeLog
+│   │                              #   Collection, Modifier, ChangeLog,
+│   │                              #   CompGraph/CompNode/CompPort (planned,
+│   │                              #   NODE_GRAPH.md — the per-layer
+│   │                              #   Compositing Graph, NOT the frame Graph/
+│   │                              #   RenderGraph below)
 │   ├── Scene/                     #   Scene, SceneItem, CompileOptions, DirtySet
 │   ├── Geometry/                  #   PathFlattener, Stroker, Tessellator,
 │   │                              #   GeometryCache, Bounds, HitTest
@@ -127,7 +131,10 @@ Editor mutates Document (via typed ops)          ── CPU, app thread
 Scene::Compile(doc, changes)                     ── incremental
         │  • re-evaluates modifiers whose inputs changed
         │  • re-expands instances logically (refs, not copies)
-        │  • re-resolves z-order for touched layer subtrees
+        │  • re-resolves z-order for touched layer subtrees (planned,
+        │    NODE_GRAPH.md: by evaluating each layer's Compositing Graph —
+        │    auto-generated from tree order unless pinned — same DirtySet
+        │    contract, no change to Scene's public interface)
         │  ▼ DirtySet {items added/removed/geom-dirty/style-dirty/xform-dirty}
         ▼
 GeometryCache::Refresh(dirty items, zoom tier)   ── flatten/stroke/tessellate
@@ -168,7 +175,7 @@ blit). Ink targets *zero* steady-state CPU cost for a static canvas.
 | Color space | Internal rendering **linear, premultiplied alpha**; sRGB encode at present/export | Correct blending/AA math; matches W3C compositing model |
 | Anti-aliasing | **MSAA ×4** on content/overlay targets for v1 (resolve in graph); analytic-AA fringes later as an optimisation lot | Simple, correct with arbitrary blending; the graph hides the resolve so the technique can change without touching passes |
 | Precision | Document coordinates **double**; GPU works in **view-relative float32**: the camera subtracts a per-view anchor in double, and GPU transforms are rebased against that anchor (re-anchored when the camera strays far / crosses zoom tiers) | **Unbounded zoom** (µm → km unit scales, README req. 9) without float wobble — precision by construction, never by clamping. The Lot 1 demo still clamps (its GPU tables are f32 document-space); the clamp dies with the Scene rebasing (Lots 2–3) |
-| Z-order | **Painter's order** from the Layers tree (stable sort by resolved index); no depth buffer for content | 2D correctness with transparency/blends; depth only in picking pass (id resolve) |
+| Z-order | **Painter's order** from the Layers tree (stable sort by resolved index); no depth buffer for content. *Stacking order stays here even after the Compositing Graph lands (NODE_GRAPH.md, planned Lots 12–14) — what moves into the graph is a layer's* content*, never which layer draws over which.* | 2D correctness with transparency/blends; depth only in picking pass (id resolve) |
 | Blend modes | Group/node isolation targets + backdrop-sampling composite shaders (W3C/SVG set) | Arbitrary blend modes without dual-source limits; isolation is also what clipping/effects need |
 | Geometry source | **CPU geometry for v1** (flatten/stroke/tessellate, cached, dirty-only) behind the `Geometry` interface; GPU compute geometry is a later, measured lot | Correctness and debuggability first; the interface (mesh ranges in pools) is identical either way |
 | Draw submission | Persistent vertex/index/instance pools + per-batch **indirect draws**; per-instance data in SSBOs; push constants only carry indices | One code path for 1 object or 10 000 instances |

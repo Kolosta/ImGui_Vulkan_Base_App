@@ -28,6 +28,29 @@ namespace Ink {
 // Instance: renders another node's subtree with this node's transform (Lot 5).
 enum class NodeKind : std::uint8_t { Group = 0, Path = 1, Instance = 2 };
 
+// A manual override of one entry in a Layer's Compositing Graph Input list
+// (docs/Ink/NODE_GRAPH.md; ROADMAP Lot 13). `Node::compInputs` empty = fully
+// automatic (mirror `children`, in order — Lot 12 behavior, unchanged);
+// non-empty = a complete, hand-authored replacement of that list (reorder/
+// exclude), never a partial patch. `Document::SetCompInputs` validates every
+// entry references a NODE CURRENTLY IN `children` — Lot 13's scope is
+// reordering/filtering a layer's OWN children; routing in a piece of a
+// FOREIGN node (a fill/stroke that isn't this layer's own child) needs the
+// "don't also render it at its structural position" semantics that are a
+// deliberate follow-on, not yet built (NODE_GRAPH.md §6). `fill`/`stroke` are
+// therefore inert scaffolding today (always null after validation) — kept so
+// the type doesn't need to change shape again when that follow-on lands.
+struct CompInputOverride {
+    NodeId   node   = kNullNode;
+    FillId   fill   = kNullFill;
+    StrokeId stroke = kNullStroke;
+    // Node Graph Editor "Mute" (M): skip this entry at render time WITHOUT
+    // removing it from the list — its slot/order survives a mute/unmute
+    // round-trip untouched, unlike the close/exclude gesture which drops the
+    // entry outright.
+    bool     muted  = false;
+};
+
 // Per-PROPERTY edit locks (a bitmask on Node::propLocks). A locked property is
 // read-only in the editors (shown with a closed padlock) and refused by the
 // viewport transform ops. Distinct from Node::locked (which locks the WHOLE
@@ -96,6 +119,17 @@ struct Node {
     // compile. Each turns this node's rendered content into many copies at
     // generated transforms (docs/Ink/DOCUMENT_MODEL.md §6).
     std::vector<Modifier> modifiers;
+
+    // Compositing Graph manual override (kind == Group only; see
+    // CompInputOverride above). Empty = fully automatic.
+    std::vector<CompInputOverride> compInputs;
+    // Node Graph Editor "Mute" (M) applied to this layer's Blend node ONLY
+    // (docs/Ink/NODE_GRAPH.md §7 — Merge/Clip/Mask are separate nodes now
+    // and are never muted): bypasses opacity/blend-mode/isolation while
+    // Clip/Mask (if any) keep working — Scene::OpenScopeIfNeeded folds this
+    // in on top of the blend half of the predicate only. Fields themselves
+    // are untouched, so unmuting restores exactly what they already were.
+    bool compBlendMuted = false;
 };
 
 struct Page {
@@ -171,6 +205,14 @@ public:
     // Affinity mask flag: mark a child node as a MASK of its parent (it stops
     // painting and masks the parent's content) or back to a clipped child.
     void   SetMask(NodeId node, bool isMask);
+    // Compositing Graph manual override (docs/Ink/NODE_GRAPH.md, ROADMAP
+    // Lot 13, kind == Group only): replace `layer`'s Input list wholesale.
+    // Entries not currently a child of `layer` are dropped (validated, never
+    // a foreign node). Empty reverts to fully automatic (mirrors `children`).
+    void   SetCompInputs(NodeId layer, std::vector<CompInputOverride> inputs);
+    void   ResetCompInputs(NodeId layer) { SetCompInputs(layer, {}); }
+    // Mute/unmute a layer's Blend node (Node::compBlendMuted above).
+    void   SetCompBlendMuted(NodeId layer, bool muted);
     void   Remove(NodeId node);      // node or page (subtree included)
     void   Clear();                  // everything (fresh document)
 
@@ -334,6 +376,12 @@ private:
     DMat23 WorldTransformDepth(NodeId id, int depth) const;   // parent recursion
     void   Log(NodeId id, ChangeKind kind);
     NodeId NextId() { return nextId_++; }
+    // Assign FillId/StrokeId to a Style's pieces (docs/Ink/NODE_GRAPH.md
+    // §3.1): fills in only the null (never-stamped) ones by default; `force`
+    // reassigns every piece a FRESH id (DuplicateSubtree — a copied piece must
+    // not share its source's id, or a Compositing Graph Input targeting one
+    // could resolve to either).
+    void   StampStyleIds(Style& s, bool force = false);
     // Remove `id` from its parent's children list (page or group).
     void   DetachFromParent(const Node& n);
     void   RemoveSubtree(NodeId id);

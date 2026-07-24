@@ -12,6 +12,18 @@ namespace Ink {
 using NodeId = std::uint64_t;
 inline constexpr NodeId kNullNode = 0;
 
+// Per-piece ids for one Style's Fill/Stroke entries (docs/Ink/NODE_GRAPH.md
+// §3.1) — what makes a single fill or stroke individually addressable as a
+// Compositing Graph Input target, instead of only a plain-array element.
+// Drawn from the SAME allocator pool as NodeId (Document::NextId()), so they
+// are document-unique, not just unique within their owning node — a stronger
+// guarantee than required, chosen to avoid a second per-node counter.
+// Stable across list reorders (assigned once, at creation).
+using FillId = std::uint64_t;
+using StrokeId = std::uint64_t;
+inline constexpr FillId   kNullFill   = 0;
+inline constexpr StrokeId kNullStroke = 0;
+
 // Row-major 2×3 affine in double (the document-space sibling of Mat23).
 struct DMat23 {
     double m[6] = { 1, 0, 0, 0, 1, 0 };

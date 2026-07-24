@@ -143,6 +143,117 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   layers, symbol viewer, map settings — which completes this lot. The full
   legacy feature inventory and the phased plan (core marks → curves/NURBS/pen
   → module) live in `docs/Ink/IOF_CORE_PLAN.md`.)*
+- [x] **Lot 12 — Compositing graph core** (spec: `docs/Ink/NODE_GRAPH.md`):
+  the **Compositing Graph** (`CompGraph`/`CompNode`/`CompPort`,
+  `Ink/Scene/CompGraph.h` + `src/Scene/CompGraph.cpp` — a Scene-owned,
+  transient dataflow model, NOT the frame `Ink::graph` render graph) lands as
+  a pure engine substrate, no visible UI change. `Input`/`Output`/`Merge`/
+  `MaskBlend` node kinds; `BuildAutoGraph` auto-builds a layer's graph from
+  the Layers tree's child order + `ComputeAutoMergeParams` (the exact
+  predicate `Scene::OpenScopeIfNeeded` used to compute inline: opacity<1,
+  non-Normal blend, isolate, clip, Affinity path-parent, Subtract AlongPath,
+  Erase-blend piece); fills/strokes gained stable per-piece ids (`FillId`/
+  `StrokeId`, DOCUMENT_MODEL.md §4, stamped by `Document::StampStyleIds` from
+  the shared `NodeId` pool) so they are individually addressable.
+  `Scene::OpenScopeIfNeeded` now calls `ComputeAutoMergeParams` instead of
+  computing the predicate inline — same `CompositeScope` output, one
+  mechanism instead of two. Port WIRING (which node feeds which) is
+  deliberately NOT represented yet (NODE_GRAPH.md §2) — it has no behavioral
+  consequence until Lot 13 needs to draw cables. *(Delivered 2026-07-24: full
+  app build green (also fixed an unrelated pre-existing corruption in
+  `ButtonGroup.cpp` blocking the build); `ink_tests` all green including new
+  `TestCompGraphAutoGenerate`/`TestStyleIds` and unmodified
+  `TestCompositeScopes`; `blend_groups` bench compiles in ~0.0006 ms/frame
+  steady-state (the CPU path this lot touched) — GPU cost (~395 ms/frame for
+  500 forced-isolation groups) is unchanged from before this lot (zero GPU/
+  composite-pass code touched, CompositeScope construction proven
+  parameter-identical) and reflects an already-known-expensive path, not a
+  Lot 12 regression; `bootstrap` bench unaffected (~4 ms/frame GPU).)*
+- [x] **Lot 13 — Node Graph Editor** (spec: `docs/Ink/NODE_GRAPH.md` §5):
+  the generic, reusable **Core Node UI** (`UI::NodeGraph`, `src/UI/Widgets/
+  NodeGraph.h`+`.cpp` — node box/port/cable widgets, pan/zoom, drag-to-
+  connect with type validation, closable nodes, all design-system-token-
+  driven: 20 new `C_NodeGraph_*`/`C_NodeBox_*`/`C_NodePort_*`/`C_NodeCable_*`
+  Component tokens) lands in `src/UI/`, alongside its first concrete
+  consumer — the **Layer Graph Editor** (`Application/Editors/LayerGraph/
+  LayerGraphEditor.cpp`, registered as `core.layergraph`) that shows a
+  layer's `CompGraph` (`Ink::BuildAutoGraph`) and lets the user reorder/
+  exclude its children. *(Delivered 2026-07-24, with one deliberate design
+  simplification from the original per-edge "pinned port" sketch: editing is
+  whole-graph, not per-edge — `Ink::Document::Node::compInputs`
+  (`CompInputOverride` list) either mirrors `children` (fully automatic) or
+  wholesale replaces the Input order/set (fully customized), validated to
+  only ever reorder/exclude a layer's OWN children (routing in a FOREIGN
+  node's fill/stroke — the full cross-layer example from the product-owner
+  spec — needs a "don't also render at the structural position" semantic
+  that is a deliberate, separate follow-on, not yet built). Reordering is by
+  dragging node boxes (position re-sorted on drop, `NodeGraphResult::
+  nodeMoveEnded`); exclusion is a per-node close cross
+  (`NodeGraphNode::closable`/`NodeGraphResult::closeRequested`) — NOT a
+  cable-drag gesture, because in this graph shape every Input always feeds
+  the one sink, so there is nothing meaningful to disconnect/reconnect yet;
+  the displayed Input→Merge/Output cables are the auto topology computed for
+  display, not a stored, rewirable edge list. `Mask & Blend` exists as a
+  `CompNodeKind` (Lot 12) but the editor does not create/place one yet — no
+  UI to add it. The Outliner gained "Open Layer Graph" / "Reset Layer Graph
+  to Automatic" (a `•` prefix marks a customized layer in the context menu)
+  but NOT yet a dedicated row badge like the clip/mask icon — deferred to
+  avoid destabilizing that row-layout code under time pressure. Full app
+  build green (`Carto.exe`, `ink_tests`, `ds_token_tests` all pass); the
+  actual drag/click feel is unverified — needs the user's F5 visual check.)*
+  *(Revised same day, after product-owner review of the first pass: renamed
+  `LayerGraphEditor`/`core.layergraph` → `NodeGraphEditor`/`core.nodegraph`
+  and decoupled it from the Layers-mode name entirely — it now follows
+  `edit_.active` automatically (Blender-style, no manual "open" step), for
+  whichever object is selected anywhere (Viewport/Outliner). Fixed a middle-
+  click-pan-also-starts-a-stuck-box-select bug (`canvasClicked` now checks
+  `ImGuiMouseButton_Left` explicitly) and a body-picker-field bug (rendered
+  outside the node + duplicate ImGui id — `pr::NodePickerRow` sizes off the
+  CURRENT WINDOW and `PushID`s a literal string; fixed with a per-slot
+  `BeginChild`). **`CompNodeKind` split from `{Input, Output, Merge,
+  MaskBlend}` into `{Input, Merge, Clip, Mask, Blend, Output}`** — see
+  `NODE_GRAPH.md` §3's corrected node list and `CompGraph.h`'s header
+  comment — after the product owner flagged the original single node as
+  conflating four distinct real operations; Node Graph "Mute" (M) now
+  targets Blend specifically (`Node::compBlendMuted`, renamed from
+  `compMergeMuted`), never Clip/Mask. The editor now builds a real UI node
+  per kind present (Merge always, Clip/Mask/Blend only when
+  `ComputeAutoMergeParams` says so) with a dedicated mask-source Input node,
+  chaining edges through whichever stages exist. Added a live Vulkan preview
+  thumbnail on every Input node (`Application::NodePreviewTexture`, the same
+  real-pipeline vignette mechanism the Outliner uses) and a scoped-down
+  bidirectional cable-drag (grab an Input's cable off Merge, re-drop it on a
+  different Merge slot to reorder, or in empty space to exclude it) — full
+  cross-layer link-dragging needs the real per-edge model `NODE_GRAPH.md` §7
+  now designs. `ink_tests`/`ds_token_tests` re-verified green after every
+  change in this pass.)*
+- [ ] **Lot 14 — Outliner sub-component drill-down & cross-layer routing**
+  (spec: `docs/Ink/NODE_GRAPH.md` §4 for the display rules, §7 for the real
+  per-edge model routing needs — written 2026-07-24 after the product owner
+  asked for cross-layer drag & drop explicitly): the Outliner (Layers **and**
+  Collections mode) grows recursive chevrons down into each object's fills/
+  strokes (icon per piece) — **display half delivered**: `OutlinerRow::Kind::
+  Fill`/`Stroke` rows exist, gained a proper `OutlinerChildKind` selection
+  discriminator (fixed a duplicate-ImGui-id bug where every fill/stroke row
+  on the same node collapsed onto one id — `cfg.id` didn't mix in
+  `pieceIndex` — and made them properly selectable/highlightable, same
+  pattern as Modifier/LinkedData child rows). Further recursion into
+  pattern motifs / instance targets / Array/AlongPath expansions is not
+  built. **Layers mode only**, dragging a fill/stroke onto another layer —
+  the harder, still-deferred half — needs the real per-edge `CompEdge` model
+  `NODE_GRAPH.md` §7 now designs (§7.1: why `Node::compInputs`, Lot 13's
+  shipped storage, structurally cannot express a foreign-node edge; §7.3:
+  the "don't also render at the structural position" semantic, default
+  answer now settled — it DOES still render there by default, a `CompEdge`
+  is an additional consumer, not a move; §7.4: the actual Outliner
+  encapsulation/dual-row design). §7.5 suggests an increment order
+  (`CompEdge` storage → bidirectional same-layer dragging, already partly
+  done this session in the Node Graph Editor → cross-layer `Input` targeting
+  → Outliner encapsulation display). The object's row is shown again nested
+  under the target layer to hold that piece (visual duplication, still one
+  Document node); selecting the object selects every row representing it,
+  and it still moves as one block in the Viewport — rendering routing and
+  object identity stay decoupled, per the product owner's constraint.
 - [ ] **Lot 6 (deferred) — Images**: run here, after modules. Import
   (decode app-side), bindless texture table, image paints & ImageNode;
   `images` bench.
@@ -153,7 +264,13 @@ Ordering rationale: correctness spine first (model → geometry → compositing)
 then the two claims that shape all data structures (instancing, relations),
 then interaction, then persistence/UI breadth. Undo arrives with the editing
 loop (Lot 8) because command-based undo needs the typed ops that tools
-exercise.
+exercise. Lots 12–14 (Compositing Graph) run substrate → manual editing
+surface → simplified/automatic surface — in that order so each lot is
+independently benchable/testable before the next depends on it: Lot 12 alone
+already carries a regression gate (behavior-parity with Lot 4), Lot 13 proves
+the substrate is editable and the pin/override contract holds, and only then
+does Lot 14 wire a one-gesture Outliner shortcut onto a mechanism already
+proven in isolation.
 
 ---
 

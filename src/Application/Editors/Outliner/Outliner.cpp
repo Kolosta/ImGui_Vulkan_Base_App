@@ -240,7 +240,13 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
     const int  nMods = collections ? (int)n->modifiers.size() : 0;
     const bool hasLinked = collections && n->kind == Ink::NodeKind::Instance &&
                            doc.Find(n->targetRef) != nullptr;
-    const bool anyChild = hasKids || nMods > 0 || hasLinked;
+    // Sub-component drill-down (docs/Ink/NODE_GRAPH.md §4, ROADMAP Lot 14,
+    // DISPLAY ONLY): a Path's fills/strokes, shown in BOTH views (unlike
+    // Modifier/LinkedData, which are Collections-only) — a piece isn't an
+    // organisational concept, it belongs to the object in either view.
+    const bool hasPieces = n->kind == Ink::NodeKind::Path &&
+                          (!n->style.fills.empty() || !n->style.strokes.empty());
+    const bool anyChild = hasKids || nMods > 0 || hasLinked || hasPieces;
 
     const int myRow = (int)out.size();
     if (drawSelf) {
@@ -270,6 +276,20 @@ void Application::OutlinerFlattenNode(Ink::NodeId id, int depth,
         if (hasLinked) {
             OutlinerRow r; r.id = id; r.kind = OutlinerRow::Kind::LinkedData;
             r.depth = childDepth; r.refId = n->targetRef;
+            r.ownerColl = ownerColl; r.ownerRow = ownerRow; r.objRow = myRow;
+            out.push_back(r);
+        }
+    }
+    if (drawSelf && hasPieces) {
+        // Top-of-stack first (reverse paint order), matching the Layers
+        // tree's own top-first convention. Further recursion into pattern
+        // motifs/instance targets/Array-AlongPath expansions a piece may
+        // itself carry is explicitly DEFERRED — a piece row is a leaf here.
+        const std::vector<Ink::Style::PaintRef> order = n->style.PaintOrder();
+        for (auto pit = order.rbegin(); pit != order.rend(); ++pit) {
+            OutlinerRow r; r.id = id;
+            r.kind = pit->isStroke ? OutlinerRow::Kind::Stroke : OutlinerRow::Kind::Fill;
+            r.depth = childDepth; r.pieceIndex = pit->index;
             r.ownerColl = ownerColl; r.ownerRow = ownerRow; r.objRow = myRow;
             out.push_back(r);
         }
@@ -731,12 +751,17 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     const bool layers = (o.display == OutlinerDisplayMode::Layers);
     const bool preview = layers && rrow.kind == OutlinerRow::Kind::Object;
 
-    // Common ListRow config. The hit id mixes kind + modifier index so child
-    // rows sharing the object's document id stay unique ImGui items.
+    // Common ListRow config. The hit id mixes kind + modifier index + piece
+    // index so child rows sharing the object's document id stay unique ImGui
+    // items — a node with 2+ fills or 2+ strokes needs pieceIndex in the mix
+    // too, or every one of them collapses onto the same id (ImGui "ID already
+    // used" + broken hit-testing, since only one of the colliding items can
+    // actually own the id at a time).
     UI::ListRowConfig cfg;
     cfg.id = ImGui::GetID((void*)(uintptr_t)
         (rrow.id ^ ((uint64_t)rrow.kind << 48) ^
-         ((uint64_t)(rrow.modIndex + 1) << 56)));
+         ((uint64_t)(rrow.modIndex + 1) << 56) ^
+         ((uint64_t)(rrow.pieceIndex + 1) << 40)));
     // Parity by flat INDEX, not by a draw-order counter: the grabbed row is
     // drawn out of order during a reorder, and the stripes must not care.
     cfg.zebraOdd = (rrow.flatIndex & 1);
@@ -897,8 +922,10 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         const bool childSel =
             o.selChildObj == rrow.id &&
             ((rrow.kind == OutlinerRow::Kind::Modifier &&
+              o.selChildKind == OutlinerChildKind::Modifier &&
               o.selChildMod == rrow.modIndex) ||
-             (rrow.kind == OutlinerRow::Kind::LinkedData && o.selChildMod == -1));
+             (rrow.kind == OutlinerRow::Kind::LinkedData &&
+              o.selChildKind == OutlinerChildKind::LinkedData));
         if (childSel) {
             cfg.selected = true;
             cfg.colors.selected = ImGui::ColorConvertFloat4ToU32(
@@ -970,12 +997,14 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
                     OutlinerSelectClick(rrow.id, true);
                     o.activeModifier = rrow.modIndex;
                     o.selChildObj = rrow.id; o.selChildMod = rrow.modIndex;
+                    o.selChildKind = OutlinerChildKind::Modifier;
                 } else if (doc.Find(rrow.refId)) {
                     // Select the LINKED object (the instance owning this row),
                     // not the original data holder.
                     o.sel.clear();
                     OutlinerSelectClick(rrow.id, true);
                     o.selChildObj = rrow.id; o.selChildMod = -1;
+                    o.selChildKind = OutlinerChildKind::LinkedData;
                 }
             }
             if (in.rightClicked) {
@@ -985,6 +1014,73 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
                 outlinerCtxLinkedRef_ =
                     rrow.kind == OutlinerRow::Kind::LinkedData ? rrow.refId
                                                               : Ink::kNullNode;
+            }
+        }
+        return;
+    }
+
+    // ── Fill / Stroke child rows (docs/Ink/NODE_GRAPH.md §4, ROADMAP Lot 14,
+    // DISPLAY ONLY — both Layers and Collections view; no drag source yet,
+    // cross-layer routing is a deliberate follow-on, not built). Selectable
+    // like a Modifier/LinkedData child row: the row itself highlights and
+    // becomes the document selection's "focused piece", while the owning
+    // object is what actually lands in edit_.selection (a fill/stroke is
+    // paint data, not a real Node — there is nothing else to select). ──
+    if (rrow.kind == OutlinerRow::Kind::Fill || rrow.kind == OutlinerRow::Kind::Stroke) {
+        const Ink::Node* n = doc.Find(rrow.id);
+        const bool isStroke = rrow.kind == OutlinerRow::Kind::Stroke;
+        const bool valid = n && (isStroke
+            ? (rrow.pieceIndex >= 0 && rrow.pieceIndex < (int)n->style.strokes.size())
+            : (rrow.pieceIndex >= 0 && rrow.pieceIndex < (int)n->style.fills.size()));
+        if (!valid) { UI::ListRow dummy(cfg); return; }
+        const bool enabled = isStroke ? n->style.strokes[rrow.pieceIndex].enabled
+                                      : n->style.fills[rrow.pieceIndex].enabled;
+        const OutlinerChildKind selfKind =
+            isStroke ? OutlinerChildKind::Stroke : OutlinerChildKind::Fill;
+        ImVec4 hov = ol::SafeColor(Tok::C_Outliner_Row_Hover, ImVec4(0.3f, 0.5f, 0.9f, 1));
+        hov.w = 0.35f;
+        cfg.colors.hover = ImGui::ColorConvertFloat4ToU32(hov);
+        const bool childSel = o.selChildObj == rrow.id && o.selChildKind == selfKind &&
+                              o.selChildMod == rrow.pieceIndex;
+        if (childSel) {
+            cfg.selected = true;
+            cfg.colors.selected = ImGui::ColorConvertFloat4ToU32(
+                ol::SafeColor(Tok::C_Outliner_Row_Selected, ImVec4(0.2f, 0.4f, 0.7f, 1)));
+            cfg.colors.selectedHover = ImGui::ColorConvertFloat4ToU32(
+                ol::SafeColor(Tok::C_Outliner_Row_SelectedHover, ImVec4(0.3f, 0.5f, 0.8f, 1)));
+        }
+        UI::ListRow row(cfg);
+        ImGui::SetCursorScreenPos(ImVec2(row.ContentX(), row.RowTop()));
+        ImGui::PushID((int)cfg.id);
+        ol::DotGutter();
+        for (int d = 0; d < rrow.depth; ++d) ol::ChevronSpacer();
+        ol::ChevronSpacer();
+        ol::SlotIcon(isStroke ? "draw" : "colorize",
+                    ol::SafeColor(Tok::S_Color_Text_Subtle, ImVec4(.6f, .6f, .6f, 1)));
+        const char* label = isStroke ? "Stroke" : "Fill";
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(ImGui::GetCursorScreenPos().x + 4.0f * ol::Gs(),
+                   row.RowTop() + (ol::RowH() - ImGui::GetTextLineHeight()) * 0.5f),
+            ol::LabelColor(false, !enabled), label);
+        ImGui::PopID();
+        if (!outlinerSuppressInput_) {
+            const UI::ListRowInput& in = row.Input();
+            if (in.clicked) {
+                if (ObjectPickActive()) {
+                    DeliverObjectPick(rrow.id);
+                } else {
+                    o.sel.clear();
+                    OutlinerSelectClick(rrow.id, true);
+                    o.selChildObj = rrow.id;
+                    o.selChildKind = selfKind;
+                    o.selChildMod = rrow.pieceIndex;
+                }
+            }
+            if (in.rightClicked) {
+                outlinerCtxRequested_ = true;
+                outlinerCtxPos_ = ImGui::GetIO().MousePos;
+                outlinerCtxNode_ = rrow.id;
+                outlinerCtxLinkedRef_ = Ink::kNullNode;
             }
         }
         return;
@@ -1004,7 +1100,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     // The ORIGINAL data holder of a selected linked-data row: a violet
     // "linked" tint (not selected — just a marker), so it is easy to spot.
     bool linkedMarker = false;
-    if (o.selChildObj != Ink::kNullNode && o.selChildMod == -1) {
+    if (o.selChildObj != Ink::kNullNode && o.selChildKind == OutlinerChildKind::LinkedData) {
         const Ink::Node* sc = doc.Find(o.selChildObj);
         if (sc && sc->kind == Ink::NodeKind::Instance &&
             sc->targetRef == rrow.id && rrow.id != o.selChildObj)
@@ -1118,8 +1214,16 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
         ol::ChevronSpacer();
     }
 
+    // Node Graph "customized" badge (docs/Ink/NODE_GRAPH.md, ROADMAP Lot 13):
+    // this layer's compInputs no longer mirror its Outliner child order —
+    // shown immediately left of the eye toggle, Layers view only (Group only
+    // — compInputs is meaningless on any other kind).
+    const bool showCustomBadge =
+        layers && n->kind == Ink::NodeKind::Group && !n->compInputs.empty();
     const float eyeSlot = ol::RowH();
+    const float badgeSlot = showCustomBadge ? ol::RowH() : 0.0f;
     const float eyeX = row.BandRight() - 6.0f * ol::Gs() - eyeSlot;
+    const float contentRight = eyeX - badgeSlot;   // name/summary boundary
 
     // Preview card (Layers view) or the flat type icon. In the Collections
     // view a GROUP is just an object (no folder icon — the layer hierarchy is
@@ -1149,7 +1253,7 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
     if (o.renaming == rrow.id) {
         bool deactivated = false;
         if (ol::RenameField("##rename", o.renameBuf, sizeof o.renameBuf,
-                            nameX, row.RowTop(), eyeX - nameX - 4.0f,
+                            nameX, row.RowTop(), contentRight - nameX - 4.0f,
                             o.renameTakeFocus, &deactivated)) {
             Action_RenameNode(rrow.id, o.renameBuf); o.renaming = 0;
         }
@@ -1165,12 +1269,23 @@ void Application::OutlinerDrawRow(EditorState& st, const OutlinerRow& rrow, floa
                                    : !o.ObjExpanded(rrow.id);
         if (rrow.hasChildren && folded)
             OutlinerCollapsedSummary(rrow, nameX + ImGui::CalcTextSize(label).x,
-                                     row.RowTop(), eyeX - 4.0f * ol::Gs());
+                                     row.RowTop(), contentRight - 4.0f * ol::Gs());
     }
 
     if (active) {
         ImVec4 dc = ol::SafeColor(Tok::S_State_Active_OnPage, ImVec4(0.95f,0.6f,0.2f,1));
         ol::ActiveDotAt(row.BandLeft(), row.RowTop(), ImGui::ColorConvertFloat4ToU32(dc));
+    }
+
+    if (showCustomBadge) {
+        auto& im = VectorGraphics::IconManager::Instance();
+        const float isz = ol::IconSize() * 0.86f;
+        const float bx = eyeX - badgeSlot;
+        auto md = im.GetDefaultMetadata("polyline");
+        if (!md.colorZones.empty())
+            md.colorZones[0].customColor = ds.GetColor(Tok::S_Color_Accent_Default);
+        im.RenderIcon(ImGui::GetWindowDrawList(), "polyline",
+            ImVec2(bx + (badgeSlot - isz) * 0.5f, row.RowTop() + (ol::RowH() - isz) * 0.5f), isz, md);
     }
 
     row.SuppressInputIn(eyeX, eyeX + eyeSlot);

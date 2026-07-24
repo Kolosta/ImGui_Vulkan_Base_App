@@ -49,6 +49,7 @@ NodeId Document::AddPath(NodeId parent, PathData path, Style style,
     n.name  = std::move(name);
     n.path  = std::move(path);
     n.style = std::move(style);
+    StampStyleIds(n.style);
     if (Node* pg = FindMutable(parent)) {
         if (pg->kind != NodeKind::Group) return kNullNode;
         n.parent = parent;
@@ -123,8 +124,16 @@ void Document::SetPath(NodeId node, PathData path) {
     }
 }
 
+void Document::StampStyleIds(Style& s, bool force) {
+    for (Fill& f : s.fills)
+        if (force || f.id == kNullFill) f.id = (FillId)NextId();
+    for (Stroke& st : s.strokes)
+        if (force || st.id == kNullStroke) st.id = (StrokeId)NextId();
+}
+
 void Document::SetStyle(NodeId node, Style style) {
     if (Node* n = FindMutable(node); n && n->kind == NodeKind::Path) {
+        StampStyleIds(style);   // no-op for pieces that already carry an id
         // A stroke-geometry parameter change (width/align/caps/joins) needs a
         // re-tessellation, a paint-only change does not — compare the
         // geometry-affecting hashes to log the cheapest exact change.
@@ -183,6 +192,31 @@ void Document::SetClip(NodeId group, bool clip) {
 
 void Document::SetMask(NodeId node, bool isMask) {
     if (Node* n = FindMutable(node)) { n->isMask = isMask; Log(node, ChangeKind::Hierarchy); }
+}
+
+void Document::SetCompInputs(NodeId layer, std::vector<CompInputOverride> inputs) {
+    Node* n = FindMutable(layer);
+    if (!n || n->kind != NodeKind::Group) return;
+    // Validated: an entry must reference a node CURRENTLY in `children` (Lot
+    // 13 scope is reorder/filter of a layer's own children — docs/Ink/
+    // NODE_GRAPH.md; routing in a foreign node's fill/stroke is a follow-on).
+    std::vector<CompInputOverride> filtered;
+    filtered.reserve(inputs.size());
+    for (const CompInputOverride& ov : inputs) {
+        if (ov.node != kNullNode &&
+            std::find(n->children.begin(), n->children.end(), ov.node) !=
+                n->children.end())
+            filtered.push_back(ov);
+    }
+    n->compInputs = std::move(filtered);
+    Log(layer, ChangeKind::Hierarchy);
+}
+
+void Document::SetCompBlendMuted(NodeId layer, bool muted) {
+    if (Node* n = FindMutable(layer); n && n->kind == NodeKind::Group) {
+        n->compBlendMuted = muted;
+        Log(layer, ChangeKind::Hierarchy);
+    }
 }
 
 void Document::DetachFromParent(const Node& n) {
@@ -254,6 +288,11 @@ bool Document::Restore(std::vector<Page> pages, std::vector<Node> nodes,
     }
     for (const Collection& c : collections)
         if (!claim(c.id)) return false;
+    // Raised NOW (not after Install below): the fill/stroke id stamping pass
+    // in the Install loop calls NextId(), which must already account for
+    // maxId or a freshly-stamped piece id could collide with an incoming
+    // node/page/collection id.
+    nextId_ = std::max(nextId, maxId + 1);
 
     // Bidirectional layer-tree consistency: every child list entry exists and
     // points back; every node is reachable through exactly its declared owner.
@@ -325,12 +364,17 @@ bool Document::Restore(std::vector<Page> pages, std::vector<Node> nodes,
     // ── Install ──────────────────────────────────────────────────────────────
     nodes_.clear();
     for (Node& n : nodes) {
+        // Old files (pre-dating FillId/StrokeId) load with every piece's id
+        // still null — stamp them now so a loaded document is immediately
+        // usable as a Compositing Graph Input target (nextId_ already
+        // accounts for maxId, raised above, so no collision with any id in
+        // this same install).
+        StampStyleIds(n.style);
         const NodeId id = n.id;
         nodes_.emplace(id, std::move(n));
     }
     pages_       = std::move(pages);
     collections_ = std::move(collections);
-    nextId_      = std::max(nextId, maxId + 1);
     changes_.clear();
     Log(kNullNode, ChangeKind::Removed);   // "everything changed" marker
     for (const Page& p : pages_) Log(p.id, ChangeKind::Added);
@@ -971,6 +1015,10 @@ NodeId Document::DuplicateSubtree(NodeId src) {
         }
         for (Fill& f : c.style.fills)
             f.pattern.motifRef = mapped(f.pattern.motifRef);
+        // Fresh piece ids too — a duplicate must never share its source's
+        // FillId/StrokeId (docs/Ink/NODE_GRAPH.md §3.1): a Compositing Graph
+        // Input targeting one would otherwise resolve ambiguously.
+        StampStyleIds(c.style, /*force=*/true);
         const NodeId newId = c.id;
         nodes_.emplace(newId, std::move(c));
         Log(newId, ChangeKind::Added);

@@ -420,6 +420,22 @@ void Application::RenderOutlinerContextMenu(EditorState& st) {
               entries.push_back(std::move(e));
           }
         }
+        // Node Graph (docs/Ink/NODE_GRAPH.md, ROADMAP Lot 13): the Node Graph
+        // editor always shows the ACTIVE object's graph automatically
+        // (Blender-style — selecting this row IS "opening" it, no separate
+        // action needed). Only "Reset to Automatic" is a distinct explicit
+        // action, and only once the layer has actually been customized
+        // (compInputs non-empty). Group nodes only (DOCUMENT_MODEL §2).
+        { const Ink::Node* ctxN = doc.Find(outlinerCtxNode_);
+          if (ctxN && ctxN->kind == Ink::NodeKind::Group && !ctxN->compInputs.empty()) {
+              const Ink::NodeId gid = outlinerCtxNode_;
+              UI::MenuEntry e; e.label = "Reset Node Graph to Automatic";
+              e.tooltip = "Discard the manual reorder/exclusion — mirror the "
+                          "Outliner's child order again";
+              e.onClick = [this, gid]() { Action_ResetCompInputs(gid); };
+              entries.push_back(std::move(e));
+          }
+        }
         { UI::MenuEntry e; e.label = "Rename"; e.enabled = edit_.active != Ink::kNullNode;
           e.onClick = [this, &st]() {
               if (const Ink::Node* n = project_.document->Find(edit_.active)) {

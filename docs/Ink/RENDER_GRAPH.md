@@ -121,6 +121,13 @@ culled).
   soft masks (feathered) are a later effects-lot feature via mask textures.
 
 ### CompositePass (P3)
+- **Planned evolution (NODE_GRAPH.md, Lots 12–14):** this pass's execution
+  order/scopes will come from evaluating each layer's Compositing Graph
+  (`CompGraph` — a *document-level* graph, distinct from this frame render
+  graph) instead of a hand-walked isolation stack. The mechanics below are
+  the behavior-parity contract that evaluation must reproduce exactly for a
+  layer nobody has manually rewired — nothing described here changes from
+  the outside.
 - Normal-blend items composite directly in P1 (hardware premultiplied-over).
 - A node/group with blend ≠ Normal or opacity < 1 or isolate=true renders to
   `iso[d]`, then a fullscreen composite applies opacity + blend, reading the

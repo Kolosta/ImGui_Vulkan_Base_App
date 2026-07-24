@@ -37,6 +37,8 @@ this stage if a better name is ever preferred.
 | [RENDER_GRAPH.md](RENDER_GRAPH.md) | The frame: passes, resources, batching, GPU data model, picking, ImGui integration |
 | [GEOMETRY.md](GEOMETRY.md) | Flattening, stroking (inside/center/outside on open paths), tessellation, caching, hit-testing |
 | [PERF_TESTING.md](PERF_TESTING.md) | The automated benchmark harness (`ink_bench`), scenes, metrics, baselines |
+| [NODE_GRAPH.md](NODE_GRAPH.md) | Planned (Lots 12–14): the per-layer Compositing Graph, its auto-generation from the Outliner + manual-override ("pin") model, the generic Node Graph Editor UI, and Outliner sub-component drill-down/routing |
+| [NODE_UI.md](NODE_UI.md) | Planned: replacing the Node Graph Editor's ImGui-based rendering with fully custom, Vulkan-native components (zoom-correct text/controls, Blender-parity) |
 | [ROADMAP.md](ROADMAP.md) | Lot-by-lot build plan; **Lot 1 = the detailed Viewport integration plan** |
 
 ## Status

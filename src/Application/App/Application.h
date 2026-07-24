@@ -485,9 +485,17 @@ private:
                                     ProjectRoot,
                                     // Collections view children of an object:
                                     Modifier,     // one row per stack entry
-                                    LinkedData }; // an instance's shared data
+                                    LinkedData,   // an instance's shared data
+                                    // Sub-component drill-down (docs/Ink/
+                                    // NODE_GRAPH.md §4, ROADMAP Lot 14,
+                                    // DISPLAY ONLY — both Layers and
+                                    // Collections view): one row per paint
+                                    // piece, top-of-stack first. No drag
+                                    // source yet (cross-layer routing is a
+                                    // deliberate follow-on, not built).
+                                    Fill, Stroke };
         uint64_t id = 0;        // node / collection / page id (root: 0);
-                                // Modifier/LinkedData: the OWNING object's id
+                                // Modifier/LinkedData/Fill/Stroke: the OWNING object's id
         Kind     kind = Kind::Object;
         int      depth = 0;
         bool     hasChildren = false;
@@ -499,7 +507,8 @@ private:
         int      flatIndex = 0;    // this row's own flat index
         int      modIndex  = -1;   // Kind::Modifier: index into the stack
         uint64_t refId     = 0;    // Kind::LinkedData: the referenced node
-        int      objRow    = -1;   // Modifier/LinkedData: owning object's row
+        int      objRow    = -1;   // Modifier/LinkedData/Fill/Stroke: owning object's row
+        int      pieceIndex = -1;  // Kind::Fill/Stroke: index into style.fills/strokes
     };
     // Append the visible rows of a node subtree (respecting collapse + filter +
     // search) to `out`. Pure computation, no drawing. In the Collections view
@@ -875,6 +884,55 @@ private:
     void PushEditCommand(const std::string& label, const EditSnapshot& before,
                          const EditSnapshot& after);
     void RenderInfoEditor();     // "Info" editor — live action feed
+    // "Node Graph" editor (docs/Ink/NODE_GRAPH.md §5, ROADMAP Lot 13): shows
+    // the ACTIVE object's Compositing Graph (Ink::BuildAutoGraph) through the
+    // generic UI::NodeGraph widget — follows edit_.active automatically,
+    // Blender-style (same pattern as Properties, no manual "open" step).
+    // Node reorder/exclusion commits via Ink::Document::SetCompInputs when
+    // the active node is a Group (only kind SetCompInputs accepts). Named
+    // after the GRAPH, not "layer" — Layers is only one view onto it.
+    void RenderNodeGraphEditor(EditorState& st);
+    // Undoable compInputs edit (docs/Ink/NODE_GRAPH.md, ROADMAP Lot 13).
+    // Also what the Outliner's "Reset Graph to Automatic" action calls.
+    void Action_SetCompInputs(Ink::NodeId layer, std::vector<Ink::CompInputOverride> inputs);
+    void Action_ResetCompInputs(Ink::NodeId layer);
+    // Kept as a thin forward to Action_SetCompBlendMuted (mute now targets
+    // the Blend node specifically — docs/Ink/NODE_GRAPH.md §7).
+    void Action_SetCompMergeMuted(Ink::NodeId layer, bool muted);
+    void Action_SetCompBlendMuted(Ink::NodeId layer, bool muted);
+    // Node Graph selected-node actions (X / M / H — ShortcutDefaults.cpp).
+    // Operate over ngSelected_ (keys in the SAME space as NgKey() in
+    // NodeGraphEditor.cpp: a real NodeId for an Input, reserved sentinels
+    // for Merge/Clip-or-Mask/Blend/Output).
+    void Action_NodeGraphDeleteSelected();
+    void Action_NodeGraphMuteToggleSelected();
+    void Action_NodeGraphCollapseToggleSelected();
+    void Action_NodeGraphOpenAddMenu();
+    // Live preview vignettes (docs/Ink/NODE_UI.md task #3) are a real Vulkan
+    // render per visible Input node every frame — cheap individually, but
+    // worth a one-key kill switch while working on a graph with many inputs.
+    void Action_NodeGraphTogglePreviews() { ngShowPreviews_ = !ngShowPreviews_; }
+    bool        ngShowPreviews_ = true;
+    double      ngPanX_ = 0.0, ngPanY_ = 0.0, ngZoom_ = 1.0;
+    // Shift+A → "Layer Input" placement (docs/Ink/NODE_UI.md task #2):
+    // ngPendingPlacement_ = a ghost node is following the mouse, not yet
+    // dropped; ngPendingPlaced_ = dropped at ngPendingPos_, showing an EMPTY
+    // picker, nothing committed to the Document until a target is chosen.
+    bool        ngPendingPlacement_ = false;
+    bool        ngPendingPlaced_    = false;
+    ImVec2      ngPendingPos_{ 0.0f, 0.0f };
+    // Canvas layout, keyed by a STABLE per-node identity (CompGraph is
+    // rebuilt fresh every compile, so CompNode::id — a small per-build
+    // counter — cannot anchor a position across frames): Output/Merge use
+    // reserved sentinels (shared across every object shown — harmless, they
+    // always sit at "the end of the chain"), an Input uses its target NodeId
+    // (globally unique, so safe to share one map across every active object
+    // the editor ever follows in a session).
+    std::unordered_map<std::uint64_t, ImVec2> ngNodePos_;
+    std::set<std::uint64_t> ngSelected_;     // current Node Graph selection
+    std::set<std::uint64_t> ngCollapsed_;    // collapsed (H) node keys
+    Ink::NodeId ngLastActive_ = Ink::kNullNode;   // detects edit_.active switching
+    bool        ngAddMenuRequested_ = false;      // Shift+A pending this frame
     // "Palette" editor — the document COLOUR TABLE (Editors/Palette/).
     // Swatches are colours used as variables by any paint, optionally
     // carrying their CMYK, their place in the plate stack and overprint.

@@ -236,6 +236,21 @@ void Application::RegisterCoreEditors() {
         reg.Register(std::move(d));
     }
 
+    // Node Graph — the ACTIVE object's Compositing Graph, shown/edited
+    // through the generic UI::NodeGraph widget (docs/Ink/NODE_GRAPH.md §5,
+    // ROADMAP Lot 13). Follows edit_.active automatically (Blender-style —
+    // no manual "open" step, same pattern as Properties). Own pan/zoom
+    // canvas, no scroll wrap/inset (mirrors Viewport).
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::NodeGraph; d.name = "Node Graph"; d.icon = "polyline";
+        d.column = 0; d.themeScope = "editors/nodegraph";
+        d.switchAction = "editor.nodegraph";
+        d.wrapInScroll = false; d.contentInset = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderNodeGraphEditor(st); };
+        reg.Register(std::move(d));
+    }
+
     // Palette — the document colour table: named colours any paint may
     // follow, each optionally carrying its CMYK, its place in the plate
     // stack and whether it overprints (Editors/Palette/Palette.cpp).

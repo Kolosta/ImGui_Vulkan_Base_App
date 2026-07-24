@@ -4,6 +4,7 @@
 
 #include <Ink/Document/Document.h>
 #include <Ink/Geometry/GeometryCache.h>
+#include <Ink/Scene/CompGraph.h>
 #include <Ink/Scene/Picking.h>
 #include <Ink/Scene/Scene.h>
 
@@ -398,6 +399,304 @@ void TestCompositeScopes() {
         CHECK(maskWrite);
         CHECK(!maskPaints);   // the mask never paints
     }
+}
+
+// docs/Ink/NODE_GRAPH.md, ROADMAP Lot 12/13: the Compositing Graph's auto-
+// generator must (a) produce a real, inspectable graph shape — Merge ALWAYS
+// present for a Group (combining its ordinary children in order), Clip/Mask
+// and Blend as SEPARATE nodes only when actually needed — and (b) be the
+// exact mechanism Scene::OpenScopeIfNeeded now uses, so Blend's params
+// always match the CompositeScope Scene::Compile actually builds. This is
+// the behavior-parity contract TestCompositeScopes/blend_groups depend on.
+void TestCompGraphAutoGenerate() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 100, 100 });
+
+    // Plain group: still pass-through at render time, but Merge ALWAYS
+    // exists for a Group (its job — combine children in order — isn't
+    // conditional on any compositing) — no Blend, no Clip/Mask.
+    const NodeId plain = doc.AddGroup(page, "plain");
+    const NodeId child1 = doc.AddPath(plain, PathData::Rect(0, 0, 10, 10),
+                                      Style::Filled({ 1, 0, 0, 1 }), "r");
+    const CompGraph g0 = BuildAutoGraph(doc, *doc.Find(plain));
+    CHECK(g0.layer == plain);
+    CHECK(g0.FindBlend() == nullptr);
+    CHECK(g0.FindClipOrMask() == nullptr);
+    const CompNode* plainMerge = g0.FindMerge();
+    CHECK(plainMerge != nullptr);
+    CHECK(plainMerge->in.size() == 1);   // one ordinary child
+    CHECK(g0.nodes.size() == 3);   // Input + Merge + Output
+    CHECK(g0.nodes[0].kind == CompNodeKind::Input);
+    CHECK(g0.nodes[0].target.node == child1);
+    CHECK(g0.nodes[g0.output].kind == CompNodeKind::Output);
+
+    // Opacity group: a separate Blend node appears (Merge stays a plain
+    // combiner), carrying the same params Scene::OpenScopeIfNeeded builds
+    // its CompositeScope from.
+    const NodeId fade = doc.AddGroup(page, "fade");
+    doc.AddPath(fade, PathData::Rect(0, 0, 5, 5), Style::Filled({ 0, 1, 0, 1 }), "c");
+    doc.SetOpacity(fade, 0.5f);
+    const CompGraph g1 = BuildAutoGraph(doc, *doc.Find(fade));
+    CHECK(g1.FindMerge() != nullptr);
+    CHECK(g1.FindClipOrMask() == nullptr);
+    const CompNode* blend = g1.FindBlend();
+    CHECK(blend != nullptr);
+    CHECK(std::abs(blend->opacity - 0.5f) < 1e-6f);
+    CHECK(blend->blend == BlendMode::Normal);
+    CHECK(!blend->muted);
+
+    // Behavior parity: the CompositeScope Scene::Compile actually produces
+    // for `fade` must carry the SAME params as the auto-generator's Blend —
+    // this is what protects TestCompositeScopes/blend_groups from silently
+    // diverging as either side changes.
+    Scene sc;
+    sc.Compile(doc);
+    bool found = false;
+    for (const CompositeScope& s : sc.Scopes()) {
+        if (s.node == fade) {
+            found = true;
+            CHECK(std::abs(s.opacity - blend->opacity) < 1e-6f);
+            CHECK(s.blend == blend->blend);
+        }
+    }
+    CHECK(found);
+
+    // Muting Blend: Scene stops opening a scope for pure opacity/blend (no
+    // clip involved here), but BuildAutoGraph still shows the Blend node
+    // (dimmed) with its TRUE stored params, not neutralised ones.
+    doc.SetCompBlendMuted(fade, true);
+    const CompGraph g1m = BuildAutoGraph(doc, *doc.Find(fade));
+    const CompNode* blendMuted = g1m.FindBlend();
+    CHECK(blendMuted != nullptr);
+    CHECK(blendMuted->muted);
+    CHECK(std::abs(blendMuted->opacity - 0.5f) < 1e-6f);   // true value, not 1.0
+    Scene scMuted;
+    scMuted.Compile(doc);
+    bool fadeScopeGoneWhenMuted = true;
+    for (const CompositeScope& s : scMuted.Scopes())
+        if (s.node == fade) fadeScopeGoneWhenMuted = false;
+    CHECK(fadeScopeGoneWhenMuted);
+    doc.SetCompBlendMuted(fade, false);   // restore for the rest of this test
+
+    // Clip group: a SEPARATE Clip node appears (not "Merge" doing double
+    // duty), fed by a dedicated mask-source Input distinct from the
+    // ordinary merged children.
+    const NodeId clipG = doc.AddGroup(page, "clip");
+    const NodeId mask = doc.AddPath(clipG, PathData::Ellipse(0, 0, 20, 20),
+                                    Style::Filled({ 0, 0, 0, 1 }), "mask");
+    const NodeId clipped = doc.AddPath(clipG, PathData::Rect(0, 0, 8, 8),
+                                       Style::Filled({ 1, 1, 0, 1 }), "clipped");
+    doc.SetClip(clipG, true);
+    const CompGraph g2 = BuildAutoGraph(doc, *doc.Find(clipG));
+    CHECK(g2.FindBlend() == nullptr);
+    const CompNode* merge2 = g2.FindMerge();
+    CHECK(merge2 != nullptr);
+    CHECK(merge2->in.size() == 1);   // only `clipped` — the mask source is excluded
+    const CompNode* clipNode = g2.Find(CompNodeKind::Clip);
+    CHECK(clipNode != nullptr);
+    CHECK(g2.Find(CompNodeKind::Mask) == nullptr);   // group-clip is Clip, never Mask
+    CHECK(clipNode->target.node == mask);
+    bool sawMaskSourceInput = false;
+    for (const CompNode& n : g2.nodes)
+        if (n.kind == CompNodeKind::Input && n.isMaskSourceInput && n.target.node == mask)
+            sawMaskSourceInput = true;
+    CHECK(sawMaskSourceInput);
+    (void)clipped;
+
+    // Affinity MASK child: a Mask node (not Clip) appears.
+    Document doc3;
+    const NodeId page3 = doc3.AddPage("P", { 0, 0 }, { 100, 100 });
+    const NodeId host = doc3.AddPath(page3, PathData::Rect(0, 0, 40, 40),
+                                     Style::Filled({ 0.8f, 0.3f, 0.2f, 1 }), "host");
+    const NodeId maskChild = doc3.AddPath(page3, PathData::Ellipse(0, 0, 15, 15),
+                                          Style::Filled({ 0, 0, 0, 1 }), "mask");
+    doc3.MoveTo(maskChild, host, -1);
+    doc3.SetMask(maskChild, true);
+    const CompGraph g3 = BuildAutoGraph(doc3, *doc3.Find(host));
+    CHECK(g3.Find(CompNodeKind::Mask) != nullptr);
+    CHECK(g3.Find(CompNodeKind::Clip) == nullptr);
+    CHECK(g3.Find(CompNodeKind::Mask)->target.node == maskChild);
+    // The host's OWN content is a real Object input (the bug this session
+    // fixed: a Path/Instance used to have NO input at all representing its
+    // own paint stack, so Blend/Clip/Mask always had nothing real to sit
+    // between and Output — see NODE_GRAPH.md §3/§7, NODE_UI.md task #5/#6).
+    bool sawHostObjectInput = false;
+    for (const CompNode& n : g3.nodes)
+        if (n.kind == CompNodeKind::Input && n.isObjectInput && n.target.node == host)
+            sawHostObjectInput = true;
+    CHECK(sawHostObjectInput);
+    CHECK(g3.FindMerge() == nullptr);   // just the Object alone — no Merge needed
+}
+
+// docs/Ink/NODE_UI.md task #5/#6: every Path/Instance layer always carries a
+// real Object input (its own resolved paint stack) — a plain leaf shape is
+// simply Object → Output, never "Output connected to nothing"; an Affinity
+// clip/mask host merges its Object alongside its real children.
+void TestObjectInput() {
+    // A plain leaf shape: Object alone, no Merge (nothing else to combine),
+    // feeding Output directly.
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 100, 100 });
+    const NodeId leaf = doc.AddPath(page, PathData::Rect(0, 0, 10, 10),
+                                    Style::Filled({ 1, 0, 0, 1 }), "leaf");
+    const CompGraph g0 = BuildAutoGraph(doc, *doc.Find(leaf));
+    CHECK(g0.nodes.size() == 2);   // Object + Output only
+    CHECK(g0.FindMerge() == nullptr);
+    CHECK(g0.FindClipOrMask() == nullptr);
+    CHECK(g0.FindBlend() == nullptr);
+    CHECK(g0.nodes[0].kind == CompNodeKind::Input);
+    CHECK(g0.nodes[0].isObjectInput);
+    CHECK(g0.nodes[0].target.node == leaf);
+    CHECK(g0.nodes[g0.output].kind == CompNodeKind::Output);
+
+    // Add a blend: Object feeds Blend directly — Blend sits strictly between
+    // a real source and Output, never adjacent to Output on both sides.
+    doc.SetOpacity(leaf, 0.5f);
+    const CompGraph g1 = BuildAutoGraph(doc, *doc.Find(leaf));
+    CHECK(g1.FindMerge() == nullptr);
+    CHECK(g1.FindBlend() != nullptr);
+    CHECK(g1.nodes.size() == 3);   // Object + Blend + Output
+
+    // A plain Affinity CLIP host (no dedicated mask child — the host's OWN
+    // fill IS the mask): Object AND the real child both feed Merge, then a
+    // Clip node with a null (self) mask source.
+    Document doc2;
+    const NodeId page2 = doc2.AddPage("P", { 0, 0 }, { 100, 100 });
+    const NodeId host = doc2.AddPath(page2, PathData::Rect(0, 0, 40, 40),
+                                     Style::Filled({ 0.5f, 0.5f, 0.5f, 1 }), "host");
+    const NodeId child = doc2.AddPath(page2, PathData::Rect(0, 0, 10, 10),
+                                      Style::Filled({ 1, 1, 1, 1 }), "child");
+    doc2.MoveTo(child, host, -1);
+    const CompGraph g2 = BuildAutoGraph(doc2, *doc2.Find(host));
+    const CompNode* clipNode = g2.Find(CompNodeKind::Clip);
+    CHECK(clipNode != nullptr);
+    CHECK(clipNode->target.node == kNullNode);
+    const CompNode* merge = g2.FindMerge();
+    CHECK(merge != nullptr);
+    CHECK(merge->in.size() == 2);   // Object + the one real child
+    bool sawObject = false, sawChildAsOrdinary = false;
+    for (const CompNode& n : g2.nodes) {
+        if (n.kind == CompNodeKind::Input && n.isObjectInput && n.target.node == host)
+            sawObject = true;
+        if (n.kind == CompNodeKind::Input && !n.isObjectInput && !n.isMaskSourceInput &&
+            n.target.node == child)
+            sawChildAsOrdinary = true;
+    }
+    CHECK(sawObject);
+    CHECK(sawChildAsOrdinary);
+}
+
+// docs/Ink/NODE_GRAPH.md §3.1: FillId/StrokeId make pieces individually
+// addressable as future Compositing Graph Input targets.
+void TestStyleIds() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 100, 100 });
+    const NodeId path = doc.AddPath(
+        page, PathData::Rect(0, 0, 10, 10),
+        Style::Filled({ 1, 0, 0, 1 }).WithStroke({ 0, 0, 0, 1 }, 2.0), "r");
+
+    const Node* n = doc.Find(path);
+    CHECK(n->style.fills.size() == 1);
+    CHECK(n->style.strokes.size() == 1);
+    CHECK(n->style.fills[0].id != kNullFill);
+    CHECK(n->style.strokes[0].id != kNullStroke);
+    CHECK(n->style.fills[0].id != n->style.strokes[0].id);
+
+    // SetStyle round-trip (the vignette drag-reorder pattern, PaintStack.cpp):
+    // ids already stamped on a copied Style survive unchanged.
+    const FillId fid = n->style.fills[0].id;
+    const StrokeId sid = n->style.strokes[0].id;
+    Style copy = n->style;
+    doc.SetStyle(path, copy);
+    const Node* n2 = doc.Find(path);
+    CHECK(n2->style.fills[0].id == fid);
+    CHECK(n2->style.strokes[0].id == sid);
+
+    // A newly-added piece gets its own fresh id; existing ones are untouched.
+    Style withExtra = n2->style;
+    withExtra.fills.push_back(Fill{});
+    doc.SetStyle(path, withExtra);
+    const Node* n3 = doc.Find(path);
+    CHECK(n3->style.fills.size() == 2);
+    CHECK(n3->style.fills[0].id == fid);
+    CHECK(n3->style.fills[1].id != kNullFill);
+    CHECK(n3->style.fills[1].id != fid);
+
+    // DuplicateSubtree gives the copy FRESH piece ids — never the source's —
+    // so a Compositing Graph Input targeting one FillId never resolves
+    // ambiguously between an object and its duplicate.
+    const NodeId dup = doc.DuplicateSubtree(path);
+    CHECK(dup != kNullNode);
+    const Node* nd = doc.Find(dup);
+    CHECK(nd->style.fills.size() == n3->style.fills.size());
+    for (std::size_t i = 0; i < nd->style.fills.size(); ++i) {
+        CHECK(nd->style.fills[i].id != kNullFill);
+        CHECK(nd->style.fills[i].id != n3->style.fills[i].id);
+    }
+}
+
+// docs/Ink/NODE_GRAPH.md, ROADMAP Lot 13: a manual `compInputs` override
+// reorders/filters a layer's OWN children — both in the CompGraph
+// (BuildAutoGraph) and in the ACTUAL render walk (Scene::Compile), which is
+// what makes the override a real feature rather than a cosmetic one.
+void TestCompInputsOverride() {
+    Document doc;
+    const NodeId page = doc.AddPage("P", { 0, 0 }, { 100, 100 });
+    const NodeId layer = doc.AddGroup(page, "layer");
+    const NodeId a = doc.AddPath(layer, PathData::Rect(0, 0, 10, 10),
+                                 Style::Filled({ 1, 0, 0, 1 }), "a");
+    const NodeId b = doc.AddPath(layer, PathData::Rect(0, 0, 10, 10),
+                                 Style::Filled({ 0, 1, 0, 1 }), "b");
+    const NodeId c = doc.AddPath(layer, PathData::Rect(0, 0, 10, 10),
+                                 Style::Filled({ 0, 0, 1, 1 }), "c");
+
+    CHECK(!BuildAutoGraph(doc, *doc.Find(layer)).customized);
+
+    // Exclude `b`, reorder `c` before `a`.
+    doc.SetCompInputs(layer, { { c }, { a } });
+    const Node* ln = doc.Find(layer);
+    CHECK(ln->compInputs.size() == 2);   // both valid: c and a are children
+
+    const CompGraph g = BuildAutoGraph(doc, *ln);
+    CHECK(g.customized);
+    // 2 Input + Merge (ALWAYS present for a Group, docs/Ink/NODE_GRAPH.md §7)
+    // + Output — b excluded.
+    CHECK(g.nodes.size() == 4);
+    CHECK(g.nodes[0].kind == CompNodeKind::Input && g.nodes[0].target.node == c);
+    CHECK(g.nodes[1].kind == CompNodeKind::Input && g.nodes[1].target.node == a);
+    CHECK(g.FindMerge() != nullptr && g.FindMerge()->in.size() == 2);
+
+    // The actual render walk honors it: b must not appear; c must paint
+    // before a (painter order).
+    Scene sc;
+    sc.Compile(doc);
+    int idxA = -1, idxB = -1, idxC = -1;
+    for (std::size_t i = 0; i < sc.Drawables().size(); ++i) {
+        const Drawable& d = sc.Drawables()[i];
+        if (d.node == a) idxA = (int)i;
+        if (d.node == b) idxB = (int)i;
+        if (d.node == c) idxC = (int)i;
+    }
+    CHECK(idxB == -1);
+    CHECK(idxA >= 0 && idxC >= 0 && idxC < idxA);
+
+    // A foreign node (not a child of `layer`) is silently dropped by
+    // SetCompInputs's validation — never rendered under the wrong parent.
+    const NodeId other = doc.AddGroup(page, "other");
+    doc.SetCompInputs(layer, { { other } });
+    CHECK(doc.Find(layer)->compInputs.empty());
+
+    // Reset reverts to fully automatic: b reappears.
+    doc.SetCompInputs(layer, { { c }, { a } });
+    doc.ResetCompInputs(layer);
+    CHECK(doc.Find(layer)->compInputs.empty());
+    CHECK(!BuildAutoGraph(doc, *doc.Find(layer)).customized);
+    Scene sc2;
+    sc2.Compile(doc);
+    bool sawB = false;
+    for (const Drawable& d : sc2.Drawables())
+        if (d.node == b) sawB = true;
+    CHECK(sawB);
 }
 
 void TestInstancing() {
@@ -1350,6 +1649,89 @@ void TestStrokeMarks() {
     }
 }
 
+// A Fill/Stroke's OWN `blend` field (Style.h): Erase cuts the OTHER pieces of
+// the SAME shape's paint stack beneath it — distinct from the mark-object
+// Subtract mechanism above (TestStrokeMarks). The owning node isolates itself
+// (ComputeAutoMergeParams's blendPiece trigger, Scene.cpp) so the cut stops at
+// its own paint stack instead of reaching into a sibling painted earlier in
+// the parent's shared target.
+void TestPieceErase() {
+    Document doc;
+    const NodeId page = doc.AddPage("p", { 0, 0 }, { 100, 100 });
+    Style st;
+    Fill under;  under.paint.color = { 1, 0, 0, 1 };
+    Fill eraser; eraser.paint.color = { 0, 1, 0, 1 };
+    eraser.blend = BlendMode::Erase;
+    eraser.opacity = 0.6f;
+    st.fills.push_back(under);
+    st.fills.push_back(eraser);
+    const NodeId obj = doc.AddPath(page, PathData::Rect(0, 0, 10, 10), st, "obj");
+
+    Scene scene;
+    scene.Compile(doc);
+
+    bool sawIso = false;
+    for (const CompositeScope& sc : scene.Scopes())
+        if (sc.node == obj) sawIso = true;
+    CHECK(sawIso);   // the erase piece forces its own node to open a scope
+
+    bool sawNormalFill = false, sawErase = false;
+    for (const Drawable& d : scene.Drawables()) {
+        if (d.node != obj || d.isStroke || d.isClipSource) continue;
+        if (d.pieceIndex == 0) {
+            CHECK(d.clip == ClipRole::None);
+            CHECK(std::abs(d.color.r - 1.0f) < 1e-6f);   // its own colour, untouched
+            sawNormalFill = true;
+        } else if (d.pieceIndex == 1) {
+            CHECK(d.clip == ClipRole::EraseWrite || d.clip == ClipRole::EraseClipped);
+            CHECK(d.color.r == 0.0f && d.color.g == 0.0f && d.color.b == 0.0f);
+            CHECK(std::abs(d.color.a - 0.6f) < 1e-6f);   // opacity survives; colour does not
+            sawErase = true;
+        }
+    }
+    CHECK(sawNormalFill);
+    CHECK(sawErase);
+
+    // A Stroke's own blend field follows the exact same rule.
+    {
+        Document doc2;
+        const NodeId pg = doc2.AddPage("p", { 0, 0 }, { 100, 100 });
+        Style st2;
+        Fill under2; under2.paint.color = { 1, 0, 0, 1 };
+        Stroke eraserS; eraserS.width = 2.0; eraserS.paint.color = { 0, 0, 1, 1 };
+        eraserS.blend = BlendMode::Erase;
+        st2.fills.push_back(under2);
+        st2.strokes.push_back(eraserS);
+        const NodeId obj2 = doc2.AddPath(pg, PathData::Rect(0, 0, 10, 10), st2, "obj2");
+        Scene scene2; scene2.Compile(doc2);
+        bool sawStrokeErase = false;
+        for (const Drawable& d : scene2.Drawables())
+            if (d.node == obj2 && d.isStroke && !d.isClipSource &&
+                (d.clip == ClipRole::EraseWrite || d.clip == ClipRole::EraseClipped))
+                sawStrokeErase = true;
+        CHECK(sawStrokeErase);
+    }
+
+    // LAYER-level Erase (Node::blend, the Compositing panel's "Blend" — a
+    // whole isolated group's coverage removes its OWN backdrop): iso.frag's
+    // dst-out branch reads only the isolation's alpha channel, so unlike a
+    // piece-level erase, a group's own colour can never leak through even if
+    // the isolated content is opaque.
+    {
+        Document doc3;
+        const NodeId pg = doc3.AddPage("p", { 0, 0 }, { 100, 100 });
+        const NodeId grp = doc3.AddGroup(pg, "grp");
+        doc3.AddPath(grp, PathData::Rect(0, 0, 10, 10),
+                    Style::Filled({ 0, 1, 0, 1 }), "child");
+        doc3.SetBlend(grp, BlendMode::Erase);
+        Scene scene3; scene3.Compile(doc3);
+        bool sawGroupErase = false;
+        for (const CompositeScope& sc : scene3.Scopes())
+            if (sc.node == grp && sc.blend == BlendMode::Erase) sawGroupErase = true;
+        CHECK(sawGroupErase);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1360,8 +1742,13 @@ int main() {
     TestStroker();
     TestNurbs();
     TestStrokeMarks();
+    TestPieceErase();
     TestGeometryCache();
     TestCompositeScopes();
+    TestCompGraphAutoGenerate();
+    TestObjectInput();
+    TestStyleIds();
+    TestCompInputsOverride();
     TestInstancing();
     TestOrganisation();
     TestCollections();

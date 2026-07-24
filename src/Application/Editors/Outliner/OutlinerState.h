@@ -31,6 +31,12 @@ inline constexpr uint64_t kProjectRootRowId = ~0ull;
 // Object-state filter (legacy parity). Applied on top of the kind toggles.
 enum class ObjStateFilter : uint8_t { All, Visible, Selected, Active, Selectable };
 
+// Which kind of CHILD row selChildObj/selChildMod refer to (see below) — a
+// real discriminator rather than inferring it from selChildMod's sign, since
+// a Fill/Stroke row's piece index is a real ≥0 value just like a modifier
+// row's stack index, and the two must never be confused for one another.
+enum class OutlinerChildKind : uint8_t { None, Modifier, LinkedData, Fill, Stroke };
+
 struct OutlinerState {
     OutlinerDisplayMode display = OutlinerDisplayMode::Collections;
 
@@ -47,13 +53,19 @@ struct OutlinerState {
     bool     objSelfEdit = false;      // this Outliner changed it this frame
     int  activeModifier = -1;          // modifier row picked (Properties focus)
 
-    // ── Selected CHILD row (Collections view): a modifier or linked-data row
-    // reads as SELECTED here even though the document selection is its owning
-    // object. selChildObj = the owning object id; selChildMod = the modifier
-    // index (or -1 for a linked-data row). ──
-    uint64_t selChildObj = 0;
-    int      selChildMod = -1;         // ≥0 modifier row; -1 & obj set = data row
-    void ClearChildSel() { selChildObj = 0; selChildMod = -1; }
+    // ── Selected CHILD row (both Collections AND Layers view, the latter for
+    // Fill/Stroke — docs/Ink/NODE_GRAPH.md §4): a modifier, linked-data, fill
+    // or stroke row reads as SELECTED here even though the document selection
+    // is its owning object. selChildObj = the owning object id; selChildKind
+    // says which kind of child it is; selChildMod = an auxiliary index whose
+    // meaning depends on selChildKind (modifier stack index for Modifier,
+    // unused for LinkedData, style.fills/strokes index for Fill/Stroke). ──
+    uint64_t          selChildObj  = 0;
+    OutlinerChildKind selChildKind = OutlinerChildKind::None;
+    int               selChildMod  = -1;
+    void ClearChildSel() {
+        selChildObj = 0; selChildKind = OutlinerChildKind::None; selChildMod = -1;
+    }
 
     // ── Filters (which kinds + which object states are shown). ──
     bool showObjects = true, showPages = true, showCollections = true;
