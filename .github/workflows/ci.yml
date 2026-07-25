@@ -80,9 +80,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: out/build/ci/_deps
-          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
-          restore-keys: |
-            deps-${{ runner.os }}-
+          # Cache entries contain CMake sub-build metadata, including the
+          # generator. Keep Ninja caches isolated from the former MinGW
+          # Makefiles cache and invalidate them when presets/CMake change.
+          key: deps-ninja-v2-${{ runner.os }}-${{ hashFiles('CMakePresets.json', '**/CMakeLists.txt', '**/*.cmake') }}
 
       # rust-toolchain uses the default cargo home (USERPROFILE\.cargo on
       # Windows runners). Cache its registry/git plus the project's
