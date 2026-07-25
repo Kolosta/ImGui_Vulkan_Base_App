@@ -23,17 +23,33 @@ gh pr create --base develop               # CI must be green before merge
 
 ## Build
 
-**Toolchain:** GCC 15.2.0 (MSYS2 MinGW64), C++20, CMake ≥ 3.22, Rust (target
-`x86_64-pc-windows-gnu`, static CRT), Vulkan SDK. vcpkg triplet:
-`x64-mingw-dynamic`. SDL3 and ImGui (docking branch) are fetched by CMake
-(`FetchContent`); the Rust `resvg-bindings` crate and the `icon_compiler`
-binary are built automatically during the CMake build. `icon_compiler`
-pre-processes SVG icons into `IconData.h`.
+**Toolchain:** GCC with C++20 support, CMake ≥ 3.22, Ninja, stable Rust,
+Vulkan headers/loader plus `glslc`, and FreeType development files. Windows
+uses MSYS2 MinGW64 and the Rust target `x86_64-pc-windows-gnu` with a static
+CRT; Linux uses the native Rust target. SDL3 and ImGui (docking branch) are
+fetched by CMake (`FetchContent`); the Rust `resvg-bindings` crate and the
+`icon_compiler` binary are built automatically during the CMake build.
+`icon_compiler` pre-processes SVG icons into `IconData.h`.
+
+Ubuntu 24.04 dependencies:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential cmake ninja-build pkg-config rustup \
+  libfreetype6-dev libvulkan-dev vulkan-tools glslc \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+  libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+  libwayland-dev libxkbcommon-dev libdecor-0-dev \
+  libdrm-dev libgbm-dev libegl1-mesa-dev libgl1-mesa-dev \
+  libdbus-1-dev libudev-dev
+rustup default stable
+```
 
 ### Presets
 
-`CMakePresets.json` is **portable and versioned** — it resolves `gcc`/`g++`
-from `PATH` and contains no machine-specific paths. Two presets:
+`CMakePresets.json` is **portable and versioned** — it uses Ninja, resolves
+`gcc`/`g++` from `PATH`, and contains no machine-specific paths. Two presets:
 
 | Preset    | Use                                    |
 |-----------|----------------------------------------|
@@ -67,7 +83,8 @@ cmake --preset default          # configure
 cmake --build --preset default  # build (parallel)
 ```
 
-The executable lands in `out/build/<preset>/Carto.exe`.
+The executable lands in `out/build/<preset>/Carto` on Linux and
+`out/build/<preset>/Carto.exe` on Windows.
 
 ### Token integrity tests
 
@@ -302,8 +319,10 @@ gh pr create --base main          # hotfix/* targets main
 
 ## Continuous Integration
 
-`.github/workflows/ci.yml` builds the project on `windows-latest` (MSYS2 +
-Rust + Vulkan SDK) and runs a smoke check on the produced binaries.
+`.github/workflows/ci.yml` builds the project on both `windows-latest`
+(MSYS2 + Rust + Vulkan SDK) and `ubuntu-latest` (native GCC + Mesa Vulkan).
+The Linux job also runs CTest and launches Carto under Xvfb with Mesa's
+software Vulkan driver, catching loader and startup regressions.
 
 - Runs automatically on **push to `main` or `develop`**, and on **every PR
   targeting `main`, `develop`, `release/**` or `hotfix/**`**.
@@ -317,8 +336,8 @@ re-runs automatically. Do not merge red.
 
 ### Branch protection (maintainers)
 
-Both `main` and `develop` are protected: PR required, the `Build (Windows ·
-MinGW64)` status check must pass, and force-pushes / deletions are disabled.
+Both `main` and `develop` are protected: PR required, the Windows and Linux
+build status checks must pass, and force-pushes / deletions are disabled.
 Configure under **Settings → Branches → Branch protection rules** if not
 already applied.
 

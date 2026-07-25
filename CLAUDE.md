@@ -4,17 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Build System
 
-**Toolchain:** GCC 15.2.0 (MinGW64), C++20, CMake 3.22+. vcpkg triplet: `x64-mingw-dynamic` at `D:/Projets/Code/libs/vcpkg`.
+**Toolchain:** GCC with C++20 support, CMake 3.22+, Ninja, stable Rust,
+Vulkan headers/loader plus `glslc`, and FreeType. Windows uses MSYS2 MinGW64
+and Rust's `x86_64-pc-windows-gnu` target; Linux uses the native Rust target.
 
 ```bash
 # Configure
-cmake --preset "GCC 15.2.0 x86_64-w64-mingw32 (mingw64)"
+cmake --preset default
 
 # Build
-cmake --build "out/build/GCC 15.2.0 x86_64-w64-mingw32 (mingw64)" --config Debug
+cmake --build --preset default
+
+# Run
+./out/build/default/Carto       # Linux
+# out/build/default/Carto.exe   # Windows
 ```
 
-SDL3 and ImGui (docking branch, enabled but not yet wired up) are fetched via CMake FetchContent. The Rust `resvg-bindings` library is built automatically via `cargo build` during the CMake build (target: `x86_64-pc-windows-gnu`, static CRT). The `icon_compiler` Rust binary pre-processes SVG icons into `IconData.h`.
+SDL3 and ImGui (docking branch, enabled but not yet wired up) are fetched via CMake FetchContent. The Rust `resvg-bindings` library is built automatically during the CMake build (Windows target: `x86_64-pc-windows-gnu`, static CRT; Linux: native target). The `icon_compiler` Rust binary pre-processes SVG icons into `IconData.h`.
 
 Icons: a normal build regenerates `IconData.h` automatically when any
 `resources/icons/**` SVG changes (no clean needed). For the icons-only fast path

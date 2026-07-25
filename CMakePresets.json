@@ -8,9 +8,9 @@
     "configurePresets": [
         {
             "name": "default",
-            "displayName": "Default (MinGW Makefiles, portable)",
-            "description": "Portable preset: gcc/g++ resolved from PATH (MSYS2 mingw64). No machine-specific paths. Override locally via CMakeUserPresets.json.",
-            "generator": "MinGW Makefiles",
+            "displayName": "Default (Ninja, portable)",
+            "description": "Portable preset: gcc/g++ and Ninja resolved from PATH. No machine-specific paths. Override locally via CMakeUserPresets.json.",
+            "generator": "Ninja",
             "binaryDir": "${sourceDir}/out/build/${presetName}",
             "cacheVariables": {
                 "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",

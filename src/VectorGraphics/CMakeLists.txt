@@ -108,6 +108,11 @@ else()
     add_library(resvg_c SHARED IMPORTED GLOBAL)
     set_target_properties(resvg_c PROPERTIES
         IMPORTED_LOCATION "${RESVG_SO}"
+        # Rust cdylibs do not carry an ELF SONAME by default. Without this,
+        # linking from Ninja's relative working directory records
+        # "src/VectorGraphics/.../libresvg_c.so" in DT_NEEDED and the Linux
+        # loader cannot resolve it even though CMake emitted the correct RPATH.
+        IMPORTED_NO_SONAME TRUE
     )
 endif()
 
