@@ -37,14 +37,33 @@ Blender-style hierarchical shortcut engine, and runtime-recolorable SVG icons.
 
 ## Quick start
 
-**Requirements:** GCC 15.2.0 (MSYS2 MinGW64), C++20, CMake ≥ 3.22, Rust
-(target `x86_64-pc-windows-gnu`), Vulkan SDK. SDL3 and ImGui are fetched
-automatically by CMake; the Rust icon tooling builds during the CMake build.
+**Requirements:** GCC with C++20 support, CMake ≥ 3.22, Ninja, stable Rust,
+Vulkan headers/loader plus `glslc`, and FreeType development files. SDL3 and
+ImGui are fetched automatically by CMake; the Rust icon tooling builds during
+the CMake build.
+
+On Ubuntu 24.04, install the native build dependencies with:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  build-essential cmake ninja-build pkg-config rustup \
+  libfreetype6-dev libvulkan-dev vulkan-tools glslc \
+  libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+  libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+  libwayland-dev libxkbcommon-dev libdecor-0-dev \
+  libdrm-dev libgbm-dev libegl1-mesa-dev libgl1-mesa-dev \
+  libdbus-1-dev libudev-dev
+rustup default stable
+```
+
+Build and run:
 
 ```bash
 cmake --preset default
 cmake --build --preset default
-# → out/build/default/Carto.exe
+./out/build/default/Carto       # Linux
+# out/build/default/Carto.exe   # Windows
 ```
 
 Optional token integrity test:

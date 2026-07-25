@@ -29,8 +29,8 @@ mapping.
 
 | # | Item | Status | Where / Notes |
 |---|------|--------|---------------|
-| 1.2.1 | Type tag on the token (`Color/Float/Int/Vec2/Reference`) | ✅ | [TokenType.h](src/DesignSystem/include/DesignSystem/core/TokenType.h) |
-| 1.2.2 | Per-token value constraints (min/max/step/intervals/positive/etc.) | ✅ | [ValueConstraint.h](src/DesignSystem/include/DesignSystem/core/ValueConstraint.h) — Float & Int implemented; Color & Vec2 constraints planned |
+| 1.2.1 | Type tag on the token (`Color/Float/Int/Vec2/Reference`) | ✅ | [TokenType.h](src/DesignSystem/include/DesignSystem/Core/TokenType.h) |
+| 1.2.2 | Per-token value constraints (min/max/step/intervals/positive/etc.) | ✅ | [ValueConstraint.h](src/DesignSystem/include/DesignSystem/Core/ValueConstraint.h) — Float & Int implemented; Color & Vec2 constraints planned |
 | 1.2.3 | Constraints enforced on override write | ✅ | `OverrideManager::AddOverride` clamps/validates via the token's constraint |
 | 1.2.4 | UI inputs respect constraints (slider min/max, allowed values) | ✅ | `TokenEditor::RenderValueEditor` uses the constraint, not a name heuristic |
 | 1.2.5 | Override of a referenced token requires identical type **and** identical constraint | 🟡 | Type checked; constraint identity not yet checked when overriding with a reference |
@@ -41,7 +41,7 @@ mapping.
 
 | # | Item | Status | Where / Notes |
 |---|------|--------|---------------|
-| 1.3.1 | Theme is a context, not just a colour scheme | ✅ | [Context.h](src/DesignSystem/include/DesignSystem/core/Context.h) |
+| 1.3.1 | Theme is a context, not just a colour scheme | ✅ | [Context.h](src/DesignSystem/include/DesignSystem/Core/Context.h) |
 | 1.3.2 | Default ("none") theme uses the token's `defaultValue_` | ✅ | `Token::GetDefaultValue` |
 | 1.3.3 | A theme may override only a subset of tokens | ✅ | `Token::contextValues_` map |
 | 1.3.4 | Only one theme active at a time | ✅ | `DesignSystem::currentContext_` |

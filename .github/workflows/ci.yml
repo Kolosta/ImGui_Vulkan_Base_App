@@ -23,12 +23,9 @@ concurrency:
 permissions:
   contents: read
 
-# NOTE: We deliberately do NOT set FORCE_JAVASCRIPT_ACTIONS_TO_NODE24.
-# The actions/* actions are already on Node-24-capable majors
-# (checkout@v6, cache@v5, upload-artifact@v7); forcing Node 24 globally
-# crashes actions/cache@v6 during restore. The only remaining Node-20
-# action is jakoch/install-vulkan-sdk-action@v1, whose deprecation
-# warning is harmless until the June 2026 cutoff.
+# Do not override the JavaScript runtime globally: each pinned action selects
+# the Node version it supports, and a forced runtime can break third-party
+# actions that have not migrated yet.
 
 jobs:
   build:
@@ -38,7 +35,7 @@ jobs:
     defaults:
       run:
         # Run every step inside the MSYS2 mingw64 shell so gcc/g++/cmake/
-        # mingw32-make are all on PATH and ABI-consistent with the Rust
+        # ninja are all on PATH and ABI-consistent with the Rust
         # x86_64-pc-windows-gnu target.
         shell: msys2 {0}
 
@@ -54,10 +51,10 @@ jobs:
         with:
           targets: x86_64-pc-windows-gnu
 
-      # ── MSYS2 toolchain (GCC + CMake + Make) ─────────────────────────────
+      # ── MSYS2 toolchain (GCC + CMake + Ninja) ────────────────────────────
       # path-type: inherit makes the MSYS2 shell inherit the full Windows
       # PATH, so `cargo` (installed by rust-toolchain) is reachable from
-      # the same shell that runs cmake/make.
+      # the same shell that runs cmake/ninja.
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
@@ -67,7 +64,7 @@ jobs:
           install: >-
             mingw-w64-x86_64-gcc
             mingw-w64-x86_64-cmake
-            mingw-w64-x86_64-make
+            mingw-w64-x86_64-ninja
             mingw-w64-x86_64-freetype
             git
 
@@ -147,3 +144,62 @@ jobs:
             out/build/ci/*.dll
           if-no-files-found: error
           retention-days: 14
+
+  linux:
+    name: Build and smoke test (Linux · GCC)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux build and runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential cmake ninja-build pkg-config \
+            libfreetype6-dev libvulkan-dev vulkan-tools glslc \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxi-dev libxfixes-dev libxss-dev libxtst-dev \
+            libwayland-dev libxkbcommon-dev libdecor-0-dev \
+            libdrm-dev libgbm-dev libegl1-mesa-dev libgl1-mesa-dev \
+            libdbus-1-dev libudev-dev mesa-vulkan-drivers xvfb xauth
+
+      - name: Configure
+        run: cmake --preset ci
+
+      - name: Build
+        run: cmake --build --preset ci -j2
+
+      - name: Test
+        run: ctest --test-dir out/build/ci --output-on-failure
+
+      - name: Smoke check
+        run: |
+          set -e
+          test -x out/build/ci/Carto
+          test -f out/build/ci/src/VectorGraphics/generated/IconData.h
+          test -f out/build/ci/src/VectorGraphics/resvg-lib/cargo/release/libresvg_c.so
+          ldd out/build/ci/Carto | tee /tmp/carto-ldd.txt
+          ! grep -q "not found" /tmp/carto-ldd.txt
+
+          for lvp_icd in /usr/share/vulkan/icd.d/lvp_icd*.json; do
+            test -f "$lvp_icd" && break
+          done
+          test -f "$lvp_icd"
+
+          set +e
+          timeout 10s xvfb-run -a env \
+            LIBGL_ALWAYS_SOFTWARE=1 \
+            VK_DRIVER_FILES="$lvp_icd" \
+            XDG_RUNTIME_DIR=/tmp \
+            ./out/build/ci/Carto
+          status=$?
+          set -e
+          if [ "$status" -ne 124 ]; then
+            echo "::error::Carto exited unexpectedly during the Linux smoke test (status $status)"
+            exit 1
+          fi
