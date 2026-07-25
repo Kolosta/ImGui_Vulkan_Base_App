@@ -42,4 +42,12 @@ bool BeginScroll(const char* id, const ImVec2& size = ImVec2(0, 0),
 // scrollbar, then calls EndChild. Always pair with BeginScroll.
 void EndScroll();
 
+// The overlay scrollbar's grab is GEOMETRIC (a raw io.MousePos + IsMouseClicked
+// test, no ImGui item), so an ImGui-window blocker can't stop it. The layout
+// publishes the screen band of an active editor-RESIZE separator here each frame;
+// the scrollbar then SKIPS its grab when the cursor is inside it, so a resize
+// press slightly inside the neighbour editor never also grabs its scrollbar.
+// Pass an empty/degenerate rect (max <= min) to clear it.
+void SetResizeReservedBand(const ImVec4& screenRect);
+
 } // namespace UI

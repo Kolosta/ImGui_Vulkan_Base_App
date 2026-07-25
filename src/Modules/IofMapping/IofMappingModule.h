@@ -3,37 +3,45 @@
 #include <cstdint>
 #include <imgui.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "ModuleAPI.h"
-#include "IofSpec.h"   // PrintLayer, IofElement (print-layer collections)
+#include "IofSpec.h"
 
 namespace App::Modules::IofMapping {
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  IOF Mapping module — orienteering map authoring (ISOM 2017-2), first pass.
+//  IOF Mapping module — orienteering map authoring (ISOM 2017-2), rebuilt on
+//  the Ink engine.
 //
-//  Reuses the core Viewport / Outliner / Properties editors (by id) and adds:
-//   • a specialised Shift+A "Add" menu = the ISOM catalogue grouped by type,
-//     plus a Course-planning group (Control / Start / Finish) — no core
-//     primitives;
-//   • a Viewport "Map elements" side-panel tab (preview + description + place);
-//   • a Map Settings editor (scale, contour interval, grid);
-//   • a Course Settings editor: a tab per course (+ "All controls"), each with
-//     an ordered control card you build by joining placed control OBJECTS, an
-//     editable control number, and a live schematic — and the active course's
-//     line is drawn over the map on the Viewport.
+//  Symbols are ordinary Ink content:
+//   • a hidden SYMBOL LIBRARY (a previewOnly group seeded by OnDocumentCreated)
+//     holds one specimen node per catalogue element, styled with CORE tools
+//     only (stroke dash + repeats, multi-fill, instanced fills). Vignettes
+//     everywhere are the REAL pipeline (ModuleHost::NodePreviewTexture).
+//   • POINT symbols place as INSTANCES of their specimen (editing the library
+//     re-skins every placement — e.g. a map-scale change);
+//   • LINE / AREA symbols run the core pen in symbol-draw mode (the symbol's
+//     exact style, the symbol vignette riding the cursor); the committed node
+//     is routed into its print-layer group.
 //
-//  Controls / Start / Finish are REAL document objects (created via Shift+A), so
-//  they are selectable / movable / deletable like any object. A course is an
-//  ordered list of those objects' ids. Map data + courses live in memory for now.
+//  Structure (kept by EnsureStructure, resolved by NAME so saved files reopen
+//  into the same skeleton):
+//   • layer tree:  page → "Map symbols"  → one group per ISOM print layer, in
+//                  painter order (reverse print stack) — fixed, auto z-order;
+//                  page → "Map layout"   → "Layout" + "Extras" (the ONLY
+//                  editable containers) — above the symbols;
+//   • collections: "Map annotations" { "Layout", "Extras" } (editable, on
+//                  top) and "IOF Cartography" { one per element type } (fixed;
+//                  every placed symbol auto-joins its type collection).
+//  The outliner tree is locked (capability) and AllowReparent whitelists only
+//  the editable containers.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// A course = an ordered list of control object ids (into the document) + a name.
-struct IofCourse {
-    std::string           name;
-    std::vector<uint64_t> controls;   // ordered shape ids (placed control objects)
-};
+// The ISOM competition scales offered by Map Settings (base scale first).
+inline constexpr int kIofScales[]   = { 15000, 10000, 7500, 5000, 4000 };
+inline constexpr int kIofScaleCount = 5;
 
 class IofMappingModule final : public IModule {
 public:
@@ -41,94 +49,112 @@ public:
     void       OnRegister(ModuleContext& ctx) override;
     LayoutSpec BuildLayout() const override;
     void       ConfigureCapabilities(Capabilities& caps) const override;
-    std::pair<float, float> DefaultPageSize() const override { return {297.0f, 210.0f}; }  // A4 landscape (mm)
+    std::pair<float, float> DefaultPageSize() const override {
+        // A4 landscape in BASE units (css px @96 dpi): 297 × 210 mm.
+        constexpr float kPxPerMm = 96.0f / 25.4f;
+        return { 297.0f * kPxPerMm, 210.0f * kPxPerMm };
+    }
     std::vector<std::string> AllowedEditors() const override;
+    void       OnDocumentCreated(Ink::Document& doc) override;
     bool       BuildAddMenu(std::vector<UI::MenuEntry>& out) override;
     void       ViewportSidePanelTabs(std::vector<UI::SidePanelTab>& out) override;
-    void       DrawViewportOverlay(ImVec2 canvasMin, ImVec2 canvasMax,
-                                   const std::function<ImVec2(ImVec2)>& docToScreen) override;
-    bool       AllowReparent(uint64_t shapeId, uint64_t targetCollectionId) override;
+    void       ObjectTools(std::vector<std::string>& out) override;
+    void       DrawToolButtons(ImVec2 origin, float size,
+                               std::vector<ImVec4>& outRects) override;
+    bool       AllowReparent(uint64_t shapeId, uint64_t target) override;
     void       OnFrameSync() override;
+    void       OnNumpadSequence(const std::string& digits) override;
     void       OnActivate() override;
-
-private:
-    // Ensure the print-layer collections exist, in print order, UNDER the page,
-    // and cache their ids by layer. Re-runs cheaply (reuses existing collections).
-    void EnsureLayerCollections();
-    // Collection id for an exact print layer (0 if not created yet).
-    uint64_t LayerCollection(PrintLayer layer) const;
-    // The print-layer collection a symbol belongs to (0 if none / unknown).
-    uint64_t CollectionForSymbol(const IofElement& e) const;
-    // The page the map is authored on (the module's single default page). 0 if
-    // none yet. Symbols + their layer collections all live under it (no orphans).
-    uint64_t MapPageId() const;
-    // Render RANK of a shape = its print-layer position in the DRAW stack (lower =
-    // drawn first = underneath). Derived from the symbol's isomCode → print layer;
-    // bottom-of-print-stack layers (yellow) get the lowest rank. Unknown → top.
-    int      PrintRankOf(const Renderer::Shape& s) const;
-    // Re-sort the map page's shapes into print-layer z-order (stable within a
-    // layer). Cheap-guarded by a content signature so it only runs on a change.
-    void     SyncPrintOrder();
-    // Editor bodies (registered as descriptors in OnRegister, capturing `this`).
-    void DrawMapSettings();
-    void DrawCourseSettings();
-    void DrawMapElementsTab(ImVec2 contentMin, ImVec2 contentMax);
-    void DrawSymbolViewer(ImVec2 size);
-    // Blit a symbol's glyph into rect [mn,mx] as an SSAA Vulkan texture (smooth),
-    // falling back to a CPU triangle blit if the host can't render textures.
-    // `keySalt` distinguishes different sizes/contexts of the same symbol.
-    void DrawGlyphImage(ImDrawList* dl, const IofElement& e, float scale,
-                        ImVec2 mn, ImVec2 mx, uint64_t keySalt, float padFrac = 0.18f);
-    // Same, but the blitted image is ROUNDED (corner radius `rounding`) so the
-    // thumbnail matches the cell's rounded outline.
-    void DrawGlyphImageRounded(ImDrawList* dl, const IofElement& e, float scale,
-                               ImVec2 mn, ImVec2 mx, uint64_t keySalt, float padFrac,
-                               float rounding);
-
-    // Bake a symbol's exact ISOM glyph and place it at the cursor (via the host).
-    void PlaceSymbol(const IofElement& e, const std::string& nameOverride);
-
-    // Place a course object (control auto-numbered / start / finish) at the cursor.
-    void AddControlObject();
-    void AddStartObject();
-    void AddFinishObject();
-    int  NextControlNumber() const;   // max existing control number + 1
+    void       OnDeactivate() override;
 
     // Symbol-size factor for the current map scale, relative to the ISOM base
-    // 1:15 000 (where symbol dimensions are given in mm). 1:10 000 → 1.5, etc.
+    // 1:15 000 (1:10 000 → 1.5 …).
     float MapScaleFactor() const;
 
-    // ── Map settings (in memory) ──
-    int   scaleIndex_      = 0;     // index into kScales
-    int   contourInterval_ = 5;     // metres
-    bool  showGrid_        = true;
+private:
+    // Resolve-or-create the fixed document skeleton (library, print-layer
+    // groups, layout groups, collections) — by NAME, cached by id, re-run
+    // cheaply (validates the cache against the live document).
+    void EnsureStructure();
+    // Seed / refresh the symbol library: one "SYM <code>" group per element,
+    // its parts rebuilt at the current map scale (children replaced in place —
+    // instance targets reference the group, so placements re-skin live).
+    void SeedLibrary(bool rebuildExisting);
+    // Seed the document's COLOUR TABLE from the official ISOM print-layer list:
+    // one locked swatch per separation, carrying its exact CMYK and its place
+    // in the plate stack (the table is already in printing order). Matched by
+    // name so re-opening a file adopts the swatches it already has instead of
+    // duplicating them.
+    void SeedPalette();
+    // The document swatch of a print layer (0 before SeedPalette has run).
+    std::uint64_t LayerSwatch(PrintLayer layer) const;
+    // Bind every paint of a built symbol to the document swatch whose colour it
+    // uses. A symbol legitimately spans SEVERAL plates — 402 lays yellow 75 %
+    // and white dots, 509 black and white — so the binding is per PAINT, not
+    // per element. Matching is by colour because the symbol tables and the
+    // plate table are built from the same ink constants.
+    void BindSwatches(Ink::Style& style, IofType type) const;
+    // The library specimen group of an element (0 if absent).
+    std::uint64_t LibNode(int code) const;
 
-    // ── Symbol Viewer (in memory) ──
-    int   viewerSelected_  = -1;    // flat catalogue index of the selected symbol
-    // Example canvas camera (like the Viewport): zoom = px per mm-at-display-scale,
-    // pan = the doc-mm point centred. -1 zoom = "fit on next draw / on selection
-    // change". The grid pane is horizontally resizable; gridW_ is its width (px).
-    float viewerZoom_      = -1.0f; // <0 → re-fit to the examples next frame
-    ImVec2 viewerPan_      = {0,0}; // doc-mm point at the canvas centre
-    int   viewerFitSel_    = -2;    // last selection we auto-fit for (re-fit on change)
-    float viewerGridW_     = 230.0f;// resizable thumbnail-grid pane width (px)
+    // Activate the symbol's TOOL: point → place mode (armed placement with the
+    // cursor vignette); line / area → the core pen in symbol-draw mode.
+    void SelectSymbol(const IofElement& e);
+    // Drop a point-symbol instance at the document position (undoable).
+    void PlacePointSymbol(const IofElement& e, double docX, double docY);
+    // Route a pen-drawn line/area node into its print layer + collections +
+    // locks (called by the core BEFORE the draw undo snapshot).
+    void RouteDrawnSymbol(const IofElement& e, std::uint64_t node);
+    // Non-cartographic LAYOUT tools (frame, free area, guide line): draw a
+    // plain, EDITABLE object into the "Extras" layer/collection — no spec lock.
+    void SelectLayoutTool(const char* kind);
+    void RouteLayoutObject(std::uint64_t node);
 
-    // Draw the example canvas (zoom/pan, all examples on one white sheet, dims).
-    void DrawExampleCanvas(const IofElement& e, ImVec2 canvasMin, ImVec2 canvasMax);
+    // Editor bodies (IofMappingPanels.cpp).
+    void DrawSymbolsTab(ImVec2 cMin, ImVec2 cMax);
+    void DrawSymbolCell(const IofElement& e, float side);  // one vignette tile
+    void DrawSymbolViewer(ImVec2 size);
+    void DrawMapSettings();
 
-    // ── Courses (in memory; controls are document objects) ──
-    std::vector<IofCourse> courses_;
-    int  activeCourse_ = -1;        // -1 = "All controls" view
+    // ── Map settings ──
+    int scaleIndex_ = 0;              // index into kScales (15000 first)
+    int contourInterval_ = 5;         // metres
 
-    // Print-layer collection ids, one per exact ISOM 2017-2 print layer, created
-    // on activation UNDER the page in printing order so the Outliner groups
-    // symbols by the real colour-separation stack. Indexed by (int)PrintLayer.
-    // 0 = not created yet.
-    uint64_t layerColl_[kPrintLayerCount] = {};
+    // ── Cached skeleton ids (validated against the document each sync) ──
+    std::uint64_t libRoot_ = 0;
+    std::uint64_t mapRoot_ = 0;                       // "Map symbols"
+    std::uint64_t layerGroup_[kPrintLayerCount] = {};
+    std::uint64_t layoutRoot_ = 0;                    // "Map layout"
+    std::uint64_t layoutLayer_ = 0, extrasLayer_ = 0;
+    std::uint64_t collIof_ = 0, collAnnot_ = 0;
+    // One collection per ISOM THEME group (Landforms, Rock and boulders, …),
+    // keyed by the group name — the Outliner Collections organisation.
+    std::unordered_map<std::string, std::uint64_t> collTheme_;
+    std::uint64_t collLayout_ = 0, collExtras_ = 0;
+    std::unordered_map<int, std::uint64_t> libByCode_;
+    // Print layer → its document swatch, resolved by SeedPalette.
+    std::uint64_t swatchByLayer_[kPrintLayerCount] = {};
+    std::uint64_t structureVersion_ = ~0ull;          // doc version at last sync
 
-    // Content signature of the map page's shape list (ids × ranks), so SyncPrintOrder
-    // only re-sorts when shapes were added / removed / re-layered (not every frame).
-    uint64_t printOrderSig_ = 0;
+    // ── Theme tool buttons (viewport palette) ──
+    // Six buttons: Landforms / Rock / Water / Vegetation / Man-made /
+    // (Technical + Course). Each remembers its currently-selected symbol code.
+    int    themeSel_[6] = { 1010, 2040, 3040, 4010, 5030, 7030 };
+    // Keep the module arming in sync with the active tool (OnFrameSync): the
+    // theme index currently armed + which symbol code, so a tool/symbol change
+    // (or a lapsed placement/draw after Esc) re-arms — the tools stay "hot".
+    int    armedTheme_  = -1;
+    int    armedSymbol_ = -1;
+    // Activate a theme tool: make it the active Viewport tool + arm its symbol.
+    void   ActivateThemeTool(int idx);
+    // Per-frame: reconcile the module arming against the active Viewport tool.
+    void   SyncThemeTool();
+
+    // ── Symbol Viewer state ──
+    int    viewerSel_  = 1010;        // selected element code
+    double viewerZoom_ = -1.0;        // <0 → fit on next draw
+    double viewerPanX_ = 0.0, viewerPanY_ = 0.0;
+    float  viewerGridW_ = 230.0f;     // resizable grid pane width (px)
 };
 
 }  // namespace App::Modules::IofMapping

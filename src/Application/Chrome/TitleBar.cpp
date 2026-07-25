@@ -243,16 +243,13 @@ void Application::RenderTitleBar() {
         item("open", "file.open",   "Open"),
         item("save", "file.save",   "Save"),
         item("save", "file.saveAs", "Save As"),
-        [&]{ UI::DropdownItem it; it.icon = "image"; it.label = "Update Thumbnail";
-             it.tooltip = "Regenerate the .acu thumbnail from the current page"; return it; }(),
         item("close", "app.quit",   "Quit"),
     });
     if (fileSel == 0) Action_NewFile();
     else if (fileSel == 1) Action_OpenFile();
     else if (fileSel == 2) Action_SaveFile();
     else if (fileSel == 3) Action_SaveFileAs();
-    else if (fileSel == 4) Action_UpdateThumbnail();
-    else if (fileSel == 5) Action_Quit();
+    else if (fileSel == 4) Action_Quit();
 
     int editSel = menu("##editMenu", "Edit", {
         { "settings", "Settings", sc("app.toggleSettings").c_str() },

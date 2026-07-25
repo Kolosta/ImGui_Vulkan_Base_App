@@ -11,11 +11,12 @@ namespace DS = DesignSystem;
 using Tok = DesignSystem::Tok;
 
 int s_zebra = 0;   // per-frame stripe parity (reset by ListRowResetZebra)
+float s_bandScale = 1.0f;   // extra multiplier on the band height (Layers previews ×2.5)
 
 // One ui-unit (the coloured band height); the stripe is this + 2px (1px margins).
 float BandH() {
     auto& ds = DS::DesignSystem::Instance();
-    return ds.GetFloat(Tok::S_Size_ControlHeight) * ds.GetGlobalScale();
+    return ds.GetFloat(Tok::S_Size_ControlHeight) * ds.GetGlobalScale() * s_bandScale;
 }
 float StripeMargin() { return 1.0f; }   // px above + below the band (per side)
 } // namespace
@@ -26,6 +27,8 @@ float ListRowStripeHeight() { return BandH() + 2.0f * StripeMargin(); }
 void ListRowResetZebra()     { s_zebra = 0; }
 int  ListRowZebraIndex()     { return s_zebra; }
 void ListRowAdvanceZebra()   { ++s_zebra; }
+void  ListRowSetBandScale(float s) { s_bandScale = (s > 0.0f) ? s : 1.0f; }
+float ListRowBandScale()           { return s_bandScale; }
 
 ListRow::ListRow(const ListRowConfig& cfg) {
     ImGuiWindow* w = ImGui::GetCurrentWindow();
@@ -40,7 +43,9 @@ ListRow::ListRow(const ListRowConfig& cfg) {
     // content on the visible row, not the slightly-taller stripe.
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     stripeTop_ = p0.y;
-    top_ = stripeTop_ + margin;
+    // The band (and therefore every content item, which centres on it) may be
+    // displaced by a live reorder; the stripe and the hit zone never are.
+    top_ = stripeTop_ + margin + cfg.bandOffsetY;
     const float editorL = w->WorkRect.Min.x;
     const float editorR = w->WorkRect.Max.x + ImGui::GetStyle().ScrollbarSize; // under the gutter
     bandL_ = w->WorkRect.Min.x + cfg.bandMarginLeft;
@@ -52,9 +57,12 @@ ListRow::ListRow(const ListRowConfig& cfg) {
     contentX_ = bandL_ + indent;
 
     // ── Zebra stripe (full width, full stripe height) ────────────────────────
-    if (cfg.zebraOdd && cfg.zebraColor)
+    if (cfg.zebraOdd && cfg.zebraColor) {
+        if (cfg.bgSplitter) cfg.bgSplitter->SetCurrentChannel(w->DrawList, 0);
         w->DrawList->AddRectFilled(ImVec2(editorL, stripeTop_),
                                    ImVec2(editorR, stripeTop_ + pitch_), cfg.zebraColor);
+        if (cfg.bgSplitter) cfg.bgSplitter->SetCurrentChannel(w->DrawList, 1);
+    }
 
     // ── Full-width hit zone ──────────────────────────────────────────────────
     // Its LAYOUT height is the stripe height minus one ItemSpacing.y, so the row
@@ -101,6 +109,20 @@ ListRow::ListRow(const ListRowConfig& cfg) {
     else if (cfg.selected)          band = in_.hovered ? c.selectedHover : c.selected;
     else if (in_.hovered)           band = c.hover;
     else                            band = c.idle;
+    if (cfg.dragging) {
+        auto& ds = DS::DesignSystem::Instance();
+        float ghost = 0.55f;
+        try { ghost = ds.GetFloat(Tok::C_ListRow_DragAlpha); } catch (...) {}
+        ImVec4 c4;
+        if (band) {
+            c4 = ImGui::ColorConvertU32ToFloat4(band);
+        } else {
+            c4 = ImVec4(0.45f, 0.45f, 0.45f, 1.0f);
+            try { c4 = ds.GetColor(Tok::C_ListRow_DragFill); } catch (...) {}
+        }
+        c4.w *= ghost;
+        band = ImGui::ColorConvertFloat4ToU32(c4);
+    }
     if (band) {
         ImVec2 a(bandL_, top_);                 // top_ is already the band top
         ImVec2 b(bandR_, top_ + bandH_);

@@ -59,6 +59,13 @@ void ZoneLayout::DrawSeparator(Node* s, float gap) {
     if (sepDragging_ == s && !ImGui::IsMouseDown(ImGuiMouseButton_Left))
         sepDragging_ = nullptr;
 
+    // Publish the grab band so the corner blocker (Render) seals it: without it,
+    // a resize press slightly inside the neighbour editor also grabs that
+    // editor's overlay scrollbar. The blocker claims the press so ONLY the
+    // (geometric) separator resize runs.
+    if (hov || act)
+        sepBlockRect_ = ImVec4(hMin.x, hMin.y, hMax.x, hMax.y);
+
     if (hov || act)
         ImGui::SetMouseCursor(vert ? ImGuiMouseCursor_ResizeEW
                                    : ImGuiMouseCursor_ResizeNS);

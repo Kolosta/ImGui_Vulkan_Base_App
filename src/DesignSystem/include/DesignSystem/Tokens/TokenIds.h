@@ -1370,6 +1370,8 @@ enum class Tok : std::uint32_t {
     C_IconButton_Background,
     C_IconButton_BackgroundHover,
     C_IconButton_BackgroundDown,
+    C_ToolPalette_ButtonSize,
+    C_ToolPalette_IconScale,
     C_IconButton_Border,
     C_IconButton_Icon,
     C_IconButton_IconNegative,
@@ -1433,6 +1435,7 @@ enum class Tok : std::uint32_t {
     C_Editor_ContentInset,
     C_Cursor_Color,
     C_Menu_ItemPaddingX,
+    C_Menu_MaxHeight,               // menu height cap before the list scrolls (px)
     C_Menu_TitleText,
     C_Tooltip_Background,
     C_Tooltip_Text,
@@ -1444,6 +1447,7 @@ enum class Tok : std::uint32_t {
     P_Color_Gray_875,
     C_ZoneTab_Gap,
     C_ZoneTab_Padding,
+    C_SidePanel_Margin,
     C_ZoneTab_Background,
     C_ZoneTab_BackgroundActive,
     C_ZoneTab_BackgroundHover,
@@ -1519,6 +1523,10 @@ enum class Tok : std::uint32_t {
     C_Outliner_Row_SelectedHover,   // selected + hovered row bg
     C_Outliner_Row_Active,          // selected + active row bg
     C_Outliner_Row_ActiveHover,     // selected + active + hovered row bg
+    C_ListRow_ReorderDuration,      // reorder slide anim, ms (shared list rows)
+    C_ListRow_DragFill,             // carried row bg when it is NOT selected
+    C_ListRow_DragAlpha,            // carried row opacity (see-through)
+    C_ListRow_DropSlot,             // the opened landing slot's fill
     C_Outliner_Text,                // default row label colour
     C_Outliner_TreeLineInset,       // top/bottom inset of the vertical tree guide line (px)
     C_Outliner_Search_Visual,       // search: a matched-but-idle row bg (faint)
@@ -1586,6 +1594,40 @@ enum class Tok : std::uint32_t {
     // ── Dev / debug toggles (Preferences ▸ Dev) ──
     P_Config_ShowCornerZones,        // raw 0/1 backing the semantic below
     S_Config_ShowCornerZones,        // 0/1: draw the colour-coded editor-corner hit-zone previews
+
+    // ── Node Graph (docs/Ink/NODE_GRAPH.md §5 — generic node/port/cable
+    // canvas widget, first used by the Layer Graph Editor, ROADMAP Lot 13) ──
+    C_NodeGraph_Background,          // the node canvas surface
+    C_NodeGraph_GridLine,            // faint background grid
+    C_NodeBox_HeaderBackground,      // node header band
+    C_NodeBox_BodyBackground,        // node body
+    C_NodeBox_Border,                // node outline, unselected
+    C_NodeBox_BorderSelected,        // node outline, selected
+    C_NodeBox_Text,                  // node header label
+    C_NodeBox_CornerRadius,          // node box rounding
+    C_NodeBox_Padding,               // node body padding (x, y)
+    C_NodeBox_HeaderHeight,          // node header band height
+    C_NodePort_Background,           // port dot, unconnected
+    C_NodePort_BackgroundHover,      // port dot, hovered while dragging a cable
+    C_NodePort_BackgroundConnected,  // port dot, has a cable
+    C_NodePort_BackgroundIncompatible, // port dot, hovered but type-incompatible
+    C_NodePort_Border,               // port dot outline
+    C_NodePort_Size,                 // port dot diameter
+    C_NodeCable_Color,                // idle cable colour
+    C_NodeCable_ColorActive,          // cable colour while being dragged
+    C_NodeCable_ColorIncompatible,    // dragged cable over an incompatible port
+    C_NodeCable_Width,                // cable stroke width
+    // Header band colour BY NODE KIND (Blender-style category colouring) —
+    // NodeGraphNode::headerColor override; falls back to
+    // C_NodeBox_HeaderBackground above when a kind isn't one of these.
+    C_NodeBox_HeaderInput,            // Input nodes (imports a layer/object/piece)
+    C_NodeBox_HeaderMerge,            // Merge nodes (combine N inputs, in order)
+    C_NodeBox_HeaderOutput,           // Output node (the layer's sink)
+    C_NodeBox_HeaderBlend,            // Blend nodes (opacity/blend-mode/isolation)
+    C_NodeBox_HeaderClipMask,         // Clip/Mask nodes (masking by a source shape)
+    // Cable/port colour BY PORT TYPE — NodeGraphPort::color override.
+    C_NodeCable_TypeRenderOutput,     // a resolved object/fill/stroke/layer result
+    C_NodeCable_TypeLayerOutput,      // strictly a Layer's Output (a future cross-layer blend node)
 
     // Sentinel — must stay last. Never used as a real token.
     _Count
@@ -2407,7 +2449,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::S_Border_Orange: return "semantic.border.color.orange.default";
         case Tok::S_Border_Cyan: return "semantic.border.color.cyan.default";
         case Tok::S_Focus_Indicator: return "semantic.focus.color.indicator.default";
-        case Tok::S_Accent_Visual: return "semantic.accent.color.visual.default";
+        case Tok::S_Accent_Visual: return "semantic.accent.color.visual";
         case Tok::S_Info_Visual: return "semantic.info.color.visual.default";
         case Tok::S_Negative_Visual: return "semantic.negative.color.visual.default";
         case Tok::S_Positive_Visual: return "semantic.positive.color.visual.default";
@@ -2919,6 +2961,8 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_IconButton_Background: return "component.icon-button.background.color.default";
         case Tok::C_IconButton_BackgroundHover: return "component.icon-button.background.color.hover";
         case Tok::C_IconButton_BackgroundDown: return "component.icon-button.background.color.down";
+        case Tok::C_ToolPalette_ButtonSize: return "component.tool-palette.button.size";
+        case Tok::C_ToolPalette_IconScale: return "component.tool-palette.icon.scale";
         case Tok::C_IconButton_Border: return "component.icon-button.border.color.default";
         case Tok::C_IconButton_Icon: return "component.icon-button.icon.color.default";
         case Tok::C_IconButton_IconNegative: return "component.icon-button.icon.color.negative";
@@ -2982,6 +3026,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Editor_ContentInset: return "component.editor.content.inset.default";
         case Tok::C_Cursor_Color: return "component.cursor.icon.color.default";
         case Tok::C_Menu_ItemPaddingX: return "component.menu.item.padding.horizontal";
+        case Tok::C_Menu_MaxHeight: return "component.menu.max-height.default";
         case Tok::C_Menu_TitleText: return "component.menu.title.label.color.default";
         case Tok::C_Tooltip_Background: return "component.tooltip.background.color.default";
         case Tok::C_Tooltip_Text: return "component.tooltip.label.color.default";
@@ -2993,6 +3038,7 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::P_Color_Gray_875: return "primitive.color.gray.875";
         case Tok::C_ZoneTab_Gap: return "component.zone-tab.gap.default";
         case Tok::C_ZoneTab_Padding: return "component.zone-tab.padding.default";
+        case Tok::C_SidePanel_Margin: return "component.side-panel.margin.default";
         case Tok::C_ZoneTab_Background: return "component.zone-tab.background.color.default";
         case Tok::C_ZoneTab_BackgroundActive: return "component.zone-tab.background.color.active";
         case Tok::C_ZoneTab_BackgroundHover: return "component.zone-tab.background.color.hover";
@@ -3044,6 +3090,10 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::C_Outliner_Row_SelectedHover:   return "component.outliner.row.background.selected-hover";
         case Tok::C_Outliner_Row_Active:          return "component.outliner.row.background.active";
         case Tok::C_Outliner_Row_ActiveHover:     return "component.outliner.row.background.active-hover";
+        case Tok::C_ListRow_ReorderDuration:      return "component.list-row.reorder.duration";
+        case Tok::C_ListRow_DragFill:             return "component.list-row.drag.background";
+        case Tok::C_ListRow_DragAlpha:            return "component.list-row.drag.opacity";
+        case Tok::C_ListRow_DropSlot:             return "component.list-row.drop-slot.background";
         case Tok::C_Outliner_Text:                return "component.outliner.row.text.default";
         case Tok::C_Outliner_TreeLineInset:       return "component.outliner.tree-line.inset.default";
         case Tok::C_Outliner_Search_Visual:       return "component.outliner.row.search.background.visual";
@@ -3099,6 +3149,34 @@ constexpr std::string_view TokName(Tok t) {
         case Tok::S_Config_PlacementPreviewAlpha: return "semantic.config.placement-preview-alpha";
         case Tok::P_Config_ShowCornerZones: return "primitive.config.show-corner-zones";
         case Tok::S_Config_ShowCornerZones: return "semantic.config.show-corner-zones";
+
+        case Tok::C_NodeGraph_Background: return "component.node-graph.background.color.default";
+        case Tok::C_NodeGraph_GridLine: return "component.node-graph.grid-line.color.default";
+        case Tok::C_NodeBox_HeaderBackground: return "component.node-box.header.background.color.default";
+        case Tok::C_NodeBox_BodyBackground: return "component.node-box.body.background.color.default";
+        case Tok::C_NodeBox_Border: return "component.node-box.border.color.default";
+        case Tok::C_NodeBox_BorderSelected: return "component.node-box.border.color.selected";
+        case Tok::C_NodeBox_Text: return "component.node-box.text.color.default";
+        case Tok::C_NodeBox_CornerRadius: return "component.node-box.corner-radius.default";
+        case Tok::C_NodeBox_Padding: return "component.node-box.padding.default";
+        case Tok::C_NodeBox_HeaderHeight: return "component.node-box.header.size.height";
+        case Tok::C_NodePort_Background: return "component.node-port.background.color.default";
+        case Tok::C_NodePort_BackgroundHover: return "component.node-port.background.color.hover";
+        case Tok::C_NodePort_BackgroundConnected: return "component.node-port.background.color.connected";
+        case Tok::C_NodePort_BackgroundIncompatible: return "component.node-port.background.color.incompatible";
+        case Tok::C_NodePort_Border: return "component.node-port.border.color.default";
+        case Tok::C_NodePort_Size: return "component.node-port.size.default";
+        case Tok::C_NodeCable_Color: return "component.node-cable.color.default";
+        case Tok::C_NodeCable_ColorActive: return "component.node-cable.color.active";
+        case Tok::C_NodeCable_ColorIncompatible: return "component.node-cable.color.incompatible";
+        case Tok::C_NodeCable_Width: return "component.node-cable.width.default";
+        case Tok::C_NodeBox_HeaderInput: return "component.node-box.header.background.color.input";
+        case Tok::C_NodeBox_HeaderMerge: return "component.node-box.header.background.color.merge";
+        case Tok::C_NodeBox_HeaderOutput: return "component.node-box.header.background.color.output";
+        case Tok::C_NodeBox_HeaderBlend: return "component.node-box.header.background.color.blend";
+        case Tok::C_NodeBox_HeaderClipMask: return "component.node-box.header.background.color.clip-mask";
+        case Tok::C_NodeCable_TypeRenderOutput: return "component.node-cable.color.type-render-output";
+        case Tok::C_NodeCable_TypeLayerOutput: return "component.node-cable.color.type-layer-output";
 
         case Tok::_Count: return "";
     }

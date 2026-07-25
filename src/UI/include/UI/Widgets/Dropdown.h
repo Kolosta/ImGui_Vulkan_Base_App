@@ -53,6 +53,7 @@ struct DropdownButton {
     std::string label;           // text (optional; icon-only if empty)
     std::string tooltip;
     bool        active = false;  // toggled/accented state
+    bool        enabled = true;  // false: dimmed, no hover, ignores clicks
     enum class Side { Left, Right } side = Side::Left;
 };
 
@@ -64,6 +65,28 @@ struct DropdownConfig {
     std::vector<DropdownItem> items;
     int selectedIndex = -1;                     // highlighted item, -1 = none
     DropdownStyle style = DropdownStyle::Default;
+    // Single-column lists: a search field at the top of the menu (keyboard
+    // focused on open) filters the items live. Long lists scroll inside the
+    // menu regardless (see component.menu.max-height.default) — searchable
+    // just forces the scrolling layout even when the list would fit.
+    bool searchable = false;
+    // When > 0 the trigger stretches to this pixel width (the label stays
+    // left-aligned, the chevron pinned to the right) — used by the Properties
+    // rows so every dropdown fills its control column like the other fields.
+    float triggerWidth = 0.0f;
+    // Object-picker chrome: an object icon left of the label, and a trailing
+    // action button in the trigger — an EYEDROPPER (pick a node in a
+    // viewport/outliner) when empty, a CLEAR cross when a node is set. The
+    // owner reads DropdownResult::pickRequested / cleared to drive it.
+    bool objectPicker = false;
+    bool objectPickerHasValue = false;
+    // Suppress the trailing EYEDROPPER glyph/action when empty (the trigger is
+    // clearable but not a node-pick target — e.g. a plain enum with a "none"
+    // placeholder). The CLEAR cross still appears when a value is set.
+    bool objectPickerNoEyedropper = false;
+    // When set and the trigger label is empty, draw `placeholder` in the
+    // subtle/disabled text colour instead of the normal label.
+    std::string placeholder;
     // Buttons fused to the trigger (ButtonGroup look). Rendered left/right per side.
     std::vector<DropdownButton> buttons;
     // CUSTOM BODY: when set, the popup renders THIS instead of the item list (the
@@ -79,10 +102,25 @@ struct DropdownResult {
     int  selected = -1;          // index of the clicked item (valid if changed)
     // Index into cfg.buttons of a fused button clicked this frame, or -1.
     int  buttonClicked = -1;
+    // Object-picker trailing button: the eyedropper was clicked (start a pick)
+    // or the clear cross was clicked (empty the field), respectively.
+    bool pickRequested = false;
+    bool cleared       = false;
 };
 
 // Draw the trigger at the current cursor position and, if open, its menu.
 // Returns whether an item was picked this frame.
 DropdownResult Dropdown(const DropdownConfig& cfg);
+
+// A standalone row of FUSED buttons in the dropdown chrome — the same cells
+// the snap widget fuses to its trigger (dark dropdown background, shared
+// border, only the row's outer corners rounded, icons dead-centred, active
+// cell filled with the accent), without any dropdown. Menu-bar toggle groups
+// (e.g. the Properties editor's page tabs) use this so every bar control
+// shares one visual family. Cell width: `cellW` per cell when > 0, else each
+// cell sizes to its content (min = control height). Returns the index of the
+// cell clicked this frame, or -1.
+int DropdownButtonRow(const char* id, const std::vector<DropdownButton>& cells,
+                      float cellW = 0.0f);
 
 } // namespace UI

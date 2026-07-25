@@ -1,14 +1,10 @@
 #include "Application.h"
-#include "ProjectFile.h"
-#include "ModuleRegistry.h"   // restore a file's module on Load
 #include <iostream>
 #include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <filesystem>
-#include <SDL3/SDL_dialog.h>
 #include <SDL3/SDL_filesystem.h>
-#include <Renderer/Tessellation/Tessellator.h>
 #include <VectorGraphics/IconManager.h>
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ShortcutManager.h>
@@ -85,6 +81,13 @@ void Application::ProcessEvents() {
             if (w->HandleEvent(event)) { consumed = true; break; }
         if (consumed) continue;
         ImGui_ImplSDL3_ProcessEvent(&event);
+        // Modal-transform mouse capture (SDL relative mode): accumulate the RAW
+        // relative motion. This is the transform's only motion source — no
+        // absolute positions, no warps → no drift (ViewportModal.cpp).
+        if (modalRelMode_ && event.type == SDL_EVENT_MOUSE_MOTION) {
+            modalRelAccum_.x += event.motion.xrel;
+            modalRelAccum_.y += event.motion.yrel;
+        }
         if (event.type == SDL_EVENT_QUIT)
             running_ = false;
         if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
@@ -163,9 +166,31 @@ void Application::ProcessEvents() {
 void Application::Update() {
     VectorGraphics::IconManager::Instance().CleanupCacheIfNeeded();
 
+    // Publish the document's display-unit system so every unit-aware input
+    // (UI::DragValue) formats/parses in it — the single source of truth, updated
+    // live when the Properties → Document tab changes it.
+    UI::Units::SetDocumentSystem(project_.docUnitSystem);
+
     // Let the active module keep the document invariants it owns (IOF: each page's
     // shapes in print-layer z-order) before any UI / viewport reads the document.
     if (activeModule_) activeModule_->OnFrameSync();
+
+    // Module NUMPAD shortcut: while Shift is held, numpad digit presses build a
+    // sequence; on Shift release it is delivered to the module (IOF: a symbol
+    // code / theme tool). Ignored while a text field is focused.
+    {
+        ImGuiIO& io = ImGui::GetIO();
+        if (!activeModule_ || io.WantTextInput) {
+            moduleNumpadSeq_.clear();
+        } else if (io.KeyShift) {
+            for (int d = 0; d <= 9; ++d)
+                if (ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_Keypad0 + d), false))
+                    moduleNumpadSeq_ += (char)('0' + d);
+        } else if (!moduleNumpadSeq_.empty()) {
+            activeModule_->OnNumpadSequence(moduleNumpadSeq_);
+            moduleNumpadSeq_.clear();
+        }
+    }
 
     // Reset component-usage tracking at the start of every frame, so the
     // Tokens viewer reads the previous frame's counts cleanly without
@@ -185,6 +210,18 @@ void Application::Update() {
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
 
+    // While a modal transform grabs the mouse (SDL relative mode), the OS
+    // still reports an absolute position that walks off the canvas — ImGui
+    // would then hover the Outliner / other editors under a cursor that has
+    // VISUALLY wrapped back inside the viewport. Pin ImGui's mouse to the
+    // displayed (wrapped) position so hover/hit-testing matches what the user
+    // sees. Done right after NewFrame, before any widget reads io.MousePos.
+    if (transformOp_.Active() && modalRelMode_) {
+        const ImVec2 wrapped = WrapPointInCanvas(
+            ImVec2((float)transformOp_.virtPx.x, (float)transformOp_.virtPx.y));
+        ImGui::GetIO().MousePos = wrapped;
+    }
+
     // Shortcut pipeline:
     //   1. drain ImGui IO into normalised events
     //   2. reset per-frame context (BeginFrame); panels then call
@@ -200,52 +237,107 @@ void Application::Update() {
             Shortcuts::EventNormalizer::Instance().SetDragThreshold(t);
         } catch (...) { /* token missing — keep current value */ }
         // Undo history depth (Preferences ▸ General). Applied live so a change
-        // takes effect without restarting.
+        // takes effect without restarting. (Only the Preferences history exists
+        // during the Ink rework — see PrefsUndo.cpp.)
         try {
             int n = DesignSystem::DesignSystem::Instance()
                         .GetInt(DesignSystem::Tok::S_Config_UndoSteps);
-            if (n != undoBufferSteps_) { undoBufferSteps_ = n; undo_.SetCapacity(n); }
+            if (n != undoBufferSteps_) { undoBufferSteps_ = n; prefsUndo_.SetCapacity(n); }
         } catch (...) { /* token missing — keep current value */ }
     }
     Shortcuts::EventNormalizer::Instance().Frame();
     Shortcuts::ShortcutManager::Instance().BeginFrame();
-    // Publish this frame's contextual status-bar hints right after BeginFrame
-    // cleared them and before the status bar is built in RenderMainLayout. Uses
-    // the persistent transform/mode state (a frame's lag at most).
-    PublishStatusHints();
 
-    // Begin the vector-renderer frame BEFORE the UI is built: each Viewport's
-    // RenderViewport() renders its canvas into an offscreen texture (its own
-    // Vulkan render pass) during the UI-build phase — all of which completes
-    // before ImGui::Render() and the main swapchain pass in Render().
-    canvasRenderer_.BeginFrame();
+    // Open the Ink frame BEFORE the UI is built: each Viewport zone acquires
+    // and configures its Ink::View during the build; EndFrame below records
+    // and submits the canvas work (docs/Ink/RENDER_GRAPH.md).
+    // Re-gathered every frame from whichever viewports show the Flattener.
+    flattenWanted_ = false;
+    if (ink_) ink_->BeginFrame();
 
-    // Clear the shared drop-preview when no move gesture is in flight, so it
-    // doesn't linger after a drop. While a move IS active it persists (the owner
-    // viewport refreshes it during RenderMainLayout); all viewports read the
-    // same value this frame.
-    {
-        const bool moveActive =
-            (toolState_.gesture == ToolGesture::MoveObjects) ||
-            (transformOp_.Active() && !transformOp_.element &&
-             transformOp_.kind == TransformKind::Move);
-        if (!moveActive) dropPreview_.active = false;
-    }
+    // Reset the per-frame hovered-viewport pointer; a Viewport leaf sets it
+    // again while building if the mouse is over it (Lot 8 keyboard actions
+    // target the hovered leaf).
+    hoveredViewport_ = nullptr;
+    if (!transformOp_.Active()) osCursorHidden_ = false;
 
     RenderTitleBar();      // publishes titleBarHeightPx_ + blockers first
     RenderMainLayout();    // viewports render their offscreen canvas here
+    // Viewport popups (Add / right-click context) — rendered ONCE here, after
+    // the whole layout, so their BeginPopup is called every frame from a stable
+    // place regardless of which zone the cursor is over (fixes the freeze).
+    RenderAddMenu();
+    RenderViewportContextMenu();
+    RenderHandleTypeMenu();
+    RenderSnapPieMenu();
     RenderFloatingWindows();
     RenderSplash();        // start screen overlay (and the logo-menu re-open)
     RenderAbout();         // "About Carto" popup
     RenderUnsavedDialog(); // "Unsaved changes" guard for splash New File presets
+
+    // Hide the OS cursor while a modal transform runs (a custom cursor is drawn
+    // in Vulkan). Forcing ImGui's cursor to None LAST in the frame — after all
+    // widgets have had their say — is the legacy-proven, reliable way (the SDL
+    // backend then hides it; a bare SDL_HideCursor is undone by ImGui's own
+    // per-frame cursor update).
+    if (osCursorHidden_ && transformOp_.Active())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+
+    // Object eyedropper: hide the OS cursor and draw the "colorize" glyph on the
+    // ImGui FOREGROUND list — the exact same technique as the transform cursor
+    // (SetMouseCursor(None) + IconManager on the foreground list, tinted by
+    // C_Cursor_Color, Multicolor scheme). The eyedropper points at its tip, so
+    // the glyph is anchored by its bottom-left corner on the mouse position.
+    // Esc cancels.
+    if (ObjectPickActive()) {
+        ImGui::SetMouseCursor(ImGuiMouseCursor_None);
+        auto& im = VectorGraphics::IconManager::Instance();
+        if (im.HasIcon("colorize")) {
+            auto& ds = DesignSystem::DesignSystem::Instance();
+            const float sz = 28.0f * ds.GetGlobalScale();
+            const ImVec2 m = ImGui::GetIO().MousePos;
+            ImDrawList* fg = ImGui::GetForegroundDrawList();
+            ImVec4 col = ds.GetColor(DesignSystem::Tok::C_Cursor_Color);
+            auto md = im.GetDefaultMetadata("colorize");
+            md.scheme = VectorGraphics::IconColorScheme::Multicolor;
+            for (auto& z : md.colorZones) z.customColor = col;
+            im.RenderIcon(fg, "colorize", ImVec2(m.x, m.y - sz), sz, md);
+        }
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape)) CancelObjectPick();
+    }
 
     // With every floating window now submitted, register the ones overlapping the
     // title bar as hit-test blockers so clicking them grabs the floating window,
     // not the native title bar.
     PublishOverlayTitleBarBlockers();
 
-    // Evict offscreen targets whose Viewport zone no longer exists this frame.
-    canvasRenderer_.EndFrame();
+    // An armed .acu save renders its page thumbnail through THIS frame: the
+    // off-screen view is set up here, recorded by EndFrame, read back and
+    // written to disk right after (ProjectIO.cpp).
+    PrepareSavePass();
+
+    // Selection / mode changes become history HERE: after every editor has had
+    // its say, so one gesture is one step no matter how many places touched it.
+    TrackEditHistory();
+
+    // Close the Ink frame: record every dirty view through the render graph
+    // and submit. Same queue as the main pass — the graph's final barriers
+    // order the canvas writes before ImGui's sampling, no semaphore needed.
+    if (ink_) ink_->SetWantFlattenRegions(flattenWanted_);
+    if (ink_) ink_->EndFrame();
+
+    // A live mark preview (temporary style applied while building overlays so
+    // the pipeline renders the real subtract/gap effect) is restored HERE —
+    // right after the frame recorded it, BEFORE saves and action dispatch —
+    // so undo, hit-testing and persistence only ever see the true document.
+    ClearMarkPreviewStyle();
+    // The translucent draw-shape preview node lives only for the duration of a
+    // DrawShape drag — drop it whenever no such drag is active (covers Esc /
+    // mode switch / any gesture reset), so it never lingers in the outliner or
+    // a save. It is (re)created next frame while the drag continues.
+    if (canvasDrag_.kind != CanvasDrag::Kind::DrawShape) ClearShapePreview();
+
+    FinishSavePass();
 
     // Dispatch happens after panels have set the context for this frame so
     // editor/region/tool match the user's current hover. Gate global actions on
@@ -259,10 +351,6 @@ void Application::Update() {
         sm.SetWindowFocused(mainFocused);
         sm.ProcessInput();
     }
-
-    // Push an undo step for any document change that finished this frame (once
-    // no gesture is mid-flight, so each completed operation is one step).
-    CommitUndoIfPending();
 }
 
 void Application::Render() {
@@ -324,23 +412,16 @@ void Application::Render() {
 
     vkCmdEndRenderPass(fd->CommandBuffer);
     {
-        // Wait on the swapchain image acquire (colour output) AND on every offscreen
-        // canvas view rendered this frame (fragment shader, where ImGui samples those
-        // textures). The latter replaces the per-view CPU fence stall in RenderView
-        // with a pure GPU dependency, so the CPU never blocks on the offscreen work.
-        std::vector<VkSemaphore> waits;
-        std::vector<VkPipelineStageFlags> waitStages;
-        waits.push_back(image_acquired_semaphore);
-        waitStages.push_back(VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
-        for (VkSemaphore s : canvasRenderer_.FrameWaitSemaphores()) {
-            waits.push_back(s);
-            waitStages.push_back(VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
-        }
+        // Wait on the swapchain image acquire (colour output) only. The Ink
+        // canvas work submitted earlier this frame needs no semaphore: its
+        // final barriers order the writes before ImGui's fragment sampling on
+        // this same queue (docs/Ink/RENDER_GRAPH.md §5).
+        VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo info = {};
         info.sType                = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        info.waitSemaphoreCount   = (uint32_t)waits.size();
-        info.pWaitSemaphores      = waits.data();
-        info.pWaitDstStageMask    = waitStages.data();
+        info.waitSemaphoreCount   = 1;
+        info.pWaitSemaphores      = &image_acquired_semaphore;
+        info.pWaitDstStageMask    = &wait_stage;
         info.commandBufferCount   = 1;
         info.pCommandBuffers      = &fd->CommandBuffer;
         info.signalSemaphoreCount = 1;
@@ -413,15 +494,9 @@ void Application::Present() {
 }
 
 // ── File actions: the .acu project lifecycle ──────────────────────────────────
-// The SDL file dialogs are ASYNCHRONOUS and their callback may run on another
-// thread, so the callback only stashes the chosen path in pendingFile_ (guarded
-// by a mutex). ProcessPendingFileOp(), called from ProcessEvents outside the
-// ImGui frame, performs the actual load/save on the main thread.
-
-static const SDL_DialogFileFilter kAcuFilter[] = {
-    { "Carto project (*.acu)", "acu" },
-    { "All files",             "*"   },
-};
+// Open/save/save-as and the two-phase save pass live in ProjectIO.cpp
+// (.acu v2 — docs/acu-format.md, docs/Ink/ROADMAP.md Lot 10). Here: the
+// project/document creation flows they chain into.
 
 void Application::Action_NewFile() {
     // Menu "New" = a fresh Classic project with no module. If a module is active,
@@ -430,23 +505,44 @@ void Application::Action_NewFile() {
     DoNewFile(LayoutPreset::General, /*applyLayout=*/activeModule_ != nullptr);
 }
 
-// Create a brand-new project (one default page) and, optionally, switch the zone
-// layout to `preset`. Shared by the menu New, the splash presets, and (with
+// Fresh document into the project + hand it to the Ink engine. Classic
+// projects seed the transitional demo content; module projects pass
+// seedDemo=false and seed their own via IModule::OnDocumentCreated (Lot 11).
+void Application::ResetDocument(bool seedDemo, double pageW, double pageH) {
+    project_.Reset(pageW, pageH);
+    // Fresh editing state for the new document (Lot 8).
+    edit_.Clear();
+    edit_.mode = EditorMode::Object;
+    // Seed the 2D cursor at the first page centre.
+    if (project_.document && !project_.document->Pages().empty()) {
+        const Ink::Page& pg = project_.document->Pages().front();
+        edit_.cursor2D = { pg.pos.x + pg.size.x * 0.5, pg.pos.y + pg.size.y * 0.5 };
+        edit_.cursor2DValid = true;
+    }
+    docUndo_.Clear();
+    transformOp_ = TransformOp{};
+    canvasDrag_  = CanvasDrag{};
+    addMenuOpen_ = false;
+    viewportCtxOpen_ = false;
+    osCursorHidden_ = false;   // (cursor visibility is driven from Update)
+    if (ink_) {
+        if (seedDemo) Ink::SeedDemoDocument(*project_.document);
+        ink_->SetDocument(project_.document.get());
+    }
+}
+
+// Create a brand-new project and, optionally, switch the zone layout to
+// `preset`. Shared by the menu New, the splash presets, and (with
 // applyLayout=false) the module-open flow which supplies its own layout next.
-// A splash preset (applyLayout=true) returns to the Classic workspace, leaving
-// any active module; the menu New (applyLayout=false) keeps the current module.
 void Application::DoNewFile(LayoutPreset preset, bool applyLayout) {
-    project_.Reset();
-    objectModeTool_ = "tool.select"; editToolByObject_.clear();  // fresh tool memory
-    project_.AddArtboard("Page 1", ImVec2(0, 0), ImVec2(1920, 1080));
-    project_.dirty = false;
-    ResetUndoHistory();   // baseline = the new empty project
+    ResetDocument();
     if (applyLayout) {
         if (activeModule_) { activeModule_->OnDeactivate(); activeModule_ = nullptr; }
         activeCapabilities_ = Modules::Capabilities{};   // Classic = full defaults
         zoneLayout_.SetEditorFilter(CoreEditor::Ids());  // Classic picker = core only
         zoneLayout_.ApplyPreset(preset);
     }
+    LogInfoAction("New Project");
 }
 
 // Splash "New File <preset>": guard unsaved changes first. If the project is
@@ -455,159 +551,11 @@ void Application::DoNewFile(LayoutPreset preset, bool applyLayout) {
 void Application::RequestNewFile(LayoutPreset preset) {
     pendingNewPreset_ = preset;
     pendingModuleId_.clear();               // preset path (not a module open)
+    pendingOpenPath_.clear();               // and not a held file open
     if (project_.dirty) {
         unsavedDialogOpen_ = true;          // RenderUnsavedDialog() opens the modal
     } else {
         CommitPendingNew();
-    }
-}
-
-void Application::Action_OpenFile() {
-    SDL_ShowOpenFileDialog(
-        [](void* ud, const char* const* files, int /*filter*/) {
-            auto* self = static_cast<Application*>(ud);
-            if (files && files[0]) {
-                std::lock_guard<std::mutex> lk(self->pendingFile_.mtx);
-                self->pendingFile_.kind = 1;          // open
-                self->pendingFile_.path = files[0];
-            }
-        },
-        this, window_, kAcuFilter, 2, nullptr, /*allow_many=*/false);
-}
-
-void Application::Action_SaveFile() {
-    if (project_.path.empty()) { Action_SaveFileAs(); return; }
-    if (project_.thumbnailPng.empty()) Action_UpdateThumbnail();  // default Page-1 aperçu
-    SyncSettingsToProject();                 // persist the live menu-bar settings
-    if (App::ProjectFile::Save(project_.path, project_, zoneLayout_))
-        project_.dirty = false;
-}
-
-void Application::Action_SaveFileAs() {
-    SDL_ShowSaveFileDialog(
-        [](void* ud, const char* const* files, int /*filter*/) {
-            auto* self = static_cast<Application*>(ud);
-            if (files && files[0]) {
-                std::lock_guard<std::mutex> lk(self->pendingFile_.mtx);
-                self->pendingFile_.kind = 2;          // save-to-path
-                self->pendingFile_.path = files[0];
-            }
-        },
-        this, window_, kAcuFilter, 2, nullptr);
-}
-
-void Application::SyncSettingsToProject() {
-    EditorSettings& e = project_.editorSettings;
-    e.pivotMode        = (int)pivotMode_;
-    e.transformOrient  = (int)transformOrientation_;
-    e.show2DCursor     = show2DCursor_;
-    e.showMetrics      = showMetrics_;
-    e.snapEnabled      = snap_.enabled;
-    e.snapMode         = (int)snap_.mode;
-    e.snapBase         = (int)snap_.base;
-    e.snapAffectMove   = snap_.affectMove;
-    e.snapAffectRotate = snap_.affectRotate;
-    e.snapAffectScale  = snap_.affectScale;
-    e.snapRotIncrement = snap_.rotIncrement;
-    e.snapRotPrecision = snap_.rotPrecisionIncrement;
-    // Per-mode tool memory. Persist the CURRENT mode's live tool too so a save
-    // mid-session keeps the right tool for the active mode/object.
-    const std::string curTool = Shortcuts::Tools::ToolManager::Instance().GetActiveTool();
-    if (editorMode_ == EditorMode::Object) objectModeTool_ = curTool;
-    else if (uint64_t id = EditToolObject())  editToolByObject_[id] = curTool;
-    e.objectModeTool   = objectModeTool_;
-    e.editToolByObject = editToolByObject_;
-    e.defaultFill[0]=defaultFill_.r; e.defaultFill[1]=defaultFill_.g;
-    e.defaultFill[2]=defaultFill_.b; e.defaultFill[3]=defaultFill_.a;
-    e.defaultStroke[0]=defaultStroke_.r; e.defaultStroke[1]=defaultStroke_.g;
-    e.defaultStroke[2]=defaultStroke_.b; e.defaultStroke[3]=defaultStroke_.a;
-}
-
-void Application::ApplySettingsFromProject() {
-    const EditorSettings& e = project_.editorSettings;
-    auto clampEnum = [](int v, int lo, int hi){ return v < lo ? lo : (v > hi ? hi : v); };
-    pivotMode_           = (PivotMode)clampEnum(e.pivotMode, 0, 4);
-    transformOrientation_= (TransformOrientation)clampEnum(e.transformOrient, 0, 4);
-    show2DCursor_        = e.show2DCursor;
-    showMetrics_         = e.showMetrics;
-    snap_.enabled        = e.snapEnabled;
-    snap_.mode           = (SnapSettings::Mode)clampEnum(e.snapMode, 0, 5);
-    snap_.base           = (SnapSettings::Base)clampEnum(e.snapBase, 0, 3);
-    snap_.affectMove     = e.snapAffectMove;
-    snap_.affectRotate   = e.snapAffectRotate;
-    snap_.affectScale    = e.snapAffectScale;
-    snap_.rotIncrement   = e.snapRotIncrement;
-    snap_.rotPrecisionIncrement = e.snapRotPrecision;
-    // Per-mode tool memory. Apply the tool the loaded mode/object should show.
-    objectModeTool_   = e.objectModeTool.empty() ? "tool.select" : e.objectModeTool;
-    editToolByObject_ = e.editToolByObject;
-    std::string want = objectModeTool_;
-    if (editorMode_ == EditorMode::Edit) {
-        uint64_t id = EditToolObject();
-        auto it = id ? editToolByObject_.find(id) : editToolByObject_.end();
-        want = (it != editToolByObject_.end()) ? it->second : "tool.select";
-    }
-    if (!want.empty()) Shortcuts::Tools::ToolManager::Instance().SetActiveTool(want);
-    defaultFill_   = { e.defaultFill[0],   e.defaultFill[1],   e.defaultFill[2],   e.defaultFill[3]   };
-    defaultStroke_ = { e.defaultStroke[0], e.defaultStroke[1], e.defaultStroke[2], e.defaultStroke[3] };
-}
-
-void Application::ProcessPendingFileOp() {
-    int kind = 0; std::string path;
-    {
-        std::lock_guard<std::mutex> lk(pendingFile_.mtx);
-        kind = pendingFile_.kind; path = pendingFile_.path;
-        pendingFile_.kind = 0; pendingFile_.path.clear();
-    }
-    if (kind == 0) return;
-
-    if (kind == 1) {                                   // open
-        if (App::ProjectFile::Load(path, project_, zoneLayout_)) {
-            // Derive a display name from the file stem if META had none.
-            if (project_.name.empty()) {
-                size_t slash = path.find_last_of("/\\");
-                size_t dot   = path.find_last_of('.');
-                std::string stem = path.substr(
-                    slash == std::string::npos ? 0 : slash + 1,
-                    (dot == std::string::npos ? path.size() : dot) -
-                    (slash == std::string::npos ? 0 : slash + 1));
-                project_.name = stem;
-            }
-            ApplySettingsFromProject();  // restore the file's menu-bar settings
-            ResetUndoHistory();    // baseline = the just-loaded document
-            AddRecentFile(path);   // remember in the splash recent list
-            // Restore the file's module (Classic if it has none). A file can't
-            // switch modules afterwards — its workspace follows the document.
-            // Keep the loaded layout (rebuildLayout=false): it's authoritative.
-            ActivateModule(Modules::ModuleRegistry::Instance().Get(project_.moduleId),
-                           /*rebuildLayout=*/false);
-        }
-    } else if (kind == 2) {                            // save-to-path
-        // Ensure the .acu extension if the user didn't type one.
-        if (path.find_last_of('.') == std::string::npos ||
-            path.size() < 4 || path.substr(path.size() - 4) != ".acu")
-            path += ".acu";
-        // Give every saved .acu a default thumbnail (Page 1) if none exists yet.
-        if (project_.thumbnailPng.empty()) Action_UpdateThumbnail();
-        SyncSettingsToProject();             // persist the live menu-bar settings
-        if (App::ProjectFile::Save(path, project_, zoneLayout_)) {
-            project_.path  = path;
-            project_.dirty = false;
-            size_t slash = path.find_last_of("/\\");
-            size_t dot   = path.find_last_of('.');
-            project_.name = path.substr(
-                slash == std::string::npos ? 0 : slash + 1,
-                (dot == std::string::npos ? path.size() : dot) -
-                (slash == std::string::npos ? 0 : slash + 1));
-            AddRecentFile(path);   // remember in the splash recent list
-            // If this Save-As was the "Save" branch of the unsaved-changes dialog
-            // for a new-file request, create the new project now that the save
-            // committed (the dialog was async, so it could only resolve here).
-            if (newFileAfterSave_) {
-                newFileAfterSave_ = false;
-                CommitPendingNew();   // preset OR module, per the pending intent
-            }
-        }
     }
 }
 

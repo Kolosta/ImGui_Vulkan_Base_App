@@ -5,6 +5,7 @@
 #include <VectorGraphics/IconManager.h>
 #include <UI/Chrome/StatusBar.h>
 #include <UI/Widgets/IconWidgets.h>
+#include <UI/Widgets/Panel.h>
 #include <imgui_internal.h>
 #include <algorithm>
 #include <cfloat>
@@ -268,7 +269,6 @@ void Application::RenderSectionTestZone2() {
 // ─────────────────────────────────────────────────────────────────────────────
 //  Floating windows
 // ─────────────────────────────────────────────────────────────────────────────
-
 
 void Application::RenderDevTestWindow() {
     if (!showDevWindow_) return;

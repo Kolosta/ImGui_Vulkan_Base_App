@@ -10,9 +10,10 @@ namespace App {
 //  UndoStack — a snapshot-based undo/redo history.
 //
 //  Generic over the SNAPSHOT type (a self-contained copy of the editable state):
-//   • the viewport history snapshots a `Renderer::Document` (by value);
-//   • the Preferences history snapshots the design-system overrides + keymap as
-//     a serialised string.
+//   • the Preferences history snapshots the design-system overrides as a
+//     serialised string;
+//   • the document history returns with the Ink engine (command-based undo,
+//     docs/Ink/ROADMAP.md Lot 8).
 //
 //  Each window owns its OWN UndoStack (Blender-style: undoing in the viewport
 //  must not touch the Preferences history and vice-versa).

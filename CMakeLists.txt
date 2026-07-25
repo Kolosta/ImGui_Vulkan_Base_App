@@ -51,6 +51,17 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(imgui)
 
+# VMA (Vulkan Memory Allocator) — used by the Ink render engine (see
+# docs/Ink/ARCHITECTURE.md). Header-only INTERFACE target
+# `GPUOpen::VulkanMemoryAllocator`; the implementation will be compiled in one
+# Ink TU (VMA_IMPLEMENTATION).
+FetchContent_Declare(
+    VulkanMemoryAllocator
+    GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+    GIT_TAG v3.1.0
+)
+FetchContent_MakeAvailable(VulkanMemoryAllocator)
+
 # ImGui sources
 set(IMGUI_DIR ${imgui_SOURCE_DIR})
 set(IMGUI_SOURCES
@@ -64,12 +75,16 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
 )
 
-# Subdirectories
+# Subdirectories.
+# NOTE: src/_legacy/** (old Renderer + Compositor engines and the application
+# code coupled to them) is intentionally NOT built — it is a quarantined
+# reference tree during the Ink engine rewrite (see docs/Ink/ and
+# src/_legacy/README.md).
 add_subdirectory(src/DesignSystem)
 add_subdirectory(src/UI)
 add_subdirectory(src/Shortcuts)
 add_subdirectory(src/VectorGraphics)
-add_subdirectory(src/Renderer)
+add_subdirectory(src/Ink)          # the 2D vector engine (docs/Ink/)
 add_subdirectory(src/Shell)
 add_subdirectory(src/Application)
 
@@ -99,7 +114,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     UI
     Shortcuts
     VectorGraphics
-    Renderer
+    Ink
     Shell
     Application
 )
@@ -133,15 +148,14 @@ endif()
 # Copy resources
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/resources DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
-# Mirror the compiled SPIR-V shaders next to the executable so CanvasRenderer can
-# load them from "<exe-dir>/shaders" at runtime (the working dir at launch). The
-# renderer_shaders target produces them in ${RENDERER_SHADER_OUT_DIR}.
+# Mirror the compiled Ink SPIR-V next to the executable so the engine loads
+# them from "<exe-dir>/shaders/ink" at runtime (ink_shaders target, see
+# src/Ink/CMakeLists.txt).
 add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
-        ${RENDERER_SHADER_OUT_DIR}
-        $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders
-    COMMENT "Copying compiled shaders to executable directory")
-
+        ${INK_SHADER_OUT_DIR}
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>/shaders/ink
+    COMMENT "Copying Ink shaders to executable directory")
 
 if(WIN32 AND MINGW)
     add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD

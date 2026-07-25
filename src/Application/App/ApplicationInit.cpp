@@ -152,8 +152,12 @@ bool Application::Initialize() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    // Keyboard / gamepad NAVIGATION is intentionally OFF everywhere: the app
+    // drives its own focus (search fields, dropdown arrow-nav, shortcuts), and
+    // ImGui's nav draws a focus ring that would wander onto whole windows on
+    // an arrow press. We keep the flags cleared and also suppress the ring.
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
     // The docking *engine* stays compiled (docking branch), but its native
     // drag&drop / drop-target UX is intentionally NOT enabled: the app uses
     // its own Blender-style fixed 3-zone layout + custom resize instead.
@@ -291,14 +295,9 @@ bool Application::Initialize() {
         secondaryWindows_.push_back(&tokenGraphHost_);
     }
 
-    // A fresh launch opens the default project with one empty page, ready for
-    // the drawing tools. (File open/save lands in Step 3.)
-    project_.AddArtboard("Page 1", ImVec2(0, 0), ImVec2(1920, 1080));
-    project_.dirty = false;  // the default page is not an unsaved user edit
-
-    // Seed the undo history with this baseline document (so the first Undo
-    // returns to the empty default project).
-    InitUndo();
+    // A fresh launch opens a new project: fresh Ink document with one default
+    // page (+ transitional demo content), handed to the engine.
+    ResetDocument();
 
     // Load the recent-files list (shown on the splash start screen).
     LoadRecentFiles();
@@ -320,8 +319,25 @@ void Application::SetupVulkan() {
         extensions.push_back(sdl_extensions[n]);
 
     VkResult err;
+
+    // Request the highest Vulkan version the loader supports, capped at 1.3 (the
+    // Ink engine's baseline: dynamic rendering + synchronization2 are core
+    // there — see docs/Ink/ARCHITECTURE.md). The loader gates core 1.3 entry
+    // points on the instance's apiVersion. Falls back gracefully: a lower
+    // version just leaves modernVulkanSupported_ = false.
+    uint32_t instanceVersion = VK_API_VERSION_1_0;
+    if (vkEnumerateInstanceVersion(&instanceVersion) != VK_SUCCESS)
+        instanceVersion = VK_API_VERSION_1_0;
+    const uint32_t requestedApi =
+        (instanceVersion >= VK_API_VERSION_1_3) ? VK_API_VERSION_1_3 : instanceVersion;
+    VkApplicationInfo app_info = {};
+    app_info.sType      = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app_info.pApplicationName = "Carto";
+    app_info.apiVersion = requestedApi;
+
     VkInstanceCreateInfo create_info = {};
     create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    create_info.pApplicationInfo = &app_info;
 
     uint32_t properties_count;
     ImVector<VkExtensionProperties> properties;
@@ -391,8 +407,54 @@ void Application::SetupVulkan() {
         queue_info[0].queueCount = 1;
         queue_info[0].pQueuePriorities = queue_priority;
 
+        // ── Modern features for the Ink engine (Vulkan 1.3) ───────────────────
+        // Query what the device supports, then enable only the intersection with
+        // what we want — so vkCreateDevice never fails on an unsupported request.
+        // modernVulkanSupported_ gates Ink's initialisation (Lot 1); enabling
+        // supported features is harmless for ImGui's own rendering.
+        VkPhysicalDeviceProperties devProps = {};
+        vkGetPhysicalDeviceProperties(physicalDevice_, &devProps);
+
+        VkPhysicalDeviceVulkan13Features feats13 = {};
+        feats13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        VkPhysicalDeviceVulkan12Features feats12 = {};
+        feats12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        feats12.pNext = &feats13;
+        VkPhysicalDeviceFeatures2 feats2 = {};
+        feats2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        feats2.pNext = &feats12;
+
+        const bool api13 = (requestedApi >= VK_API_VERSION_1_3) &&
+                           (devProps.apiVersion >= VK_API_VERSION_1_3);
+        if (api13) {
+            vkGetPhysicalDeviceFeatures2(physicalDevice_, &feats2);
+            modernVulkanSupported_ = feats13.dynamicRendering &&
+                                     feats13.synchronization2 &&
+                                     feats12.timelineSemaphore;
+        }
+
+        // Enable chain (only the features we actually use), kept alive until
+        // vkCreateDevice below.
+        VkPhysicalDeviceVulkan13Features en13 = {};
+        en13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+        VkPhysicalDeviceVulkan12Features en12 = {};
+        en12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+        en12.pNext = &en13;
+        if (modernVulkanSupported_) {
+            en13.dynamicRendering   = VK_TRUE;
+            en13.synchronization2   = VK_TRUE;
+            en12.timelineSemaphore  = VK_TRUE;
+            // Descriptor indexing / bindless: enable when present (Ink texture table).
+            en12.descriptorIndexing                           = feats12.descriptorIndexing;
+            en12.runtimeDescriptorArray                       = feats12.runtimeDescriptorArray;
+            en12.shaderSampledImageArrayNonUniformIndexing    = feats12.shaderSampledImageArrayNonUniformIndexing;
+            en12.descriptorBindingPartiallyBound              = feats12.descriptorBindingPartiallyBound;
+            en12.descriptorBindingSampledImageUpdateAfterBind = feats12.descriptorBindingSampledImageUpdateAfterBind;
+        }
+
         VkDeviceCreateInfo create_info = {};
         create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        create_info.pNext = modernVulkanSupported_ ? (void*)&en12 : nullptr;
         create_info.queueCreateInfoCount = sizeof(queue_info) / sizeof(queue_info[0]);
         create_info.pQueueCreateInfos = queue_info;
         create_info.enabledExtensionCount = static_cast<uint32_t>(device_extensions.Size);
@@ -578,33 +640,46 @@ void Application::InitializeSubsystems() {
         device_, physicalDevice_, queue_, commandPool_, descriptorPool_
     );
 
-    // The Vulkan-only vector renderer. It needs a sampler for the ImGui
-    // descriptor binding of its offscreen textures (linear, clamped). Shaders
-    // are compiled to "<cwd>/shaders/*.spv" by the build (copied next to the
-    // exe; the working dir at launch is the binary output dir).
-    {
-        VkSamplerCreateInfo si{};
-        si.sType        = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        si.magFilter    = VK_FILTER_LINEAR;
-        si.minFilter    = VK_FILTER_LINEAR;
-        si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        si.minLod       = -1000.0f;
-        si.maxLod       = 1000.0f;
-        si.maxAnisotropy = 1.0f;
-        vkCreateSampler(device_, &si, g_Allocator, &canvasSampler_);
+    // The Ink render engine (docs/Ink/), adopting the shared device. Needs
+    // the Vulkan 1.3 features detected in SetupVulkan; without them the app
+    // shell still runs and the Viewport shows its placeholder.
+    if (modernVulkanSupported_) {
+        Ink::Renderer::InitInfo ii;
+        ii.instance       = instance_;
+        ii.physicalDevice = physicalDevice_;
+        ii.device         = device_;
+        ii.queue          = queue_;
+        ii.queueFamily    = queueFamily_;
+        // Absolute shader dir from the exe location (the IDE's CWD may be the
+        // project root, where a relative "shaders/ink" would not resolve).
+        ii.shaderDir = "shaders/ink";
+        if (const char* base = SDL_GetBasePath())
+            ii.shaderDir = std::string(base) + "shaders/ink";
+        // Node UI glyph atlas (docs/Ink/NODE_UI.md) — same bare-relative
+        // convention UI::FontManager already uses for "resources/fonts"
+        // (the app's working directory, not the exe's, per that precedent).
+        ii.fontPath = "resources/fonts/noto/noto-sans/NotoSans-Regular.ttf";
+        // Canvas textures register through ImGui's Vulkan backend; Ink itself
+        // never touches ImGui (the hooks keep it headless-capable).
+        ii.textures.user = nullptr;
+        ii.textures.create = [](void*, VkSampler sampler, VkImageView view,
+                                VkImageLayout layout) -> std::uint64_t {
+            return (std::uint64_t)(intptr_t)
+                ImGui_ImplVulkan_AddTexture(sampler, view, layout);
+        };
+        ii.textures.destroy = [](void*, std::uint64_t texture) {
+            ImGui_ImplVulkan_RemoveTexture((VkDescriptorSet)(intptr_t)texture);
+        };
+        ink_ = std::make_unique<Ink::Renderer>();
+        if (!ink_->Initialize(ii)) {
+            fprintf(stderr, "[ink] engine initialisation failed — "
+                            "the Viewport stays on its placeholder\n");
+            ink_.reset();
+        }
+    } else {
+        fprintf(stderr, "[ink] Vulkan 1.3 features unavailable on this device "
+                        "— the Viewport stays on its placeholder\n");
     }
-    // Resolve the shader directory ABSOLUTELY from the executable location, not
-    // the current working directory: when launched from an IDE (F5) the CWD may
-    // be the project root, where "shaders" would not resolve. SDL_GetBasePath()
-    // returns the exe's folder (with a trailing separator), next to which the
-    // build copies the compiled .spv into "shaders/".
-    std::string shaderDir = "shaders";
-    if (const char* base = SDL_GetBasePath())
-        shaderDir = std::string(base) + "shaders";
-    canvasRenderer_.Initialize(device_, physicalDevice_, queue_, queueFamily_,
-                               commandPool_, canvasSampler_, shaderDir);
 }
 
 void Application::ApplyFontTokens() {
@@ -661,13 +736,10 @@ void Application::Shutdown() {
     settingsHost_.Shutdown();
     tokenGraphHost_.Shutdown();
 
-    // Tear down the vector renderer (its offscreen targets/pipeline) and its
-    // sampler while the shared device is still alive.
-    canvasRenderer_.Shutdown();
-    if (canvasSampler_) {
-        vkDestroySampler(device_, canvasSampler_, g_Allocator);
-        canvasSampler_ = VK_NULL_HANDLE;
-    }
+    // Ink teardown: before ImGui's Vulkan backend dies (the texture-destroy
+    // hooks call ImGui_ImplVulkan_RemoveTexture) and before the shared device
+    // is destroyed.
+    if (ink_) { ink_->Shutdown(); ink_.reset(); }
 
     DesignSystem::DesignSystem::Instance().Shutdown();
     Shortcuts::ShortcutManager::Instance().Shutdown();

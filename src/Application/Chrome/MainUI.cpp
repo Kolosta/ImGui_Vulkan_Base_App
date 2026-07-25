@@ -1,4 +1,4 @@
-#include "Application.h"
+﻿#include "Application.h"
 #include "PngWrite.h"
 #include <Shell/ShellIntegration.h>
 #include <SDL3/SDL.h>
@@ -48,10 +48,12 @@ void Application::RenderMainLayout() {
         ImGuiWindowFlags_NoScrollWithMouse     |
         ImGuiWindowFlags_NoDocking;
 
+    ImGuiWindowFlags layoutFlags = kFlags;
+
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding,   0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,    ImVec2(0.0f, 0.0f));
-    ImGui::Begin("##MainLayout", nullptr, kFlags);
+    ImGui::Begin("##MainLayout", nullptr, layoutFlags);
     ImGui::PopStyleVar(3);
 
     // Reserve space for the bottom status bar. ImGui inserts ItemSpacing.y
@@ -98,8 +100,10 @@ void Application::RenderStatusBar() {
 void Application::RegisterCoreEditors() {
     auto& reg = EditorRegistry::Instance();
 
-    // Viewport — the vector canvas. Draws its own chrome edge-to-edge: no scroll
-    // wrap, no content inset. Carries the big editor top bar (mode/pivot/page).
+    // Viewport — the Ink vector canvas + the editing loop (docs/Ink/ROADMAP.md
+    // Lot 8). Draws its own chrome edge-to-edge (no scroll wrap, no content
+    // inset) and carries the editor top bar (mode/orientation/pivot/snap +
+    // overlay). Controls whose Ink feature has not landed yet are greyed.
     {
         EditorDescriptor d;
         d.id = CoreEditor::Viewport; d.name = "Viewport"; d.icon = "image";
@@ -108,197 +112,72 @@ void Application::RegisterCoreEditors() {
         d.wrapInScroll = false; d.contentInset = false;
         d.draw = [this](ImVec2 sz, EditorState& st) { RenderViewport(sz, st); };
         d.topBar = [this](EditorState& st, EditorBar& bar) {
-            auto& ds = DesignSystem::DesignSystem::Instance();
-            const float gs = ds.GetGlobalScale();
-            EditorState* pst = &st;
-
-            // LEFT: Object/Edit mode + ruler-space dropdowns + fill/stroke swatches.
-            bar.left.width = (110.0f + 6.0f + 130.0f + 6.0f + 52.0f) * gs;
-            bar.left.draw  = [this, gs](ImVec2 pos, float) {
-                ImGui::SetCursorPos(pos);
-                const bool canEdit = project_.document.HasSelection();
-                { UI::DropdownConfig cfg; cfg.id = "##editormode";
-                  cfg.triggerLabel = (editorMode_ == EditorMode::Edit) ? "Edit Mode" : "Object Mode";
-                  { UI::DropdownItem it; it.label="Object Mode"; it.tooltip="Select and transform whole objects"; cfg.items.push_back(it); }
-                  { UI::DropdownItem it; it.label="Edit Mode"; it.tooltip="Edit an object's points, edges and faces"; it.enabled=canEdit; cfg.items.push_back(it); }
-                  cfg.selectedIndex = (editorMode_==EditorMode::Edit)?1:0;
-                  UI::DropdownResult r = UI::Dropdown(cfg);
-                  if (r.changed) { if (r.selected==0) editorMode_=EditorMode::Object;
-                                   else if (r.selected==1 && canEdit) editorMode_=EditorMode::Edit; } }
-            };
-            {
-                auto baseDraw = bar.left.draw;
-                bar.left.draw = [this, gs, baseDraw, pst](ImVec2 pos, float bh) {
-                    baseDraw(pos, bh);
-                    ImGui::SameLine(0.0f, 6.0f * gs);
-                    using RS = EditorState::RulerSpace;
-                    UI::DropdownConfig cfg; cfg.id = "##rulerspace";
-                    cfg.triggerLabel = (pst->rulerSpace==RS::Page)?"Page rulers":"Viewport rulers";
-                    { UI::DropdownItem it; it.label="Viewport rulers"; it.tooltip="Rulers show absolute document coordinates"; cfg.items.push_back(it); }
-                    { UI::DropdownItem it; it.label="Page rulers"; it.tooltip="Rulers show coordinates relative to the selected page"; cfg.items.push_back(it); }
-                    cfg.selectedIndex = (pst->rulerSpace==RS::Page)?1:0;
-                    UI::DropdownResult r = UI::Dropdown(cfg);
-                    if (r.changed) pst->rulerSpace = (r.selected==1)?RS::Page:RS::Viewport;
-                    // Default fill / stroke colour swatches (filled disc = fill, ring
-                    // = stroke), right of the ruler dropdown. New shapes/curves use them.
-                    ImGui::SameLine(0.0f, 8.0f * gs);
-                    DrawDefaultColorSwatches(bh);
-                };
-            }
-
-            // MIDDLE: Transform Orientation + Pivot Point + Snap group widget. The
-            // three flow with the SAME small gap as the left/right groups (SameLine),
-            // so the dropdowns auto-size and sit tight together (no wide fixed slots).
-            const float kOrientW = 130.0f * gs;
-            const float kPivotW  = 175.0f * gs;
-            const float kSnapW   = 150.0f * gs;   // magnet button + mode trigger
-            const float kMidGap  = 6.0f * gs;
-            bar.middle.width = kOrientW + kMidGap + kPivotW + kMidGap + kSnapW;
-            bar.middle.draw  = [this, kSnapW, kMidGap](ImVec2 pos, float) {
-                // Transform Orientation: Global / Local / View / Cursor / Parent.
-                ImGui::SetCursorPos(pos);
-                static const char* kOrients[] = { "Global","Local","View","Cursor","Parent" };
-                static const char* kOrientTips[] = {
-                    "Transform along the document axes",
-                    "Transform along the active object's own axes",
-                    "Transform along the view axes",
-                    "Transform along the 2D cursor's axes",
-                    "Transform along the active object's parent axes" };
-                { UI::DropdownConfig cfg; cfg.id="##orient"; cfg.triggerIcon="crop-free";
-                  cfg.triggerLabel = kOrients[(int)transformOrientation_];
-                  for (int i=0;i<5;++i){ UI::DropdownItem it; it.label=kOrients[i];
-                      it.tooltip=kOrientTips[i]; cfg.items.push_back(it); }
-                  cfg.selectedIndex=(int)transformOrientation_;
-                  UI::DropdownResult r = UI::Dropdown(cfg);
-                  if (r.changed && r.selected>=0 && r.selected<5)
-                      transformOrientation_=(TransformOrientation)r.selected;
-                }
-                // Transform Pivot Point — flows right after, same gap as left group.
-                ImGui::SameLine(0.0f, kMidGap);
-                static const char* kPivots[] = { "Bounding Box Center","2D Cursor",
-                    "Individual Origins","Median Point","Active Element" };
-                static const char* kTips[] = {
-                    "Pivot at the centre of the selection's bounding box",
-                    "Pivot at the 2D cursor",
-                    "Each object rotates/scales about its own origin",
-                    "Pivot at the median of the selected origins",
-                    "Pivot at the active (last-selected) object" };
-                { UI::DropdownConfig cfg; cfg.id="##pivot"; cfg.triggerIcon="crop-free";
-                  cfg.triggerLabel = kPivots[(int)pivotMode_];
-                  for (int i=0;i<5;++i){ UI::DropdownItem it; it.label=kPivots[i]; it.tooltip=kTips[i]; cfg.items.push_back(it); }
-                  cfg.selectedIndex=(int)pivotMode_;
-                  UI::DropdownResult r = UI::Dropdown(cfg);
-                  if (r.changed && r.selected>=0 && r.selected<5) pivotMode_=(PivotMode)r.selected;
-                }
-                // Snap group widget — flows right after with the same gap.
-                ImGui::SameLine(0.0f, kMidGap);
-                DrawSnapWidget(ImGui::GetCursorPos(), kSnapW);
-            };
-
-            // RIGHT: a single ICON-ONLY "Viewport overlay" dropdown that gathers the
-            // page-layout mode, the per-page show/hide list, the 2D-cursor toggle and
-            // the performance-metrics toggle into one organised menu.
-            const float h = ds.GetFloat(DesignSystem::Tok::S_Size_ControlHeight) * gs;
-            bar.right.width = h + 6.0f * gs;     // just the overlay dropdown trigger
-            bar.right.draw  = [this, gs, h, pst](ImVec2 pos, float) {
-                auto& ds2 = DesignSystem::DesignSystem::Instance();
-                ImGui::SetCursorPos(pos);
-
-                static const PageLayoutMode kModes[] = {
-                    PageLayoutMode::Manual, PageLayoutMode::LeftToRight, PageLayoutMode::RightToLeft,
-                    PageLayoutMode::TopToBottom, PageLayoutMode::BottomToTop, PageLayoutMode::Grid,
-                    PageLayoutMode::BookLeft, PageLayoutMode::BookRight,
-                    PageLayoutMode::SinglePage, PageLayoutMode::SingleBookLeft, PageLayoutMode::SingleBookRight };
-                constexpr int kModeCount = (int)(sizeof(kModes)/sizeof(kModes[0]));
-                const float bodyW = 230.0f * gs;
-                const float bodyH = 360.0f * gs;
-
-                UI::DropdownConfig ov;
-                ov.id = "##viewportOverlay";
-                ov.triggerIcon = "image-aspect-ratio";   // icon-only trigger
-                ov.triggerLabel = "";
-                ov.menuSize = ImVec2(bodyW, bodyH);
-                ov.bodyDraw = [this, &ds2, gs, pst, bodyW]() {
-                    auto subtle = [&](const char* s){
-                        ImGui::PushStyleColor(ImGuiCol_Text, ds2.GetColor(DesignSystem::Tok::S_Color_Text_Subtle));
-                        ImGui::TextUnformatted(s); ImGui::PopStyleColor();
-                    };
-                    // ── Page layout (nested dropdown) ──
-                    subtle("Page layout");
-                    {
-                        UI::DropdownConfig pl; pl.id = "##plmode";
-                        pl.triggerLabel = PageLayoutModeName(pst->pageLayout.mode);
-                        int cur = 0;
-                        for (int i = 0; i < kModeCount; ++i) {
-                            UI::DropdownItem it; it.label = PageLayoutModeName(kModes[i]);
-                            pl.items.push_back(it);
-                            if (kModes[i] == pst->pageLayout.mode) cur = i;
-                        }
-                        pl.selectedIndex = cur;
-                        UI::DropdownResult r = UI::Dropdown(pl);
-                        if (r.changed && r.selected >= 0 && r.selected < kModeCount)
-                            pst->pageLayout.mode = kModes[r.selected];
-                    }
-                    ImGui::Separator();
-                    // ── Pages shown in this viewport (per-page checkboxes) ──
-                    subtle("Show pages");
-                    {
-                        auto& doc = project_.document;
-                        auto& hidden = pst->pageLayout.hiddenPages;
-                        for (const auto& ab : doc.artboards) {
-                            bool shown = std::find(hidden.begin(), hidden.end(), ab.id) == hidden.end();
-                            ImGui::PushID((int)ab.id);
-                            if (UI::Checkbox("##abShown", ab.name.c_str(), &shown)) {
-                                if (!shown) {
-                                    int shownCount = 0;
-                                    for (const auto& a2 : doc.artboards)
-                                        if (std::find(hidden.begin(), hidden.end(), a2.id) == hidden.end()) ++shownCount;
-                                    if (shownCount > 1) hidden.push_back(ab.id);
-                                } else {
-                                    hidden.erase(std::remove(hidden.begin(), hidden.end(), ab.id), hidden.end());
-                                }
-                            }
-                            ImGui::PopID();
-                        }
-                    }
-                    ImGui::Separator();
-                    // ── Overlays ──
-                    subtle("Overlays");
-                    UI::Checkbox("##show2dcursor", "2D cursor", &show2DCursor_);
-                    UI::Checkbox("##showmetrics",  "Performance metrics", &showMetrics_);
-                };
-                UI::DropdownResult r = UI::Dropdown(ov);
-                (void)r;
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal))
-                    UI::DrawTooltip("Viewport overlays (page layout, pages, cursor, metrics)",
-                                    ImGui::GetIO().MousePos);
-            };
+            BuildViewportTopBar(st, bar);
         };
         reg.Register(std::move(d));
     }
 
-    // Outliner — object/collection/page tree. Has its own top bar.
+    // Outliner — object organisation trees on the Ink model (Lot 9): a Layers
+    // view (pages → layer trees, z-order/visibility) and a Collections view.
     {
         EditorDescriptor d;
         d.id = CoreEditor::Outliner; d.name = "Outliner"; d.icon = "checklist";
         d.column = 2; d.themeScope = "editors/outliner";
         d.switchAction = "editor.outliner";
-        // No content inset: the zebra stripes / selection bands run flush to the
-        // editor's left edge (Blender-style). The overlay scrollbar still keeps its
-        // own right gutter via BeginScroll, so only the left/top padding is dropped.
+        // No content inset: the selection bands run flush to the editor's left
+        // edge (Blender-style). The editor owns its OWN overlay scrollbar
+        // (BeginScroll, needed by the row culling) — do NOT let the zone wrap it
+        // in a second one, which would reserve an empty right gutter.
         d.contentInset = false;
+        d.wrapInScroll = false;
         d.draw   = [this](ImVec2, EditorState& st) { RenderOutliner(st); };
         d.topBar = [this](EditorState& st, EditorBar& bar) { BuildOutlinerTopBar(st, bar); };
         reg.Register(std::move(d));
     }
 
-    // Properties — selected object's properties.
+    // Properties — the active object's transform + unified style (Lot 9).
     {
         EditorDescriptor d;
         d.id = CoreEditor::Properties; d.name = "Properties"; d.icon = "settings";
         d.column = 2; d.themeScope = "editors/properties";
         d.switchAction = "editor.properties";
-        d.draw = [this](ImVec2, EditorState&) { RenderProperties(); };
+        // Owns its own overlay scrollbar (BeginScroll inside RenderProperties) —
+        // don't double-wrap (that reserved the spurious empty right gutter).
+        d.wrapInScroll = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderProperties(st); };
+        d.topBar = [this](EditorState& st, EditorBar& bar) {
+            BuildPropertiesTopBar(st, bar);
+        };
+        reg.Register(std::move(d));
+    }
+
+    // Stroke editor — the stroke stack of the WHOLE selection (or, with no
+    // selection, the default strokes used for new objects). Fill editor: same
+    // for fills. Both reuse the Properties Paint stack UI (PaintEditors.cpp).
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::StrokeEd; d.name = "Stroke"; d.icon = "draw";
+        d.column = 2; d.themeScope = "editors/properties";
+        d.draw = [this](ImVec2, EditorState& st) { RenderStrokeEditor(st); };
+        reg.Register(std::move(d));
+    }
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::FillEd; d.name = "Fill"; d.icon = "colorize";
+        d.column = 2; d.themeScope = "editors/properties";
+        d.draw = [this](ImVec2, EditorState& st) { RenderFillEditor(st); };
+        reg.Register(std::move(d));
+    }
+    // Strokes & Fills — the active shape's paint pieces as the ONE stack they
+    // are painted in, so a stroke can be dragged under a fill.
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::PaintStack; d.name = "Strokes & Fills";
+        d.icon = "align-justify-center";
+        d.column = 2; d.themeScope = "editors/properties";
+        d.switchAction = "editor.paintstack";
+        d.wrapInScroll = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderPaintStackEditor(st); };
         reg.Register(std::move(d));
     }
 
@@ -349,64 +228,65 @@ void Application::RegisterCoreEditors() {
         d.id = CoreEditor::Info; d.name = "Info"; d.icon = "format-align-left";
         d.column = 2; d.themeScope = "editors/info";
         d.switchAction = "editor.info";
-        d.wrapInScroll = false;
+        // The feed draws the shared zebra rows, which run edge to edge: an
+        // editor inset would leave a strip of panel down the left of every
+        // stripe.
+        d.wrapInScroll = false; d.contentInset = false;
         d.draw = [this](ImVec2, EditorState&) { RenderInfoEditor(); };
+        reg.Register(std::move(d));
+    }
+
+    // Node Graph — the ACTIVE object's Compositing Graph, shown/edited on its
+    // own 100%-Vulkan canvas (docs/Ink/NODE_GRAPH.md §5, docs/Ink/NODE_UI.md,
+    // ROADMAP Lot 13) — no ImGui widget draws inside it. Follows edit_.active
+    // automatically (Blender-style — no manual "open" step, same pattern as
+    // Properties). Own pan/zoom canvas, no scroll wrap/inset (mirrors Viewport).
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::NodeGraph; d.name = "Node Graph"; d.icon = "polyline";
+        d.column = 0; d.themeScope = "editors/nodegraph";
+        d.switchAction = "editor.nodegraph";
+        d.wrapInScroll = false; d.contentInset = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderNodeGraphEditor(st); };
+        reg.Register(std::move(d));
+    }
+
+    // Palette — the document colour table: named colours any paint may
+    // follow, each optionally carrying its CMYK, its place in the plate
+    // stack and whether it overprints (Editors/Palette/Palette.cpp).
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::Palette; d.name = "Palette"; d.icon = "format-color-text";
+        d.column = 2; d.themeScope = "editors/outliner";
+        // Flush bands and its OWN overlay scrollbar, like the Outliner: the
+        // zone must add neither an inset nor a second scroll area, or the rows
+        // end up with a margin on every side.
+        d.contentInset = false;
+        d.wrapInScroll = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderPalette(st); };
+        reg.Register(std::move(d));
+    }
+
+    // Colour Usage — every colour the document paints with, in print
+    // order, expandable to the objects and the exact pieces using it.
+    {
+        EditorDescriptor d;
+        d.id = CoreEditor::ColorUsage; d.name = "Colour Usage";
+        d.icon = "checklist";
+        d.column = 2; d.themeScope = "editors/outliner";
+        // Same deal as the Outliner: flush bands and its OWN overlay scrollbar,
+        // so the zone must not wrap it in a second one (that reserved gutter is
+        // the stray right margin).
+        d.contentInset = false;
+        d.wrapInScroll = false;
+        d.draw = [this](ImVec2, EditorState& st) { RenderColorUsage(st); };
         reg.Register(std::move(d));
     }
 }
 
-// Regenerate the .acu thumbnail PNG from the chosen page/region. Frames the
-// region into a max-256px image (aspect-preserving), renders it offscreen via
-// the Vulkan canvas renderer, and PNG-encodes the result into project_.
-
-// No-arg form: use the project's stored framing (default whole Page 1).
-void Application::Action_UpdateThumbnail() {
-    Action_UpdateThumbnail(project_.thumbArtboard,
-                           project_.thumbRegionMin, project_.thumbRegionSize);
-}
-
-void Application::Action_UpdateThumbnail(int ab,
-                                         Renderer::Vec2 rmin,
-                                         Renderer::Vec2 rsz) {
-    auto& doc = project_.document;
-    if (ab < 0 || ab >= (int)doc.artboards.size()) ab = 0;
-    if (doc.artboards.empty()) return;
-    const Renderer::Artboard& art = doc.artboards[(size_t)ab];
-
-    // Region in doc-units: explicit sub-region, else the whole artboard.
-    if (rsz.x <= 1.0f || rsz.y <= 1.0f) { rmin = art.pos; rsz = art.size; }
-    if (rsz.x <= 1.0f || rsz.y <= 1.0f) return;
-
-    // Fit the region into a 256-px box, preserving aspect.
-    const int kMax = 256;
-    float aspect = rsz.x / rsz.y;
-    int W = kMax, H = kMax;
-    if (aspect >= 1.0f) H = std::max(1, (int)std::lround(kMax / aspect));
-    else                W = std::max(1, (int)std::lround(kMax * aspect));
-
-    Renderer::Camera cam;
-    cam.unitScale = 1.0f;
-    cam.zoom = (float)W / rsz.x;     // region width → image width
-    cam.panX = rmin.x;               // doc point rmin maps to pixel (0,0)
-    cam.panY = rmin.y;
-
-    std::vector<unsigned char> rgba;
-    ImVec4 backdrop(1, 1, 1, 1);     // white page backdrop for the thumbnail
-    if (!canvasRenderer_.RenderToRGBA(doc, cam, W, H, backdrop, rgba)) return;
-
-    std::vector<uint8_t> pngBytes;
-    if (App::png::EncodeRGBA(rgba.data(), W, H, pngBytes)) {
-        project_.thumbnailPng  = std::move(pngBytes);
-        project_.thumbArtboard = ab;
-        // Persist the framing: a whole-page render clears the sub-region (so a
-        // later page resize re-frames the whole page); a Zone render stores it.
-        bool wholePage = (rmin.x == art.pos.x && rmin.y == art.pos.y &&
-                          rsz.x == art.size.x && rsz.y == art.size.y);
-        project_.thumbRegionMin  = wholePage ? Renderer::Vec2{0, 0} : rmin;
-        project_.thumbRegionSize = wholePage ? Renderer::Vec2{0, 0} : rsz;
-        project_.dirty = true;
-    }
-}
+// (The .acu thumbnail generation — offscreen render + PNG encode into the
+// project — was part of the old engine stack; it returns with Ink's headless
+// render path in ROADMAP Lot 10.)
 
 namespace {
 // Pack several RGBA sizes into a single PNG-embedded .ico (ICONDIR + entries).
@@ -508,176 +388,6 @@ void Application::SetWindowIconFromLogo() {
     // surfaces (and their alternates) can be freed now.
     SDL_DestroySurface(icon);
 }
-
-// ── Left toolbar ──────────────────────────────────────────────────────────────
-
-// A real, minimal tool palette (Photoshop/Affinity-style): a narrow single
-// column of small icon buttons for the *actual* tools only, with a settings
-// button pinned at the bottom. Compact, light surface (token-driven, not the
-// accent colour), active tool highlighted.
-void Application::RenderToolbar() {
-    auto& ds      = DesignSystem::DesignSystem::Instance();
-    auto& iconMgr = VectorGraphics::IconManager::Instance();
-    auto& sm      = Shortcuts::ShortcutManager::Instance();
-    auto& tm      = Shortcuts::Tools::ToolManager::Instance();
-
-    const float gs    = ds.GetGlobalScale();
-    const float kBtn  = 28.0f * gs;             // small, like a real toolbar
-    const float kPad  = 4.0f  * gs;
-    const float width = kBtn + kPad * 2.0f;
-    toolbarWidth_ = width;
-
-    // Light surface from the design system (NOT accent/primary).
-    ImVec4 barBg   = ds.GetColor(DesignSystem::Tok::S_Color_Background_Layer1);
-    ImVec4 btnBg   = ds.GetColor(DesignSystem::Tok::C_IconButton_Background);
-    ImVec4 btnHov  = ds.GetColor(DesignSystem::Tok::C_IconButton_BackgroundHover);
-    ImVec4 btnActC = ds.GetColor(DesignSystem::Tok::S_Color_Accent_Default);
-    ImVec4 iconCol = ds.GetColor(DesignSystem::Tok::S_Color_Text_Default);
-
-    ImGui::PushStyleColor(ImGuiCol_ChildBg,          barBg);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(kPad, kPad));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,   ImVec2(0.0f, kPad));
-
-    if (ImGui::BeginChild("##Toolbar", ImVec2(width, 0.0f), false,
-                          ImGuiWindowFlags_NoScrollbar |
-                          ImGuiWindowFlags_NoScrollWithMouse))
-    {
-        sm.RegisterRegionContext("##Toolbar", "", "toolbar");
-        DesignSystem::DesignSystem::ZoneStyle zone("toolbar", "Toolbar");
-
-        const std::string activeTool = tm.GetActiveTool();
-
-        // Legacy standalone palette (unused — the live palette floats inside the
-        // Viewport now). Kept data-driven from ToolManager so it never drifts.
-        struct ToolDef {
-            const char* key;       // ToolManager id
-            const char* icon;      // icon id
-            const char* tip;       // tooltip label
-            const char* shortcut;  // shortcut action id
-        };
-        const ToolDef tools[] = {
-            { "tool.select", "select",         "Select",    "tool.select.activate"   },
-            { "tool.rect",   "crop-landscape", "Rectangle", "tool.rect.activate"     },
-        };
-
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,  ImVec2(0.0f, 0.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding,
-                            ds.GetFloat(DesignSystem::Tok::C_IconButton_CornerRadius) * gs);
-
-        auto iconButton = [&](const char* id, const char* icon,
-                              const char* tip, const char* shortcut,
-                              bool selected) -> bool {
-            ImGui::PushID(id);
-            ImGui::PushStyleColor(ImGuiCol_Button,
-                                  selected ? btnActC : btnBg);
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                                  selected ? btnActC : btnHov);
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, btnActC);
-            bool clicked = ImGui::Button("##b", ImVec2(kBtn, kBtn));
-            ImGui::PopStyleColor(3);
-
-            if (ImGui::IsItemHovered()) {
-                ImGui::BeginTooltip();
-                ImGui::TextUnformatted(tip);
-                std::string sc = sm.GetShortcutString(shortcut);
-                if (!sc.empty()) ImGui::TextDisabled("Shortcut: %s", sc.c_str());
-                ImGui::EndTooltip();
-            }
-
-            const float  isz = kBtn * 0.62f;
-            const ImVec2 bmin = ImGui::GetItemRectMin();
-            const ImVec2 ipos = { bmin.x + (kBtn - isz) * 0.5f,
-                                  bmin.y + (kBtn - isz) * 0.5f };
-            auto md = iconMgr.GetDefaultMetadata(icon);
-            // Single-zone (ds-primary) icons tint to the toolbar text colour.
-            if (!md.colorZones.empty()) md.colorZones[0].customColor = iconCol;
-            iconMgr.RenderIcon(ImGui::GetWindowDrawList(), icon, ipos, isz, md);
-            ImGui::PopID();
-            return clicked;
-        };
-
-        for (const ToolDef& t : tools) {
-            if (iconButton(t.key, t.icon, t.tip, t.shortcut,
-                           activeTool == t.key))
-                Action_ActivateNamedTool(t.key);
-        }
-
-        // Push the settings button to the bottom.
-        float used = ImGui::GetCursorPosY();
-        float avail = ImGui::GetWindowHeight();
-        float gap = avail - used - kBtn - kPad;
-        if (gap > 0.0f) ImGui::Dummy(ImVec2(0.0f, gap));
-
-        if (iconButton("app.tokenGraph", "background-grid-small", "Token Graph",
-                       "app.toggleTokenGraph", showTokenGraph_))
-            Action_ToggleTokenGraph();
-
-        if (iconButton("app.settings", "settings", "Settings",
-                       "app.toggleSettings", showSettings_))
-            Action_ToggleSettings();
-
-        ImGui::PopStyleVar(2);
-    }
-    ImGui::EndChild(); // ##Toolbar
-
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
-}
-
-// Two swatches in the Viewport top bar for the DEFAULT fill / stroke colours used
-// by new shapes & curves: a filled disc (fill) and a ring (stroke). Clicking a
-// swatch opens an ImGui colour picker popup; the choice updates defaultFill_ /
-// defaultStroke_. Drawn with the design-system border token so they match the bar.
-void Application::DrawDefaultColorSwatches(float barH) {
-    auto& ds = DesignSystem::DesignSystem::Instance();
-    const float gs = ds.GetGlobalScale();
-    const float d  = 18.0f * gs;                       // swatch diameter
-    const float gap = 6.0f * gs;
-    ImU32 border = ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::C_Dropdown_Border));
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-
-    auto swatch = [&](const char* id, Renderer::Color& col, bool ring) {
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        // Vertically centre the swatch in the bar.
-        float yoff = (barH > 0.0f) ? (barH - d) * 0.5f : 0.0f;
-        ImVec2 c{ p.x + d * 0.5f, p.y + yoff + d * 0.5f };
-        ImGui::InvisibleButton(id, ImVec2(d, d + (yoff > 0 ? yoff * 2 : 0)));
-        bool hovered = ImGui::IsItemHovered();
-        ImU32 fill = ImGui::ColorConvertFloat4ToU32(ImVec4(col.r, col.g, col.b, 1.0f));
-        if (ring) {
-            // Stroke swatch: a thick ring (hollow centre) so it reads as "contour".
-            dl->AddCircleFilled(c, d * 0.5f, fill, 24);
-            dl->AddCircleFilled(c, d * 0.28f,
-                ImGui::GetColorU32(ds.GetColor(DesignSystem::Tok::S_Color_Background_Layer1)), 24);
-        } else {
-            dl->AddCircleFilled(c, d * 0.5f, fill, 24);
-        }
-        dl->AddCircle(c, d * 0.5f, border, 24, hovered ? 2.0f : 1.0f);
-        if (hovered)
-            UI::DrawTooltip(ring ? "Default stroke colour (new shapes)"
-                                 : "Default fill colour (new shapes)",
-                            ImGui::GetIO().MousePos);
-        if (ImGui::IsItemClicked()) ImGui::OpenPopup(id);
-        if (ImGui::BeginPopup(id)) {
-            DesignSystem::DesignSystem::ZoneStyle zone("editors/viewport", "Viewport");
-            float rgba[4] = { col.r, col.g, col.b, col.a };
-            if (ImGui::ColorPicker4("##pick", rgba,
-                    ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_NoSidePreview)) {
-                col.r = rgba[0]; col.g = rgba[1]; col.b = rgba[2]; col.a = rgba[3];
-            }
-            ImGui::EndPopup();
-        }
-    };
-
-    swatch("##fillCol", defaultFill_, /*ring=*/false);
-    ImGui::SameLine(0.0f, gap);
-    swatch("##strokeCol", defaultStroke_, /*ring=*/true);
-}
-
-// ── Floating tool palette, drawn as an overlay inside the canvas ──────────────
-// Real tools (Brush / Eraser / Hand), pinned to the left edge inside the
-// viewport like Affinity / Illustrator. A child window so it overlaps the
-// canvas content.
 
 void Application::RenderMainContent() {
     // The demo/test panels moved to the floating "Dev Test Window". This

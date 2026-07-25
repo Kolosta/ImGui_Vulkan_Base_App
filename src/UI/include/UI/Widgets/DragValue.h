@@ -1,5 +1,6 @@
 #pragma once
 
+#include <UI/Units.h>
 #include <imgui.h>
 #include <string>
 
@@ -22,8 +23,12 @@
 //     value), as does right-click / Esc during a drag.
 //   • The displayed value is truncated to `displayDecimals` for readability
 //     only; the stored value keeps full precision.
-//   • An optional `unit` suffix is appended to the display ("mm", "°", "pt", …)
-//     and, when the per-modifier steps are left at 0, drives sensible defaults.
+//   • UNIT-AWARE: when `quantity` is Length/Angle/Percent, `*v` is the BASE
+//     value (px / degrees / 0..1 fraction). The field CONVERTS to the active
+//     display unit — the maths, drag, steps and label all run in display units;
+//     manual edit hides the unit, accepts a Blender-style expression with any
+//     compatible unit tag, and stores back the base (see UI::Units). With
+//     `quantity == Scalar` it stays a plain number with the fixed `unit` suffix.
 //
 //  Returns true on any frame the value changed (drag tick, step button, or a
 //  committed manual edit). A cancelled edit/drag does NOT report a change.
@@ -33,12 +38,31 @@ namespace UI {
 
 struct DragValueConfig {
     const char* id = "##drag";        // unique within the current ImGui id stack
-    float speed = 1.0f;               // value change per pixel of drag
-    float min = 0.0f;                 // clamp range; min==max (e.g. 0,0) = unbounded
+    float speed = 1.0f;               // value change per pixel of drag (display units)
+    float min = 0.0f;                 // clamp range (BASE units); min==max = unbounded
     float max = 0.0f;
     int   displayDecimals = 3;        // decimals shown at rest (display only)
-    const char* unit = "";            // suffix shown after the number ("mm","°",…)
+    const char* unit = "";            // Scalar-only fixed suffix ("×", "px",…)
+    // Draw the unit BEFORE the value instead of after it. What reads naturally
+    // depends on the quantity: "12 mm" but "C 56" — a channel name prefixes the
+    // amount it labels.
+    bool  unitBeforeValue = false;
+    // Below this width the +/- step buttons are dropped and the field is drag /
+    // double-click only: at narrow sizes they eat the room the NUMBER needs,
+    // and a value you cannot read is worse than one you cannot nudge. Measured
+    // in ui-units; re-evaluated every frame, so they come back on their own
+    // when the panel is widened.
+    float minButtonsUiUnits = 4.0f;
     float width = 0.0f;               // 0 = use the available content width
+
+    // Unit awareness. Length/Angle/Percent → `*v` is the BASE value, converted
+    // to the display unit; Scalar → a plain number with the `unit` suffix.
+    Units::Quantity    quantity = Units::Quantity::Scalar;
+    Units::LengthScale scale    = Units::LengthScale::Normal;
+    // Which unit SYSTEM to display in: useDocSystem (default) = the document
+    // system; otherwise `system` (a viewport's rulers / N-panel pass their own).
+    bool               useDocSystem = true;
+    Units::UnitSystem  system       = Units::UnitSystem::Pixel;
 
     // Per-modifier increments. 0 = auto (derived from `speed`/`unit`/magnitude,
     // Blender-style). Override to pin exact behaviour for a given field.

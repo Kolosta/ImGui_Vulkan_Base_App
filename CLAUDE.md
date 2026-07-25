@@ -23,7 +23,9 @@ authoring contract, see `docs/SVG_FORMAT.md`.
 
 ## Architecture
 
-The application is a vector graphics editor (built on a design-system foundation) with six static library subsystems linked into one executable. The vector document is rendered **exclusively in Vulkan** (`src/Renderer/`); ImGui drives only the application interface.
+The application is a vector graphics editor (built on a design-system foundation) made of static library subsystems linked into one executable.
+
+**ENGINE REWRITE IN PROGRESS (Ink).** The previous rendering stack — the legacy `Renderer` engine, the `Compositor` engine, the old document model and every application file coupled to them (Viewport tools/edit mode, Outliner/Properties implementations, `.acu` v1 codec, snapshot undo, IofMapping module) — is **quarantined under `src/_legacy/`**: kept in the tree for behavioural reference, removed from the build, and **must never be included or copied from**. Its replacement, the **Ink** engine (document model + scene + geometry + Vulkan render graph, 100 % Vulkan canvas), is specified in `docs/Ink/` (`ARCHITECTURE.md`, `DOCUMENT_MODEL.md`, `RENDER_GRAPH.md`, `GEOMETRY.md`, `PERF_TESTING.md`, `ROADMAP.md`) and is built lot by lot into `src/Ink/`. The Viewport / Outliner / Properties editors are placeholders until their Ink lots land.
 
 ### Application Layer (`src/Application/`)
 
@@ -31,27 +33,27 @@ Organised by responsibility (not "everything in Core"). `Application` owns the
 Vulkan + SDL3 + ImGui lifecycle; its methods are split across folders by concern:
 
 - `App/` — technical core: `Application.cpp` (main loop: `ProcessEvents() → Update()
-  → Render() → Present()`), `ApplicationInit.cpp` (Vulkan device/swapchain setup,
-  subsystem init, the borderless hit-test), `SecondaryWindow.*` (detached OS window).
+  → Render() → Present()`), `ApplicationInit.cpp` (Vulkan 1.3 device/swapchain setup,
+  subsystem init, the borderless hit-test), `Actions.cpp` (generic actions),
+  `PrefsUndo.cpp` (Preferences undo history), `SecondaryWindow.*` (detached OS window).
 - `Chrome/` — window chrome: `TitleBar.cpp` (custom borderless title bar + window
-  ops), `Splash.cpp` (start screen / About), `MainUI.cpp` (toolbar + docking layout
-  host + status-bar host).
-- `Editors/<Editor>/` — one folder per editor, each with its own complexity:
-  `Viewport/` (`Viewport.cpp` canvas + `ViewportTools.cpp` drawing-tool state machine
-  + `EditMode.cpp` vertex/edge/handle editing), `Outliner/` (object/collection/page
-  tree + `OutlinerState.h`), `Properties/`, `Info/`.
-- `Project/` — `Project.h` (shared project, wraps a `Renderer::Document`),
-  `ProjectFile.cpp` (the `.acu` file format, see `docs/acu-format.md`), `Undo.cpp` +
-  `UndoStack.h` (snapshot undo/redo).
-- `Layout/` — the Blender-style dynamic zone tree (`ZoneLayout*`, `PageLayout`).
+  ops), `Splash.cpp` (start screen / About), `MainUI.cpp` (layout host + status-bar
+  host + core editor registration).
+- `Editors/<Editor>/` — one folder per editor. `Viewport/`, `Outliner/` (+ the
+  engine-agnostic `OutlinerState.h`) and `Properties/` are placeholders awaiting
+  Ink; `Info/` (action feed + dev data editor) is live.
+- `Project/` — `Project.h` (transitional: name/path/dirty/module bookkeeping only)
+  and the generic `UndoStack.h`. The document model and `.acu` v2 return with Ink
+  (ROADMAP Lots 2 and 10; the v1 format doc `docs/acu-format.md` describes the
+  quarantined codec).
+- `Layout/` — the Blender-style dynamic zone tree (`ZoneLayout*`, `EditorRegistry`).
 - `Util/` — small self-contained helpers (`PngWrite.h`).
 - `Dev/` — debug/test panels and the design-system window (`DevPanels.cpp`,
   `Windows.cpp`).
 
 Every sub-folder is on the include path, so source files use flat includes
-(`#include "Application.h"`, `"ZoneLayout.h"`, `"ViewportTools.h"`) regardless of
-folder. All three major subsystems are singletons initialized in
-`InitializeSubsystems()`.
+(`#include "Application.h"`, `"ZoneLayout.h"`) regardless of folder. All three
+major subsystems are singletons initialized in `InitializeSubsystems()`.
 
 **Editors are registry-based, not a fixed enum.** `EditorRegistry`
 (`Layout/EditorRegistry.h`) maps a string id (`core.viewport`, `iof.mapsettings`,
@@ -70,10 +72,12 @@ layout/editors/Shift+A/capabilities. `ModuleAPI.h` is the stable contract (the o
 header an external plugin needs); `IModule` is the interface; `ModuleHost` (which
 `Application` implements) is the slice of app services a module may drive.
 `ModuleRegistry` holds the catalogue; internal modules are built in
-`RegisterInternal()` (`Typography/`, `IofMapping/`); external DLL plugins are
-designed-for but not yet loaded. Module wiring on `Application` lives in
-`ModuleManager.cpp`. **Put reusable features in the core, not in a module.** See
-`src/Modules/README.md`.
+`RegisterInternal()` (`Typography/` — `IofMapping/` is quarantined in
+`src/_legacy/Modules/` until it is rebuilt on Ink, ROADMAP Lot 11); external DLL
+plugins are designed-for but not yet loaded. Module wiring on `Application` lives
+in `ModuleManager.cpp`. The ModuleHost document services are removed during the
+rework and return, re-designed on the Ink document, in Lot 11. **Put reusable
+features in the core, not in a module.** See `src/Modules/README.md`.
 
 ### DesignSystem (`src/DesignSystem/`)
 
@@ -91,9 +95,9 @@ Blender-inspired hierarchical shortcut engine. A 5-level context (window → edi
 
 SVG icons are rasterized at runtime by `resvg` (Rust, exposed via C FFI in `src/tools/resvg-bindings/`). `IconManager` maintains an LRU cache of Vulkan textures keyed on `(iconId, size, colorMetadata)`. Color zones map SVG element IDs to design tokens, enabling runtime recoloring without re-parsing SVG files.
 
-### Renderer (`src/Renderer/`)
+### Ink (`src/Ink/`) — the 2D vector engine (in construction)
 
-The **Vulkan-only vector engine**. Owns the vector document model (`Document` → `Artboard` → `Shape`, pure data under `include/Renderer/Document/`), CPU tessellation (`Tessellator`, shapes → triangle `Mesh`), and an offscreen Vulkan pipeline (`CanvasRenderer` + `RenderTarget`). Each Viewport zone is rendered into its own offscreen `VkImage`, exposed as an `ImTextureID` and blitted by the application with `ImGui::Image`. **ImGui never draws the vector artwork** — only the editor chrome (rulers, guides, tool palette, panels). GLSL shaders in `shaders/` are compiled to SPIR-V by `glslc` at build time (target `renderer_shaders`) and loaded from `<exe-dir>/shaders` at runtime. `CanvasRenderer` shares the main Vulkan device/queue/pools; the per-view camera (pan/zoom/unitScale) mirrors the Viewport's `D2S` mapping. See `src/Renderer/README.md`.
+The from-scratch replacement for both quarantined engines and the old document. Strictly-2D, Vulkan-1.3-only canvas (content **and** editor overlays — ImGui only draws the surrounding interface), layered as Document → Scene → Geometry → Render/Graph → RHI with a documented render graph, real instancing, unified fill/stroke styling, Layers (z-order/blend hierarchy) + Collections (organisation/relations), relation-based modifiers, and an automated benchmark harness (`ink_bench`). **Read `docs/Ink/README.md` first**; the lot-by-lot build order (and what exists at any point) is `docs/Ink/ROADMAP.md`. Hard rule: Ink code never includes or copies from `src/_legacy/**`.
 
 ### UI (`src/UI/`)
 
@@ -208,7 +212,7 @@ Use the subsystem name, lowercase, hyphenated:
 | `design-system` | `src/DesignSystem/` |
 | `shortcuts` | `src/Shortcuts/` |
 | `vector-graphics` | `src/VectorGraphics/` |
-| `renderer` | `src/Renderer/` |
+| `ink` | `src/Ink/` (the 2D vector engine; its docs in `docs/Ink/`) |
 | `shell` | `src/Shell/` (Windows shell integration) |
 | `ui` | `src/UI/` |
 | `icon-compiler` | `src/tools/resvg-bindings/` |

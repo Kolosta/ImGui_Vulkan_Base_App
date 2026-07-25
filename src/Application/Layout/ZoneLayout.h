@@ -72,10 +72,17 @@ struct PageLayout {
 };
 
 struct EditorState {
-    // Camera: screen = canvasMin + (doc - pan) * zoom.
-    ImVec2 pan{0, 0};
-    float  zoom = 1.0f;
+    // Camera: screen = canvasMin + (doc - pan) * zoom. DOUBLE end-to-end —
+    // the Ink engine's unbounded-canvas requirement (docs/Ink README req. 9)
+    // includes the viewport camera state itself.
+    double panX = 0.0, panY = 0.0;
+    double zoom = 1.0;
     int    docUnit = 0;             // index into the viewport unit table
+    // PRINT PROOFING, per viewport (Ink::PrintPreview). Deliberately not a
+    // document setting: proofing one viewport must leave the others — and the
+    // symbol vignettes, which are views too — on the plain screen render.
+    int    printPreview  = 0;       // 0 Normal · 1 Overprint · 2 Separations · 3 Flattener
+    int    printChannels = 0x0F;    // C M Y K bits (Separations only)
     // Pending view requests, consumed by this leaf's RenderViewport only.
     bool   reqFitDoc       = false;  // frame the project's artboards
     bool   reqFitSelection = false;  // frame the selected/active object(s) (Numpad .)
@@ -89,6 +96,9 @@ struct EditorState {
     // corner). Falls back to Viewport when no page is implied by the selection.
     enum class RulerSpace : uint8_t { Viewport = 0, Page };
     RulerSpace rulerSpace = RulerSpace::Viewport;
+    // Which of the four rulers are visible (any combination). Default = the
+    // legacy pair: top + left. Persisted in the LAY blob (v9).
+    bool rulerTop = true, rulerLeft = true, rulerRight = false, rulerBottom = false;
 
     // Right-side reusable EditorSidePanel (the "N" panel). Generic UI state
     // (stage/width/tab) lives in `sidePanel`; viewport-specific options are kept
@@ -109,6 +119,13 @@ struct EditorState {
     // meaningful for an Outliner leaf, but carried by every EditorState so a tab
     // can switch kind / move between zones without losing it. See OutlinerState.h.
     OutlinerState outliner;
+
+    // Properties editor page (Blender-style top-bar tabs): Object = transform /
+    // compositing / instance target; Paint = the fill & stroke stacks (path
+    // nodes); Modifiers = the modifier stack; Document = document-wide settings
+    // (the display-unit system, …).
+    enum class PropTab : uint8_t { Object = 0, Paint = 1, Modifiers = 2, Document = 3 };
+    PropTab propTab = PropTab::Object;
 };
 
 // One tab inside a zone: an editor id plus its own independent view state.
@@ -196,6 +213,12 @@ public:
     // Called by RenderViewport when it determines its leaf is the genuinely
     // hovered, non-occluded one (strict IsWindowHovered). Last writer wins.
     void SetHoveredEditorState(EditorState* st) { hoveredState_ = st; }
+
+    // When true, the Viewport zone paints NO opaque ImGui background — for a
+    // render engine that composites its canvas onto the swapchain itself, UNDER
+    // ImGui (kept for Ink's swapchain-direct present option; unused while the
+    // engine presents via a sampled texture).
+    void SetCanvasZoneTransparent(bool b) { canvasZoneTransparent_ = b; }
 
     // True while a layout-level gesture owns the mouse: dragging a separator,
     // an armed corner add/join, a context-menu split guide, or a live tab drag.
@@ -390,6 +413,7 @@ private:
     AddArm       addArm_;
     SplitArm     splitArm_;
     EditorState* hoveredState_ = nullptr;  // recomputed every Render()
+    bool         canvasZoneTransparent_ = false;  // viewport zone bg off (swapchain-direct engine)
     std::vector<std::string> editorFilter_; // ids selectable in the picker (empty=all)
     Node*        hoveredLeaf_   = nullptr;  // leaf under the mouse (any editor),
                                            // recomputed every Render() — drives
@@ -401,6 +425,10 @@ private:
                                            // short delay so quick moves between
                                            // editors don't flash a resize line
     Node*        sepDragging_  = nullptr;  // split whose separator is dragging
+    // Screen band (min.x,min.y,max.x,max.y) of the separator currently
+    // hovered / dragged — the corner blocker seals it so a resize click never
+    // also lands on the neighbour editor's overlay scrollbar or content.
+    ImVec4       sepBlockRect_{0, 0, 0, 0};
     ImVec2       contextMenuPos_{0, 0};    // mouse pos captured at right-click
     Node*        menuSplit_    = nullptr;  // split whose context menu is open
     bool         menuOpenRequest_ = false; // ask to OpenPopup next (in body)

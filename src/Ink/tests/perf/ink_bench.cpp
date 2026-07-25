@@ -1,0 +1,520 @@
+// ink_bench — the headless Ink performance harness (docs/Ink/PERF_TESTING.md).
+//
+// Creates its own Vulkan 1.3 device (no window, no ImGui, no SDL), runs the
+// engine through the exact same render graph as the app (texture hooks left
+// null — the display image simply is never sampled by a UI), and reports the
+// Stats counters as JSON.
+//
+//   ink_bench [--scene bootstrap|steady|empty|paths_10k] [--frames N]
+//             [--warmup N] [--shaders DIR] [--out FILE]
+//
+// Scenes (grow with the lots — docs/Ink/PERF_TESTING.md §3):
+//   bootstrap — the demo document, camera fit, dirtied every frame
+//               (simulated navigation → full re-record each frame)
+//   steady    — same content, camera frozen → the steady-state short-circuit
+//               must keep viewsRendered at 0 (record cost ≈ 0)
+//   empty     — camera far off-content (hardware-clipped): frame-loop floor
+//   paths_10k — 10 000 random filled+stroked Bézier blobs (deterministic
+//               seed), camera fit, dirtied every frame
+
+#include <Ink/Document/Document.h>
+#include <Ink/Render/Renderer.h>
+#include <Ink/Scene/Picking.h>
+
+#include <vulkan/vulkan.h>
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
+
+namespace {
+
+struct BenchDevice {
+    VkInstance       instance = VK_NULL_HANDLE;
+    VkPhysicalDevice physical = VK_NULL_HANDLE;
+    VkDevice         device   = VK_NULL_HANDLE;
+    VkQueue          queue    = VK_NULL_HANDLE;
+    std::uint32_t    queueFamily = 0;
+};
+
+bool CreateBenchDevice(BenchDevice& d) {
+    VkApplicationInfo app{};
+    app.sType      = VK_STRUCTURE_TYPE_APPLICATION_INFO;
+    app.pApplicationName = "ink_bench";
+    app.apiVersion = VK_API_VERSION_1_3;
+    VkInstanceCreateInfo ici{};
+    ici.sType            = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+    ici.pApplicationInfo = &app;
+    if (vkCreateInstance(&ici, nullptr, &d.instance) != VK_SUCCESS) {
+        std::fprintf(stderr, "ink_bench: vkCreateInstance failed\n");
+        return false;
+    }
+
+    std::uint32_t count = 0;
+    vkEnumeratePhysicalDevices(d.instance, &count, nullptr);
+    if (count == 0) { std::fprintf(stderr, "ink_bench: no Vulkan device\n"); return false; }
+    std::vector<VkPhysicalDevice> gpus(count);
+    vkEnumeratePhysicalDevices(d.instance, &count, gpus.data());
+    // Prefer a discrete GPU, else take the first.
+    d.physical = gpus[0];
+    for (VkPhysicalDevice g : gpus) {
+        VkPhysicalDeviceProperties p{};
+        vkGetPhysicalDeviceProperties(g, &p);
+        if (p.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) { d.physical = g; break; }
+    }
+
+    // A graphics queue family (no present needed — headless).
+    vkGetPhysicalDeviceQueueFamilyProperties(d.physical, &count, nullptr);
+    std::vector<VkQueueFamilyProperties> families(count);
+    vkGetPhysicalDeviceQueueFamilyProperties(d.physical, &count, families.data());
+    bool found = false;
+    for (std::uint32_t i = 0; i < count; ++i)
+        if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { d.queueFamily = i; found = true; break; }
+    if (!found) { std::fprintf(stderr, "ink_bench: no graphics queue\n"); return false; }
+
+    // The engine's Vulkan 1.3 baseline (same as the app's device).
+    VkPhysicalDeviceVulkan13Features f13{};
+    f13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    f13.dynamicRendering = VK_TRUE;
+    f13.synchronization2 = VK_TRUE;
+    VkPhysicalDeviceVulkan12Features f12{};
+    f12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    f12.pNext = &f13;
+    f12.timelineSemaphore = VK_TRUE;
+
+    const float prio = 1.0f;
+    VkDeviceQueueCreateInfo qi{};
+    qi.sType            = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    qi.queueFamilyIndex = d.queueFamily;
+    qi.queueCount       = 1;
+    qi.pQueuePriorities = &prio;
+    VkDeviceCreateInfo dci{};
+    dci.sType                = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+    dci.pNext                = &f12;
+    dci.queueCreateInfoCount = 1;
+    dci.pQueueCreateInfos    = &qi;
+    if (vkCreateDevice(d.physical, &dci, nullptr, &d.device) != VK_SUCCESS) {
+        std::fprintf(stderr, "ink_bench: vkCreateDevice failed (Vulkan 1.3 features?)\n");
+        return false;
+    }
+    vkGetDeviceQueue(d.device, d.queueFamily, 0, &d.queue);
+    return true;
+}
+
+void DestroyBenchDevice(BenchDevice& d) {
+    if (d.device)   vkDestroyDevice(d.device, nullptr);
+    if (d.instance) vkDestroyInstance(d.instance, nullptr);
+    d = {};
+}
+
+constexpr double kTau = 6.28318530717958647692;
+
+struct Lcg {
+    std::uint64_t s = 0x1234ABCDu;
+    double operator()() {   // [0,1)
+        s = s * 6364136223846793005ull + 1442695040888963407ull;
+        return (double)(s >> 11) / 9007199254740992.0;
+    }
+};
+
+// A smooth 6-anchor blob: points on a noisy circle, tangent handles.
+Ink::PathData MakeBlob(Lcg& rnd, double r) {
+    Ink::PathData path;
+    Ink::Subpath sp;
+    sp.closed = true;
+    for (int i = 0; i < 6; ++i) {
+        const double a  = kTau * (double)i / 6.0;
+        const double rr = r * (0.65 + rnd() * 0.7);
+        Ink::Anchor an;
+        an.pos = { std::cos(a) * rr, std::sin(a) * rr };
+        const double hl = rr * 0.55;
+        an.out = { -std::sin(a) * hl,  std::cos(a) * hl };
+        an.in  = {  std::sin(a) * hl, -std::cos(a) * hl };
+        an.hasIn = an.hasOut = true;
+        an.kind = Ink::AnchorKind::Smooth;
+        sp.anchors.push_back(an);
+    }
+    path.subpaths.push_back(std::move(sp));
+    return path;
+}
+
+// 100 000 instances of ~10 star definitions via Array modifiers — the
+// instancing claim (docs/Ink/PERF_TESTING.md §3): O(1) CPU/instance, one
+// merged draw per definition run.
+void BuildInstances100k(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 6000, 3500 });
+    Lcg rnd;
+    // 100 base objects, each arrayed ×1000 → 100k instances.
+    for (int b = 0; b < 100; ++b) {
+        std::vector<Ink::DVec2> pts;
+        for (int i = 0; i < 10; ++i) {
+            const double r = (i % 2 == 0) ? 12.0 : 5.0;
+            const double a = 3.14159265 * (double)i / 5.0;
+            pts.push_back({ std::cos(a) * r, std::sin(a) * r });
+        }
+        const Ink::NodeId n = doc.AddPath(
+            page, Ink::PathData::Polygon(pts),
+            Ink::Style::Filled({ (float)rnd(), (float)rnd(), (float)rnd(), 1.0f }),
+            "star");
+        Ink::Transform2D t;
+        t.tx = 40.0 + rnd() * 5900.0;
+        t.ty = 40.0 + rnd() * 3400.0;
+        doc.SetTransform(n, t);
+        Ink::Modifier arr;
+        arr.kind = Ink::ModifierKind::Array;
+        arr.count = 1000;
+        arr.step.tx = 4.0;
+        arr.step.ty = 3.0;
+        arr.step.rotation = 0.05;
+        doc.SetModifiers(n, { arr });
+    }
+}
+
+// A large rectangle pattern-filled with a dense instanced motif lattice.
+void BuildPatternFill(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 4000, 3000 });
+    const Ink::NodeId motif = doc.AddPath(page, Ink::PathData::Ellipse(0, 0, 3, 3),
+        Ink::Style::Filled({ 0.3f, 0.5f, 0.8f, 1.0f }), "motif");
+    doc.SetVisible(motif, false);
+    Ink::Fill pf;
+    pf.kind = Ink::FillKind::Pattern;
+    pf.pattern.motifRef = motif;
+    pf.pattern.spacingX = 10.0;
+    pf.pattern.spacingY = 10.0;   // 3800×2800 / 100 ≈ 106k motif instances
+    Ink::Style st; st.fills.push_back(pf);
+    const Ink::NodeId rect = doc.AddPath(
+        page, Ink::PathData::Rect(-1900, -1400, 3800, 2800), st, "host");
+    Ink::Transform2D t; t.tx = 2000; t.ty = 1500;
+    doc.SetTransform(rect, t);
+}
+
+// 20 000 ticks distributed along long curves via AlongPath modifiers.
+void BuildAlongPath(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 4000, 3000 });
+    Lcg rnd;
+    for (int c = 0; c < 20; ++c) {
+        Ink::PathData wave;
+        Ink::Subpath sp; sp.closed = false;
+        const double y = 100.0 + c * 140.0;
+        for (int i = 0; i <= 40; ++i)
+            sp.anchors.push_back({ { i * 95.0, y + std::sin(i * 0.5) * 40.0 } });
+        wave.subpaths.push_back(sp);
+        const Ink::NodeId tick = doc.AddPath(page,
+            Ink::PathData::Polygon({ { 0, -6 }, { 3, 6 }, { -3, 6 } }),
+            Ink::Style::Filled({ (float)rnd(), 0.5f, 0.3f, 1.0f }), "tick");
+        doc.SetVisible(tick, false);   // instanced along the wave only
+        Ink::Modifier along;
+        along.kind = Ink::ModifierKind::AlongPath;
+        along.motifRef = tick;
+        along.alongCount = 1000;
+        along.align = Ink::AlongAlign::Tangent;
+        const Ink::NodeId path = doc.AddPath(page, wave,
+            Ink::Style::Stroked({ 0.5f, 0.5f, 0.5f, 0.3f }, 1.0), "wave");
+        doc.SetModifiers(path, { along });
+    }
+}
+
+// 500 nested composite groups (opacity + blend), 4 discs each, over a shared
+// backdrop — the isolation/composite stress (docs/Ink/PERF_TESTING.md §3).
+void BuildBlendGroups(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 2400, 1400 });
+    Lcg rnd;
+    const Ink::BlendMode modes[] = {
+        Ink::BlendMode::Normal, Ink::BlendMode::Multiply, Ink::BlendMode::Screen,
+        Ink::BlendMode::Overlay, Ink::BlendMode::Darken, Ink::BlendMode::Lighten,
+        Ink::BlendMode::Difference };
+    for (int n = 0; n < 500; ++n) {
+        const Ink::NodeId g = doc.AddGroup(page, "grp");
+        Ink::Transform2D t;
+        t.tx = 60.0 + rnd() * 2280.0;
+        t.ty = 60.0 + rnd() * 1280.0;
+        doc.SetTransform(g, t);
+        for (int d = 0; d < 4; ++d) {
+            const Ink::NodeId disc = doc.AddPath(
+                g, Ink::PathData::Ellipse(0, 0, 30, 30),
+                Ink::Style::Filled({ (float)rnd(), (float)rnd(), (float)rnd(),
+                                     1.0f }), "d");
+            Ink::Transform2D dt;
+            dt.tx = (rnd() - 0.5) * 40.0;
+            dt.ty = (rnd() - 0.5) * 40.0;
+            doc.SetTransform(disc, dt);
+        }
+        doc.SetOpacity(g, 0.4f + (float)rnd() * 0.55f);
+        doc.SetBlend(g, modes[(std::size_t)(rnd() * 7.0) % 7]);
+    }
+}
+
+// 10 000 random filled+stroked Bézier blobs over an 8000×4500 page —
+// deterministic (LCG seed), built through the public Document API
+// (docs/Ink/PERF_TESTING.md §3: scenes double as API integration tests).
+// Returns one node id for the edit_heavy mutation loop.
+Ink::NodeId BuildPaths10k(Ink::Document& doc) {
+    const Ink::NodeId page = doc.AddPage("Bench", { 0, 0 }, { 8000, 4500 });
+    Lcg rnd;
+    Ink::NodeId first = Ink::kNullNode;
+    for (int n = 0; n < 10000; ++n) {
+        const double cx = 100.0 + rnd() * 7800.0;
+        const double cy = 100.0 + rnd() * 4300.0;
+        const double r  = 20.0 + rnd() * 40.0;
+        Ink::Style style = Ink::Style::Filled(
+            { (float)rnd(), (float)rnd(), (float)rnd(),
+              0.35f + (float)rnd() * 0.6f });
+        if (n % 2 == 0)
+            style.WithStroke({ 0.05f, 0.05f, 0.08f, 1.0f }, 2.0 + rnd() * 4.0);
+        const Ink::NodeId id =
+            doc.AddPath(page, MakeBlob(rnd, r), style, "blob");
+        if (first == Ink::kNullNode) first = id;
+        Ink::Transform2D t;
+        t.tx = cx; t.ty = cy;
+        t.rotation = rnd() * kTau;
+        doc.SetTransform(id, t);
+    }
+    return first;
+}
+
+struct Series {
+    std::vector<double> values;
+    void   Add(double v) { values.push_back(v); }
+    double Avg() const {
+        if (values.empty()) return 0.0;
+        double s = 0.0; for (double v : values) s += v;
+        return s / (double)values.size();
+    }
+    double Percentile(double p) const {
+        if (values.empty()) return 0.0;
+        std::vector<double> s = values;
+        std::sort(s.begin(), s.end());
+        const auto i = (std::size_t)(p * (double)(s.size() - 1) + 0.5);
+        return s[std::min(i, s.size() - 1)];
+    }
+};
+
+} // namespace
+
+int main(int argc, char** argv) {
+    std::string scene   = "bootstrap";
+    std::string shaders = INK_BENCH_SHADER_DIR;
+    std::string outPath;
+    int frames = 300, warmup = 60;
+    for (int i = 1; i < argc - 1; ++i) {
+        if (!std::strcmp(argv[i], "--scene"))   scene   = argv[++i];
+        else if (!std::strcmp(argv[i], "--frames"))  frames  = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--warmup"))  warmup  = std::atoi(argv[++i]);
+        else if (!std::strcmp(argv[i], "--shaders")) shaders = argv[++i];
+        else if (!std::strcmp(argv[i], "--out"))     outPath = argv[++i];
+    }
+    if (scene != "bootstrap" && scene != "steady" && scene != "empty" &&
+        scene != "paths_10k" && scene != "edit_heavy" && scene != "zoom_sweep" &&
+        scene != "blend_groups" && scene != "instances_100k" &&
+        scene != "pattern_fill" && scene != "along_path" &&
+        scene != "pick_storm") {
+        std::fprintf(stderr, "ink_bench: unknown scene '%s'\n", scene.c_str());
+        return 2;
+    }
+
+    // pick_storm — CPU-only (no device): exact picking over the 10k-paths
+    // document at random points (docs/Ink/ROADMAP.md Lot 8). `--frames` scales
+    // the workload: picks = frames × 100.
+    if (scene == "pick_storm") {
+        Ink::Document doc;
+        BuildPaths10k(doc);
+        Ink::Scene s;
+        const auto tc0 = std::chrono::steady_clock::now();
+        s.Compile(doc);
+        const double compileOnce = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - tc0).count();
+
+        const Ink::Rect b = s.Bounds();
+        Lcg rnd;
+        Ink::PickOptions opt;
+        opt.tolerance = 3.0;
+        opt.zoom = 1.0;
+        const int picks = frames * 100;
+        Series pickUs;
+        std::uint64_t hits = 0;
+        for (int i = 0; i < picks; ++i) {
+            const Ink::DVec2 p{ b.min.x + rnd() * (b.max.x - b.min.x),
+                                b.min.y + rnd() * (b.max.y - b.min.y) };
+            const auto t0 = std::chrono::steady_clock::now();
+            if (Ink::PickTop(s, p, opt) != Ink::kNullNode) ++hits;
+            pickUs.Add(std::chrono::duration<double, std::micro>(
+                std::chrono::steady_clock::now() - t0).count());
+        }
+        char json[768];
+        std::snprintf(json, sizeof json,
+            "{\n"
+            "  \"schema\": 1,\n"
+            "  \"scene\": \"pick_storm\",\n"
+            "  \"picks\": %d,\n"
+            "  \"hitRate\": %.3f,\n"
+            "  \"compileMs\": %.3f,\n"
+            "  \"metrics\": {\n"
+            "    \"pickUs\": { \"avg\": %.2f, \"p50\": %.2f, \"p95\": %.2f, \"p99\": %.2f }\n"
+            "  }\n"
+            "}\n",
+            picks, (double)hits / (double)picks, compileOnce,
+            pickUs.Avg(), pickUs.Percentile(0.50), pickUs.Percentile(0.95),
+            pickUs.Percentile(0.99));
+        std::fputs(json, stdout);
+        if (!outPath.empty())
+            if (std::FILE* f = std::fopen(outPath.c_str(), "wb")) {
+                std::fputs(json, f);
+                std::fclose(f);
+            }
+        return 0;
+    }
+
+    BenchDevice bd;
+    if (!CreateBenchDevice(bd)) { DestroyBenchDevice(bd); return 1; }
+
+    Ink::Renderer renderer;
+    Ink::Renderer::InitInfo ii;
+    ii.instance       = bd.instance;
+    ii.physicalDevice = bd.physical;
+    ii.device         = bd.device;
+    ii.queue          = bd.queue;
+    ii.queueFamily    = bd.queueFamily;
+    ii.shaderDir      = shaders;
+    // No texture hooks: headless — the display image never meets a UI.
+    if (!renderer.Initialize(ii)) {
+        std::fprintf(stderr, "ink_bench: engine init failed (shaders at '%s'?)\n",
+                     shaders.c_str());
+        DestroyBenchDevice(bd);
+        return 1;
+    }
+
+    // The document under test (the engine renders the app-owned model).
+    Ink::Document doc;
+    Ink::NodeId editNode = Ink::kNullNode;
+    const bool bigDoc = (scene == "paths_10k" || scene == "edit_heavy" ||
+                         scene == "zoom_sweep");
+    if (bigDoc)                         editNode = BuildPaths10k(doc);
+    else if (scene == "blend_groups")   BuildBlendGroups(doc);
+    else if (scene == "instances_100k") BuildInstances100k(doc);
+    else if (scene == "pattern_fill")   BuildPatternFill(doc);
+    else if (scene == "along_path")     BuildAlongPath(doc);
+    else                                Ink::SeedDemoDocument(doc);
+    renderer.SetDocument(&doc);
+
+    constexpr std::uint32_t kW = 1920, kH = 1080;
+    const int viewKey = 0;
+
+    // Prime frame: compiles the scene (bounds become known) and pays the full
+    // first build (compile + geometry + uploads) — reported as firstBuild.
+    Ink::Stats firstBuild{};
+    {
+        renderer.BeginFrame();
+        Ink::View* v = renderer.AcquireView(&viewKey);
+        v->SetViewport(kW, kH);
+        v->SetCamera(0.0, 0.0, 1.0);
+        v->SetBackground(Ink::SrgbToLinearPremultiplied(0.16f, 0.16f, 0.18f, 1.0f));
+        renderer.EndFrame();
+        firstBuild = renderer.GetStats();
+    }
+
+    const Ink::Rect b = renderer.SceneBounds();
+    const double fitZoom = std::min((double)kW / b.Width(), (double)kH / b.Height()) * 0.94;
+    double panX = b.min.x + b.Width() * 0.5 - kW * 0.5 / fitZoom;
+    double panY = b.min.y + b.Height() * 0.5 - kH * 0.5 / fitZoom;
+    if (scene == "empty") { panX += 100000.0; panY += 100000.0; }
+    const bool dirtyEachFrame = (scene != "steady");
+    const double centreX = b.min.x + b.Width() * 0.5;
+    const double centreY = b.min.y + b.Height() * 0.5;
+    Lcg editRnd;
+
+    Series frameMs, recordMs, gpuMs, geomMs, syncMs, compileMs;
+    Ink::Stats last{};
+    std::uint64_t steadySkips = 0;
+
+    const int total = warmup + frames;
+    for (int f = 0; f < total; ++f) {
+        // edit_heavy: mutate one path's GEOMETRY every frame — the full
+        // compile + re-tessellate + upload path, measured continuously.
+        if (scene == "edit_heavy" && editNode != Ink::kNullNode)
+            doc.SetPath(editNode, MakeBlob(editRnd, 40.0));
+
+        const auto t0 = std::chrono::steady_clock::now();
+        renderer.BeginFrame();
+        Ink::View* v = renderer.AcquireView(&viewKey);
+        v->SetViewport(kW, kH);
+        double zoomF = fitZoom, px = panX, py = panY;
+        if (scene == "zoom_sweep") {
+            // ×64 in and out around the fit zoom (tier churn + culling).
+            zoomF = fitZoom * std::exp2(6.0 * std::sin(kTau * (double)f /
+                                                       (double)total));
+            px = centreX - (double)kW * 0.5 / zoomF;
+            py = centreY - (double)kH * 0.5 / zoomF;
+        } else if (dirtyEachFrame) {
+            // Simulated navigation: a sub-pixel pan step defeats the
+            // signature so the full record path is measured every frame.
+            px += 0.01 * (double)f;
+        }
+        v->SetCamera(px, py, zoomF);
+        v->SetBackground(Ink::SrgbToLinearPremultiplied(0.16f, 0.16f, 0.18f, 1.0f));
+        renderer.EndFrame();
+        const double ms = std::chrono::duration<double, std::milli>(
+                              std::chrono::steady_clock::now() - t0).count();
+
+        if (f >= warmup) {
+            last = renderer.GetStats();
+            frameMs.Add(ms);
+            recordMs.Add(last.recordMs);
+            geomMs.Add(last.geomMs);
+            syncMs.Add(last.syncMs);
+            compileMs.Add(last.compileMs);
+            if (last.gpuMs > 0.0f) gpuMs.Add(last.gpuMs);
+            if (last.viewsRendered == 0) ++steadySkips;
+        }
+    }
+    vkDeviceWaitIdle(bd.device);
+
+    char json[2560];
+    std::snprintf(json, sizeof json,
+        "{\n"
+        "  \"schema\": 1,\n"
+        "  \"scene\": \"%s\",\n"
+        "  \"frames\": %d,\n"
+        "  \"viewport\": [%u, %u],\n"
+        "  \"firstBuild\": { \"compileMs\": %.4f, \"geomMs\": %.4f,\n"
+        "                    \"syncMs\": %.4f, \"recordMs\": %.4f },\n"
+        "  \"metrics\": {\n"
+        "    \"frameMs\":  { \"avg\": %.4f, \"p50\": %.4f, \"p99\": %.4f },\n"
+        "    \"compileMs\":{ \"avg\": %.4f, \"p99\": %.4f },\n"
+        "    \"recordMs\": { \"avg\": %.4f, \"p99\": %.4f },\n"
+        "    \"geomMs\":   { \"avg\": %.4f, \"p99\": %.4f },\n"
+        "    \"syncMs\":   { \"avg\": %.4f, \"p99\": %.4f },\n"
+        "    \"gpuMs\":    { \"avg\": %.4f, \"p99\": %.4f },\n"
+        "    \"counters\": { \"drawCalls\": %u, \"triangles\": %u,\n"
+        "                    \"instances\": %u, \"steadySkippedFrames\": %llu }\n"
+        "  }\n"
+        "}\n",
+        scene.c_str(), frames, kW, kH,
+        firstBuild.compileMs, firstBuild.geomMs, firstBuild.syncMs,
+        firstBuild.recordMs,
+        frameMs.Avg(), frameMs.Percentile(0.5), frameMs.Percentile(0.99),
+        compileMs.Avg(), compileMs.Percentile(0.99),
+        recordMs.Avg(), recordMs.Percentile(0.99),
+        geomMs.Avg(), geomMs.Percentile(0.99),
+        syncMs.Avg(), syncMs.Percentile(0.99),
+        gpuMs.Avg(), gpuMs.Percentile(0.99),
+        last.drawCalls, last.triangles, last.instances,
+        (unsigned long long)steadySkips);
+
+    std::printf("%s", json);
+    if (!outPath.empty()) {
+        if (std::FILE* out = std::fopen(outPath.c_str(), "wb")) {
+            std::fputs(json, out);
+            std::fclose(out);
+        } else {
+            std::fprintf(stderr, "ink_bench: cannot write '%s'\n", outPath.c_str());
+        }
+    }
+
+    renderer.Shutdown();
+    DestroyBenchDevice(bd);
+    return 0;
+}

@@ -1,0 +1,127 @@
+#version 450
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Compositor - flatten_prim.comp (Lot 13-4c-0): GPU primitive flatten scaffold.
+//
+//  One invocation per PRIMITIVE object (Rectangle / Ellipse). It writes that
+//  object's stencil-then-cover fan (pivot → each contour edge) + its 6-vert cover
+//  quad into a device-local fan SSBO, at a per-object output offset. This is the
+//  first compute pipeline in the engine — it proves the SSBO/dispatch/barrier
+//  plumbing on the trivial (no-gain) primitive case before curves land (13-4c-1).
+//  The maths mirror the CPU flatten (OutlinePartLocal + WorldTransform) so the two
+//  paths agree. Behind a Dev flag, default OFF — no effect on the live path yet.
+//
+//  Fan layout matches FanVertex { float x, y }: each output slot is a vec2 in
+//  document (world) units, exactly what fill_stencil.vert / fill_cover.vert read.
+// ─────────────────────────────────────────────────────────────────────────────
+
+layout(local_size_x = 64) in;
+
+// Per-object input. kind: 0 = Rectangle, 1 = Ellipse. `pos`/`size` are the part's
+// parametric box (object-local). The transform places it in the page + world:
+//   world = pageOrigin + T + R(rot)·S(scale)·(local − origin) + origin
+// `outFirst` is this object's first output element in `fans`; `outCap` the reserved
+// slots (fan verts + 6 cover verts). `segMax` caps the ellipse tessellation to the
+// reserved capacity. Padded to a 16-byte multiple for std430 stability.
+struct PrimIn {
+    uint  kind;        // 0 rect, 1 ellipse
+    uint  outFirst;    // first output element (vec2 slot) for this object
+    uint  outCap;      // reserved output slots (fan + 6 quad)
+    uint  segMax;      // max ellipse segments (fits outCap)
+    vec2  pos;         // parametric top-left (object-local)
+    vec2  size;        // parametric extents
+    vec2  origin;      // object origin (object-local)
+    vec2  translate;   // transform translate (doc-units)
+    vec2  scale;       // transform scale (per-axis)
+    vec2  pageOrigin;  // owning page origin (doc-units)
+    float rotate;      // transform rotation (radians)
+    float _pad0;
+};
+
+layout(std430, binding = 0) readonly buffer InBuf  { PrimIn  prims[]; };
+layout(std430, binding = 1) writeonly buffer OutBuf { vec2   fans[];  };
+
+layout(push_constant) uniform PC { uint count; } pc;
+
+// world = pageOrigin + T + R(rot)·S(scale)·(local − origin) + origin
+vec2 worldXform(PrimIn p, vec2 local) {
+    vec2 d = (local - p.origin) * p.scale;
+    float c = cos(p.rotate), s = sin(p.rotate);
+    vec2 r = vec2(d.x * c - d.y * s, d.x * s + d.y * c);
+    return r + p.origin + p.translate + p.pageOrigin;
+}
+
+void main() {
+    uint gid = gl_GlobalInvocationID.x;
+    if (gid >= pc.count) return;
+    PrimIn p = prims[gid];
+
+    // Build the object-local contour (world-transformed), then fan it from the pivot.
+    // We cap point counts to the reserved capacity so we never overrun the SSBO.
+    const uint base = p.outFirst;
+    uint w = base;                     // write cursor
+    vec2 bbMin = vec2( 1e30);
+    vec2 bbMax = vec2(-1e30);
+
+    // Collect contour points into locals is not possible (dynamic count); instead we
+    // fan on the fly: keep pivot + previous point, emit a triangle per edge.
+    vec2 pivot = vec2(0.0);
+    vec2 prev  = vec2(0.0);
+    uint n = 0u;                       // points emitted so far
+
+    // Helper-free inline: process a contour point index `i` of total `total`.
+    // Rectangle: 4 corners. Ellipse: segMax points around the box.
+    uint total;
+    if (p.kind == 0u) total = 4u;
+    else               total = max(p.segMax, 3u);
+
+    // Guard: the fan needs (total-2) triangles = 3*(total-2) verts, + 6 quad verts.
+    uint fanVerts = (total >= 3u) ? 3u * (total - 2u) : 0u;
+    if (fanVerts + 6u > p.outCap) {
+        // Not enough room (shouldn't happen — caller reserves from segMax). Emit an
+        // empty (degenerate) slice so the draw skips it.
+        return;
+    }
+
+    for (uint i = 0u; i < total; ++i) {
+        vec2 local;
+        if (p.kind == 0u) {
+            // Rectangle corners: (x0,y0)(x1,y0)(x1,y1)(x0,y1)
+            vec2 x0y0 = p.pos;
+            vec2 x1y1 = p.pos + p.size;
+            if      (i == 0u) local = vec2(x0y0.x, x0y0.y);
+            else if (i == 1u) local = vec2(x1y1.x, x0y0.y);
+            else if (i == 2u) local = vec2(x1y1.x, x1y1.y);
+            else              local = vec2(x0y0.x, x1y1.y);
+        } else {
+            // Ellipse: centre + radii, angle stepped over total segments.
+            vec2 ctr = p.pos + p.size * 0.5;
+            vec2 rad = p.size * 0.5;
+            float ang = float(i) / float(total) * 6.2831853;
+            local = vec2(ctr.x + cos(ang) * rad.x, ctr.y + sin(ang) * rad.y);
+        }
+        vec2 wp = worldXform(p, local);
+        bbMin = min(bbMin, wp);
+        bbMax = max(bbMax, wp);
+        if (n == 0u) {
+            pivot = wp;
+        } else if (n == 1u) {
+            prev = wp;
+        } else {
+            // Emit triangle (pivot, prev, wp).
+            fans[w++] = pivot;
+            fans[w++] = prev;
+            fans[w++] = wp;
+            prev = wp;
+        }
+        ++n;
+    }
+
+    // Cover quad (6 verts) right after the fans — matches the CPU layout.
+    fans[w++] = vec2(bbMin.x, bbMin.y);
+    fans[w++] = vec2(bbMax.x, bbMin.y);
+    fans[w++] = vec2(bbMax.x, bbMax.y);
+    fans[w++] = vec2(bbMin.x, bbMin.y);
+    fans[w++] = vec2(bbMax.x, bbMax.y);
+    fans[w++] = vec2(bbMin.x, bbMax.y);
+}

@@ -2,6 +2,7 @@
 #include <UI/Widgets/IconWidgets.h>
 #include <UI/Widgets/Dropdown.h>
 #include <UI/Widgets/PopupMenu.h>
+#include <UI/Widgets/ScrollArea.h>
 #include <VectorGraphics/IconManager.h>
 #include <DesignSystem/DesignSystem.h>
 #include <Shortcuts/ShortcutManager.h>
@@ -144,6 +145,7 @@ struct BW {
     void u32(uint32_t v){ for (int i=0;i<4;++i) b.push_back((uint8_t)(v>>(i*8))); }
     void u64(uint64_t v){ for (int i=0;i<8;++i) b.push_back((uint8_t)(v>>(i*8))); }
     void f32(float v)   { uint32_t u; std::memcpy(&u,&v,4); u32(u); }
+    void f64(double v)  { uint64_t u; std::memcpy(&u,&v,8); u64(u); }
     void str(const std::string& s) { u32((uint32_t)s.size());
                                      for (char c : s) b.push_back((uint8_t)c); }
 };
@@ -156,6 +158,7 @@ struct BR {
     uint64_t u64(){ if (p+8>end){ok=false;return 0;} uint64_t v=0;
                     for (int i=0;i<8;++i) v|=(uint64_t)(*p++)<<(i*8); return v; }
     float f32()   { uint32_t u=u32(); float f; std::memcpy(&f,&u,4); return f; }
+    double f64()  { uint64_t u=u64(); double d; std::memcpy(&d,&u,8); return d; }
     std::string str() { uint32_t n=u32(); if(!ok||p+n>end){ok=false;return {};}
                         std::string s((const char*)p, n); p+=n; return s; }
 };
@@ -167,7 +170,18 @@ struct BR {
 // v5: per-tab Outliner filter state (show* toggles, objState, invertFilter) +
 //     nPanelShowOrphans appended after rulerSpace, so the Outliner remembers its
 //     filter on reopen. (The live viewport-sync link is runtime-only, not saved.)
-constexpr uint32_t kLayoutBlobVersion = 5;
+// v6: per-tab camera (pan/zoom) is DOUBLE (was f32) — the Ink unbounded-canvas
+//     requirement reaches the persisted camera too. Older blobs read as f32.
+// v7: Outliner state rebuilt on the Ink model (Lot 9): display mode + two show
+//     toggles replace the old filter block. v5/v6 blobs migrate (their 8 filter
+//     bytes are read and discarded; display defaults to Layers).
+// v8: per-tab Outliner FOLD state — the collapsed containers (groups /
+//     collections / pages / project root) and the Collections-view expanded
+//     objects — appended after nPanelShowOrphans, so reopening a file keeps
+//     every tree folded exactly as it was left.
+// v9: per-tab ruler VISIBILITY (top/left/right/bottom packed in a u8),
+//     appended after the fold state. Older blobs default to top + left.
+constexpr uint32_t kLayoutBlobVersion = 9;
 } // namespace
 
 // Node encoding: [isLeaf:u8]; split → [vertical][firstPx][initRatio][lastUsable]
@@ -185,9 +199,9 @@ std::vector<uint8_t> ZoneLayout::Serialize() const {
             w.u32((uint32_t)n->tabs.size());
             for (const Tab& t : n->tabs) {
                 w.str(t.editorId);                   // v4: editor string id
-                w.f32(t.state.pan.x);
-                w.f32(t.state.pan.y);
-                w.f32(t.state.zoom);
+                w.f64(t.state.panX);                 // v6: double camera
+                w.f64(t.state.panY);
+                w.f64(t.state.zoom);
                 w.u32((uint32_t)t.state.docUnit);
                 // v2: per-viewport page layout.
                 const PageLayout& pl = t.state.pageLayout;
@@ -199,16 +213,26 @@ std::vector<uint8_t> ZoneLayout::Serialize() const {
                 w.u32((uint32_t)pl.hiddenPages.size());
                 for (uint64_t id : pl.hiddenPages) w.u64(id);
                 w.u8((uint8_t)t.state.rulerSpace);   // v3
-                // v5: Outliner filter state + orphan toggle.
+                // v7: Outliner state (Ink model, legacy-parity filters).
                 const OutlinerState& o = t.state.outliner;
+                w.u8((uint8_t)o.display);
                 w.u8(o.showObjects ? 1 : 0);
                 w.u8(o.showPages ? 1 : 0);
                 w.u8(o.showCollections ? 1 : 0);
-                w.u8(o.showMeshes ? 1 : 0);
-                w.u8(o.showCurves ? 1 : 0);
+                w.u8(o.showGroups ? 1 : 0);
                 w.u8((uint8_t)o.objState);
                 w.u8(o.invertFilter ? 1 : 0);
                 w.u8(t.state.nPanelShowOrphans ? 1 : 0);
+                // v8: fold state (collapsed containers + expanded objects).
+                w.u32((uint32_t)o.collapsed.size());
+                for (uint64_t id : o.collapsed) w.u64(id);
+                w.u32((uint32_t)o.expandedObjects.size());
+                for (uint64_t id : o.expandedObjects) w.u64(id);
+                // v9: ruler visibility packed (top 1 · left 2 · right 4 · bottom 8).
+                w.u8((uint8_t)((t.state.rulerTop    ? 1 : 0) |
+                               (t.state.rulerLeft   ? 2 : 0) |
+                               (t.state.rulerRight  ? 4 : 0) |
+                               (t.state.rulerBottom ? 8 : 0)));
             }
         } else {
             w.u8(1);
@@ -243,9 +267,15 @@ bool ZoneLayout::Deserialize(const std::vector<uint8_t>& blob) {
                 if (ver >= 4) t.editorId = r.str();        // v4: string id
                 else          t.editorId = LegacyKindToId(r.u32());  // migrate
                 if (t.editorId.empty()) t.editorId = CoreEditor::Viewport;
-                t.state.pan.x   = r.f32();
-                t.state.pan.y   = r.f32();
-                t.state.zoom    = r.f32();
+                if (ver >= 6) {                      // v6: double camera
+                    t.state.panX = r.f64();
+                    t.state.panY = r.f64();
+                    t.state.zoom = r.f64();
+                } else {
+                    t.state.panX = (double)r.f32();
+                    t.state.panY = (double)r.f32();
+                    t.state.zoom = (double)r.f32();
+                }
                 t.state.docUnit = (int)r.u32();
                 if (ver >= 2) {   // per-viewport page layout
                     PageLayout& pl = t.state.pageLayout;
@@ -260,17 +290,35 @@ bool ZoneLayout::Deserialize(const std::vector<uint8_t>& blob) {
                         pl.hiddenPages.push_back(r.u64());
                     if (ver >= 3)
                         t.state.rulerSpace = (EditorState::RulerSpace)r.u8();
-                    if (ver >= 5) {   // Outliner filter state + orphan toggle
+                    if (ver >= 7) {   // Outliner state (Ink model)
                         OutlinerState& o = t.state.outliner;
+                        o.display         = (OutlinerDisplayMode)r.u8();
                         o.showObjects     = r.u8() != 0;
                         o.showPages       = r.u8() != 0;
                         o.showCollections = r.u8() != 0;
-                        o.showMeshes      = r.u8() != 0;
-                        o.showCurves      = r.u8() != 0;
+                        o.showGroups      = r.u8() != 0;
                         o.objState        = (ObjStateFilter)r.u8();
                         o.invertFilter    = r.u8() != 0;
                         t.state.nPanelShowOrphans = r.u8() != 0;
+                        if (ver >= 8) {   // fold state (bounded reads)
+                            uint32_t nc = r.u32();
+                            for (uint32_t k = 0; k < nc && r.ok; ++k)
+                                o.collapsed.insert(r.u64());
+                            uint32_t ne = r.u32();
+                            for (uint32_t k = 0; k < ne && r.ok; ++k)
+                                o.expandedObjects.insert(r.u64());
+                        }
+                    } else if (ver >= 5) {   // migrate: discard old filter block
+                        for (int k = 0; k < 7; ++k) r.u8();   // old show*/objState/invert
+                        t.state.nPanelShowOrphans = r.u8() != 0;
                     }
+                }
+                if (ver >= 9) {   // v9: ruler visibility flags
+                    const uint8_t rf = r.u8();
+                    t.state.rulerTop    = (rf & 1) != 0;
+                    t.state.rulerLeft   = (rf & 2) != 0;
+                    t.state.rulerRight  = (rf & 4) != 0;
+                    t.state.rulerBottom = (rf & 8) != 0;
                 }
                 n->tabs.push_back(std::move(t));
             }
@@ -673,6 +721,12 @@ void ZoneLayout::Render() {
         catch (...) {}
         if (show) DrawCornerZones(root_.get());
     }
+    // Publish LAST frame's separator band (stable while the mouse dwells on it,
+    // as it does before a resize click) so THIS frame's editors — their overlay
+    // scrollbars use a geometric hit-test that no ImGui blocker can stop — skip
+    // a grab inside it. Then reset; DrawSeparator republishes for next frame.
+    UI::SetResizeReservedBand(sepBlockRect_);
+    sepBlockRect_ = ImVec4(0, 0, 0, 0);
     DrawNode(root_.get(), gap);
     DrawSplitPreview();
     // Tab drag: promote/draw/dispatch on the overlay draw list (above zones).
@@ -680,6 +734,82 @@ void ZoneLayout::Render() {
     ImGui::EndChild();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
+
+    // ── Corner input BLOCKER ──────────────────────────────────────────────────
+    // The corner hot-zones (and the drag gestures they arm) are GEOMETRIC —
+    // the editor content underneath still received the same press/drag, so a
+    // corner drag also grabbed an Outliner row or a zone tab. This small
+    // INPUT-ENABLED child (created after everything, so it is the top-most
+    // layout window) sits exactly over the hovered corner square — the press
+    // lands on it, never on the content — and, while a corner gesture runs,
+    // over the whole layout so the drag crosses rows/tabs inertly. It is a
+    // CHILD of ##LayoutBody, so overlayHov_ (native ChildWindows hover) stays
+    // true and the geometric gesture code keeps working. Simple clicks do
+    // nothing (the corner arms on press and a release-in-place is a no-op).
+    if (overlayHov_ || addArm_.armed) {
+        ImVec2 bMin{}, bMax{};
+        bool   block = false;
+        if (addArm_.armed || splitArm_.active ||
+            (join_.active && join_.fromDrag)) {
+            bMin = origin;
+            bMax = ImVec2(origin.x + avail.x, origin.y + avail.y);
+            block = true;
+        } else if (sepBlockRect_.z > sepBlockRect_.x &&
+                   sepBlockRect_.w > sepBlockRect_.y) {
+            // A separator is hovered / dragged → seal its grab band so the
+            // resize press is the ONLY action (no neighbour scrollbar / content).
+            bMin = ImVec2(sepBlockRect_.x, sepBlockRect_.y);
+            bMax = ImVec2(sepBlockRect_.z, sepBlockRect_.w);
+            block = true;
+        } else if (!sepDragging_ && !tabDrag_.armed && !tabDrag_.active &&
+                   !join_.active) {
+            const float corner = 14.0f * gs;
+            const ImVec2 m = ImGui::GetIO().MousePos;
+            std::function<void(Node*)> find = [&](Node* n) {
+                if (!n || block) return;
+                if (!n->isLeaf()) { find(n->a.get()); find(n->b.get()); return; }
+                const float lL = n->pos.x, lR = n->pos.x + n->size.x;
+                const float lT = n->pos.y, lB = n->pos.y + n->size.y;
+                const struct { float x0, y0, x1, y1; } cs[4] = {
+                    { lL, lT, lL + corner, lT + corner },
+                    { lR - corner, lT, lR, lT + corner },
+                    { lL, lB - corner, lL + corner, lB },
+                    { lR - corner, lB - corner, lR, lB },
+                };
+                for (const auto& c : cs)
+                    if (m.x >= c.x0 && m.x <= c.x1 && m.y >= c.y0 &&
+                        m.y <= c.y1) {
+                        bMin = ImVec2(c.x0, c.y0);
+                        bMax = ImVec2(c.x1, c.y1);
+                        block = true;
+                        return;
+                    }
+            };
+            find(root_.get());
+        }
+        if (block && bMax.x > bMin.x && bMax.y > bMin.y) {
+            ImGui::SetCursorScreenPos(bMin);
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+            ImGui::BeginChild("##ZoneCornerBlocker",
+                              ImVec2(bMax.x - bMin.x, bMax.y - bMin.y),
+                              ImGuiChildFlags_None,
+                              ImGuiWindowFlags_NoScrollbar |
+                              ImGuiWindowFlags_NoScrollWithMouse |
+                              ImGuiWindowFlags_NoBackground |
+                              ImGuiWindowFlags_NoNav);
+            // Claim press/hover so nothing underneath reacts (both buttons).
+            ImGui::InvisibleButton("##blk",
+                                   ImVec2(std::max(1.0f, bMax.x - bMin.x),
+                                          std::max(1.0f, bMax.y - bMin.y)),
+                                   ImGuiButtonFlags_MouseButtonLeft |
+                                   ImGuiButtonFlags_MouseButtonRight |
+                                   ImGuiButtonFlags_MouseButtonMiddle);
+            ImGui::EndChild();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
+        }
+    }
 
     // Right-click separator menu, rendered in the ##LayoutBody context (the
     // overlay is NoInputs and cannot host an interactive popup). DrawSeparator

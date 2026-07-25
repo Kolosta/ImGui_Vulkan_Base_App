@@ -1,0 +1,132 @@
+#pragma once
+
+#include "Ink/Core/Math.h"
+#include <cstdint>
+#include <cstring>
+
+// Document-level value types (docs/Ink/DOCUMENT_MODEL.md). Everything spatial
+// is DOUBLE — the unbounded-canvas requirement (README req. 9) starts here.
+namespace Ink {
+
+// Document-unique node/page identifier. 0 = null. Monotonic, never reused.
+using NodeId = std::uint64_t;
+inline constexpr NodeId kNullNode = 0;
+
+// Per-piece ids for one Style's Fill/Stroke entries (docs/Ink/NODE_GRAPH.md
+// §3.1) — what makes a single fill or stroke individually addressable as a
+// Compositing Graph Input target, instead of only a plain-array element.
+// Drawn from the SAME allocator pool as NodeId (Document::NextId()), so they
+// are document-unique, not just unique within their owning node — a stronger
+// guarantee than required, chosen to avoid a second per-node counter.
+// Stable across list reorders (assigned once, at creation).
+using FillId = std::uint64_t;
+using StrokeId = std::uint64_t;
+inline constexpr FillId   kNullFill   = 0;
+inline constexpr StrokeId kNullStroke = 0;
+
+// Row-major 2×3 affine in double (the document-space sibling of Mat23).
+struct DMat23 {
+    double m[6] = { 1, 0, 0, 0, 1, 0 };
+
+    DVec2 Apply(DVec2 p) const {
+        return { m[0] * p.x + m[1] * p.y + m[2],
+                 m[3] * p.x + m[4] * p.y + m[5] };
+    }
+    // this ∘ other (apply `other` first, then this).
+    DMat23 Compose(const DMat23& o) const {
+        DMat23 r;
+        r.m[0] = m[0] * o.m[0] + m[1] * o.m[3];
+        r.m[1] = m[0] * o.m[1] + m[1] * o.m[4];
+        r.m[2] = m[0] * o.m[2] + m[1] * o.m[5] + m[2];
+        r.m[3] = m[3] * o.m[0] + m[4] * o.m[3];
+        r.m[4] = m[3] * o.m[1] + m[4] * o.m[4];
+        r.m[5] = m[3] * o.m[2] + m[4] * o.m[5] + m[5];
+        return r;
+    }
+    static DMat23 Translation(double tx, double ty) {
+        DMat23 r; r.m[2] = tx; r.m[5] = ty; return r;
+    }
+};
+
+// Node transform, stored as TRS components (editable independently) with the
+// matrix derived. Rotation in radians. Blender semantics: a non-uniform scale
+// stretches the node's strokes (they are generated in local space).
+struct Transform2D {
+    double tx = 0.0, ty = 0.0;
+    double sx = 1.0, sy = 1.0;
+    double rotation = 0.0;
+
+    DMat23 Matrix() const {
+        const double c = std::cos(rotation), s = std::sin(rotation);
+        DMat23 r;
+        r.m[0] = c * sx;  r.m[1] = -s * sy; r.m[2] = tx;
+        r.m[3] = s * sx;  r.m[4] =  c * sy; r.m[5] = ty;
+        return r;
+    }
+
+    // Decompose an affine matrix into TRS components (skew is not represented —
+    // a sheared matrix decomposes to its nearest rotation+scale). Used when a
+    // parenting op re-expresses a node's local transform to preserve its world
+    // position (docs/Ink/DOCUMENT_MODEL.md §2).
+    static Transform2D FromMatrix(const DMat23& m) {
+        Transform2D t;
+        t.tx = m.m[2];
+        t.ty = m.m[5];
+        t.rotation = std::atan2(m.m[3], m.m[0]);
+        t.sx = std::sqrt(m.m[0] * m.m[0] + m.m[3] * m.m[3]);
+        t.sy = std::sqrt(m.m[1] * m.m[1] + m.m[4] * m.m[4]);
+        // Preserve a mirrored (negative-determinant) matrix on sy.
+        if (m.m[0] * m.m[4] - m.m[1] * m.m[3] < 0.0) t.sy = -t.sy;
+        return t;
+    }
+};
+
+// Document-space axis-aligned rectangle (double — unbounded canvas). Invalid
+// until the first Grow.
+struct DRect {
+    DVec2 min{ 0, 0 }, max{ 0, 0 };
+    bool  valid = false;
+
+    void Grow(DVec2 p) {
+        if (!valid) { min = max = p; valid = true; return; }
+        if (p.x < min.x) min.x = p.x;
+        if (p.y < min.y) min.y = p.y;
+        if (p.x > max.x) max.x = p.x;
+        if (p.y > max.y) max.y = p.y;
+    }
+    void Inflate(double d) {
+        if (!valid) return;
+        min.x -= d; min.y -= d; max.x += d; max.y += d;
+    }
+    bool Contains(DVec2 p) const {
+        return valid && p.x >= min.x && p.x <= max.x &&
+               p.y >= min.y && p.y <= max.y;
+    }
+    bool Intersects(const DRect& o) const {
+        return valid && o.valid && min.x <= o.max.x && o.min.x <= max.x &&
+               min.y <= o.max.y && o.min.y <= max.y;
+    }
+    DVec2 Center() const { return { (min.x + max.x) * 0.5, (min.y + max.y) * 0.5 }; }
+};
+
+// Compositing blend mode — the W3C separable set (plus Erase). Values are
+// stable (persisted in .acu, sent to the composite shader as an index).
+// Non-separable modes (Hue/Saturation/Color/Luminosity) come later.
+enum class BlendMode : std::uint8_t {
+    Normal = 0,
+    Multiply, Screen, Overlay, Darken, Lighten,
+    ColorDodge, ColorBurn, HardLight, SoftLight,
+    Difference, Exclusion,
+    Erase,            // dst-out: the group's coverage removes the backdrop
+    Count
+};
+
+// Hash helper for doubles (bit pattern, so 0.0 == 0.0 deterministically).
+inline std::uint64_t HashDouble(double v, std::uint64_t seed) {
+    std::uint64_t bits;
+    static_assert(sizeof bits == sizeof v);
+    std::memcpy(&bits, &v, sizeof bits);
+    return HashBytes(&bits, sizeof bits, seed);
+}
+
+} // namespace Ink

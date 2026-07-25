@@ -1,6 +1,10 @@
 #include "Application.h"
 #include "ModuleRegistry.h"
 #include <Shortcuts/ShortcutManager.h>
+#include <Shortcuts/ToolManager.h>
+#include <Ink/Render/Renderer.h>
+#include <Ink/View/View.h>
+#include <algorithm>
 
 namespace App {
 
@@ -18,6 +22,7 @@ void Application::RegisterModules() {
 // activate the module immediately.
 void Application::RequestOpenModule(const std::string& moduleId) {
     pendingModuleId_ = moduleId;
+    pendingOpenPath_.clear();               // a module open, not a held file open
     if (project_.dirty) {
         unsavedDialogOpen_ = true;
     } else {
@@ -25,11 +30,16 @@ void Application::RequestOpenModule(const std::string& moduleId) {
     }
 }
 
-// Resolve the pending new-file intent: a module open (pendingModuleId_ set) or a
-// plain preset. Shared by the direct path, the unsaved dialog, and the post-save
+// Resolve the pending intent: an .acu open (pendingOpenPath_ set — held while
+// the unsaved dialog ran), a module open (pendingModuleId_), or a plain new-file
+// preset. Shared by the direct path, the unsaved dialog, and the post-save
 // continuation (newFileAfterSave_).
 void Application::CommitPendingNew() {
-    if (!pendingModuleId_.empty()) {
+    if (!pendingOpenPath_.empty()) {
+        const std::string path = pendingOpenPath_;
+        pendingOpenPath_.clear();
+        LoadProjectFromFile(path);
+    } else if (!pendingModuleId_.empty()) {
         std::string id = pendingModuleId_;
         pendingModuleId_.clear();
         DoOpenModule(id);
@@ -40,15 +50,19 @@ void Application::CommitPendingNew() {
 
 void Application::DoOpenModule(const std::string& moduleId) {
     Modules::IModule* mod = Modules::ModuleRegistry::Instance().Get(moduleId);
-    // Fresh blank project, no preset layout yet — the module supplies its own
-    // arrangement via ActivateModule. Use the module's default page size if it
-    // declares one (e.g. IOF → A4 landscape), else the core default.
-    project_.Reset();
-    auto [pw, ph] = mod ? mod->DefaultPageSize() : std::pair<float, float>{0.0f, 0.0f};
-    if (pw > 0.0f && ph > 0.0f) project_.AddArtboard("Page 1", ImVec2(0, 0), ImVec2(pw, ph));
-    else                        project_.AddArtboard("Page 1", ImVec2(0, 0), ImVec2(1920, 1080));
-    project_.dirty = false;
-    ResetUndoHistory();
+    // Fresh blank project sized to the module's default page; the Classic demo
+    // seed stays OUT of module projects — the module builds its own starter
+    // content through the typed document ops (OnDocumentCreated, Lot 11).
+    double pageW = 1920.0, pageH = 1080.0;
+    if (mod) {
+        const auto [w, h] = mod->DefaultPageSize();
+        if (w > 0.0f && h > 0.0f) { pageW = w; pageH = h; }
+    }
+    ResetDocument(/*seedDemo=*/mod == nullptr, pageW, pageH);
+    if (mod && project_.document) {
+        mod->BindHost(this);            // host services live before OnActivate
+        mod->OnDocumentCreated(*project_.document);
+    }
     ActivateModule(mod);
 }
 
@@ -74,40 +88,181 @@ void Application::ActivateModule(Modules::IModule* mod, bool rebuildLayout) {
         std::vector<std::string> allowed = mod->AllowedEditors();
         zoneLayout_.SetEditorFilter(allowed.empty() ? CoreEditor::Ids() : allowed);
         if (rebuildLayout) zoneLayout_.BuildFromSpec(mod->BuildLayout());
-        // Apply the module's default document unit to every zone (IOF → mm).
-        zoneLayout_.ApplyDocUnitToAll(activeCapabilities_.documentUnit);
+        // A FRESH module project takes the module's DOCUMENT unit system and
+        // colour mode (persisted with the file); a loaded file keeps its own.
+        if (rebuildLayout) {
+            if (activeCapabilities_.documentUnit >= 0)
+                project_.docUnitSystem = (UI::Units::UnitSystem)std::clamp(
+                    activeCapabilities_.documentUnit, 0,
+                    UI::Units::kUnitSystemCount - 1);
+            if (activeCapabilities_.colorMode >= 0)
+                project_.colorMode = activeCapabilities_.colorMode
+                                         ? Project::ColorModeKind::Cmyk
+                                         : Project::ColorModeKind::Rgb;
+        }
+        zoneLayout_.ApplyDocUnitToAll(0);   // zones follow the document unit
         mod->OnActivate();
     } else {
         zoneLayout_.SetEditorFilter(CoreEditor::Ids());     // Classic: core only
         if (rebuildLayout) zoneLayout_.ApplyPreset(LayoutPreset::General);
-        zoneLayout_.ApplyDocUnitToAll(0);                   // Classic: px
+        zoneLayout_.ApplyDocUnitToAll(0);                   // zones follow doc
     }
 }
 
 // ── Modules::ModuleHost — app services exposed to the active module ───────────
-Renderer::Document& Application::Document() { return project_.document; }
-
-void Application::CreateObject(const std::string& presetKind, const std::string& name) {
-    Action_AddShape(presetKind.empty() ? "rectangle" : presetKind);
-    if (Renderer::Shape* s = project_.document.ActiveShape(); s && !name.empty())
-        s->name = name;
-    project_.dirty = true;
-}
-
+// The document services (object creation, baked-shape placement, cached glyph
+// rendering) return re-designed on the Ink document — docs/Ink/ROADMAP.md Lot 11.
 void Application::MarkDirty() { project_.dirty = true; }
 
-ImTextureID Application::RenderGlyphTexture(uint64_t key, uint64_t contentHash,
-                                           const std::vector<Renderer::Shape>& shapes,
-                                           int widthPx, int heightPx, float padFrac,
-                                           bool transparent, bool exactFit,
-                                           const Renderer::Vec2* frameMin,
-                                           const Renderer::Vec2* frameMax) {
-    // White "map paper" card behind a thumbnail; transparent for the placement
-    // ghost (so it overlays the canvas). SSAA-smoothed via the Vulkan pipeline.
-    ImVec4 clear = transparent ? ImVec4(0, 0, 0, 0) : ImVec4(1, 1, 1, 1);
-    return canvasRenderer_.RenderGlyphCached(key, contentHash, shapes,
-                                             widthPx, heightPx, padFrac, clear, exactFit,
-                                             frameMin, frameMax);
+// Real-pipeline vignette of a node subtree: a cached off-screen Ink view with
+// the preview filter on the subtree, camera FITTED on the node's bounds with a
+// `padFrac` margin — identical rendering (strokes / instanced fills / MSAA) to
+// the canvas. Works for preview-only library nodes (their bounds are kept).
+// Shared by NodePreviewTexture (an ImGui-hosted ImTextureID) and
+// NodePreviewDescriptorSet (docs/Ink/NODE_UI.md — the SAME view, sampled by
+// the Node Graph Editor's own Vulkan pass instead of ImGui) — one camera-fit
+// implementation, two ways of reading the result.
+Ink::View* Application::NodePreviewView(std::uint64_t node, int px, float padFrac) {
+    if (!ink_ || !project_.document || px <= 0) return nullptr;
+    // Owners = the layer subtree; the frame is the UNION of their bounds
+    // (NodeBounds is per-owner — a multi-part GROUP has no entry of its own).
+    std::vector<std::uint64_t> owners;
+    Ink::DRect bb;
+    {
+        std::vector<Ink::NodeId> stack{ node };
+        while (!stack.empty()) {
+            const Ink::NodeId c = stack.back();
+            stack.pop_back();
+            owners.push_back(c);
+            Ink::DRect nb;
+            if (ink_->NodeBounds(c, nb) && nb.valid) {
+                bb.Grow(nb.min);
+                bb.Grow(nb.max);
+            }
+            if (const Ink::Node* n = project_.document->Find(c))
+                for (Ink::NodeId k : n->children) stack.push_back(k);
+        }
+    }
+    if (!bb.valid) return nullptr;
+    // Key space: low bits 0b11 mark the module vignettes (Outliner thumbnails
+    // are odd; paint previews use 0b10; viewport keys are aligned pointers).
+    const void* key = (const void*)(std::uintptr_t)(
+        ((node * 131u + (std::uint64_t)px) << 2) | 3u);
+    Ink::View* view = ink_->AcquireView(key);
+    view->SetViewport((std::uint32_t)px, (std::uint32_t)px);
+    const double w  = std::max(1e-6, bb.max.x - bb.min.x);
+    const double h  = std::max(1e-6, bb.max.y - bb.min.y);
+    const double cx = (bb.min.x + bb.max.x) * 0.5;
+    const double cy = (bb.min.y + bb.max.y) * 0.5;
+    const double pad = std::clamp((double)padFrac, 0.0, 0.45);
+    const double zoom = (double)px * (1.0 - 2.0 * pad) / std::max(w, h);
+    view->SetCamera(cx - (double)px * 0.5 / zoom,
+                    cy - (double)px * 0.5 / zoom, zoom);
+    view->SetBackground(Ink::SrgbToLinearPremultiplied(1, 1, 1, 1));
+    view->SetPreviewFilter(owners);
+    return view;
+}
+
+std::uint64_t Application::NodePreviewTexture(std::uint64_t node, int px,
+                                              float padFrac) {
+    Ink::View* view = NodePreviewView(node, px, padFrac);
+    return view ? view->Texture() : 0;
+}
+
+std::uint64_t Application::NodePreviewDescriptorSet(std::uint64_t node, int px,
+                                                    float padFrac) {
+    Ink::View* view = NodePreviewView(node, px, padFrac);
+    return view ? view->PreviewDescriptorSet() : 0;
+}
+
+// A module-driven zoom/pan preview canvas: same isolation render as the
+// vignettes but with an explicit camera and a non-square target (the IOF
+// Symbol Viewer example canvas).
+std::uint64_t Application::CanvasPreviewTexture(std::uint64_t node,
+                                                std::uint32_t viewKey, int w,
+                                                int h, double panX, double panY,
+                                                double zoom) {
+    if (!ink_ || !project_.document || w <= 0 || h <= 0 || zoom <= 0.0) return 0;
+    std::vector<std::uint64_t> owners;
+    std::vector<Ink::NodeId> stack{ node };
+    while (!stack.empty()) {
+        const Ink::NodeId c = stack.back();
+        stack.pop_back();
+        owners.push_back(c);
+        if (const Ink::Node* n = project_.document->Find(c))
+            for (Ink::NodeId k : n->children) stack.push_back(k);
+    }
+    // Key space: low bits 0b11 (module vignettes), a distinct salt per canvas.
+    const void* key = (const void*)(std::uintptr_t)(
+        ((node * 977u + (std::uint64_t)viewKey * 131u + 7u) << 2) | 3u);
+    Ink::View* view = ink_->AcquireView(key);
+    view->SetViewport((std::uint32_t)w, (std::uint32_t)h);
+    view->SetCamera(panX, panY, zoom);
+    view->SetBackground(Ink::SrgbToLinearPremultiplied(1, 1, 1, 1));
+    view->SetPreviewFilter(owners);
+    return view->Texture();
+}
+
+bool Application::NodeDocBounds(std::uint64_t node, double out[4]) {
+    if (!ink_ || !project_.document) return false;
+    Ink::DRect bb;
+    std::vector<Ink::NodeId> stack{ node };
+    while (!stack.empty()) {
+        const Ink::NodeId c = stack.back();
+        stack.pop_back();
+        Ink::DRect nb;
+        if (ink_->NodeBounds(c, nb) && nb.valid) {
+            bb.Grow(nb.min);
+            bb.Grow(nb.max);
+        }
+        if (const Ink::Node* n = project_.document->Find(c))
+            for (Ink::NodeId k : n->children) stack.push_back(k);
+    }
+    if (!bb.valid) return false;
+    out[0] = bb.min.x; out[1] = bb.min.y;
+    out[2] = bb.max.x; out[3] = bb.max.y;
+    return true;
+}
+
+// ── Module viewport tools: place-symbol arming + symbol-draw pen override ────
+void Application::ArmPlacement(const Modules::PlacementRequest& req) {
+    EndSymbolDraw();                      // the two modes are exclusive
+    modulePlace_.armed = true;
+    modulePlace_.req   = req;
+}
+
+void Application::CancelPlacement() {
+    modulePlace_.armed = false;
+    modulePlace_.req = {};
+}
+
+void Application::BeginSymbolDraw(const Modules::SymbolDrawRequest& req) {
+    CancelPlacement();                    // the two modes are exclusive
+    moduleDraw_.active   = true;
+    moduleDraw_.style    = req.style ? *req.style : Ink::Style{};
+    moduleDraw_.iconNode = req.iconNode;
+    moduleDraw_.onCommit = req.onCommit;
+    moduleDraw_.penKind  = req.penKind.empty() ? std::string("curve")
+                                               : req.penKind;
+    BeginPenDraw(moduleDraw_.penKind.c_str());
+}
+
+void Application::EndSymbolDraw() {
+    // Cancel any in-progress module pen draw (switching away from the tool
+    // mid-path must not leave the pen live with a stale style).
+    if (moduleDraw_.active && penActive_) CommitPenDraw(/*keep=*/false);
+    moduleDraw_ = {};
+}
+
+std::string Application::ActiveTool() const {
+    return Shortcuts::Tools::ToolManager::Instance().GetActiveTool();
+}
+
+void Application::RegisterTool(const std::string& id, const std::string& name,
+                               const std::string& icon) {
+    Shortcuts::Tools::ToolDef def;
+    def.id = id; def.name = name; def.iconId = icon;
+    Shortcuts::Tools::ToolManager::Instance().RegisterTool(def);
 }
 
 }  // namespace App

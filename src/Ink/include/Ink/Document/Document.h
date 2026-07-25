@@ -1,0 +1,411 @@
+#pragma once
+
+#include "Ink/Document/Modifier.h"
+#include "Ink/Document/PathData.h"
+#include "Ink/Document/Style.h"
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+namespace Ink {
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Document — the persistent model (docs/Ink/DOCUMENT_MODEL.md). Pure data +
+//  invariants: no Vulkan, no ImGui, no file I/O (serialisation lives app-side,
+//  Lot 10). Owned by App::Project; the Scene is its only render-side consumer.
+//
+//  Structure (Lot 2 scope):
+//    Document → pages: [Page { children }] → layer tree of Nodes
+//    Node = Group { children } | Path { PathData + Style }
+//  InstanceNode/ImageNode/TextNode, Collections and modifiers arrive with
+//  their lots (5/6/7/9) on top of this same storage.
+//
+//  Every mutation goes through the typed operations below, which (1) apply
+//  the change, (2) append a Change to the log consumed by Scene::Compile for
+//  exact dirtying, (3) bump the version. Undo records hook in here at Lot 8.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Instance: renders another node's subtree with this node's transform (Lot 5).
+enum class NodeKind : std::uint8_t { Group = 0, Path = 1, Instance = 2 };
+
+// A manual override of one entry in a Layer's Compositing Graph Input list
+// (docs/Ink/NODE_GRAPH.md; ROADMAP Lot 13). `Node::compInputs` empty = fully
+// automatic (mirror `children`, in order — Lot 12 behavior, unchanged);
+// non-empty = a complete, hand-authored replacement of that list (reorder/
+// exclude), never a partial patch. `Document::SetCompInputs` validates every
+// entry references a NODE CURRENTLY IN `children` — Lot 13's scope is
+// reordering/filtering a layer's OWN children; routing in a piece of a
+// FOREIGN node (a fill/stroke that isn't this layer's own child) needs the
+// "don't also render it at its structural position" semantics that are a
+// deliberate follow-on, not yet built (NODE_GRAPH.md §6). `fill`/`stroke` are
+// therefore inert scaffolding today (always null after validation) — kept so
+// the type doesn't need to change shape again when that follow-on lands.
+struct CompInputOverride {
+    NodeId   node   = kNullNode;
+    FillId   fill   = kNullFill;
+    StrokeId stroke = kNullStroke;
+    // Node Graph Editor "Mute" (M): skip this entry at render time WITHOUT
+    // removing it from the list — its slot/order survives a mute/unmute
+    // round-trip untouched, unlike the close/exclude gesture which drops the
+    // entry outright.
+    bool     muted  = false;
+};
+
+// Per-PROPERTY edit locks (a bitmask on Node::propLocks). A locked property is
+// read-only in the editors (shown with a closed padlock) and refused by the
+// viewport transform ops. Distinct from Node::locked (which locks the WHOLE
+// object): these freeze individual channels — a module (IOF) locks exactly the
+// channels its specification fixes (a north-locked symbol: rotation; a
+// fixed-size symbol: scale + dimensions; spec colours: style).
+enum PropLock : std::uint32_t {
+    PropLockPosition   = 1u << 0,   // location (tx/ty)
+    PropLockRotation   = 1u << 1,   // rotation
+    PropLockScale      = 1u << 2,   // scale sx/sy
+    PropLockDimensions = 1u << 3,   // derived W/H dimensions
+    PropLockStyle      = 1u << 4,   // fills/strokes (paints, widths, dashes…)
+    // A module OWNS this node's locks: the padlock toggles are read-only in the
+    // UI (the user cannot unlock a spec-fixed property).
+    PropLockManaged    = 1u << 31,
+};
+
+struct Node {
+    NodeId      id   = kNullNode;
+    NodeKind    kind = NodeKind::Path;
+    std::string name;
+    NodeId      parent = kNullNode;   // owning group (kNullNode = page root)
+    NodeId      page   = kNullNode;   // owning page
+    // Object PARENTING (docs/Ink/DOCUMENT_MODEL.md §2), a relation DISTINCT
+    // from the layer-tree position above: the resolved transform inherits the
+    // parentId chain, not the group nesting. kNullNode = unparented. Editing
+    // the parent moves the child; z-order/compositing are unaffected.
+    NodeId      parentId = kNullNode;
+    Transform2D transform;
+    bool        visible = true;
+    bool        locked  = false;
+    // Per-property edit locks (see PropLock above). 0 = everything editable.
+    std::uint32_t propLocks = 0;
+    // Library/data-block node: compiled into the Scene but dropped from normal
+    // views — it renders ONLY when a preview filter selects it (module symbol
+    // libraries: real nodes powering real-pipeline vignettes, never on canvas).
+    bool        previewOnly = false;
+    float       opacity = 1.0f;                    // compositing (Lot 4)
+    BlendMode   blend   = BlendMode::Normal;       // compositing (Lot 4)
+    bool        isolate = false;                   // compositing (Lot 4)
+    // kind == Group: clip the subtree by the group's first path child
+    // (docs/Ink/RENDER_GRAPH.md §ClipPass). Ignored on a path node.
+    bool        clip    = false;
+    // Affinity layer semantics (docs/Ink/DOCUMENT_MODEL.md §Layers): a node
+    // nested under a PARENT path node is CLIPPED to that parent's fill
+    // coverage. When it is instead a MASK child (`isMask`), it does not paint —
+    // its coverage MASKS its parent's content. Children are bottom→top.
+    bool        isMask  = false;
+
+    // kind == Path
+    PathData path;
+    Style    style;
+    // kind == Group — children in painter order (bottom → top)
+    std::vector<NodeId> children;
+    // kind == Instance — the node/subtree this instance renders (Lot 5).
+    NodeId   targetRef = kNullNode;
+    // Which of the ORIGINAL's object-transform components the instance keeps
+    // COPYING live. Default: none — the linked data is the edit-mode geometry;
+    // the original's location/rotation/scale never move its instances (they
+    // were merely copied once at duplicate-linked time). Instance kind only.
+    bool instCopyLoc   = false;
+    bool instCopyRot   = false;
+    bool instCopyScale = false;
+
+    // Instancing modifiers (Lot 5): an ordered stack evaluated at Scene
+    // compile. Each turns this node's rendered content into many copies at
+    // generated transforms (docs/Ink/DOCUMENT_MODEL.md §6).
+    std::vector<Modifier> modifiers;
+
+    // Compositing Graph manual override (kind == Group only; see
+    // CompInputOverride above). Empty = fully automatic.
+    std::vector<CompInputOverride> compInputs;
+    // Node Graph Editor "Mute" (M) applied to this layer's Blend node ONLY
+    // (docs/Ink/NODE_GRAPH.md §7 — Merge/Clip/Mask are separate nodes now
+    // and are never muted): bypasses opacity/blend-mode/isolation while
+    // Clip/Mask (if any) keep working — Scene::OpenScopeIfNeeded folds this
+    // in on top of the blend half of the predicate only. Fields themselves
+    // are untouched, so unmuting restores exactly what they already were.
+    bool compBlendMuted = false;
+};
+
+struct Page {
+    NodeId      id = kNullNode;
+    std::string name;
+    DVec2       pos{ 0, 0 };
+    DVec2       size{ 0, 0 };
+    Color       background{ 1, 1, 1, 1 };   // display substrate, NOT a layer
+    std::vector<NodeId> children;           // painter order (bottom → top)
+};
+
+// Collection — an ORGANISATIONAL set (docs/Ink/DOCUMENT_MODEL.md §7), distinct
+// from the layer tree: no z-order, no compositing. Membership is many-to-many
+// (a node may belong to several). A collection's visibility is a Scene-compile
+// FILTER: a node hidden by ANY route (layer, collection, page) is culled —
+// culling never changes correctness of what IS drawn (GEOMETRY.md §7).
+struct Collection {
+    NodeId              id = kNullNode;
+    std::string         name;
+    Color               colorTag{ 0.55f, 0.60f, 0.70f, 1.0f };
+    bool                visible = true;      // filter: hide members at compile
+    std::vector<NodeId> members;             // node ids (many-to-many)
+    std::vector<NodeId> childCollections;    // nested collections (tree in UI)
+};
+
+// What changed, at the granularity the Scene needs for exact dirtying.
+enum class ChangeKind : std::uint8_t {
+    Added,        // node/page created
+    Removed,      // node/page destroyed
+    Geometry,     // PathData edited            → re-tessellate + re-batch
+    StyleChanged, // paints/opacity/etc edited  → paint/item tables only
+    Moved,        // transform edited           → instance records only
+    Hierarchy,    // reparent/reorder/visibility→ recompile order
+};
+
+struct Change {
+    NodeId     node;
+    ChangeKind kind;
+};
+
+class Document {
+public:
+    // ── Typed operations (the ONLY mutation path) ────────────────────────────
+    NodeId AddPage(std::string name, DVec2 pos, DVec2 size);
+    NodeId AddGroup(NodeId parent, std::string name);   // parent = group or page
+    NodeId AddPath(NodeId parent, PathData path, Style style, std::string name);
+    // An instance of `target`'s subtree (Lot 5). Renders target's content with
+    // this node's transform; editing target updates every instance.
+    NodeId AddInstance(NodeId parent, NodeId target, std::string name);
+    void   SetPath(NodeId node, PathData path);
+    void   SetStyle(NodeId node, Style style);
+    // Replace a node's instancing modifier stack (Lot 5).
+    void   SetModifiers(NodeId node, std::vector<Modifier> modifiers);
+    // Retarget an Instance node (kind must be Instance; self-ref refused).
+    void   SetInstanceTarget(NodeId inst, NodeId target);
+    // Which of the original's transform components the instance copies live
+    // (location / rotation / scale — see Node::instCopy*).
+    void   SetInstanceTransformCopy(NodeId inst, bool loc, bool rot, bool scale);
+    void   SetTransform(NodeId node, const Transform2D& t);
+    void   SetVisible(NodeId node, bool visible);
+    // Object parenting (docs/Ink/DOCUMENT_MODEL.md §2). `keepWorld` preserves
+    // the child's on-screen position by folding the inherited transform into
+    // its local one. Refused (no-op) if it would create a cycle. ClearParent
+    // detaches, optionally keeping the world position.
+    bool   SetParent(NodeId child, NodeId parent, bool keepWorld = true);
+    void   ClearParent(NodeId child, bool keepWorld = true);
+    // Group compositing (docs/Ink/DOCUMENT_MODEL.md §2). Setting any of these
+    // to a non-default value makes the group composite its subtree as a unit.
+    void   SetOpacity(NodeId group, float opacity);
+    void   SetBlend(NodeId group, BlendMode blend);
+    void   SetIsolate(NodeId group, bool isolate);
+    void   SetClip(NodeId group, bool clip);
+    // Affinity mask flag: mark a child node as a MASK of its parent (it stops
+    // painting and masks the parent's content) or back to a clipped child.
+    void   SetMask(NodeId node, bool isMask);
+    // Compositing Graph manual override (docs/Ink/NODE_GRAPH.md, ROADMAP
+    // Lot 13, kind == Group only): replace `layer`'s Input list wholesale.
+    // Entries not currently a child of `layer` are dropped (validated, never
+    // a foreign node). Empty reverts to fully automatic (mirrors `children`).
+    void   SetCompInputs(NodeId layer, std::vector<CompInputOverride> inputs);
+    void   ResetCompInputs(NodeId layer) { SetCompInputs(layer, {}); }
+    // Mute/unmute a layer's Blend node (Node::compBlendMuted above).
+    void   SetCompBlendMuted(NodeId layer, bool muted);
+    void   Remove(NodeId node);      // node or page (subtree included)
+    void   Clear();                  // everything (fresh document)
+
+    // ── Organisation ops the editors drive (Lot 9) ───────────────────────────
+    void   SetName(NodeId node, std::string name);
+    void   SetLocked(NodeId node, bool locked);
+    // Per-property edit locks (PropLock bitmask) — editor/module policy carried
+    // by the document so it persists and travels with the file.
+    void   SetPropLocks(NodeId node, std::uint32_t locks);
+    // Mark a node (subtree root) as a preview-only library block (see
+    // Node::previewOnly). Applies to the node itself; the renderer drops the
+    // whole subtree from normal views because children inherit the owner.
+    void   SetPreviewOnly(NodeId node, bool previewOnly);
+    // Reorder a node among its siblings (page or group children): move it to
+    // absolute index `to` (clamped). No-op if it has no sibling list.
+    void   ReorderChild(NodeId node, int to);
+    // Move a node under a new layer-tree parent (a group or a page id) at
+    // `index` (−1 = append). Preserves world position. Refuses to parent a
+    // node under itself/its descendant. This is the LAYER-TREE parent (not the
+    // object parentId of Lot 7). Returns false on refusal.
+    bool   MoveTo(NodeId node, NodeId newParent, int index = -1);
+    // Wrap `nodes` in a new group (in their common parent, at the topmost
+    // member's position). Returns the new group id (kNullNode on failure).
+    NodeId GroupNodes(const std::vector<NodeId>& nodes, std::string name);
+    // Dissolve a group: its children take its place among its siblings,
+    // inheriting its transform. Returns the freed child ids.
+    std::vector<NodeId> UngroupNode(NodeId group);
+
+    // ── Collections (docs/Ink/DOCUMENT_MODEL.md §7) ──────────────────────────
+    // `parent` nests the new collection under an existing one (kNullNode = a
+    // top-level collection).
+    NodeId AddCollection(std::string name, NodeId parent = kNullNode);
+    // `deleteContents` also removes the member NODES and every child collection
+    // recursively (the legacy "Delete Hierarchy"); false frees only the set.
+    void   RemoveCollection(NodeId coll, bool deleteContents = false);
+    void   SetCollectionName(NodeId coll, std::string name);
+    void   SetCollectionVisible(NodeId coll, bool visible);
+    void   SetCollectionColor(NodeId coll, const Color& colorTag);
+    void   AddToCollection(NodeId coll, NodeId node);
+    void   RemoveFromCollection(NodeId coll, NodeId node);
+    // Re-nest a collection under `parent` (kNullNode = make it top-level).
+    // Refused (no-op) on cycles / self.
+    void   MoveCollection(NodeId coll, NodeId parent);
+    // Reorder a collection among its CURRENT siblings (its parent's children,
+    // or the top-level order) to absolute index `to` (clamped).
+    void   ReorderCollection(NodeId coll, int to);
+    const std::vector<Collection>& Collections() const { return collections_; }
+    const Collection* FindCollection(NodeId id) const;
+    // True when `id` is nested inside another collection (not top-level).
+    bool   IsChildCollection(NodeId id) const;
+    // True when the node is hidden by collection membership (any collection it
+    // belongs to is invisible) — the Scene's collection filter.
+    bool   HiddenByCollection(NodeId node) const;
+
+    // ── Persistence support (Lot 10) ─────────────────────────────────────────
+    // Wholesale-install a document read back from disk. The .acu codec lives
+    // APP-SIDE (this model does no file I/O); it parses the file into these
+    // plain containers and commits them here in one step. Ids install VERBATIM
+    // (ids are never reused, so restored ids are the same logical entities).
+    // Structural invariants (page/parent ↔ children consistency, id
+    // uniqueness) are validated FIRST — malformed input leaves the document
+    // untouched and returns false. Non-structural references (parentId,
+    // instance targets, modifier refs, collection members) pointing at missing
+    // nodes are sanitised to null / dropped instead of failing, so a file that
+    // lost a referenced node still opens. `nextId` is raised to clear every
+    // installed id if the stored allocator mark is stale.
+    bool Restore(std::vector<Page> pages, std::vector<Node> nodes,
+                 std::vector<Collection> collections, NodeId nextId);
+    // The id-allocator high-water mark (persisted so restored documents keep
+    // allocating unique ids).
+    NodeId PeekNextId() const { return nextId_; }
+
+    // ── Editing / undo support (Lot 8) ───────────────────────────────────────
+    // A detached copy of a node subtree with its placement — the currency of
+    // command-based undo (Remove ↔ Restore round-trips exactly).
+    struct SubtreeSnapshot {
+        std::vector<Node> nodes;     // pre-order; [0] = the root (ids preserved)
+        int indexInParent = -1;      // root's position among its siblings
+    };
+    SubtreeSnapshot CopySubtree(NodeId root) const;
+    // Reinsert a subtree removed earlier. Ids restore VERBATIM (ids are never
+    // reused, so this is the same logical nodes coming back). False if the
+    // root id still exists or its parent is gone.
+    bool RestoreSubtree(const SubtreeSnapshot& snap);
+    // Deep copy of `src` (fresh ids) inserted right after it among its
+    // siblings. Intra-subtree references (children, parentId, targetRef,
+    // modifier refs) are remapped; references OUTSIDE the subtree are kept.
+    NodeId DuplicateSubtree(NodeId src);
+    // Bake the node's scale into its geometry (Blender's Apply Scale —
+    // docs/Ink/DOCUMENT_MODEL.md §4): anchors/handles scale, Document-space
+    // stroke widths scale by the geometric mean of |sx|,|sy|, then sx/sy
+    // reset to 1. World appearance is unchanged (local matrix is R·S — S
+    // folds into the geometry exactly). Path nodes only.
+    void   ApplyScale(NodeId node);
+    int    IndexInParent(NodeId id) const;   // −1 when not found
+
+    // ── Queries ──────────────────────────────────────────────────────────────
+    const Node* Find(NodeId id) const;
+    Node*       FindMutable(NodeId id);   // for editors; pair with NotifyEdited
+    // After mutating through FindMutable, report WHAT was edited so the
+    // change log stays exact (transitional escape hatch for tools; typed ops
+    // are preferred).
+    void        NotifyEdited(NodeId id, ChangeKind kind) { Log(id, kind); }
+
+    const std::vector<Page>&  Pages() const { return pages_; }
+    const Page* FindPage(NodeId id) const;
+    std::size_t NodeCount() const { return nodes_.size(); }
+
+    // ── Swatches — the document colour table (Swatch.h) ──────────────────────
+    // Named colours used as VARIABLES: a paint that references one follows it,
+    // so editing the swatch restyles every user. A swatch may also carry its
+    // place in the PLATE STACK (print order) and whether it overprints.
+    const std::vector<Swatch>& Swatches() const { return swatches_; }
+    // `s.id` is ignored — a fresh id is allocated and returned.
+    SwatchId AddSwatch(Swatch s);
+    // Replace everything but the id. Every paint following it repaints.
+    void     SetSwatch(SwatchId id, Swatch s);
+    // Paints that referenced it fall back to their own literal colour.
+    void     RemoveSwatch(SwatchId id);
+    const Swatch* FindSwatch(SwatchId id) const;
+    // Resolve a paint site to the colour that must actually be drawn: the
+    // swatch when it resolves, else the literal. The single funnel every
+    // renderer, picker and exporter goes through.
+    Color    ResolveColor(const Color& literal, SwatchId swatch) const;
+    Color    ResolveColor(const Paint& p) const {
+        return ResolveColor(p.color, p.swatch);
+    }
+    // Swatches in PLATE ORDER (lowest printOrder first = printed underneath).
+    // Only those that declare an order take part; the rest are left out.
+    std::vector<const Swatch*> PrintStack() const;
+    // Restore the whole table verbatim (loading a file). Ids are preserved.
+    void     RestoreSwatches(std::vector<Swatch> table);
+    // Permute the table so it starts with `order` (ids not listed keep their
+    // relative position after them). The table's own order is what colours
+    // WITHOUT a print order are listed by, so this is how they are ranked.
+    void     ReorderSwatches(const std::vector<SwatchId>& order);
+
+    // How the document is printed (PrintTechnique in Swatch.h). It decides
+    // whether a colour carrying a spot definition is built from process inks or
+    // laid as its own ink — which changes both the proof and the plate list.
+    // This one IS a document property: a fact about the print run, not a way of
+    // looking at it. HOW a canvas proofs it (Ink::View::SetPrintPreview /
+    // SetPrintOrder) is per VIEW, so one viewport can proof while another — and
+    // every symbol vignette — stays on the plain screen render.
+    PrintTechnique PrintTech() const { return printTech_; }
+    void SetPrintTech(PrintTechnique t);
+
+    // Resolved node → document transform. Object parenting (parentId) takes
+    // precedence over the layer-tree position (docs/Ink/DOCUMENT_MODEL.md §2).
+    DMat23 WorldTransform(NodeId id) const;
+
+    // ── Change tracking ──────────────────────────────────────────────────────
+    // Monotonic content version (bumped by every op) — mixed into view
+    // signatures so any edit re-renders.
+    std::uint64_t Version() const { return version_; }
+    // Drain the pending changes (consumed by Scene::Compile once per frame).
+    std::vector<Change> DrainChanges();
+    bool HasPendingChanges() const { return !changes_.empty(); }
+
+private:
+    DMat23 WorldTransformDepth(NodeId id, int depth) const;   // parent recursion
+    void   Log(NodeId id, ChangeKind kind);
+    NodeId NextId() { return nextId_++; }
+    // Assign FillId/StrokeId to a Style's pieces (docs/Ink/NODE_GRAPH.md
+    // §3.1): fills in only the null (never-stamped) ones by default; `force`
+    // reassigns every piece a FRESH id (DuplicateSubtree — a copied piece must
+    // not share its source's id, or a Compositing Graph Input targeting one
+    // could resolve to either).
+    void   StampStyleIds(Style& s, bool force = false);
+    // Remove `id` from its parent's children list (page or group).
+    void   DetachFromParent(const Node& n);
+    void   RemoveSubtree(NodeId id);
+
+    // Siblings list a node lives in (its group's children or its page's), or
+    // nullptr. Non-const + const overloads share the lookup.
+    std::vector<NodeId>*       SiblingsOf(const Node& n);
+    const std::vector<NodeId>* SiblingsOf(const Node& n) const;
+
+    std::unordered_map<NodeId, Node> nodes_;
+    std::vector<Page>                pages_;
+    std::vector<Collection>          collections_;
+    std::vector<Swatch>              swatches_;
+    SwatchId                         nextSwatch_ = 1;
+    PrintTechnique                   printTech_ = PrintTechnique::Cmyk;
+    NodeId                           nextId_  = 1;
+    std::uint64_t                    version_ = 0;
+    std::vector<Change>              changes_;
+};
+
+// Transitional demo content (Lot 2): the Lot 1 hard-coded scene rebuilt as
+// real document content — a page, filled+stroked shapes and a 1 000-node
+// grid (identical paths dedup into ONE cached mesh). Removed when the
+// drawing tools land (Lot 8).
+void SeedDemoDocument(Document& doc);
+
+} // namespace Ink

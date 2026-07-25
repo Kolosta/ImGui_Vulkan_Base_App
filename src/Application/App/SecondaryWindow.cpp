@@ -35,7 +35,7 @@ bool SecondaryWindow::Init(const VulkanShared& shared, float dpiScale,
     ctx_ = ImGui::CreateContext(sharedAtlas);
     ImGui::SetCurrentContext(ctx_);
     ImGuiIO& io = ImGui::GetIO();
-    io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+    io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;   // no nav ring
     io.IniFilename = nullptr;                    // don't fight the main ctx ini
     // Mirror the main context's style (colours, sizes, font scaling) so this
     // window is visually identical and stays linked to it. We copy the whole

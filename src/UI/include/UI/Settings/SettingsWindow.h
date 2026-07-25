@@ -1,6 +1,7 @@
 #pragma once
 
 #include <imgui.h>
+#include <functional>
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  Blender-style "Preferences" window.
@@ -42,6 +43,11 @@ public:
     Page CurrentPage() const { return page_; }
     void SetPage(Page p) { page_ = p; }
 
+    // App-injected extra content for the Dev page, rendered after the built-in
+    // panels. Lets the Application add dev tools that need its own state (e.g. the
+    // render-engine selector) without the UI lib depending on Application.
+    void SetDevPageExtra(std::function<void()> fn) { devPageExtra_ = std::move(fn); }
+
 private:
     void RenderTitleBar(float width);
     void RenderLeftColumn(float width, float height);
@@ -64,6 +70,7 @@ private:
     void EndPageBody();
 
     Page page_ = Page::Theme;
+    std::function<void()> devPageExtra_;   // app-injected Dev-page content
     bool sysClose_ = false;   // set by the title-bar close button this frame
     // Customisation: edit overrides globally vs. for the current theme only.
     bool editGlobal_ = true;

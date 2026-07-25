@@ -2,6 +2,7 @@
 
 #include <imgui.h>
 #include <DesignSystem/DesignSystem.h>
+#include <Ink/Document/Document.h>
 
 namespace App::Modules::Typography {
 
@@ -68,12 +69,59 @@ void TypographyModule::ConfigureCapabilities(Capabilities& caps) const {
     caps.corePrimitivesAddMenu = false;   // no rectangles/curves in a font module
     caps.pages                 = false;    // glyphs, not pages
     caps.editMode              = true;     // (point editing makes sense later)
+    caps.documentUnit          = 2;        // Typographic — points
 }
 
 std::vector<std::string> TypographyModule::AllowedEditors() const {
     // Only the module's editors are selectable — no core Viewport/Timeline/etc.
     return { "typo.fontatlas", "typo.fonteditor", "typo.fontinfo",
              "typo.fontpreview", "typo.variations", "typo.fontoutliner" };
+}
+
+// ── Ink document hooks (Lot 11) ──────────────────────────────────────────────
+// A square 1000-unit em canvas (the classic font-unit grid) seeded with the
+// glyph working guides. Built through the document's typed ops — the same path
+// core tools use, so the seed is undo-consistent and engine-visible.
+
+std::pair<float, float> TypographyModule::DefaultPageSize() const {
+    return { 1000.0f, 1000.0f };   // one em at 1000 units/em
+}
+
+void TypographyModule::OnDocumentCreated(Ink::Document& doc) {
+    if (doc.Pages().empty()) return;
+    const Ink::Page& pg = doc.Pages().front();
+    const double x = pg.pos.x, y = pg.pos.y;
+    const double w = pg.size.x, h = pg.size.y;
+
+    // Guides are viewport-px hairlines (constant on-screen width at any zoom),
+    // in a muted grey — glyph outlines will sit on top of them.
+    const Ink::Color guideCol{ 0.35f, 0.38f, 0.45f, 1.0f };
+    auto hairline = [&](double width) {
+        Ink::Style s = Ink::Style::Stroked(guideCol, width);
+        s.strokes[0].widthSpace = Ink::WidthSpace::Viewport;
+        return s;
+    };
+
+    // Em square (the full page frame) + the classic horizontal metrics:
+    // baseline at 20 % up, x-height at 50 %, cap height at 70 %.
+    const Ink::NodeId em = doc.AddPath(
+        pg.id, Ink::PathData::Rect(x, y, w, h), hairline(1.5), "Em square");
+    auto metricLine = [&](double frac, const char* name) {
+        const double ly = y + h * (1.0 - frac);
+        Ink::PathData p =
+            Ink::PathData::Polygon({ { x, ly }, { x + w, ly } }, false);
+        return doc.AddPath(pg.id, std::move(p), hairline(1.0), name);
+    };
+    const Ink::NodeId baseline  = metricLine(0.20, "Baseline");
+    const Ink::NodeId xheight   = metricLine(0.50, "x-height");
+    const Ink::NodeId capheight = metricLine(0.70, "Cap height");
+
+    // Organised into a locked-purpose "Guides" collection so the outliner
+    // groups them; the glyph itself is drawn as ordinary paths beside them.
+    const Ink::NodeId guides = doc.AddCollection("Guides");
+    doc.SetCollectionColor(guides, { 0.35f, 0.38f, 0.45f, 1.0f });
+    for (Ink::NodeId n : { em, baseline, xheight, capheight })
+        doc.AddToCollection(guides, n);
 }
 
 }  // namespace App::Modules::Typography

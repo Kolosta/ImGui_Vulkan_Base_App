@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 add_library(UI STATIC
+    src/Units.cpp
     src/Text/FontManager.cpp
     src/Widgets/IconWidgets.cpp
     src/Widgets/ButtonGroup.cpp
@@ -8,10 +9,12 @@ add_library(UI STATIC
     src/Widgets/Checkbox.cpp
     src/Widgets/DragValue.cpp
     src/Widgets/ListRow.cpp
+    src/Widgets/RowDrag.cpp
     src/Widgets/PopupMenu.cpp
     src/Widgets/Panel.cpp
     src/Widgets/ScrollArea.cpp
     src/Widgets/SidePanel.cpp
+    src/Widgets/ToolPalette.cpp
     src/Tokens/TokenEditor.cpp
     src/Tokens/TokenValueWidgets.cpp
     src/Tokens/TokenGraphWindow.cpp
