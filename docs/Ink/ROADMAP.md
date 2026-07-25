@@ -227,6 +227,30 @@ benchmark/tests, and updates these docs. No lot references `_legacy` code.
   cross-layer link-dragging needs the real per-edge model `NODE_GRAPH.md` §7
   now designs. `ink_tests`/`ds_token_tests` re-verified green after every
   change in this pass.)*
+  *(Cut over to Vulkan-native rendering the SAME day, after the user
+  rejected ImGui-based node rendering outright — "Je ne veux plus d'ImGui
+  dans le Node Graph editor." Full design + build in `docs/Ink/NODE_UI.md`:
+  a new `Ink::View` per Node Graph zone (`View::SetContentVisible(false)` —
+  new engine API, the view has no relationship to the Document), boxes/
+  borders/ports/cables drawn through the EXISTING `Overlay()` pipeline
+  (reused as-is — a Node Graph view's own private `OverlayList`, zero
+  interference with any Viewport), text and live preview vignettes through a
+  brand-new textured-quad pipeline + pass (`nodeui.vert/frag`, a FreeType-
+  rasterized glyph atlas built once at `Renderer::Initialize`) — deliberately
+  NOT the content pipeline (wrong shape for arbitrary per-frame UI chrome
+  with no document relationship, see NODE_UI.md §2/§3 for the full reasoning
+  the product owner asked for). `NodeGraphEditor.cpp` rewritten end to end:
+  a hand-rolled hit-test/drag state machine (pan/zoom/select/box-select/
+  node-drag/cable-connect) replaces every ImGui item the canvas used to
+  have, and the layer picker / blend-mode selector / Shift+A add menu are
+  now one shared, hand-rolled floating-list popup instead of ImGui dropdowns/
+  popups. `UI::NodeGraph` (the ImGui widget this supersedes) is deleted —
+  nothing consumes it anymore. Full build (`Ink`, `Application`, `Carto.exe`)
+  + `ink_tests` + `ds_token_tests` green. NOT yet verified: the user's F5
+  visual/interactive pass — camera math, hit-test rects, popup placement and
+  text legibility are all unverified against a running app; node corners are
+  sharp (`OverlayList` has no rounded-rect primitive) pending a v2 polish
+  pass.)*
 - [ ] **Lot 14 — Outliner sub-component drill-down & cross-layer routing**
   (spec: `docs/Ink/NODE_GRAPH.md` §4 for the display rules, §7 for the real
   per-edge model routing needs — written 2026-07-24 after the product owner

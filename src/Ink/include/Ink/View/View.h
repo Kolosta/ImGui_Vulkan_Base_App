@@ -2,6 +2,7 @@
 
 #include "Ink/Core/Math.h"
 #include "Ink/Document/Swatch.h"   // PrintPreview / PrintChannel
+#include "Ink/View/NodeUIList.h"
 #include "Ink/View/OverlayList.h"
 #include <cstdint>
 #include <vector>
@@ -38,8 +39,26 @@ public:
     // and convert with SrgbToLinearPremultiplied — the engine is token-free).
     void SetBackground(const Color& linearPremultiplied);
 
+    // A view samples the ONE shared Document/Scene by default (a Viewport
+    // zone, a preview vignette). A view with NO relationship to the document
+    // at all (docs/Ink/NODE_UI.md — the Node Graph Editor's own canvas) sets
+    // this false: the content pass is skipped entirely, only the background
+    // clear + Overlay()/NodeUI() draw. Default true.
+    void SetContentVisible(bool visible);
+
     // Editor overlay primitives for THIS frame (cleared after recording).
     OverlayList& Overlay();
+
+    // Node UI textured-quad primitives for THIS frame (docs/Ink/NODE_UI.md):
+    // glyph text and live preview vignettes. Cleared after recording, same
+    // contract as Overlay().
+    NodeUIList& NodeUI();
+
+    // An opaque handle sampling THIS view's CURRENTLY rendered image — pass
+    // to another view's `NodeUIList::AddPreviewQuad` to draw this view's
+    // result as a textured quad (a Node Graph Editor's per-node live preview
+    // vignette). 0 until SetViewport ran.
+    std::uint64_t PreviewDescriptorSet() const;
 
     // PREVIEW mode (Outliner thumbnails): render ONLY the given owner set in
     // isolation — the node plus its layer subtree — through the real pipeline

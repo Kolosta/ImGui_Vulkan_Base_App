@@ -138,7 +138,9 @@ VkDescriptorSet MakeCompositeSet(RendererImpl& r, VkImageView source,
 void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
                 graph::RenderGraph& g, const PushCamera& world,
                 const PushCamera& px, VkBuffer overlayBuffer,
-                std::uint32_t overlayCount) {
+                std::uint32_t overlayCount, VkBuffer nodeUIBuffer,
+                const NodeUIList::Batch* nodeUIBatches,
+                std::uint32_t nodeUIBatchCount) {
     VkBuffer indirect = v.indirect[slot].buffer;
     const VkDescriptorSet sceneSet = v.sceneSet;
 
@@ -184,15 +186,26 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
             const std::uint32_t ovDedupCount =
                 (std::uint32_t)v.overlayDedupScratch.size();
             const std::uint32_t ovBaseTag = v.overlayBaseTag;
+            // A view with no relationship to the Document (View::
+            // SetContentVisible(false) — the Node Graph Editor's own canvas,
+            // docs/Ink/NODE_UI.md) skips the document content draw entirely;
+            // only the clear + Overlay/NodeUI content shows.
+            const bool drawContent = v.contentVisible;
             g.AddRenderPass("scope.content", content, {},
                             [&r, worldCam, indirect, segs, nSegs, sceneSet,
                              overlayHere, pxCam, overlayBuffer, overlayCount,
-                             ovDedups, ovDedupCount, ovBaseTag](VkCommandBuffer cmd) {
-                RecordContentPass(r, cmd, worldCam, indirect, segs, nSegs,
-                                  sceneSet);
-                if (overlayHere)
+                             ovDedups, ovDedupCount, ovBaseTag, drawContent,
+                             nodeUIBuffer, nodeUIBatches,
+                             nodeUIBatchCount](VkCommandBuffer cmd) {
+                if (drawContent)
+                    RecordContentPass(r, cmd, worldCam, indirect, segs, nSegs,
+                                      sceneSet);
+                if (overlayHere) {
                     RecordOverlayPass(r, cmd, pxCam, overlayBuffer, overlayCount,
                                       ovDedups, ovDedupCount, ovBaseTag);
+                    RecordNodeUIPass(r, cmd, pxCam, nodeUIBuffer, nodeUIBatches,
+                                     nodeUIBatchCount);
+                }
             });
             continue;
         }
@@ -237,9 +250,12 @@ void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
             (std::uint32_t)v.overlayDedupScratch.size();
         g.AddRenderPass("overlay.top", content, {},
                         [&r, pxCam, overlayBuffer, overlayCount,
-                         ovDedups, ovDedupCount](VkCommandBuffer cmd) {
+                         ovDedups, ovDedupCount, nodeUIBuffer, nodeUIBatches,
+                         nodeUIBatchCount](VkCommandBuffer cmd) {
             RecordOverlayPass(r, cmd, pxCam, overlayBuffer, overlayCount,
                               ovDedups, ovDedupCount, 2);
+            RecordNodeUIPass(r, cmd, pxCam, nodeUIBuffer, nodeUIBatches,
+                             nodeUIBatchCount);
         });
 
         IsoTarget& root = v.iso[0];

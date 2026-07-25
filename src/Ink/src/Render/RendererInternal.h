@@ -14,6 +14,7 @@
 #include "Ink/Render/Renderer.h"
 #include "Ink/Render/Stats.h"
 #include "Ink/Scene/Scene.h"
+#include "Ink/View/NodeUIList.h"
 #include "Ink/View/OverlayList.h"
 
 #include <cstdint>
@@ -109,7 +110,12 @@ struct ViewImpl {
     std::uint32_t width = 0, height = 0;
     double panX = 0.0, panY = 0.0, zoom = 1.0;
     Color  background{ 0.1f, 0.1f, 0.1f, 1.0f };
+    // False for a view with no relationship to the Document at all (the Node
+    // Graph Editor's own canvas, docs/Ink/NODE_UI.md) — the content pass is
+    // skipped entirely; only the background clear + Overlay()/NodeUI() draw.
+    bool contentVisible = true;
     OverlayList overlay;
+    NodeUIList  nodeUI;   // docs/Ink/NODE_UI.md — glyph text + preview quads
     // PREVIEW filter (Outliner thumbnails): when non-empty, only drawables
     // whose OWNER is in this set are drawn — a node rendered in isolation
     // through the real pipeline (same strokes / patterns / transparency /
@@ -145,6 +151,13 @@ struct ViewImpl {
     std::vector<OverlayList::DedupGroup> overlayDedupScratch;
     std::uint32_t overlayBaseTag = 2;
 
+    // Per-slot Node UI vertex buffers (host-visible ring), same pattern as
+    // the overlay ones above. Batches are copied here in the prepare phase
+    // (stable across the record lambda, like overlayDedupScratch).
+    rhi::Buffer   nodeUIVb[kFramesInFlight];
+    std::uint32_t nodeUIVertexCount = 0;
+    std::vector<NodeUIList::Batch> nodeUIBatchScratch;
+
     // The view's draw commands (built in scope order): one host-visible ring
     // buffer per slot holds every command back-to-back; each ScopeRun points
     // into it. Mesh ranges depend on the view's zoom tier, so commands are
@@ -178,6 +191,28 @@ struct ViewImpl {
     bool          usedThisFrame = false;
 
     bool HasTargets() const { return (bool)display; }
+};
+
+// One rasterized glyph's atlas placement + metrics, all in PIXELS at the
+// atlas's own reference size (FontAtlasData::referencePx) — see
+// Renderer::Glyph's doc comment on why there is no per-size re-rasterizing.
+struct GlyphInfo {
+    float u0 = 0, v0 = 0, u1 = 0, v1 = 0;
+    float width = 0, height = 0;
+    float bearingX = 0, bearingY = 0;
+    float advance = 0;
+};
+
+// The Node UI text atlas (docs/Ink/NODE_UI.md): one FreeType-rasterized
+// bitmap (ASCII 32..126, PREMULTIPLIED white — rgb=coverage, a=coverage, see
+// nodeui.frag) built ONCE at Renderer::Initialize and never rebuilt.
+struct FontAtlasData {
+    std::unordered_map<std::uint32_t, GlyphInfo> glyphs;
+    float referencePx  = 32.0f;
+    float lineHeight   = 0.0f;
+    rhi::Image      image;                        // R8G8B8A8_UNORM
+    VkDescriptorSet descriptorSet = VK_NULL_HANDLE; // presentSetLayout-shaped
+    bool ready = false;
 };
 
 struct FrameSlot {
@@ -223,6 +258,13 @@ struct RendererImpl {
     VkPipeline overlayDedupPipeline= VK_NULL_HANDLE;  // overlay TestNotEqualWrite
     VkPipeline presentPipeline     = VK_NULL_HANDLE;
     VkPipeline compositePipeline   = VK_NULL_HANDLE;  // iso composite (blend)
+    // Node UI (docs/Ink/NODE_UI.md): textured quads, layout REUSES
+    // presentSetLayout (identical shape — one combined-image-sampler,
+    // fragment stage) rather than declaring a second, structurally-identical
+    // layout.
+    VkPipelineLayout nodeUILayout   = VK_NULL_HANDLE;
+    VkPipeline       nodeUIPipeline = VK_NULL_HANDLE;
+    FontAtlasData    fontAtlas;
     VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
     // Generations: bumped when the drawable list changes / when a global
     // style table buffer is recreated — views resync lazily against them.
@@ -253,6 +295,16 @@ struct RendererImpl {
     void Defer(std::function<void()> fn) { slots[slot].garbage.push_back(std::move(fn)); }
 };
 
+// Rasterizes `fontPath` into `atlas` and uploads it (staging buffer, one-shot
+// command buffer — same technique as VectorGraphics::IconManager's texture
+// upload, just with OUR OWN descriptor set built against `setLayout` instead
+// of ImGui's descriptor pool, which is not bindable by a foreign pipeline).
+// False (atlas left `ready = false`) on any failure — Node UI text is a
+// silent no-op, never a startup failure, if the font can't be loaded.
+bool BuildFontAtlas(RendererImpl& r, FontAtlasData& atlas,
+                   const std::string& fontPath, VkDescriptorSetLayout setLayout);
+void DestroyFontAtlas(RendererImpl& r, FontAtlasData& atlas);
+
 // Pass entry points (Passes/*.cpp). All record inside an open dynamic
 // rendering scope set up by the graph.
 //
@@ -273,6 +325,12 @@ void RecordOverlayPass(RendererImpl& r, VkCommandBuffer cmd,
                        std::uint32_t dedupCount, std::uint32_t baseTag);
 void RecordPresentPass(RendererImpl& r, VkCommandBuffer cmd,
                        VkDescriptorSet presentSet);
+// Node UI (docs/Ink/NODE_UI.md): draws the batch list in emission order; each
+// batch binds the font atlas set (sourceSet == 0) or the external descriptor
+// set from AddPreviewQuad, then issues one draw for its vertex range.
+void RecordNodeUIPass(RendererImpl& r, VkCommandBuffer cmd,
+                      const PushCamera& pxToNdc, VkBuffer vertexBuffer,
+                      const NodeUIList::Batch* batches, std::uint32_t batchCount);
 // Composite: fullscreen draw sampling source+backdrop (compositeSet) with the
 // scope's opacity + blend.
 void RecordCompositePass(RendererImpl& r, VkCommandBuffer cmd,
@@ -289,6 +347,8 @@ std::uint32_t BuildScopePlan(const Scene& scene, ViewImpl& v);
 void PlayScopes(RendererImpl& r, ViewImpl& v, std::uint32_t slot,
                 graph::RenderGraph& g, const PushCamera& world,
                 const PushCamera& px, VkBuffer overlayBuffer,
-                std::uint32_t overlayCount);
+                std::uint32_t overlayCount, VkBuffer nodeUIBuffer,
+                const NodeUIList::Batch* nodeUIBatches,
+                std::uint32_t nodeUIBatchCount);
 
 } // namespace Ink::detail

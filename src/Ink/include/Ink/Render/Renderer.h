@@ -52,7 +52,22 @@ public:
         VkQueue          queue          = VK_NULL_HANDLE;
         std::uint32_t    queueFamily    = 0;
         std::string      shaderDir;     // "<exe>/shaders/ink"
+        std::string      fontPath;      // Node UI glyph atlas source (.ttf/.otf);
+                                        // empty = Node UI text unavailable
         TextureHooks     textures;      // optional (headless: leave null)
+    };
+
+    // One glyph's atlas UV rect + metrics, all at `FontReferenceSize()` px —
+    // a caller drawing at a different size scales every field by
+    // `desiredPx / FontReferenceSize()` (docs/Ink/NODE_UI.md: a fixed
+    // reference resolution + GPU bilinear filtering, same tradeoff any
+    // bitmap-font UI makes; no dynamic re-atlasing).
+    struct GlyphMetrics {
+        float u0 = 0, v0 = 0, u1 = 0, v1 = 0;   // atlas UV rect (empty if !found)
+        float width = 0, height = 0;            // glyph bitmap size, px
+        float bearingX = 0, bearingY = 0;       // pen -> glyph top-left, px
+        float advance = 0;                      // pen advance to the next glyph, px
+        bool  found = false;
     };
 
     Renderer();
@@ -129,6 +144,16 @@ public:
     // rendered yet.
     bool ReadViewPixels(View* view, std::vector<std::uint8_t>& rgba,
                         std::uint32_t& width, std::uint32_t& height);
+
+    // ── Node UI font atlas (docs/Ink/NODE_UI.md) ──────────────────────────
+    // False until InitInfo::fontPath was loaded successfully (Node UI text
+    // silently draws nothing rather than crash if the font is missing).
+    bool FontReady() const;
+    float FontReferenceSize() const;   // px the atlas was rasterized at
+    float FontLineHeight() const;      // ascent + descent + line gap, px, at reference size
+    // nullptr-safe: returns a !found metrics struct for a glyph outside the
+    // rasterized set (ASCII 32..126 today) rather than a missing-glyph box.
+    GlyphMetrics Glyph(char32_t codepoint) const;
 
 private:
     std::unique_ptr<detail::RendererImpl> impl_;

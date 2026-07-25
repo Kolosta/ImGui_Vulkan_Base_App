@@ -655,6 +655,10 @@ void Application::InitializeSubsystems() {
         ii.shaderDir = "shaders/ink";
         if (const char* base = SDL_GetBasePath())
             ii.shaderDir = std::string(base) + "shaders/ink";
+        // Node UI glyph atlas (docs/Ink/NODE_UI.md) — same bare-relative
+        // convention UI::FontManager already uses for "resources/fonts"
+        // (the app's working directory, not the exe's, per that precedent).
+        ii.fontPath = "resources/fonts/noto/noto-sans/NotoSans-Regular.ttf";
         // Canvas textures register through ImGui's Vulkan backend; Ink itself
         // never touches ImGui (the hooks keep it headless-capable).
         ii.textures.user = nullptr;

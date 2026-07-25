@@ -25,7 +25,22 @@ void View::SetBackground(const Color& linearPremultiplied) {
     impl_->background = linearPremultiplied;
 }
 
+void View::SetContentVisible(bool visible) {
+    detail::ViewImpl& v = *impl_;
+    if (v.contentVisible == visible) return;
+    v.contentVisible = visible;
+    v.forceDirty = true;
+}
+
 OverlayList& View::Overlay() { return impl_->overlay; }
+
+NodeUIList& View::NodeUI() { return impl_->nodeUI; }
+
+std::uint64_t View::PreviewDescriptorSet() const {
+    const detail::ViewImpl& v = *impl_;
+    if (!v.HasTargets()) return 0;
+    return (std::uint64_t)(std::uintptr_t)v.iso[0].CurSet();
+}
 
 void View::SetPreviewFilter(const std::vector<std::uint64_t>& owners,
                             int piece, bool pieceIsStroke) {

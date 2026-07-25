@@ -236,11 +236,11 @@ void Application::RegisterCoreEditors() {
         reg.Register(std::move(d));
     }
 
-    // Node Graph — the ACTIVE object's Compositing Graph, shown/edited
-    // through the generic UI::NodeGraph widget (docs/Ink/NODE_GRAPH.md §5,
-    // ROADMAP Lot 13). Follows edit_.active automatically (Blender-style —
-    // no manual "open" step, same pattern as Properties). Own pan/zoom
-    // canvas, no scroll wrap/inset (mirrors Viewport).
+    // Node Graph — the ACTIVE object's Compositing Graph, shown/edited on its
+    // own 100%-Vulkan canvas (docs/Ink/NODE_GRAPH.md §5, docs/Ink/NODE_UI.md,
+    // ROADMAP Lot 13) — no ImGui widget draws inside it. Follows edit_.active
+    // automatically (Blender-style — no manual "open" step, same pattern as
+    // Properties). Own pan/zoom canvas, no scroll wrap/inset (mirrors Viewport).
     {
         EditorDescriptor d;
         d.id = CoreEditor::NodeGraph; d.name = "Node Graph"; d.icon = "polyline";

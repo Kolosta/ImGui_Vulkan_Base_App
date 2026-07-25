@@ -42,6 +42,11 @@ add_library(Ink STATIC
     # View — per-viewport camera/target/overlay façade
     src/View/View.cpp
     src/View/OverlayList.cpp
+    src/View/NodeUIList.cpp
+
+    # Node UI — Vulkan-native components (docs/Ink/NODE_UI.md)
+    src/NodeUI/FontAtlas.cpp
+    src/Render/Passes/NodeUIPass.cpp
 )
 
 target_include_directories(Ink
@@ -52,6 +57,7 @@ target_include_directories(Ink
 target_link_libraries(Ink PUBLIC
     Vulkan::Vulkan
     GPUOpen::VulkanMemoryAllocator
+    Freetype::Freetype
 )
 
 # ── Shaders: GLSL → SPIR-V via glslc (Vulkan SDK) ────────────────────────────
@@ -66,6 +72,8 @@ set(INK_SHADER_SOURCES
     shaders/composite/iso.frag
     shaders/present/present.vert
     shaders/present/present.frag
+    shaders/nodeui/nodeui.vert
+    shaders/nodeui/nodeui.frag
 )
 
 set(INK_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/spv)

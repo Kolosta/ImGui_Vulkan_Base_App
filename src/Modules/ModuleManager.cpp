@@ -118,9 +118,12 @@ void Application::MarkDirty() { project_.dirty = true; }
 // the preview filter on the subtree, camera FITTED on the node's bounds with a
 // `padFrac` margin — identical rendering (strokes / instanced fills / MSAA) to
 // the canvas. Works for preview-only library nodes (their bounds are kept).
-std::uint64_t Application::NodePreviewTexture(std::uint64_t node, int px,
-                                              float padFrac) {
-    if (!ink_ || !project_.document || px <= 0) return 0;
+// Shared by NodePreviewTexture (an ImGui-hosted ImTextureID) and
+// NodePreviewDescriptorSet (docs/Ink/NODE_UI.md — the SAME view, sampled by
+// the Node Graph Editor's own Vulkan pass instead of ImGui) — one camera-fit
+// implementation, two ways of reading the result.
+Ink::View* Application::NodePreviewView(std::uint64_t node, int px, float padFrac) {
+    if (!ink_ || !project_.document || px <= 0) return nullptr;
     // Owners = the layer subtree; the frame is the UNION of their bounds
     // (NodeBounds is per-owner — a multi-part GROUP has no entry of its own).
     std::vector<std::uint64_t> owners;
@@ -140,7 +143,7 @@ std::uint64_t Application::NodePreviewTexture(std::uint64_t node, int px,
                 for (Ink::NodeId k : n->children) stack.push_back(k);
         }
     }
-    if (!bb.valid) return 0;
+    if (!bb.valid) return nullptr;
     // Key space: low bits 0b11 mark the module vignettes (Outliner thumbnails
     // are odd; paint previews use 0b10; viewport keys are aligned pointers).
     const void* key = (const void*)(std::uintptr_t)(
@@ -157,7 +160,19 @@ std::uint64_t Application::NodePreviewTexture(std::uint64_t node, int px,
                     cy - (double)px * 0.5 / zoom, zoom);
     view->SetBackground(Ink::SrgbToLinearPremultiplied(1, 1, 1, 1));
     view->SetPreviewFilter(owners);
-    return view->Texture();
+    return view;
+}
+
+std::uint64_t Application::NodePreviewTexture(std::uint64_t node, int px,
+                                              float padFrac) {
+    Ink::View* view = NodePreviewView(node, px, padFrac);
+    return view ? view->Texture() : 0;
+}
+
+std::uint64_t Application::NodePreviewDescriptorSet(std::uint64_t node, int px,
+                                                    float padFrac) {
+    Ink::View* view = NodePreviewView(node, px, padFrac);
+    return view ? view->PreviewDescriptorSet() : 0;
 }
 
 // A module-driven zoom/pan preview canvas: same isolation render as the

@@ -105,6 +105,17 @@ bool CreateLayoutsAndPool(RendererImpl& r) {
     if (vkCreatePipelineLayout(dev, &li, nullptr, &r.presentLayout) != VK_SUCCESS)
         return false;
 
+    // Node UI layout (docs/Ink/NODE_UI.md): REUSES presentSetLayout (same
+    // shape — one combined-image-sampler, fragment stage) instead of
+    // declaring a second, structurally-identical layout, + the same
+    // px -> NDC push constant content/overlay already use.
+    li.setLayoutCount         = 1;
+    li.pSetLayouts            = &r.presentSetLayout;
+    li.pushConstantRangeCount = 1;
+    li.pPushConstantRanges    = &push;
+    if (vkCreatePipelineLayout(dev, &li, nullptr, &r.nodeUILayout) != VK_SUCCESS)
+        return false;
+
     // Composite layout: the 2-sampler set + the PushComposite (fragment).
     VkPushConstantRange compPush{};
     compPush.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
@@ -149,8 +160,10 @@ bool CreatePipelines(RendererImpl& r) {
     VkShaderModule presF = load("present.frag.spv");
     VkShaderModule isoV  = load("iso.vert.spv");
     VkShaderModule isoF  = load("iso.frag.spv");
+    VkShaderModule nodeuiV = load("nodeui.vert.spv");
+    VkShaderModule nodeuiF = load("nodeui.frag.spv");
     const VkShaderModule all[] = { vecV, vecF, primV, primF, presV, presF,
-                                   isoV, isoF };
+                                   isoV, isoF, nodeuiV, nodeuiF };
     bool ok = true;
     for (VkShaderModule m : all) ok = ok && m != VK_NULL_HANDLE;
 
@@ -213,7 +226,21 @@ bool CreatePipelines(RendererImpl& r) {
         // overlapping triangles exactly once (OverlayList dedup groups).
         d.stencil = rhi::StencilMode::TestNotEqualWrite;
         r.overlayDedupPipeline = rhi::CreateGraphicsPipeline(r.device, d);
-        d.stencil       = rhi::StencilMode::None;
+        d.stencil = rhi::StencilMode::None;
+
+        // Node UI (docs/Ink/NODE_UI.md): textured quads (glyph text + live
+        // preview vignettes), same MSAA target/stencil-format requirement as
+        // content/overlay (dynamic rendering needs every pipeline used in
+        // the scope to declare the bound stencil format, even unused).
+        d.vert         = nodeuiV;
+        d.frag         = nodeuiF;
+        d.vertexStride = sizeof(NodeUIList::Vertex);
+        d.attributes   = { { 0, VK_FORMAT_R32G32_SFLOAT,   0 },
+                           { 1, VK_FORMAT_R32G32_SFLOAT,   8 },
+                           { 2, VK_FORMAT_R32G32B32A32_SFLOAT, 16 } };
+        d.layout       = r.nodeUILayout;
+        r.nodeUIPipeline = rhi::CreateGraphicsPipeline(r.device, d);
+
         d.stencilFormat = VK_FORMAT_UNDEFINED;
 
         // Composite: fullscreen, writes the parent iso (×1) with the blend
@@ -238,7 +265,7 @@ bool CreatePipelines(RendererImpl& r) {
              r.clipClearPipeline && r.strokeDedupPipeline &&
              r.contentErasePipeline && r.contentEraseClipPipeline &&
              r.overlayPipeline && r.overlayDedupPipeline &&
-             r.compositePipeline && r.presentPipeline;
+             r.compositePipeline && r.presentPipeline && r.nodeUIPipeline;
     }
     for (VkShaderModule m : all)
         if (m) vkDestroyShaderModule(r.device.vk(), m, nullptr);
@@ -325,13 +352,17 @@ std::uint64_t ViewSignature(const ViewImpl& v, std::uint64_t sceneVersion,
         std::uint64_t scene;
         std::uint64_t previewFilter;
         int tier;
-        int pad_;
+        int contentVisible;
     } key{ v.width, v.height, v.panX, v.panY, v.zoom, v.anchorX, v.anchorY,
-           v.background, sceneVersion, v.previewFilterGen, tier, 0 };
+           v.background, sceneVersion, v.previewFilterGen, tier,
+           v.contentVisible ? 1 : 0 };
     std::uint64_t h = HashBytes(&key, sizeof key);
     const auto& ov = v.overlay.Vertices();
     if (!ov.empty())
         h = HashBytes(ov.data(), ov.size() * sizeof(OverlayList::Vertex), h);
+    const auto& nv = v.nodeUI.Vertices();
+    if (!nv.empty())
+        h = HashBytes(nv.data(), nv.size() * sizeof(NodeUIList::Vertex), h);
     return h ? h : 1;   // 0 is reserved for "never rendered"
 }
 
@@ -494,6 +525,10 @@ bool Renderer::Initialize(const InitInfo& info) {
                     CreateFrameSlots(r) &&
                     r.gpu.Initialize(r.device);
     if (!ok) { Shutdown(); return false; }
+    // Node UI text (docs/Ink/NODE_UI.md): best-effort — a missing/unreadable
+    // font silently leaves Node UI text unavailable rather than failing
+    // engine init (boxes/cables/previews still work with no labels).
+    BuildFontAtlas(r, r.fontAtlas, info.fontPath, r.presentSetLayout);
     return true;
 }
 
@@ -520,6 +555,7 @@ void Renderer::Shutdown() {
                     r.hooks.destroy(r.hooks.user, vi.texture);
                 rhi::DestroyImage(r.device, vi.display);
                 for (auto& vb : vi.overlayVb) rhi::DestroyBuffer(r.device, vb);
+                for (auto& vb : vi.nodeUIVb)  rhi::DestroyBuffer(r.device, vb);
                 for (auto& ib : vi.indirect)  rhi::DestroyBuffer(r.device, ib);
                 rhi::DestroyBuffer(r.device, vi.instanceBuf);
                 if (vi.sceneSet)
@@ -538,6 +574,7 @@ void Renderer::Shutdown() {
             s = {};
         }
         r.gpu.Shutdown(r.device);
+        DestroyFontAtlas(r, r.fontAtlas);
         auto destroyPipeline = [&](VkPipeline& p) {
             if (p) { vkDestroyPipeline(dev, p, nullptr); p = VK_NULL_HANDLE; } };
         destroyPipeline(r.contentPipeline);
@@ -551,12 +588,14 @@ void Renderer::Shutdown() {
         destroyPipeline(r.overlayDedupPipeline);
         destroyPipeline(r.compositePipeline);
         destroyPipeline(r.presentPipeline);
+        destroyPipeline(r.nodeUIPipeline);
         auto destroyLayout = [&](VkPipelineLayout& l) {
             if (l) { vkDestroyPipelineLayout(dev, l, nullptr); l = VK_NULL_HANDLE; } };
         destroyLayout(r.contentLayout);
         destroyLayout(r.overlayLayout);
         destroyLayout(r.presentLayout);
         destroyLayout(r.compositeLayout);
+        destroyLayout(r.nodeUILayout);
         if (r.descriptorPool)
             vkDestroyDescriptorPool(dev, r.descriptorPool, nullptr);
         if (r.sceneSetLayout)
@@ -689,7 +728,10 @@ void Renderer::EndFrame() {
     const auto tGeom = Clock::now();
     for (auto& [key, view] : r.views) {
         ViewImpl& v = *view->impl_;
-        if (!v.usedThisFrame || !v.HasTargets()) { v.overlay.Clear(); continue; }
+        if (!v.usedThisFrame || !v.HasTargets()) {
+            v.overlay.Clear(); v.nodeUI.Clear();
+            continue;
+        }
         ++r.stats.views;
 
         // Zoom tier with hysteresis (no re-tessellation thrash at boundaries).
@@ -723,6 +765,7 @@ void Renderer::EndFrame() {
         const std::uint64_t sig = ViewSignature(v, r.scene.Version(), tier);
         if (!v.forceDirty && sig == v.lastSignature && !v.instancesDirty) {
             v.overlay.Clear();
+            v.nodeUI.Clear();
             continue;
         }
         v.lastSignature = sig;
@@ -924,6 +967,15 @@ void Renderer::EndFrame() {
                            v.overlay.ByteSize(),
                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
+        // Node UI vertices → this slot's ring buffer (docs/Ink/NODE_UI.md),
+        // same reasoning as the overlay copy above.
+        const auto& nodeUIVerts = v.nodeUI.Vertices();
+        v.nodeUIVertexCount = (std::uint32_t)nodeUIVerts.size();
+        v.nodeUIBatchScratch = v.nodeUI.Batches();
+        FillHostRingBuffer(r, v.nodeUIVb[r.slot], nodeUIVerts.data(),
+                           v.nodeUI.ByteSize(),
+                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+
         // Camera blocks, computed in double, narrowed per view. Content
         // coordinates arrive ANCHOR-relative from the instance table, so the
         // offset uses (anchor − pan) — small at any zoom (GEOMETRY.md §6).
@@ -956,11 +1008,13 @@ void Renderer::EndFrame() {
         graph::RenderGraph g;
         VkBuffer overlayBuffer    = v.overlayVb[r.slot].buffer;
         const std::uint32_t nOverlay = v.overlayVertexCount;
+        VkBuffer nodeUIBuffer     = v.nodeUIVb[r.slot].buffer;
 
         // Content + compositing: play every scope (post-order) into the iso
         // targets; the root content ends up in iso[0].Cur().
         detail::PlayScopes(r, v, r.slot, g, job.world, job.px, overlayBuffer,
-                           nOverlay);
+                           nOverlay, nodeUIBuffer, v.nodeUIBatchScratch.data(),
+                           (std::uint32_t)v.nodeUIBatchScratch.size());
 
         // Present: sRGB-encode iso[0]'s current linear into the display image.
         IsoTarget& main = v.iso[0];
@@ -977,6 +1031,7 @@ void Renderer::EndFrame() {
         g.Execute(s.cb);
 
         v.overlay.Clear();
+        v.nodeUI.Clear();
         ++r.stats.viewsRendered;
         // Content indirect commands + one composite per scope + overlay +
         // present. (indirectScratch holds every scope's commands back-to-back.)
@@ -1041,6 +1096,25 @@ void Renderer::EndFrame() {
 
 const Stats& Renderer::GetStats() const { return impl_->published; }
 Rect Renderer::SceneBounds() const { return impl_->scene.Bounds(); }
+
+bool Renderer::FontReady() const { return impl_->fontAtlas.ready; }
+float Renderer::FontReferenceSize() const { return impl_->fontAtlas.referencePx; }
+float Renderer::FontLineHeight() const { return impl_->fontAtlas.lineHeight; }
+
+Renderer::GlyphMetrics Renderer::Glyph(char32_t codepoint) const {
+    const detail::FontAtlasData& atlas = impl_->fontAtlas;
+    GlyphMetrics out;
+    if (!atlas.ready) return out;
+    const auto it = atlas.glyphs.find((std::uint32_t)codepoint);
+    if (it == atlas.glyphs.end()) return out;
+    const detail::GlyphInfo& g = it->second;
+    out.u0 = g.u0; out.v0 = g.v0; out.u1 = g.u1; out.v1 = g.v1;
+    out.width = g.width; out.height = g.height;
+    out.bearingX = g.bearingX; out.bearingY = g.bearingY;
+    out.advance = g.advance;
+    out.found = true;
+    return out;
+}
 
 NodeId Renderer::PickAt(DVec2 docPoint, const PickOptions& opt) const {
     return PickTop(impl_->scene, docPoint, opt);

@@ -884,9 +884,10 @@ private:
     void PushEditCommand(const std::string& label, const EditSnapshot& before,
                          const EditSnapshot& after);
     void RenderInfoEditor();     // "Info" editor — live action feed
-    // "Node Graph" editor (docs/Ink/NODE_GRAPH.md §5, ROADMAP Lot 13): shows
-    // the ACTIVE object's Compositing Graph (Ink::BuildAutoGraph) through the
-    // generic UI::NodeGraph widget — follows edit_.active automatically,
+    // "Node Graph" editor (docs/Ink/NODE_GRAPH.md §5, docs/Ink/NODE_UI.md,
+    // ROADMAP Lot 13): shows the ACTIVE object's Compositing Graph
+    // (Ink::BuildAutoGraph) on its own 100%-Vulkan canvas (its own Ink::View,
+    // no ImGui widget draws inside it) — follows edit_.active automatically,
     // Blender-style (same pattern as Properties, no manual "open" step).
     // Node reorder/exclusion commits via Ink::Document::SetCompInputs when
     // the active node is a Group (only kind SetCompInputs accepts). Named
@@ -932,6 +933,25 @@ private:
     std::set<std::uint64_t> ngSelected_;     // current Node Graph selection
     std::set<std::uint64_t> ngCollapsed_;    // collapsed (H) node keys
     Ink::NodeId ngLastActive_ = Ink::kNullNode;   // detects edit_.active switching
+    // Node UI interaction state (docs/Ink/NODE_UI.md): the canvas is drawn
+    // entirely through Ink (no ImGui item exists on it at all), so drag and
+    // popup state are tracked explicitly across frames here — the same
+    // "caller owns persistent state" rule Viewport's own tool state already
+    // follows (ViewportInput.cpp), just applied to a second canvas.
+    enum class NgDragKind : std::uint8_t { None, MoveNode, ConnectCable, BoxSelect };
+    NgDragKind    ngDragKind_ = NgDragKind::None;
+    std::uint64_t ngDragNode_ = 0;
+    int           ngDragPort_ = -1;
+    ImVec2        ngDragGrabOffset_{ 0.0f, 0.0f };   // MoveNode: cursor -> node pos, CANVAS space
+    ImVec2        ngDragBoxStart_{ 0.0f, 0.0f };     // BoxSelect: press position, PIXEL space
+    // A floating list popup (Shift+A add menu / layer picker / blend-mode
+    // selector) — one minimal hand-rolled component shared by all three (no
+    // ImGui popup/menu widget exists on this canvas either).
+    enum class NgPopupKind : std::uint8_t { None, AddMenu, Picker, BlendMode };
+    NgPopupKind ngPopupKind_ = NgPopupKind::None;
+    ImVec2      ngPopupPos_{ 0.0f, 0.0f };            // PIXEL-space anchor (top-left)
+    Ink::NodeId ngPopupOwner_ = Ink::kNullNode;        // the layer being edited
+    int         ngPopupChildSlot_ = -1;                // Picker: which compInputs entry
     bool        ngAddMenuRequested_ = false;      // Shift+A pending this frame
     // "Palette" editor — the document COLOUR TABLE (Editors/Palette/).
     // Swatches are colours used as variables by any paint, optionally
@@ -1024,6 +1044,14 @@ private:
     // off-screen Ink view fitted on the node — module symbol thumbnails.
     std::uint64_t NodePreviewTexture(std::uint64_t node, int px,
                                      float padFrac = 0.12f) override;
+    // The SAME preview view, for a caller drawing it through the Node Graph
+    // Editor's own Vulkan pass instead of ImGui (docs/Ink/NODE_UI.md) — an
+    // opaque descriptor-set handle for View::PreviewDescriptorSet's contract,
+    // NOT an ImTextureID (never pass this to ImGui::Image).
+    std::uint64_t NodePreviewDescriptorSet(std::uint64_t node, int px,
+                                           float padFrac = 0.12f);
+    // Shared camera-fit setup behind both of the above (ModuleManager.cpp).
+    Ink::View* NodePreviewView(std::uint64_t node, int px, float padFrac);
     std::uint64_t CanvasPreviewTexture(std::uint64_t node, std::uint32_t viewKey,
                                        int w, int h, double panX, double panY,
                                        double zoom) override;

@@ -1,5 +1,23 @@
 # Node UI — Vulkan-native node graph components
 
+> **Status: DELIVERED (2026-07-24), same day as this doc was first written.**
+> The Node Graph Editor's canvas is now 100% Vulkan — boxes, borders, ports,
+> cables, text and live preview vignettes all render through Ink (`Ink::View`
+> + `Overlay()`/`NodeUI()`, a new textured-quad pipeline + FreeType glyph
+> atlas), and interaction (pan/zoom/select/drag/box-select/cable-connect,
+> the Shift+A add-flow, the layer picker, the blend-mode selector) is a
+> hand-rolled hit-test/drag state machine with zero ImGui items on the
+> canvas. Full build + `ink_tests`/`ds_token_tests` green; `UI::NodeGraph`
+> (the ImGui widget this superseded) is deleted, nothing consumes it anymore.
+> **Not yet done**: visual/interactive verification (the user's F5 pass —
+> camera math, hit-test rects and popup placement are unverified against a
+> running app); rounded node corners (`OverlayList` has no rounded-rect
+> primitive, so boxes are sharp-cornered — a v2 polish item, not a
+> functional gap); Phase 2's interaction is a first pass, not necessarily
+> feature-complete vs. every nuance the old ImGui widget had refined over
+> several rounds (multi-select edge cases, exact popup styling). Sections
+> below are kept as the as-built record + the remaining task list.
+
 Roadmap + design spec for replacing the Node Graph Editor's current
 ImGui-based rendering with fully custom, Vulkan-native **components**
 (deliberately not called "widgets" — that word stays reserved for ImGui:
@@ -85,27 +103,78 @@ more than a from-scratch rendering system:
   from "drawn via `ImGui::AddImage`" to "drawn via a Node UI textured quad"
   is a drawing-call change only, not a re-implementation.
 
-## 3. Architecture (Phase 1 target)
+## 3. Architecture — DECIDED (2026-07-24), grounded in existing code
+
+**Question settled: reuse the existing Viewport/content Vulkan pipeline, or
+a separate one?** Neither extreme — the right split follows what already
+exists at each layer:
+
+- **Reuse `Ink::View` and the `BeginFrame`/`EndFrame` frame protocol
+  WHOLESALE** (`Renderer.h`, `Renderer.cpp`'s per-view dirty-tracking/
+  record/submit loop). `View` is already a general "one rendered rectangle,
+  acquired by an opaque key" abstraction — Viewport zones, Outliner preview
+  vignettes and `NodePreviewTexture` all already go through
+  `Renderer::AcquireView`/`SetViewport`/`SetCamera`/`Texture()`, not
+  something Viewport-specific. The Node Graph Editor gets its OWN `View`
+  (keyed like any other zone) instead of inventing a second "get a Vulkan
+  image on screen" mechanism. Its content pass renders NOTHING from the
+  Document (a Node Graph is not a view onto the document's geometry) — the
+  whole picture comes from what's described below.
+- **Reuse `Ink::OverlayList` + the existing `overlayPipeline` AS-IS for
+  every UNTEXTURED shape**: node boxes, header bands, borders, port dots,
+  and cables (flattened to a polyline, drawn as `AddLine` segments — no new
+  bezier primitive needed for v1; a thin stroked mesh is a v2 polish item
+  only if joins look rough). This is not a new pipeline at all: the Node
+  Graph's `View` has its OWN private `OverlayList` instance (one per View,
+  confirmed in `RendererInternal.h`) — filling it with node-graph shapes
+  instead of viewport gizmos is exactly what the mechanism is already for,
+  zero interference with any Viewport zone's own overlay.
+- **One genuinely NEW pipeline for TEXTURED quads** — nothing existing
+  supports this shape (`OverlayList`'s vertex has no UV; the content
+  pipeline's paint tables are a completely different, Document-coupled
+  mechanism; `IconManager`'s textures are uploaded into ImGui's OWN
+  descriptor pool via `ImGui_ImplVulkan_AddTexture`, which is NOT bindable
+  by a foreign pipeline with a different descriptor set layout — confirmed
+  by reading its upload code). Two uses share this one pipeline:
+  - **Text**: one FreeType-rasterized glyph atlas (built once, uploaded via
+    the exact staging-buffer technique `IconManager::
+    CreateVulkanTextureFromRGBA` already uses, just with our OWN descriptor
+    set/layout instead of ImGui's), sampled by glyph quads laid out in
+    CANVAS space — the actual fix for "text doesn't zoom with the node":
+    the SAME camera matrix that transforms box/cable vertices transforms
+    glyph quads too, so nothing can ever scale independently again.
+  - **Preview vignettes**: each node's live preview is already a rendered
+    `Ink::View`/`NodePreviewTexture` result — drawn as one textured quad per
+    visible preview, sampling that View's OWN image view directly through
+    our descriptor set/layout (still cheap: at most a few dozen visible
+    nodes, one draw call each, same order of magnitude as today's
+    `ImGui::AddImage` calls).
+- **Deliberately NOT reused: the content pipeline** (`contentPipeline` and
+  its clip/erase/dedup siblings). That pipeline's entire design — GPU-
+  resident tessellated mesh cache, instance tables, paint tables, indirect
+  multi-draw — exists to scale to a large, persisted DOCUMENT's geometry.
+  Node UI's boxes/text are arbitrary, interaction-driven, per-frame CPU
+  content with no relationship to the open document; forcing it through
+  that pipeline would mean either faking Document nodes for UI chrome (a
+  real layering violation — UI state does not belong in the document
+  model) or bypassing its residency/caching machinery entirely while still
+  paying for its specific stencil/clip-oriented pipeline variants that Node
+  UI has no use for. Reusing Overlay's PATTERN (cheap, CPU-driven, no
+  document coupling) is the correct-shaped precedent; reusing Content's
+  PATTERN would be forcing a square peg into a round hole for the sake of
+  reusing pipeline objects that do not fit the workload.
 
 ```
-NodeUI::Canvas (new, lives beside OverlayList — Ink:: or a sibling library,
-                decide at implementation time)
-├── Camera (panX, panY, zoom — SAME convention as today's ngPanX_/ngPanY_/
-│           ngZoom_, just owned by the new system instead of the ImGui widget)
-├── ShapeList   — extends/wraps OverlayList's existing primitives (boxes,
-│                 port dots, header bands) + a NEW AddBezier(p0,c0,c1,p1,
-│                 color, thickness) for cables
-├── GlyphList   — NEW: per-frame textured quad list. One font atlas texture
-│                 (FreeType-rasterized, built once, cached), UV per glyph
-│                 from a shelf-packed atlas layout. AddText(pos, sizePx,
-│                 str, color) shapes+lays out glyphs in CANVAS space, so
-│                 the SAME camera matrix that scales boxes/cables scales
-│                 text too — this is the actual fix for the reported bug.
-└── Vulkan draw — a new pass (or a new pipeline pair inside the existing
-                  OverlayPass) consuming ShapeList (untextured, `PremultipliedOver`
-                  blend, matches OverlayList's existing pipeline) and GlyphList
-                  (textured, atlas-sampled, alpha-blended) each frame the
-                  Node Graph editor is open.
+NodeGraphEditor.cpp (App)
+  acquires its own Ink::View (AcquireView(key), same call Viewport/preview
+  vignettes already use) → SetViewport(zone size) → SetCamera unused (Node
+  UI keeps its OWN pan/zoom, unrelated to a document camera) → every frame:
+    view->Overlay().AddRectFilled/AddLine/AddCircleFilled(...)   // boxes, cables, ports — EXISTING pipeline
+    NodeUI::GlyphList (new) .AddText(...) / .AddPreviewQuad(...) // NEW pipeline, this doc's actual new work
+  blit: ImGui::GetWindowDrawList()->AddImage(view->Texture(), zoneMin, zoneMax)
+  input: IsWindowHovered(...) + raw ImGui::IsMouseDown/IsKeyPressed, EXACTLY
+         Viewport's HandleViewportInput pattern — no ImGui widgets, no
+         InvisibleButton; the zone is host-rect + input-forwarding only.
 ```
 
 **Interaction model (Phase 2, the hard part — no existing precedent in this
@@ -126,34 +195,30 @@ lives on `Application` next to `ngSelected_`/`ngCollapsed_` today, the same
 
 ## 4. Phasing
 
-1. **Phase 1 — static, zoom-correct primitives.** `NodeUI::Canvas` +
-   `ShapeList`/`GlyphList` + font atlas + the Vulkan pass. Node boxes,
-   headers, port dots, cables and every text label render through it,
-   correctly scaling as ONE picture at any zoom (Blender-parity for the
-   *visual*). Interactive controls (picker, blend-mode selector, mute/
-   collapse) temporarily STAY ImGui `bodyDraw` callbacks layered on top,
-   same as today — a visual seam, not a functional regression, while
-   Phase 2 is designed. Deliverable is benchable/verifiable on its own
-   (zoom the graph, everything scales together) before touching interaction.
-2. **Phase 2 — interactive components.** The hit-testing/interaction layer
-   above, plus the actual component set the editor needs today: a
-   Blender-style dropdown-equivalent (layer picker, blend-mode selector),
-   drag-to-connect on ports, node-box dragging, box-select, mute/collapse/
-   delete affordances — feature parity with what `UI::NodeGraph` already
-   does, on the new rendering.
-3. **Phase 3 — full migration.** `NodeGraphEditor.cpp` moves entirely off
-   `UI::NodeGraph`/ImGui for its canvas content (the breadcrumb header above
-   the canvas and the Shift+A popup chrome may reasonably stay ImGui — they
-   are closer to "surrounding interface" than canvas content, revisit if
-   that reads inconsistently once built). `UI::NodeGraph` (the ImGui widget)
-   is deleted once nothing consumes it.
+**No ImGui in the Node Graph editor's canvas content is the hard requirement
+(2026-07-24) — Phase 1/2/3 are build ORDER within one continuous effort, not
+separate sessions with an ImGui seam accepted in between.**
 
-**Not scheduled a lot number yet** — this is new, sizeable scope (realistically
-comparable to standing up a small text-rendering + immediate-mode UI
-subsystem) and deserves its own implementation pass with room to get Phase 1
-right before Phase 2 is attempted, rather than being squeezed into the
-current Node Graph Editor session. Tracked here so it is never lost; picked
-up as its own dedicated effort.
+1. **Phase 1 — static, zoom-correct primitives.** `Ink::View` for the Node
+   Graph zone + the font atlas + the new textured-quad pipeline. Node boxes,
+   headers, port dots, cables and every text label render through
+   Overlay/the new pipeline, correctly scaling as ONE picture at any zoom
+   (Blender-parity for the *visual*). Verifiable on its own (zoom the graph,
+   everything scales together) before interaction is wired.
+2. **Phase 2 — interaction.** A minimal, purpose-built hit-testing layer
+   (no ImGui item state exists on this canvas at all): per-frame CANVAS-
+   space rects for anything clickable, hit-tested against the raw mouse
+   position converted through the SAME camera transform used for drawing
+   — node dragging, box-select, port drag-to-connect, and the in-node
+   controls (layer picker, blend-mode selector) all route through this one
+   mechanism instead of ImGui widgets.
+3. **Phase 3 — cutover.** `NodeGraphEditor.cpp` stops calling `UI::
+   DrawNodeGraph`/ImGui for anything inside the canvas rect. The breadcrumb
+   header above the canvas and the Shift+A popup chrome are OUTSIDE that
+   rect (surrounding interface, not canvas content) and may reasonably stay
+   ImGui per ARCHITECTURE.md's own rule — revisit only if that reads
+   inconsistently once built. `UI::NodeGraph` (the ImGui widget) is deleted
+   once nothing consumes it.
 
 ## 5. Precise task list (2026-07-24 feedback, so nothing is dropped again)
 
